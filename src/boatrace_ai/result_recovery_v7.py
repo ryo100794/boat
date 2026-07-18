@@ -9,7 +9,7 @@ from typing import Any
 
 from .db import connection, init_db
 from .live_safe_patch4 import install
-from .webserver_operational2 import now_jst, parse_jst
+from .time_semantics import now_jst, parse_jst
 
 install()
 

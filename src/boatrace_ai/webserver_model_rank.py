@@ -1,13 +1,60 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from .db import connect
 from .webserver_all import required, rowdict
-from .webserver_operational2 import race_payload
+from .time_semantics import iso, minutes_between, parse_any_time, parse_jst
+
+
+def race_payload(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    now,
+    before_minutes: int = 10,
+) -> dict[str, Any]:
+    deadline = parse_jst(row["deadline_at"])
+    buy_until = deadline - timedelta(minutes=before_minutes) if deadline else None
+    race_time = deadline + timedelta(minutes=5) if deadline else None
+    latest_odds = parse_any_time(row["latest_odds_at"])
+    result_rows = int(row["result_rows"] or 0)
+    if result_rows >= 3:
+        time_status = "確定"
+    elif not deadline:
+        time_status = "時刻未取得"
+    elif now > deadline:
+        time_status = "締切後"
+    elif buy_until and now > buy_until:
+        time_status = "T-10超過"
+    else:
+        time_status = "候補"
+    top_prediction, top5 = latest_prediction_rows_by_probability(conn, row["race_id"], limit=5)
+    return {
+        "race_id": row["race_id"],
+        "race_date": row["race_date"],
+        "jcd": row["jcd"],
+        "venue_name": row["venue_name"],
+        "rno": row["rno"],
+        "title": row["title"],
+        "status": row["status"],
+        "deadline_at": iso(deadline),
+        "race_time_at": iso(race_time),
+        "buy_until_at": iso(buy_until),
+        "minutes_to_deadline": minutes_between(now, deadline),
+        "minutes_to_buy_until": minutes_between(now, buy_until),
+        "time_status": time_status,
+        "entries": row["entries"],
+        "odds_snapshots": row["odds_snapshots"],
+        "latest_odds_at": iso(latest_odds),
+        "result_rows": row["result_rows"],
+        "latest_prediction": row["latest_prediction"],
+        "top_prediction": top_prediction,
+        "top5": top5,
+    }
 
 
 def race_payload_model_rank(

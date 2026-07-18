@@ -1,8 +1,41 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from .webserver_operational2 import iso, minutes_between, parse_jst
+
+JST = timezone(timedelta(hours=9))
+
+
+def now_jst() -> datetime:
+    return datetime.now(timezone.utc).astimezone(JST)
+
+
+def parse_jst(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=JST)
+    return parsed.astimezone(JST)
+
+
+def parse_any_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc).astimezone(JST)
+    return parsed.astimezone(JST)
+
+
+def minutes_between(start: datetime, end: datetime | None) -> int | None:
+    if not end:
+        return None
+    return int((end - start).total_seconds() // 60)
+
+
+def iso(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="seconds") if value else None
 
 
 START_TO_DEADLINE_MINUTES = 5
