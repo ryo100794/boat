@@ -12,3 +12,5 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 src/*.egg-info/
+data/remote_eval_status.json
+data/remote_eval_status.json.tmp

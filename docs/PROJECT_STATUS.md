@@ -46,15 +46,15 @@
 - Sartre M4設計回収: `base_pastlog`、`series_cached`、`series_relative`、`rolling_history` のdrop-one-feature-group ablation境界を確定。
 - Russell M6実装: `--require-real-odds` を通常/ストリーミング資金運用バックテストへ追加。実オッズなしはskipし、EV/推定払戻は締切前実オッズから算出。
 - Euler M4実装: `modeling_pastlog_v7_stream_hash` に `--drop-feature-groups` と `ablation` サブコマンドを追加し、特徴量グループ別比較を実行可能にした。
-- Remote Eval: `/workspace/boat-milestone-e07badb` で疎行列index修正を同期し、固定版ジョブを再投入。実オッズ必須 PID 171805、資金配分スイープ PID 171806-171810、特徴量ablation PID 171811。旧PID 171523-171525は疎行列indexエラーで失敗、旧PID 171290/171291/171526/171527は停止。実オッズ必須fold1は全skipで、過去実オッズ履歴不足を確認。
+- Remote Eval: `/workspace/boat-milestone-e07badb` で疎行列index修正を同期し、固定版ジョブを再投入。実オッズ必須 PID 171805、資金配分スイープ PID 171806-171810、特徴量ablation PID 171811。`scripts/update_remote_eval_status.py` が `data/remote_eval_status.json` に状態を同期し、懸案ページのリモート評価表へ表示する。2026-07-18T21:20:05Z時点で7本すべて実行中、結果JSONは未生成。旧PID 171523-171525は疎行列indexエラーで失敗、旧PID 171290/171291/171526/171527は停止。実オッズ必須fold1は全skipで、過去実オッズ履歴不足を確認。
 
 ## 改善事項リスト
 
 - M6-1 実オッズ履歴不足: 実オッズ必須バックチェックのfold1は `evaluated_races=0`、`skipped_no_real_odds=18751`。リアルタイムオッズ蓄積が十分になるまでは、過去ログ中心の資金運用評価を主判定にする。進捗25%。
-- M6-2 資金配分パラメータ探索: EV閾値、Kelly比率、日次/レース/券上限の固定版スイープをリモートで再評価中。PID 171806-171810。進捗35%。
+- M6-2 資金配分パラメータ探索: EV閾値、Kelly比率、日次/レース/券上限の固定版スイープをリモートで再評価中。PID 171806-171810。`data/remote_eval_status.json` で結果回収待ち。進捗38%。
 - M6-3 完了ゲート: ROI 1.0以上、損益プラス、ドローダウン許容、購入日数/的中率の劣化なしを満たすまでM6は完了扱いしない。進捗20%。
 - M6-4 特徴量改善の反映: M4 ablation結果を資金運用モデルの入力特徴量と購入判断へ反映する。進捗15%。
-- M6-5 疎行列index互換: FeatureHasher出力がint64 indexとなりscikit-learnで失敗したため、学習/推論前にCSR indexをint32へ正規化。ローカル/リモートの小テストでint32化を確認し、固定版スイープを再投入済み。進捗80%。
+- M6-5 疎行列index互換: FeatureHasher出力がint64 indexとなりscikit-learnで失敗したため、学習/推論前にCSR indexをint32へ正規化。ローカル/リモートの小テストでint32化を確認し、固定版スイープを再投入済み。監視JSON連携まで実装済み。進捗85%。
 
 ## 進行中
 
@@ -83,7 +83,7 @@
 - M4: 過去ログ中心モデルの特徴量を見直し、場、枠、選手、モーター、ボート、天候、展示、時系列実績を体系化する。特徴量グループablationをリモート実行中。
 - M5: リアルタイム併用モデルをshadow評価で並走させ、十分な蓄積後に本番予測へ昇格する。
 - M6: 適応型資金運用モデルを、点数固定/100円固定ではなく期待値・不確実性・日次資金制約で最適化する。要改善。改善事項M6-1..M6-5で管理し、ROI/損益ゲート達成まで完了扱いしない。
-- M7: 番号付きファイルを安定名へ移行し、ローカルgit履歴に残したうえで不要ファイルを削除する。
+- M7: 番号付きファイルを安定名へ移行し、ローカルgit履歴に残したうえで不要ファイルを削除する。M7棚卸しエージェントがmust-keep依存とsafe-to-clean候補を分離済み。
 
 ## 専門エージェント分担
 
