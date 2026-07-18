@@ -1961,7 +1961,7 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "target": "M6 ROI",
             "status": "達成候補" if roi_ok else "未達",
             "evidence": _gate_bankroll_text(best),
-            "next": "ROI 1.0以上の候補を固定版スイープで確認する" if not roi_ok else "損益/ドローダウン/購入日数も確認する",
+            "next": "ROI 1.0以上の候補を正規化KellyスイープPID 172555-172559で確認する" if not roi_ok else "損益/ドローダウン/購入日数も確認する",
         },
         {
             "target": "M6 損益",
@@ -1973,7 +1973,7 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "target": "M6 最新適応型",
             "status": "未達" if latest_roi is not None and latest_roi < 1.0 else "確認中",
             "evidence": _gate_bankroll_text(latest),
-            "next": "固定版PID 171806-171810の結果で置き換える",
+            "next": "正規化KellyスイープPID 172555-172559の結果で置き換える",
         },
         {
             "target": "M6 ドローダウン",
