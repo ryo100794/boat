@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import math
+from typing import Any
+
+
+Accumulator = dict[str, dict[str, Any]]
+
+
+def new_roi_attribution() -> Accumulator:
+    return {}
+
+
+def merge_roi_attribution(target: Accumulator, source: Accumulator) -> None:
+    for dimension, source_dimension in source.items():
+        target_dimension = target.setdefault(
+            dimension,
+            {"family": source_dimension.get("family") or "other", "buckets": {}},
+        )
+        for bucket, source_bucket in source_dimension.get("buckets", {}).items():
+            target_bucket = target_dimension["buckets"].setdefault(
+                bucket,
+                {
+                    "tickets": 0.0,
+                    "hits": 0.0,
+                    "stake_yen": 0.0,
+                    "return_yen": 0.0,
+                    "probability_sum": 0.0,
+                    "estimated_ev_sum": 0.0,
+                    "estimated_odds_sum": 0.0,
+                },
+            )
+            for key in target_bucket:
+                target_bucket[key] += float(source_bucket.get(key) or 0.0)
+
+
+def update_roi_attribution(accumulator: Accumulator, ticket: dict[str, Any]) -> None:
+    stake = _finite_float(ticket.get("stake_yen"))
+    if stake is None or stake <= 0:
+        return
+    returned = _finite_float(ticket.get("return_yen")) or 0.0
+    hit = 1.0 if ticket.get("hit") else 0.0
+    probability = _finite_float(ticket.get("probability")) or 0.0
+    estimated_ev = _finite_float(ticket.get("estimated_ev")) or 0.0
+    estimated_odds = _finite_float(ticket.get("estimated_odds")) or 0.0
+
+    for dimension, family, bucket in _ticket_dimensions(ticket):
+        dimension_row = accumulator.setdefault(
+            dimension,
+            {"family": family, "buckets": {}},
+        )
+        bucket_row = dimension_row["buckets"].setdefault(
+            bucket,
+            {
+                "tickets": 0.0,
+                "hits": 0.0,
+                "stake_yen": 0.0,
+                "return_yen": 0.0,
+                "probability_sum": 0.0,
+                "estimated_ev_sum": 0.0,
+                "estimated_odds_sum": 0.0,
+            },
+        )
+        bucket_row["tickets"] += 1.0
+        bucket_row["hits"] += hit
+        bucket_row["stake_yen"] += stake
+        bucket_row["return_yen"] += returned
+        bucket_row["probability_sum"] += probability
+        bucket_row["estimated_ev_sum"] += estimated_ev
+        bucket_row["estimated_odds_sum"] += estimated_odds
+
+
+def summarize_roi_attribution(
+    accumulator: Accumulator,
+    *,
+    min_tickets: int = 100,
+    min_stake_yen: int = 10_000,
+) -> dict[str, Any]:
+    dimensions = []
+    for dimension, dimension_row in accumulator.items():
+        buckets = []
+        for bucket, raw in dimension_row.get("buckets", {}).items():
+            tickets = int(raw.get("tickets") or 0)
+            hits = int(raw.get("hits") or 0)
+            stake = int(round(raw.get("stake_yen") or 0.0))
+            returned = int(round(raw.get("return_yen") or 0.0))
+            buckets.append(
+                {
+                    "bucket": bucket,
+                    "tickets": tickets,
+                    "hits": hits,
+                    "hit_rate": hits / tickets if tickets else 0.0,
+                    "stake_yen": stake,
+                    "return_yen": returned,
+                    "profit_yen": returned - stake,
+                    "roi": returned / stake if stake else None,
+                    "avg_probability": (raw.get("probability_sum") or 0.0) / tickets if tickets else None,
+                    "avg_estimated_ev": (raw.get("estimated_ev_sum") or 0.0) / tickets if tickets else None,
+                    "avg_estimated_odds": (raw.get("estimated_odds_sum") or 0.0) / tickets if tickets else None,
+                    "eligible": tickets >= min_tickets and stake >= min_stake_yen,
+                }
+            )
+        buckets.sort(key=lambda row: (-row["stake_yen"], str(row["bucket"])))
+        eligible = [row for row in buckets if row["eligible"] and row["roi"] is not None]
+        best = max(eligible, key=lambda row: row["roi"], default=None)
+        worst = min(eligible, key=lambda row: row["roi"], default=None)
+        roi_spread = (best["roi"] - worst["roi"]) if best and worst else None
+        dimensions.append(
+            {
+                "dimension": dimension,
+                "family": dimension_row.get("family") or "other",
+                "tickets": sum(row["tickets"] for row in buckets),
+                "stake_yen": sum(row["stake_yen"] for row in buckets),
+                "eligible_buckets": len(eligible),
+                "roi_spread": roi_spread,
+                "best_bucket": _compact_bucket(best),
+                "worst_bucket": _compact_bucket(worst),
+                "status": "signal" if roi_spread is not None and roi_spread >= 0.15 else ("weak" if roi_spread is not None else "insufficient"),
+                "buckets": buckets,
+            }
+        )
+    dimensions.sort(
+        key=lambda row: (
+            row["roi_spread"] is not None,
+            row["roi_spread"] or -1.0,
+            row["stake_yen"],
+        ),
+        reverse=True,
+    )
+    signals = [row for row in dimensions if row["status"] == "signal"]
+    return {
+        "method": "selected-ticket stake-weighted ROI buckets",
+        "minimum_evidence": {"tickets": min_tickets, "stake_yen": min_stake_yen},
+        "dimensions": dimensions,
+        "top_signals": [
+            {
+                "dimension": row["dimension"],
+                "family": row["family"],
+                "roi_spread": row["roi_spread"],
+                "best_bucket": row["best_bucket"],
+                "worst_bucket": row["worst_bucket"],
+            }
+            for row in signals[:12]
+        ],
+        "diagnosis": (
+            "ROI differs materially across selected-ticket feature buckets. Validate the strongest signals on later time folds before changing the primary model."
+            if signals
+            else "No stable ROI separation is proven yet; collect more selected tickets or revise the purchase policy and features."
+        ),
+    }
+
+
+def summarize_fold_signal_stability(fold_attributions: list[dict[str, Any]]) -> dict[str, Any]:
+    fold_count = len(fold_attributions)
+    by_dimension: dict[str, dict[str, Any]] = {}
+    for fold_index, attribution in enumerate(fold_attributions, start=1):
+        for signal in (attribution or {}).get("top_signals") or []:
+            dimension = str(signal.get("dimension") or "")
+            if not dimension:
+                continue
+            row = by_dimension.setdefault(
+                dimension,
+                {
+                    "dimension": dimension,
+                    "family": signal.get("family") or "other",
+                    "signal_folds": [],
+                    "roi_spreads": [],
+                    "best_buckets": {},
+                    "worst_buckets": {},
+                },
+            )
+            row["signal_folds"].append(fold_index)
+            if signal.get("roi_spread") is not None:
+                row["roi_spreads"].append(float(signal["roi_spread"]))
+            for field, target in (("best_bucket", "best_buckets"), ("worst_bucket", "worst_buckets")):
+                bucket = (signal.get(field) or {}).get("bucket")
+                if bucket is not None:
+                    row[target][str(bucket)] = int(row[target].get(str(bucket), 0)) + 1
+
+    rows = []
+    for row in by_dimension.values():
+        signal_folds = len(row["signal_folds"])
+        best_bucket, best_count = _most_common(row["best_buckets"])
+        worst_bucket, worst_count = _most_common(row["worst_buckets"])
+        consistency = min(best_count, worst_count) / signal_folds if signal_folds else 0.0
+        rows.append(
+            {
+                "dimension": row["dimension"],
+                "family": row["family"],
+                "signal_folds": row["signal_folds"],
+                "signal_fold_rate": signal_folds / fold_count if fold_count else 0.0,
+                "mean_roi_spread": sum(row["roi_spreads"]) / len(row["roi_spreads"]) if row["roi_spreads"] else None,
+                "common_best_bucket": best_bucket,
+                "common_worst_bucket": worst_bucket,
+                "direction_consistency": consistency,
+                "status": "stable" if signal_folds >= 2 and consistency >= 0.5 else "unstable",
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            row["status"] == "stable",
+            row["signal_fold_rate"],
+            row["direction_consistency"],
+            row["mean_roi_spread"] or 0.0,
+        ),
+        reverse=True,
+    )
+    return {
+        "folds": fold_count,
+        "stable_signals": sum(1 for row in rows if row["status"] == "stable"),
+        "signals": rows[:24],
+        "gate": "candidate" if any(row["status"] == "stable" for row in rows) else "insufficient",
+    }
+
+
+def _most_common(counts: dict[str, int]) -> tuple[str | None, int]:
+    if not counts:
+        return None, 0
+    return max(counts.items(), key=lambda item: (item[1], item[0]))
+
+
+def _ticket_dimensions(ticket: dict[str, Any]) -> list[tuple[str, str, str]]:
+    rows = [
+        ("venue", "race", _text_bucket(ticket.get("jcd"))),
+        ("race_no", "race", _number_bucket(ticket.get("rno"), ((4, "1-4"), (8, "5-8"), (12, "9-12")))),
+        ("first_lane", "lane", _combination_lane(ticket.get("combination"), 0)),
+        ("second_lane", "lane", _combination_lane(ticket.get("combination"), 1)),
+        ("third_lane", "lane", _combination_lane(ticket.get("combination"), 2)),
+        ("odds_source", "market", _text_bucket(ticket.get("odds_source"))),
+        ("probability", "purchase", _number_bucket(ticket.get("probability"), ((0.005, "<0.005"), (0.01, "0.005-0.010"), (0.02, "0.010-0.020"), (0.04, "0.020-0.040"), (0.08, "0.040-0.080"), (math.inf, ">=0.080")))),
+        ("estimated_odds", "market", _number_bucket(ticket.get("estimated_odds"), ((10, "<10"), (20, "10-20"), (40, "20-40"), (80, "40-80"), (150, "80-150"), (math.inf, ">=150")))),
+        ("estimated_ev", "purchase", _number_bucket(ticket.get("estimated_ev"), ((1.10, "1.00-1.10"), (1.20, "1.10-1.20"), (1.50, "1.20-1.50"), (2.00, "1.50-2.00"), (3.00, "2.00-3.00"), (math.inf, ">=3.00")))),
+        ("kelly_fraction", "purchase", _number_bucket(ticket.get("kelly_fraction"), ((0.001, "<0.001"), (0.0025, "0.001-0.0025"), (0.005, "0.0025-0.005"), (0.01, "0.005-0.010"), (0.02, "0.010-0.020"), (math.inf, ">=0.020")))),
+        ("stake_yen", "purchase", _number_bucket(ticket.get("stake_yen"), ((100, "100"), (200, "200"), (300, "300"), (500, "400-500"), (1000, "600-1000"), (math.inf, ">1000")), inclusive=True)),
+        ("payout_history_count", "market", _number_bucket(ticket.get("payout_history_count"), ((0, "0"), (25, "1-25"), (100, "26-100"), (500, "101-500"), (math.inf, ">500")), inclusive=True)),
+    ]
+    context = ticket.get("feature_context") or {}
+    if isinstance(context, dict):
+        for key, value in context.items():
+            rows.append((f"feature:{key}", _feature_family(str(key)), _feature_bucket(str(key), value)))
+    return rows
+
+
+def _feature_bucket(key: str, value: Any) -> str:
+    if isinstance(value, str):
+        return value or "missing"
+    number = _finite_float(value)
+    if number is None or number < 0:
+        return "missing"
+    if key.endswith("_rank"):
+        return str(int(round(number)))
+    if "win_rate_s" in key or "top2_rate_s" in key or "top3_rate_s" in key or "series_win_rate" in key:
+        return _number_bucket(number, ((0.1, "0.0-0.1"), (0.2, "0.1-0.2"), (0.4, "0.2-0.4"), (0.6, "0.4-0.6"), (0.8, "0.6-0.8"), (math.inf, ">=0.8")))
+    if "avg_finish" in key or "avg_rank" in key:
+        return _number_bucket(number, ((2, "<2"), (3, "2-3"), (4, "3-4"), (5, "4-5"), (math.inf, ">=5")))
+    return _number_bucket(number, ((0, "0"), (1, "0-1"), (2, "1-2"), (4, "2-4"), (8, "4-8"), (math.inf, ">=8")), inclusive=True)
+
+
+def _feature_family(key: str) -> str:
+    if "racer" in key or "class" in key or "origin" in key or "national" in key or "local" in key:
+        return "racer"
+    if "motor" in key:
+        return "motor"
+    if "boat" in key:
+        return "boat"
+    if "series" in key:
+        return "series"
+    if "venue" in key or "race_" in key or "month" in key or "weekday" in key:
+        return "race"
+    return "feature"
+
+
+def _number_bucket(value: Any, bounds: tuple[tuple[float, str], ...], *, inclusive: bool = False) -> str:
+    number = _finite_float(value)
+    if number is None:
+        return "missing"
+    for upper, label in bounds:
+        if number <= upper if inclusive else number < upper:
+            return label
+    return bounds[-1][1]
+
+
+def _combination_lane(combination: Any, index: int) -> str:
+    parts = str(combination or "").split("-")
+    return parts[index] if len(parts) > index and parts[index] else "missing"
+
+
+def _text_bucket(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or "missing"
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _compact_bucket(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {key: row.get(key) for key in ("bucket", "tickets", "stake_yen", "profit_yen", "roi", "hit_rate")}

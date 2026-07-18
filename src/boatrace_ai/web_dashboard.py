@@ -585,6 +585,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
+    bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
@@ -724,7 +725,63 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "avg_stake_yen_per_ticket": _float_or_none(data.get("avg_stake_yen_per_ticket")),
         "avg_tickets_per_selected_race": _float_or_none(data.get("avg_tickets_per_selected_race")),
         "max_drawdown_yen": data.get("max_drawdown_yen"),
+        "ticket_roi_attribution": _compact_ticket_roi_attribution(data.get("ticket_roi_attribution")),
     }
+
+
+def _compact_ticket_roi_attribution(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "method": value.get("method"),
+        "diagnosis": value.get("diagnosis"),
+        "minimum_evidence": value.get("minimum_evidence") or {},
+        "top_signals": (value.get("top_signals") or [])[:16],
+        "fold_stability": value.get("fold_stability") or {},
+    }
+
+
+def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
+        if not str(job.get("kind") or "").startswith("bankroll"):
+            continue
+        result = job.get("result") or {}
+        metrics = result.get("metrics") or {}
+        if metrics.get("roi") is None:
+            continue
+        attribution = result.get("ticket_roi_attribution")
+        rows.append(
+            {
+                "name": job.get("name") or result.get("file") or "remote_bankroll",
+                "file": result.get("file") or job.get("output"),
+                "generated_at": result.get("modified_at") or remote_evaluations.get("generated_at"),
+                "feature_set": None,
+                "model": "remote",
+                "daily_budget_yen": None,
+                "stake_model": None,
+                "evaluated_races": metrics.get("evaluated_races"),
+                "race_days": metrics.get("race_days"),
+                "selected_races": metrics.get("selected_races"),
+                "tickets": metrics.get("tickets"),
+                "candidate_tickets": metrics.get("candidate_tickets"),
+                "stake_yen": metrics.get("stake_yen"),
+                "return_yen": metrics.get("return_yen"),
+                "profit_yen": metrics.get("profit_yen"),
+                "roi": _float_or_none(metrics.get("roi")),
+                "ticket_hit_rate": _float_or_none(metrics.get("ticket_hit_rate")),
+                "race_hit_rate": _float_or_none(metrics.get("race_hit_rate")),
+                "winning_days": metrics.get("winning_days"),
+                "losing_days": metrics.get("losing_days"),
+                "budget_utilization": _float_or_none(metrics.get("budget_utilization")),
+                "avg_stake_yen_per_ticket": None,
+                "avg_tickets_per_selected_race": None,
+                "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+                "ticket_roi_attribution": attribution,
+                "remote": True,
+            }
+        )
+    return rows
 
 
 def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2019,6 +2076,13 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
     latest_roi = _float_or_none(latest.get("roi") if latest else None)
     latest_profit = _float_or_none(latest.get("profit_yen") if latest else None)
     latest_drawdown = latest.get("max_drawdown_yen") if latest else None
+    attribution_rows = [row for row in bankrolls if row.get("roi_attribution_gate")]
+    attribution_best = max(attribution_rows, key=lambda row: int(row.get("stable_signals") or 0), default=None)
+    attribution_candidate = bool(
+        attribution_best
+        and attribution_best.get("roi_attribution_gate") == "candidate"
+        and int(attribution_best.get("stable_signals") or 0) > 0
+    )
 
     roi_ok = best_roi is not None and best_roi >= 1.0
     profit_ok = best_profit is not None and best_profit > 0
@@ -2048,6 +2112,15 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "next": "ROI/損益ゲート達成後に日次DD許容を判定する",
         },
         {
+            "target": "M4-2 ROI帰属再現性",
+            "status": "達成候補" if attribution_candidate else ("未達" if attribution_rows else "未評価"),
+            "evidence": (
+                f"{attribution_best.get('file')} / stable={int(attribution_best.get('stable_signals') or 0)} / gate={attribution_best.get('roi_attribution_gate')}"
+                if attribution_best else "ROI帰属つき時間fold成果物なし"
+            ),
+            "next": "同じ方向が後続foldでも再現し、資金運用ROI/損益も改善するか確認する" if attribution_candidate else "最良Kelly条件でROI帰属つき時間foldバックテストを実行する",
+        },
+        {
             "target": "Remote Eval",
             "status": "実行中" if remote_counts.get("実行中") else ("完了" if remote_counts.get("完了") else str(remote_evaluations.get("status") or "未取得")),
             "evidence": remote_text,
@@ -2063,6 +2136,8 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
             continue
         result = (job or {}).get("result") or {}
         metrics = result.get("metrics") or {}
+        attribution = result.get("ticket_roi_attribution") or {}
+        stability = attribution.get("fold_stability") or {}
         if metrics.get("roi") is None:
             continue
         rows.append(
@@ -2074,6 +2149,8 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
                 "stake_yen": metrics.get("stake_yen"),
                 "evaluated_races": metrics.get("evaluated_races"),
                 "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+                "roi_attribution_gate": stability.get("gate"),
+                "stable_signals": stability.get("stable_signals"),
             }
         )
     return rows
@@ -2101,6 +2178,8 @@ def _bankroll_gate_records(model_dir: Path) -> list[dict[str, Any]]:
                 "stake_yen": data.get("stake_yen"),
                 "evaluated_races": data.get("evaluated_races"),
                 "max_drawdown_yen": data.get("max_drawdown_yen"),
+                "roi_attribution_gate": ((data.get("ticket_roi_attribution") or {}).get("fold_stability") or {}).get("gate"),
+                "stable_signals": ((data.get("ticket_roi_attribution") or {}).get("fold_stability") or {}).get("stable_signals"),
             }
         )
     return rows
@@ -2132,10 +2211,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "要改善",
-            "progress": 25,
+            "status": "実行中/要改善",
+            "progress": 45,
             "item": "相関監査とROI接続",
-            "next": "特徴量ファミリー別相関、欠損疑似相関、係数ズレをJSON化。リモートPID 173485を回収し、次は購入候補/払戻/ROIへ特徴量バケットを接続する。",
+            "next": "選択券の投資/払戻/ROI帰属とfold再現性判定を実装済み。相関監査retry PID 174501を回収後、最良資金配分条件でROI帰属バックテストを実行する。",
         },
         {
             "id": "M6-1",
@@ -2164,10 +2243,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-4",
             "milestone": "M6",
-            "status": "待ち",
-            "progress": 15,
+            "status": "実装済み/評価待ち",
+            "progress": 30,
             "item": "特徴量改善の反映",
-            "next": "M4 ablation結果を回収し、資金運用モデルの入力特徴量と購入判断へ反映する。",
+            "next": "選手/場/モーター/ボート/選択条件のROI帰属を資金運用出力へ追加。M4 ablationと最良Kelly条件を回収後、除外/採用候補を同一foldで再評価する。",
         },
         {
             "id": "M6-5",
@@ -2202,7 +2281,8 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
         {"name": "Noether", "area": "NN shadowモデル", "status": "設計", "task": "embedding+MLP/odds系列branchを既存主系と同じバックチェックで比較する"},
-        {"name": "Curie", "area": "相関監査", "status": "実行中", "task": "リモートPID 173485で相関診断を実行。ROI帰属は次作業"},
+        {"name": "Curie", "area": "相関監査", "status": "再実行中", "task": "PID 173485の未定義関数停止を修正し、retry PID 174501でフル相関診断を再実行"},
+        {"name": "Fisher", "area": "ROI帰属", "status": "実装完了/評価待ち", "task": "選択券の特徴量bucket別投資/払戻/ROIとfold間再現性ゲートを資金運用モデルへ接続"},
         {"name": "Remote-M6", "area": "資金運用評価", "status": "再実行中", "task": "PID 171805実オッズ / 172555-172559正規化Kelly / 172873 sanity"},
         {"name": "Remote-M4", "area": "特徴量評価", "status": "再実行中", "task": "固定版PID 171811 / drop-one-feature-group ablation"},
         {"name": "Ptolemy", "area": "懸案UI監査", "status": "完了", "task": "M6改善事項/完了ゲート/API表示の抜け漏れ確認。リモートPID静的表示のリスクを回収"},
@@ -2216,9 +2296,9 @@ def _roadmap_milestones() -> list[dict[str, Any]]:
         {"id": "M1", "title": "懸案・進捗ページ", "status": "進行中", "progress": 86, "next": "リモート評価監視JSONを10001へ反映し、ジョブ結果を継続回収する"},
         {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 58, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 70, "next": "相関診断JSONを回収し、ROI帰属とNN shadowモデルを同じ資金運用バックチェックで比較する"},
+        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 74, "next": "retry相関診断とROI帰属バックテストを回収し、時間foldで再現する特徴だけを採用候補にする"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 66, "next": "改善事項M6-1..M6-6を追跡し、ROI/損益ゲート達成まで完了扱いしない"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 68, "next": "正規化Kelly結果と選択券ROI帰属を回収し、ROI/損益/fold再現性ゲート達成まで完了扱いしない"},
         {"id": "M7", "title": "v系ファイル整理", "status": "棚卸し完了/移行待ち", "progress": 38, "next": "Mendel棚卸しのsafe-to-clean候補から安定名移行済み範囲を削除する"},
     ]
 
@@ -2334,6 +2414,7 @@ MODEL_REPORT_HTML = """<!doctype html>
   <div class="panel" style="margin-top:10px"><h2><span>スイープ</span><span class="muted">候補比較</span></h2><table><thead><tr><th>variant</th><th>LogLoss</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div>
   <div class="panel" style="margin-top:10px"><h2><span>特徴量相関診断</span><span class="muted">ファミリー別</span></h2><table><thead><tr><th>診断</th><th>特徴群</th><th>数</th><th>max相関</th><th>平均相関</th><th>係数量</th><th>低充足</th><th>主な特徴</th></tr></thead><tbody id="featureFamilyRows"></tbody></table></div>
   <div class="panel" style="margin-top:10px"><h2><span>疑似相関/要確認特徴</span><span class="muted">欠損・ID・係数ズレ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
+  <div class="panel" style="margin-top:10px"><h2><span>購入券ROI帰属</span><span class="muted">選択券の投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -2356,7 +2437,7 @@ function render(data){
   drawBars($("roiChart"), bank.map(x=>({label:shortName(x.name), value:x.roi})), {baseline:1});
   $("summaryRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("");
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>`;
-  renderFeatureDiagnostics(features); renderDaily(data);
+  renderFeatureDiagnostics(features); renderRoiAttribution(bank); renderDaily(data);
 }
 function summaryRow(x,type){ const cls=Number(x.profit_yen||0)>=0?"pos":"neg"; return `<tr><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${type}</td><td>${fmt(x.evaluated_races)}</td><td>${ratio(x.entry_log_loss)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${x.profit_yen==null?"":cls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.stake_yen==null?"-":yen(x.stake_yen)}</td></tr>`; }
 function featureName(row){ return row && row.feature ? row.feature : "-"; }
@@ -2364,6 +2445,11 @@ function renderFeatureDiagnostics(features){
   const latest=features[features.length-1]||{}; const families=latest.family_summary||[]; const suspects=latest.suspect_features||[];
   $("featureFamilyRows").innerHTML=families.map(r=>{ const top=(r.top_numeric||[]).slice(0,3).map(featureName).join(", ") || (r.top_categorical||[]).slice(0,2).map(featureName).join(", ") || "-"; return `<tr><td title="${esc(latest.file)}">${esc(shortName(latest.file||"相関"))}</td><td>${esc(r.family||"-")}</td><td>${fmt((r.numeric_features||0)+(r.categorical_features||0))}</td><td>${corr(r.max_abs_pearson)}</td><td>${corr(r.avg_abs_pearson)}</td><td>${corr(r.coefficient_abs_sum)}</td><td>${fmt(r.low_coverage_features)}</td><td title="${esc(top)}">${esc(top)}</td></tr>`; }).join("") || `<tr><td colspan="8" class="muted">相関診断JSONなし。feature_result_correlation_v8_stream2をリモートで実行待ち。</td></tr>`;
   $("suspectRows").innerHTML=suspects.map(r=>`<tr><td>${esc(shortName(latest.file||"相関"))}</td><td title="${esc(r.feature)}">${esc(r.feature||"-")}</td><td title="${esc(r.reason)}">${esc(r.reason||"-")}</td><td>${corr(r.present_only_pearson??r.pearson)}</td><td>${pct(r.present_rate)}</td><td>${pct(r.sentinel_minus_one_rate)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">疑似相関候補なし、または診断未生成</td></tr>`;
+}
+function roiBucketText(row){ return row ? String(row.bucket||"-")+" / ROI "+ratio(row.roi)+" / "+fmt(row.tickets)+"券 / "+yen(row.profit_yen) : "-"; }
+function renderRoiAttribution(bank){
+  const rows=(bank||[]).flatMap(model=>{ const attribution=model.ticket_roi_attribution||{}, stable=(attribution.fold_stability||{}).signals||[]; return (attribution.top_signals||[]).map(signal=>({model:model.name||model.file,...signal,stability:stable.find(x=>x.dimension===signal.dimension)})); }).sort((a,b)=>(Number(b.roi_spread)||0)-(Number(a.roi_spread)||0));
+  $("roiAttributionRows").innerHTML=rows.map(r=>'<tr><td title="'+esc(r.model)+'">'+esc(shortName(r.model))+'</td><td title="'+esc(r.dimension)+'">'+esc(r.dimension||"-")+'</td><td>'+esc(r.family||"-")+'</td><td>'+ratio(r.roi_spread)+'</td><td>'+esc(r.stability ? r.stability.status+" "+pct(r.stability.signal_fold_rate) : "-")+'</td><td title="'+esc(roiBucketText(r.best_bucket))+'">'+esc(roiBucketText(r.best_bucket))+'</td><td title="'+esc(roiBucketText(r.worst_bucket))+'">'+esc(roiBucketText(r.worst_bucket))+'</td></tr>').join("") || '<tr><td colspan="7" class="muted">ROI帰属つき資金運用バックテストを実行中</td></tr>';
 }
 function renderDaily(data){ const name=$("dailyModel").value; const rows=(data.bankroll_daily||{})[name]||[]; $("profitTitle").textContent=shortName(name); drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0}); drawLines($("dailyRoiChart"), [{label:"日次ROI", rows:rows.map(r=>({x:r.date, y:r.roi}))}], {baseline:1}); drawGroupedBars($("ticketsChart"), rows.slice(-90).map(r=>({label:String(r.date||"").slice(5), a:r.tickets, b:(r.budget_used_fraction||0)*100})), {a:"点数", b:"使用率%"}); }
 function groupFoldSeries(folds, key){ const by=new Map(); for(const f of folds){ if(f[key]==null) continue; const k=shortName(f.model); if(!by.has(k)) by.set(k, []); by.get(k).push({x:f.fold, y:f[key]}); } return [...by.entries()].slice(-8).map(([label, rows])=>({label, rows:rows.sort((a,b)=>Number(a.x)-Number(b.x))})); }

@@ -25,6 +25,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 172873, "name": "m6_norm_sanity_fold_19d5c35", "milestone": "M6", "kind": "bankroll_sanity", "output": "data/models/m6_norm_sanity_fold_19d5c35.json", "log": "logs/m6_norm_sanity_fold_19d5c35.log"},
     {"pid": 171811, "name": "feature_ablation_97cc181", "milestone": "M4", "kind": "feature_ablation", "output": "data/models/feature_ablation_97cc181.json", "log": "logs/feature_ablation_97cc181.log"},
     {"pid": 173485, "name": "feature_correlation_advanced_e07badb", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_e07badb.json", "log": "logs/feature_correlation_advanced_e07badb.log"},
+    {"pid": 174501, "name": "feature_correlation_advanced_retry", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_retry.json", "log": "logs/feature_correlation_advanced_retry.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -41,7 +42,8 @@ METRIC_KEYS = (
     "tickets", "hit_tickets", "ticket_hit_rate", "race_hit_rate", "max_drawdown_yen",
     "skipped_no_real_odds", "real_odds_races", "entry_log_loss", "entry_brier",
     "winner_top1_accuracy", "trifecta_top5_hit_rate",
-    "examples", "races", "positive_labels", "global_win_rate",
+    "examples", "races", "positive_labels", "global_win_rate", "race_days",
+    "candidate_tickets", "winning_days", "losing_days", "budget_utilization",
 )
 
 def iso_mtime(path):
@@ -85,6 +87,15 @@ def result_summary(path):
         row["coefficient_alignment"] = (data.get("coefficient_alignment") or [])[:16]
         row["action_items"] = (data.get("action_items") or data.get("diagnosis") or [])[:10]
         row["roi_link"] = data.get("roi_link") or {}
+    if "ticket_roi_attribution" in data:
+        attribution = data.get("ticket_roi_attribution") or {}
+        row["ticket_roi_attribution"] = {
+            "method": attribution.get("method"),
+            "diagnosis": attribution.get("diagnosis"),
+            "minimum_evidence": attribution.get("minimum_evidence") or {},
+            "top_signals": (attribution.get("top_signals") or [])[:16],
+            "fold_stability": attribution.get("fold_stability") or {},
+        }
     if "drop_results" in data:
         base = data.get("base") or {}
         row["base_metrics"] = {key: base.get(key) for key in METRIC_KEYS if key in base}

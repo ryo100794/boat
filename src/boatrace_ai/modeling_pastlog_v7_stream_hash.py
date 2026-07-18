@@ -34,6 +34,25 @@ FEATURE_SET = "pastlog_v7_stream_hash_cached_series_sgd"
 FEATURE_GROUPS = ("base_pastlog", "series_cached", "series_relative", "rolling_history")
 HASH_FEATURES = 1 << 20
 
+ROI_DIAGNOSTIC_FEATURES = (
+    "racer_class",
+    "origin",
+    "race_month",
+    "race_weekday",
+    "race_rno_bucket",
+    "class_rank",
+    "national_win_rate_rank",
+    "local_win_rate_rank",
+    "motor_2_rate_rank",
+    "boat_2_rate_rank",
+    "hist_racer_win_rate_s",
+    "hist_racer_venue_win_rate_s",
+    "hist_motor_win_rate_s",
+    "hist_boat_win_rate_s",
+    "series_win_rate",
+    "series_avg_finish",
+)
+
 
 SERIES_SELECT = ", ".join(f"sf.{field} AS {field}" for field in CACHE_FIELDS)
 
@@ -476,6 +495,7 @@ def iter_scored_races(
                     "rank": meta["rank"],
                     "label": meta["label"],
                     "probability": float(probability) / total,
+                    "diagnostic_features": diagnostic_feature_snapshot(item["features"]),
                 }
             )
         yield rows
@@ -637,6 +657,24 @@ def to_hashable(item: dict[str, Any]) -> dict[str, float]:
             text = str(value)
             if text:
                 out[f"{key}={text}"] = 1.0
+            continue
+        if math.isfinite(number):
+            out[key] = number
+    return out
+
+
+def diagnostic_feature_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in ROI_DIAGNOSTIC_FEATURES:
+        value = item.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, str):
+            out[key] = value
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
             continue
         if math.isfinite(number):
             out[key] = number

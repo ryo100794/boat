@@ -22,6 +22,13 @@ from .modeling_pastlog_v7_stream_hash import (
     load_complete_race_ids,
     train_bundle,
 )
+from .roi_attribution import (
+    merge_roi_attribution,
+    new_roi_attribution,
+    summarize_fold_signal_stability,
+    summarize_roi_attribution,
+    update_roi_attribution,
+)
 
 
 DEFAULT_STAKE_UNIT_YEN = 100
@@ -80,6 +87,7 @@ def adaptive_bankroll_streaming(
     cumulative_profit = 0
     peak_profit = 0
     max_drawdown = 0
+    roi_attribution = new_roi_attribution()
 
     for fold_index, (train_races, test_races, test_dates) in enumerate(fold_specs, start=1):
         if not train_races or not test_races:
@@ -95,6 +103,7 @@ def adaptive_bankroll_streaming(
         fold_evaluated = 0
         fold_real_odds_races = 0
         fold_skipped_no_real_odds = 0
+        fold_roi_attribution = new_roi_attribution()
         current_date: str | None = None
         day_candidates: list[dict[str, Any]] = []
         day_evaluated: set[str] = set()
@@ -119,6 +128,7 @@ def adaptive_bankroll_streaming(
                     allocation_mode=allocation_mode,
                     stake_granularity_yen=stake_granularity_yen,
                     min_stake_yen=min_stake_yen,
+                    roi_attribution=fold_roi_attribution,
                 )
                 cumulative_profit, peak_profit, max_drawdown = _append_day_result(
                     daily_rows,
@@ -175,6 +185,7 @@ def adaptive_bankroll_streaming(
                 allocation_mode=allocation_mode,
                 stake_granularity_yen=stake_granularity_yen,
                 min_stake_yen=min_stake_yen,
+                roi_attribution=fold_roi_attribution,
             )
             cumulative_profit, peak_profit, max_drawdown = _append_day_result(
                 daily_rows,
@@ -186,6 +197,8 @@ def adaptive_bankroll_streaming(
             )
             fold_selected_count += day_result["tickets"]
 
+        merge_roi_attribution(roi_attribution, fold_roi_attribution)
+        fold_roi_summary = _compact_roi_attribution(summarize_roi_attribution(fold_roi_attribution))
         fold_row = {
             "fold": fold_index,
             "train_races": len(train_races),
@@ -196,6 +209,7 @@ def adaptive_bankroll_streaming(
             "selected_tickets": fold_selected_count,
             "real_odds_races": fold_real_odds_races,
             "skipped_no_real_odds": fold_skipped_no_real_odds,
+            "ticket_roi_attribution": fold_roi_summary,
         }
         fold_rows.append(fold_row)
         print(json.dumps(fold_row, ensure_ascii=False), flush=True)
@@ -208,6 +222,7 @@ def adaptive_bankroll_streaming(
         skipped_no_real_odds=skipped_no_real_odds,
         all_race_count=len(all_race_ids),
         max_drawdown=max_drawdown,
+        roi_attribution=roi_attribution,
         policy={
             "daily_budget_yen": daily_budget_yen,
             "bet_type": "3連単",
@@ -291,6 +306,7 @@ def _allocate_adaptive_day(
     allocation_mode: str,
     stake_granularity_yen: int,
     min_stake_yen: int,
+    roi_attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prepared = []
     for item in candidates:
@@ -363,6 +379,10 @@ def _allocate_adaptive_day(
                 "profit_yen": ticket_return - ticket_stake,
             }
         )
+
+    if roi_attribution is not None:
+        for item in selected:
+            update_roi_attribution(roi_attribution, item)
 
     profit_yen = return_yen - stake_yen
     selected_races = {str(item["race_id"]) for item in selected}
@@ -485,6 +505,7 @@ def _summarize(
     skipped_no_real_odds: int,
     all_race_count: int,
     max_drawdown: int,
+    roi_attribution: dict[str, Any],
     policy: dict[str, Any],
     folds: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -496,6 +517,10 @@ def _summarize(
     hit_races = int(totals["hit_races"])
     days_with_bets = int(totals["days_with_bets"])
     race_days = len(daily_rows)
+    ticket_roi_attribution = summarize_roi_attribution(roi_attribution)
+    ticket_roi_attribution["fold_stability"] = summarize_fold_signal_stability(
+        [row.get("ticket_roi_attribution") or {} for row in folds]
+    )
     return {
         "generated_at": _now(),
         "policy": policy,
@@ -531,8 +556,18 @@ def _summarize(
         "daily": daily_rows,
         "best_days": sorted(daily_rows, key=lambda row: row["profit_yen"], reverse=True)[:10],
         "worst_days": sorted(daily_rows, key=lambda row: row["profit_yen"])[:10],
+        "ticket_roi_attribution": ticket_roi_attribution,
         "feature_set": FEATURE_SET,
         "model": "win_model_pastlog_v7_stream_hash",
+    }
+
+
+def _compact_roi_attribution(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "method": value.get("method"),
+        "minimum_evidence": value.get("minimum_evidence") or {},
+        "top_signals": (value.get("top_signals") or [])[:16],
+        "diagnosis": value.get("diagnosis"),
     }
 
 

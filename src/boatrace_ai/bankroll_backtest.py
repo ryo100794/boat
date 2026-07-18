@@ -245,6 +245,7 @@ def _candidate_tickets(
     )
     race = rows[0]
     real_odds = real_odds_snapshot.get("odds", {}) if real_odds_snapshot else None
+    feature_context_by_combination: dict[str, dict[str, Any]] = {}
     candidates = []
     for prediction in trifecta_predictions(lane_probs):
         combo = prediction["combination"]
@@ -285,6 +286,12 @@ def _candidate_tickets(
             "actual_payout_yen": int(actual["payout_yen"]),
             "hit": combo == actual["combination"],
         }
+        feature_context = feature_context_by_combination.get(combo)
+        if feature_context is None:
+            feature_context = _ticket_feature_context(rows, combo)
+            feature_context_by_combination[combo] = feature_context
+        if feature_context:
+            item["feature_context"] = feature_context
         if real_odds_snapshot is not None:
             item.update(
                 {
@@ -300,6 +307,51 @@ def _candidate_tickets(
         key=lambda item: (item["estimated_ev"], item["probability"]),
         reverse=True,
     )
+
+
+def _ticket_feature_context(rows: list[dict[str, Any]], combination: str) -> dict[str, Any]:
+    diagnostics_by_lane = {
+        int(row["lane"]): row.get("diagnostic_features") or {}
+        for row in rows
+        if row.get("lane") is not None
+    }
+    if not any(diagnostics_by_lane.values()):
+        return {}
+    try:
+        lanes = [int(value) for value in combination.split("-")]
+    except (TypeError, ValueError):
+        return {}
+    if len(lanes) != 3:
+        return {}
+
+    context: dict[str, Any] = {}
+    common_keys = ("race_month", "race_weekday", "race_rno_bucket")
+    first_diagnostics = diagnostics_by_lane.get(lanes[0], {})
+    for key in common_keys:
+        if first_diagnostics.get(key) is not None:
+            context[key] = first_diagnostics[key]
+
+    runner_keys = (
+        "racer_class",
+        "origin",
+        "class_rank",
+        "national_win_rate_rank",
+        "local_win_rate_rank",
+        "motor_2_rate_rank",
+        "boat_2_rate_rank",
+        "hist_racer_win_rate_s",
+        "hist_racer_venue_win_rate_s",
+        "hist_motor_win_rate_s",
+        "hist_boat_win_rate_s",
+        "series_win_rate",
+        "series_avg_finish",
+    )
+    for position, lane in zip(("first", "second", "third"), lanes):
+        diagnostics = diagnostics_by_lane.get(lane, {})
+        for key in runner_keys:
+            if diagnostics.get(key) is not None:
+                context[f"{position}_{key}"] = diagnostics[key]
+    return context
 
 
 def _allocate_daily_budget(
