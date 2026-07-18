@@ -1932,10 +1932,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-2",
             "milestone": "M6",
-            "status": "探索中",
+            "status": "一部失敗/再実行",
             "progress": 35,
             "item": "資金配分パラメータ探索",
-            "next": "EV閾値、購入点数、Kelly比率、日次/レース/券上限の追加スイープをリモートで実行中。",
+            "next": "PID 171523-171525は疎行列indexエラーで失敗、PID 171526-171527は継続。M6-5修正を同期して再実行する。",
         },
         {
             "id": "M6-3",
@@ -1953,6 +1953,14 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
             "item": "特徴量改善の反映",
             "next": "M4 ablation結果を回収し、資金運用モデルの入力特徴量と購入判断へ反映する。",
         },
+        {
+            "id": "M6-5",
+            "milestone": "M6",
+            "status": "修正中",
+            "progress": 60,
+            "item": "疎行列index互換",
+            "next": "FeatureHasher出力をint32化する修正を同期し、失敗した資金配分スイープを再実行する。",
+        },
     ]
 
 
@@ -1969,7 +1977,7 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Sartre", "area": "特徴量ablation", "status": "完了", "task": "特徴量グループ別ablationの最小改修点"},
         {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
-        {"name": "Remote-M6", "area": "資金運用評価", "status": "探索中", "task": "PID 171290実オッズ検証 / 171523-171527資金配分スイープ"},
+        {"name": "Remote-M6", "area": "資金運用評価", "status": "探索/再実行", "task": "PID 171290/171526/171527継続、171523-171525はM6-5修正後に再実行"},
         {"name": "Remote-M4", "area": "特徴量評価", "status": "実行中", "task": "PID 171291 / drop-one-feature-group ablation"},
     ]
 
@@ -1982,7 +1990,7 @@ def _roadmap_milestones() -> list[dict[str, Any]]:
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
         {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 68, "next": "リモートablation結果を回収して効く特徴量へ寄せる"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 64, "next": "改善事項M6-1..M6-4を追跡し、ROI/損益ゲート達成まで完了扱いしない"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 64, "next": "改善事項M6-1..M6-5を追跡し、ROI/損益ゲート達成まで完了扱いしない"},
         {"id": "M7", "title": "v系ファイル整理", "status": "一部完了", "progress": 30, "next": "WebUI以外のモデル/収集v系依存を安定名へ移してから削除する"},
     ]
 

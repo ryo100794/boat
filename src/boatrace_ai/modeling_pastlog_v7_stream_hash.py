@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import joblib
+import numpy as np
+from scipy import sparse
 from sklearn.feature_extraction import FeatureHasher
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import brier_score_loss, log_loss
@@ -423,10 +425,21 @@ def _partial_fit(
     *,
     first: bool,
 ) -> bool:
-    matrix = hasher.transform(batch_x)
+    matrix = _ensure_sparse_index32(hasher.transform(batch_x))
     kwargs = {"classes": [0, 1]} if first else {}
     classifier.partial_fit(matrix, batch_y, sample_weight=batch_weight, **kwargs)
     return False
+
+
+def _ensure_sparse_index32(matrix: Any) -> Any:
+    if not sparse.issparse(matrix):
+        return matrix
+    matrix = matrix.tocsr(copy=False)
+    if matrix.indices.dtype != np.int32:
+        matrix.indices = matrix.indices.astype(np.int32, copy=False)
+    if matrix.indptr.dtype != np.int32:
+        matrix.indptr = matrix.indptr.astype(np.int32, copy=False)
+    return matrix
 
 
 def iter_scored_races(
@@ -447,7 +460,7 @@ def iter_scored_races(
         drop_feature_groups=drop_feature_groups,
     ):
         features = [to_hashable(item["features"]) for item in race_features]
-        matrix = hasher.transform(features)
+        matrix = _ensure_sparse_index32(hasher.transform(features))
         probabilities = classifier.predict_proba(matrix)[:, 1].tolist()
         total = sum(float(value) for value in probabilities) or 1.0
         rows = []
