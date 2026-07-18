@@ -1931,6 +1931,8 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Sartre", "area": "特徴量ablation", "status": "完了", "task": "特徴量グループ別ablationの最小改修点"},
         {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
+        {"name": "Remote-M6", "area": "資金運用評価", "status": "実行中", "task": "PID 171290 / require-real-odds adaptive bankroll"},
+        {"name": "Remote-M4", "area": "特徴量評価", "status": "実行中", "task": "PID 171291 / drop-one-feature-group ablation"},
     ]
 
 
@@ -1940,9 +1942,9 @@ def _roadmap_milestones() -> list[dict[str, Any]]:
         {"id": "M1", "title": "懸案・進捗ページ", "status": "進行中", "progress": 82, "next": "回収済み実装をテスト済みgit履歴へ積み上げる"},
         {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 58, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 65, "next": "ablationをSSHリモートで実行し、ROI改善に効く特徴量へ寄せる"},
+        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 68, "next": "リモートablation結果を回収して効く特徴量へ寄せる"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 58, "next": "実オッズ必須バックチェックをSSHリモートで実行し、通常100円制約版と比較する"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 62, "next": "リモート実オッズ必須バックチェック結果を回収して通常100円制約版と比較する"},
         {"id": "M7", "title": "v系ファイル整理", "status": "一部完了", "progress": 30, "next": "WebUI以外のモデル/収集v系依存を安定名へ移してから削除する"},
     ]
 
