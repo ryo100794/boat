@@ -1935,7 +1935,7 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
             "status": "一部失敗/再実行",
             "progress": 35,
             "item": "資金配分パラメータ探索",
-            "next": "PID 171523-171525は疎行列indexエラーで失敗、PID 171526-171527は継続。M6-5修正を同期して再実行する。",
+            "next": "旧PID 171523-171525/171526-171527は停止または失敗。固定版PID 171806-171810でEV/Kelly/上限スイープを再評価中。",
         },
         {
             "id": "M6-3",
@@ -1956,10 +1956,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-5",
             "milestone": "M6",
-            "status": "修正中",
-            "progress": 60,
+            "status": "修正済み/再評価中",
+            "progress": 80,
             "item": "疎行列index互換",
-            "next": "FeatureHasher出力をint32化する修正を同期し、失敗した資金配分スイープを再実行する。",
+            "next": "FeatureHasher出力をint32化する修正をローカル/リモートで検証済み。固定版スイープPID 171806-171810の結果を回収する。",
         },
     ]
 
@@ -1977,8 +1977,8 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Sartre", "area": "特徴量ablation", "status": "完了", "task": "特徴量グループ別ablationの最小改修点"},
         {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
-        {"name": "Remote-M6", "area": "資金運用評価", "status": "探索/再実行", "task": "PID 171290/171526/171527継続、171523-171525はM6-5修正後に再実行"},
-        {"name": "Remote-M4", "area": "特徴量評価", "status": "実行中", "task": "PID 171291 / drop-one-feature-group ablation"},
+        {"name": "Remote-M6", "area": "資金運用評価", "status": "再実行中", "task": "固定版PID 171805-171810 / 実オッズ検証と資金配分スイープ"},
+        {"name": "Remote-M4", "area": "特徴量評価", "status": "再実行中", "task": "固定版PID 171811 / drop-one-feature-group ablation"},
     ]
 
 

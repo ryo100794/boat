@@ -46,15 +46,15 @@
 - Sartre M4設計回収: `base_pastlog`、`series_cached`、`series_relative`、`rolling_history` のdrop-one-feature-group ablation境界を確定。
 - Russell M6実装: `--require-real-odds` を通常/ストリーミング資金運用バックテストへ追加。実オッズなしはskipし、EV/推定払戻は締切前実オッズから算出。
 - Euler M4実装: `modeling_pastlog_v7_stream_hash` に `--drop-feature-groups` と `ablation` サブコマンドを追加し、特徴量グループ別比較を実行可能にした。
-- Remote Eval: `/workspace/boat-milestone-e07badb` で実オッズ必須の適応型資金運用バックチェック PID 171290、特徴量ablation PID 171291、資金配分スイープ PID 171523-171527 を起動済み。PID 171523-171525 は疎行列indexエラーで失敗、PID 171526-171527 は継続中。実オッズ必須fold1は全skipで、過去実オッズ履歴不足を確認。
+- Remote Eval: `/workspace/boat-milestone-e07badb` で疎行列index修正を同期し、固定版ジョブを再投入。実オッズ必須 PID 171805、資金配分スイープ PID 171806-171810、特徴量ablation PID 171811。旧PID 171523-171525は疎行列indexエラーで失敗、旧PID 171290/171291/171526/171527は停止。実オッズ必須fold1は全skipで、過去実オッズ履歴不足を確認。
 
 ## 改善事項リスト
 
 - M6-1 実オッズ履歴不足: 実オッズ必須バックチェックのfold1は `evaluated_races=0`、`skipped_no_real_odds=18751`。リアルタイムオッズ蓄積が十分になるまでは、過去ログ中心の資金運用評価を主判定にする。進捗25%。
-- M6-2 資金配分パラメータ探索: EV閾値、購入点数、Kelly比率、日次/レース/券上限のスイープをリモートで実行中。PID 171523-171525 は疎行列indexエラーで失敗、PID 171526-171527 は継続中。進捗35%。
+- M6-2 資金配分パラメータ探索: EV閾値、Kelly比率、日次/レース/券上限の固定版スイープをリモートで再評価中。PID 171806-171810。進捗35%。
 - M6-3 完了ゲート: ROI 1.0以上、損益プラス、ドローダウン許容、購入日数/的中率の劣化なしを満たすまでM6は完了扱いしない。進捗20%。
 - M6-4 特徴量改善の反映: M4 ablation結果を資金運用モデルの入力特徴量と購入判断へ反映する。進捗15%。
-- M6-5 疎行列index互換: FeatureHasher出力がint64 indexとなりscikit-learnで失敗したため、学習/推論前にCSR indexをint32へ正規化する。修正同期後に失敗スイープを再実行する。進捗60%。
+- M6-5 疎行列index互換: FeatureHasher出力がint64 indexとなりscikit-learnで失敗したため、学習/推論前にCSR indexをint32へ正規化。ローカル/リモートの小テストでint32化を確認し、固定版スイープを再投入済み。進捗80%。
 
 ## 進行中
 
