@@ -143,6 +143,42 @@ def upsert_result_row(
     )
 
 
+def upsert_result_status(
+    conn: sqlite3.Connection,
+    *,
+    race_id: str,
+    row: dict[str, Any],
+) -> None:
+    payload = {
+        "race_id": race_id,
+        "status": row.get("status") or "unknown",
+        "trifecta_evaluable": 1 if row.get("trifecta_evaluable", True) else 0,
+        "reason": row.get("result_reason") or row.get("reason"),
+        "finish_rows": len(row.get("rows") or []),
+        "payout_rows": len(row.get("payouts") or []),
+        "raw_json": json.dumps(row, ensure_ascii=False, sort_keys=True),
+    }
+    conn.execute(
+        """
+        INSERT INTO race_result_status (
+          race_id, status, trifecta_evaluable, reason, finish_rows, payout_rows, raw_json
+        )
+        VALUES (
+          :race_id, :status, :trifecta_evaluable, :reason, :finish_rows, :payout_rows, :raw_json
+        )
+        ON CONFLICT(race_id) DO UPDATE SET
+          status=excluded.status,
+          trifecta_evaluable=excluded.trifecta_evaluable,
+          reason=excluded.reason,
+          finish_rows=excluded.finish_rows,
+          payout_rows=excluded.payout_rows,
+          raw_json=excluded.raw_json,
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        payload,
+    )
+
+
 def upsert_payout(
     conn: sqlite3.Connection,
     *,

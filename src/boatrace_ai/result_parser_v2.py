@@ -8,6 +8,17 @@ from .parsers import _soup, normalize_text, to_float, to_int
 
 BET_TYPES = ("3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝")
 ZEN_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+INCIDENT_DECISIONS = {
+    "F": "flying",
+    "L": "late_start",
+    "欠": "absent",
+    "失": "disqualified",
+    "妨": "interference",
+    "転": "capsized",
+    "落": "fell",
+    "沈": "sank",
+    "エ": "engine_stop",
+}
 
 
 def parse_result_html_v2(html: str) -> dict[str, Any]:
@@ -23,8 +34,23 @@ def parse_result_html_v2(html: str) -> dict[str, Any]:
 
     starts = _start_timing_by_lane(soup)
     rows = _finish_rows(soup, starts)
+    incidents = _finish_incidents(soup, starts)
     payouts = _payout_rows(soup)
-    return {"status": "final" if rows else "unknown", "rows": rows, "payouts": payouts}
+    refund_lanes = _refund_lanes(soup)
+    trifecta_state = _trifecta_payout_state(soup)
+    reason = _result_reason(rows, incidents, refund_lanes, trifecta_state)
+    trifecta_evaluable = _trifecta_evaluable(rows, incidents, refund_lanes, trifecta_state)
+    status = "final" if rows or reason else "unknown"
+    return {
+        "status": status,
+        "rows": rows,
+        "payouts": payouts,
+        "trifecta_evaluable": trifecta_evaluable,
+        "result_reason": reason,
+        "incidents": incidents,
+        "refund_lanes": refund_lanes,
+        "trifecta_payout_state": trifecta_state,
+    }
 
 
 def _finish_rows(soup: Any, starts: dict[int, float]) -> list[dict[str, Any]]:
@@ -53,6 +79,32 @@ def _finish_rows(soup: Any, starts: dict[int, float]) -> list[dict[str, Any]]:
                 }
             )
     return rows[:6]
+
+
+def _finish_incidents(soup: Any, starts: dict[int, float]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for table in soup.find_all("table"):
+        headers = [normalize_text(cell.get_text(" ", strip=True)) for cell in table.find_all("th")]
+        if not {"着", "枠"}.issubset(set(headers)):
+            continue
+        for tr in table.find_all("tr"):
+            cells = [normalize_text(td.get_text(" ", strip=True)) for td in tr.find_all("td")]
+            if len(cells) < 2:
+                continue
+            code = _incident_code(cells[0])
+            lane = _small_int(cells[1])
+            if code is None or lane is None:
+                continue
+            rows.append(
+                {
+                    "lane": lane,
+                    "code": code,
+                    "decision": INCIDENT_DECISIONS[code],
+                    "start_timing": starts.get(lane),
+                    "raw_text": " ".join(cells),
+                }
+            )
+    return rows
 
 
 def _start_timing_by_lane(soup: Any) -> dict[int, float]:
@@ -101,6 +153,82 @@ def _payout_rows(soup: Any) -> list[dict[str, Any]]:
                     }
                 )
     return rows
+
+
+def _trifecta_payout_state(soup: Any) -> dict[str, str | None]:
+    for table in soup.find_all("table"):
+        headers = [normalize_text(cell.get_text(" ", strip=True)) for cell in table.find_all("th")]
+        if not {"勝式", "組番", "払戻金"}.issubset(set(headers)):
+            continue
+        current_type = None
+        for tr in table.find_all("tr"):
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+            cell_texts = [normalize_text(cell.get_text(" ", strip=True)) for cell in cells]
+            first = cell_texts[0] if cell_texts else ""
+            if first in BET_TYPES:
+                current_type = first
+            if current_type != "3連単":
+                continue
+            text = " ".join(cell_texts)
+            if "不成立" in text:
+                return {"state": "not_established", "reason": "trifecta_not_established"}
+            if _combination_from_row(tr) and _payout_from_text(text) is not None:
+                return {"state": "evaluable", "reason": None}
+    return {"state": "missing", "reason": None}
+
+
+def _refund_lanes(soup: Any) -> list[int]:
+    lanes: set[int] = set()
+    for table in soup.find_all("table"):
+        headers = [normalize_text(cell.get_text(" ", strip=True)) for cell in table.find_all("th")]
+        if "返還" not in headers:
+            continue
+        for number in table.select(".numberSet1_number"):
+            lane = _small_int(number.get_text(" ", strip=True))
+            if lane is not None:
+                lanes.add(lane)
+    return sorted(lanes)
+
+
+def _result_reason(
+    rows: list[dict[str, Any]],
+    incidents: list[dict[str, Any]],
+    refund_lanes: list[int],
+    trifecta_state: dict[str, str | None],
+) -> str | None:
+    if trifecta_state.get("state") == "not_established":
+        return "trifecta_not_established"
+    if len(rows) < 3 and refund_lanes:
+        return "refund_with_insufficient_finishers"
+    if len(rows) < 3 and incidents:
+        return "incident_with_insufficient_finishers"
+    return None
+
+
+def _trifecta_evaluable(
+    rows: list[dict[str, Any]],
+    incidents: list[dict[str, Any]],
+    refund_lanes: list[int],
+    trifecta_state: dict[str, str | None],
+) -> bool:
+    if trifecta_state.get("state") == "not_established":
+        return False
+    if len(rows) < 3 and (refund_lanes or incidents):
+        return False
+    return True
+
+
+def _incident_code(value: str) -> str | None:
+    text = normalize_text(value).translate(ZEN_DIGITS).upper()
+    text = text.replace("Ｆ", "F").replace("Ｌ", "L")
+    if re.fullmatch(r"[1-6]", text):
+        return None
+    for marker in INCIDENT_DECISIONS:
+        if marker in text:
+            return marker
+    return None
 
 
 def _combination_from_row(tr: Any) -> str | None:

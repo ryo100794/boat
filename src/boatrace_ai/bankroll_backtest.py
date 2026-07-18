@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connection, init_db
-from .features import load_training_examples
+from .features import latest_trifecta_odds_before_deadline, load_training_examples
 from .modeling import (
     _make_pipeline,
     _normalize_lane_probs,
@@ -32,6 +32,7 @@ def bankroll_backtest(
     ev_threshold: float = 1.0,
     max_tickets_per_race: int = 5,
     payout_prior_weight: float = 30.0,
+    require_real_odds: bool = False,
 ) -> dict[str, Any]:
     if daily_budget_yen < unit_yen:
         raise ValueError("daily_budget_yen must be at least one betting unit")
@@ -55,6 +56,9 @@ def bankroll_backtest(
     test_window = max(1, (len(races) - min_train_races) // folds)
     candidates: list[dict[str, Any]] = []
     evaluated_races: set[str] = set()
+    real_odds_by_race: dict[str, dict[str, Any] | None] = {}
+    real_odds_races: set[str] = set()
+    skipped_no_real_odds = 0
     fold_results: list[dict[str, Any]] = []
 
     for fold in range(folds):
@@ -93,10 +97,23 @@ def bankroll_backtest(
 
         fold_candidates = 0
         fold_evaluated = 0
+        fold_real_odds_races = 0
+        fold_skipped_no_real_odds = 0
         for race_id_value, rows in by_race.items():
             payout = payouts.get(race_id_value)
             if len(rows) != 6 or not payout:
                 continue
+            real_odds_snapshot = None
+            if require_real_odds:
+                if race_id_value not in real_odds_by_race:
+                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(conn, race_id_value)
+                real_odds_snapshot = real_odds_by_race[race_id_value]
+                if real_odds_snapshot is None:
+                    skipped_no_real_odds += 1
+                    fold_skipped_no_real_odds += 1
+                    continue
+                real_odds_races.add(race_id_value)
+                fold_real_odds_races += 1
             evaluated_races.add(race_id_value)
             fold_evaluated += 1
             race_candidates = _candidate_tickets(
@@ -104,6 +121,7 @@ def bankroll_backtest(
                 actual=payout,
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
+                real_odds_snapshot=real_odds_snapshot,
             )[:max_tickets_per_race]
             fold_candidates += len(race_candidates)
             candidates.extend(race_candidates)
@@ -115,6 +133,8 @@ def bankroll_backtest(
                 "test_races": test_end - test_start,
                 "evaluated_races": fold_evaluated,
                 "candidate_tickets": fold_candidates,
+                "real_odds_races": fold_real_odds_races,
+                "skipped_no_real_odds": fold_skipped_no_real_odds,
             }
         )
 
@@ -131,9 +151,10 @@ def bankroll_backtest(
             "unit_yen": unit_yen,
             "bet_type": PAYOUT_BET_TYPE,
             "include_odds": include_odds,
+            "require_real_odds": require_real_odds,
             "ev_threshold": ev_threshold,
             "max_tickets_per_race": max_tickets_per_race,
-            "payout_estimator": "train-fold average payout by trifecta combination, blended with train-fold global average",
+            "payout_estimator": "deadline real odds" if require_real_odds else "train-fold average payout by trifecta combination, blended with train-fold global average",
             "payout_prior_weight": payout_prior_weight,
             "allocation": "each day, rank positive-EV tickets by estimated EV; buy within daily budget and split stake in 100-yen units",
         },
@@ -141,6 +162,8 @@ def bankroll_backtest(
         "examples": len(X),
         "races": len(races),
         "evaluated_races": len(evaluated_races),
+        "real_odds_races": len(real_odds_races),
+        "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": len(candidates),
         **allocated,
     }
@@ -215,37 +238,63 @@ def _candidate_tickets(
     actual: dict[str, Any],
     payout_model: dict[str, dict[str, float]],
     ev_threshold: float,
+    real_odds_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     lane_probs = _normalize_lane_probs(
         {int(row["lane"]): float(row["probability"]) for row in rows}
     )
     race = rows[0]
+    real_odds = real_odds_snapshot.get("odds", {}) if real_odds_snapshot else None
     candidates = []
     for prediction in trifecta_predictions(lane_probs):
         combo = prediction["combination"]
-        payout_estimate = payout_model.get(combo)
-        if not payout_estimate:
-            continue
-        estimated_ev = float(prediction["probability"]) * payout_estimate["estimated_odds"]
+        if real_odds is not None:
+            try:
+                estimated_odds = float(real_odds[combo])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if estimated_odds <= 0.0:
+                continue
+            estimated_payout_yen = estimated_odds * PAYOUT_UNIT_YEN
+            payout_history_count = 0
+            odds_source = "real"
+        else:
+            payout_estimate = payout_model.get(combo)
+            if not payout_estimate:
+                continue
+            estimated_odds = float(payout_estimate["estimated_odds"])
+            estimated_payout_yen = float(payout_estimate["estimated_payout_yen"])
+            payout_history_count = int(payout_estimate["history_count"])
+            odds_source = "payout_model"
+        estimated_ev = float(prediction["probability"]) * estimated_odds
         if estimated_ev < ev_threshold:
             continue
-        candidates.append(
-            {
-                "race_id": race["race_id"],
-                "race_date": race["race_date"],
-                "jcd": race["jcd"],
-                "rno": int(race["rno"]),
-                "combination": combo,
-                "probability": float(prediction["probability"]),
-                "estimated_odds": payout_estimate["estimated_odds"],
-                "estimated_payout_yen": payout_estimate["estimated_payout_yen"],
-                "estimated_ev": estimated_ev,
-                "payout_history_count": int(payout_estimate["history_count"]),
-                "actual_combination": actual["combination"],
-                "actual_payout_yen": int(actual["payout_yen"]),
-                "hit": combo == actual["combination"],
-            }
-        )
+        item = {
+            "race_id": race["race_id"],
+            "race_date": race["race_date"],
+            "jcd": race["jcd"],
+            "rno": int(race["rno"]),
+            "combination": combo,
+            "probability": float(prediction["probability"]),
+            "estimated_odds": estimated_odds,
+            "estimated_payout_yen": estimated_payout_yen,
+            "estimated_ev": estimated_ev,
+            "payout_history_count": payout_history_count,
+            "odds_source": odds_source,
+            "actual_combination": actual["combination"],
+            "actual_payout_yen": int(actual["payout_yen"]),
+            "hit": combo == actual["combination"],
+        }
+        if real_odds_snapshot is not None:
+            item.update(
+                {
+                    "real_odds_snapshot_id": real_odds_snapshot.get("snapshot_id"),
+                    "real_odds_captured_at": real_odds_snapshot.get("captured_at"),
+                    "real_odds_deadline_at": real_odds_snapshot.get("odds_deadline_at"),
+                    "real_odds_combinations": real_odds_snapshot.get("odds_count"),
+                }
+            )
+        candidates.append(item)
     return sorted(
         candidates,
         key=lambda item: (item["estimated_ev"], item["probability"]),
@@ -364,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-train-races", type=int, default=500)
     parser.add_argument("--include-odds", action="store_true")
+    parser.add_argument("--require-real-odds", action="store_true")
     parser.add_argument("--ev-threshold", type=float, default=1.0)
     parser.add_argument("--max-tickets-per-race", type=int, default=5)
     parser.add_argument("--payout-prior-weight", type=float, default=30.0)
@@ -381,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             ev_threshold=args.ev_threshold,
             max_tickets_per_race=args.max_tickets_per_race,
             payout_prior_weight=args.payout_prior_weight,
+            require_real_odds=args.require_real_odds,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

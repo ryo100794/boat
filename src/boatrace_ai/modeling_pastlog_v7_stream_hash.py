@@ -29,10 +29,36 @@ from .modeling import _race_level_metrics
 
 
 FEATURE_SET = "pastlog_v7_stream_hash_cached_series_sgd"
+FEATURE_GROUPS = ("base_pastlog", "series_cached", "series_relative", "rolling_history")
 HASH_FEATURES = 1 << 20
 
 
 SERIES_SELECT = ", ".join(f"sf.{field} AS {field}" for field in CACHE_FIELDS)
+
+
+def normalize_drop_feature_groups(drop_feature_groups: Iterable[str] | str | None = None) -> tuple[str, ...]:
+    if drop_feature_groups is None:
+        return ()
+    if isinstance(drop_feature_groups, str):
+        requested = [group.strip() for group in drop_feature_groups.split(",")]
+    else:
+        requested = []
+        for group in drop_feature_groups:
+            requested.extend(str(group).split(","))
+        requested = [group.strip() for group in requested]
+    selected = {group for group in requested if group}
+    unknown = sorted(selected.difference(FEATURE_GROUPS))
+    if unknown:
+        choices = ", ".join(FEATURE_GROUPS)
+        raise ValueError(f"unknown feature group(s): {', '.join(unknown)}; choices: {choices}")
+    return tuple(group for group in FEATURE_GROUPS if group in selected)
+
+
+def _parse_drop_feature_groups(value: str) -> tuple[str, ...]:
+    try:
+        return normalize_drop_feature_groups(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def make_hasher(n_features: int = HASH_FEATURES) -> FeatureHasher:
@@ -57,10 +83,12 @@ def train_streaming_model(
     *,
     model_path: Path | None = None,
     include_races: set[str] | None = None,
+    drop_feature_groups: Iterable[str] | str | None = None,
     batch_size: int = 24000,
     epochs: int = 1,
     n_features: int = HASH_FEATURES,
 ) -> dict[str, Any]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     hasher = make_hasher(n_features)
     classifier = make_classifier()
     first = True
@@ -70,7 +98,11 @@ def train_streaming_model(
         batch_x: list[dict[str, float]] = []
         batch_y: list[int] = []
         batch_weight: list[float] = []
-        for feature, label, meta in iter_training_entries(conn, include_races=include_races):
+        for feature, label, meta in iter_training_entries(
+            conn,
+            include_races=include_races,
+            drop_feature_groups=drop_feature_groups,
+        ):
             batch_x.append(to_hashable(feature))
             batch_y.append(label)
             batch_weight.append(3.0 if label else 0.6)
@@ -95,6 +127,7 @@ def train_streaming_model(
         "include_odds": False,
         "target": "lane_win_probability",
         "feature_set": FEATURE_SET,
+        "drop_feature_groups": list(drop_feature_groups),
         "vectorizer": f"FeatureHasher(n_features={n_features}, alternate_sign=False)",
         "classifier": "SGDClassifier(log_loss, elasticnet, partial_fit, sample_weight 3.0/0.6)",
         "epochs": max(1, epochs),
@@ -110,11 +143,14 @@ def backtest_streaming(
     conn,
     *,
     output_path: Path,
+    drop_feature_groups: Iterable[str] | str | None = None,
     folds: int = 5,
     min_train_races: int = 500,
     batch_size: int = 24000,
     epochs: int = 1,
+    log_folds: bool = True,
 ) -> dict[str, Any]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     race_keys = load_complete_race_ids(conn)
     races = [race_id for race_id, *_ in race_keys]
     if len(races) < min_train_races + folds:
@@ -136,12 +172,18 @@ def backtest_streaming(
         bundle = train_bundle(
             conn,
             include_races=train_races,
+            drop_feature_groups=drop_feature_groups,
             batch_size=batch_size,
             epochs=epochs,
         )
         labels: list[int] = []
         probs: list[float] = []
-        for rows in iter_scored_races(conn, bundle=bundle, include_races=test_races):
+        for rows in iter_scored_races(
+            conn,
+            bundle=bundle,
+            include_races=test_races,
+            drop_feature_groups=drop_feature_groups,
+        ):
             for row in rows:
                 labels.append(int(row["label"]))
                 probs.append(float(row["probability"]))
@@ -163,7 +205,8 @@ def backtest_streaming(
                 "entry_brier": float(brier_score_loss(labels, probs)),
             }
         )
-        print(json.dumps(fold_rows[-1], ensure_ascii=False), flush=True)
+        if log_folds:
+            print(json.dumps(fold_rows[-1], ensure_ascii=False), flush=True)
 
     result = {
         "generated_at": _now(),
@@ -172,6 +215,7 @@ def backtest_streaming(
         "races": len(races),
         "include_odds": False,
         "feature_set": FEATURE_SET,
+        "drop_feature_groups": list(drop_feature_groups),
         "entry_log_loss": safe_log_loss(all_labels, all_probs),
         "entry_brier": float(brier_score_loss(all_labels, all_probs)),
         **_race_level_metrics(race_predictions),
@@ -185,6 +229,7 @@ def bankroll_streaming(
     conn,
     *,
     output_path: Path,
+    drop_feature_groups: Iterable[str] | str | None = None,
     daily_budget_yen: int = 10_000,
     unit_yen: int = 100,
     folds: int = 5,
@@ -195,6 +240,7 @@ def bankroll_streaming(
     batch_size: int = 24000,
     epochs: int = 1,
 ) -> dict[str, Any]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     race_keys = load_complete_race_ids(conn)
     races = [race_id for race_id, *_ in race_keys]
     payouts = _load_trifecta_payouts(conn)
@@ -214,10 +260,21 @@ def bankroll_streaming(
             train_races=train_races,
             prior_weight=payout_prior_weight,
         )
-        bundle = train_bundle(conn, include_races=train_races, batch_size=batch_size, epochs=epochs)
+        bundle = train_bundle(
+            conn,
+            include_races=train_races,
+            drop_feature_groups=drop_feature_groups,
+            batch_size=batch_size,
+            epochs=epochs,
+        )
         fold_candidates = 0
         fold_evaluated = 0
-        for rows in iter_scored_races(conn, bundle=bundle, include_races=test_races):
+        for rows in iter_scored_races(
+            conn,
+            bundle=bundle,
+            include_races=test_races,
+            drop_feature_groups=drop_feature_groups,
+        ):
             race_id_value = str(rows[0]["race_id"])
             payout = payouts.get(race_id_value)
             if len(rows) != 6 or not payout:
@@ -262,6 +319,7 @@ def bankroll_streaming(
             "payout_prior_weight": payout_prior_weight,
             "allocation": "each day, rank positive-EV tickets by estimated EV; buy within daily budget and split stake in 100-yen units",
             "feature_set": FEATURE_SET,
+            "drop_feature_groups": list(drop_feature_groups),
             "model": "win_model_pastlog_v7_stream_hash",
         },
         "folds": fold_rows,
@@ -270,6 +328,7 @@ def bankroll_streaming(
         "evaluated_races": len(evaluated_races),
         "candidate_tickets": len(candidates),
         "feature_set": FEATURE_SET,
+        "drop_feature_groups": list(drop_feature_groups),
         "model": "win_model_pastlog_v7_stream_hash",
         **allocated,
     }
@@ -278,7 +337,56 @@ def bankroll_streaming(
     return result
 
 
-def train_bundle(conn, *, include_races: set[str], batch_size: int, epochs: int) -> dict[str, Any]:
+def ablation_streaming(
+    conn,
+    *,
+    output_path: Path,
+    folds: int = 5,
+    min_train_races: int = 500,
+    batch_size: int = 24000,
+    epochs: int = 1,
+) -> dict[str, Any]:
+    variants: list[tuple[str, tuple[str, ...]]] = [("baseline", ())]
+    variants.extend((f"drop_{group}", (group,)) for group in FEATURE_GROUPS)
+    results: list[dict[str, Any]] = []
+    for variant, drop_groups in variants:
+        detail_path = _ablation_detail_path(output_path, variant)
+        result = backtest_streaming(
+            conn,
+            output_path=detail_path,
+            drop_feature_groups=drop_groups,
+            folds=folds,
+            min_train_races=min_train_races,
+            batch_size=batch_size,
+            epochs=epochs,
+            log_folds=False,
+        )
+        results.append({"variant": variant, "output": str(detail_path), **result})
+    summary = {
+        "generated_at": _now(),
+        "feature_set": FEATURE_SET,
+        "feature_groups": list(FEATURE_GROUPS),
+        "results": results,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def _ablation_detail_path(output_path: Path, variant: str) -> Path:
+    suffix = output_path.suffix or ".json"
+    return output_path.with_name(f"{output_path.stem}_{variant}{suffix}")
+
+
+def train_bundle(
+    conn,
+    *,
+    include_races: set[str],
+    batch_size: int,
+    epochs: int,
+    drop_feature_groups: Iterable[str] | str | None = None,
+) -> dict[str, Any]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     hasher = make_hasher()
     classifier = make_classifier()
     first = True
@@ -286,7 +394,11 @@ def train_bundle(conn, *, include_races: set[str], batch_size: int, epochs: int)
         batch_x: list[dict[str, float]] = []
         batch_y: list[int] = []
         batch_weight: list[float] = []
-        for feature, label, _meta in iter_training_entries(conn, include_races=include_races):
+        for feature, label, _meta in iter_training_entries(
+            conn,
+            include_races=include_races,
+            drop_feature_groups=drop_feature_groups,
+        ):
             batch_x.append(to_hashable(feature))
             batch_y.append(label)
             batch_weight.append(3.0 if label else 0.6)
@@ -299,7 +411,7 @@ def train_bundle(conn, *, include_races: set[str], batch_size: int, epochs: int)
             first = _partial_fit(classifier, hasher, batch_x, batch_y, batch_weight, first=first)
     if first:
         raise ValueError("no training examples in fold")
-    return {"hasher": hasher, "classifier": classifier}
+    return {"hasher": hasher, "classifier": classifier, "drop_feature_groups": list(drop_feature_groups)}
 
 
 def _partial_fit(
@@ -317,10 +429,23 @@ def _partial_fit(
     return False
 
 
-def iter_scored_races(conn, *, bundle: dict[str, Any], include_races: set[str]) -> Iterable[list[dict[str, Any]]]:
+def iter_scored_races(
+    conn,
+    *,
+    bundle: dict[str, Any],
+    include_races: set[str],
+    drop_feature_groups: Iterable[str] | str | None = None,
+) -> Iterable[list[dict[str, Any]]]:
+    if drop_feature_groups is None:
+        drop_feature_groups = bundle.get("drop_feature_groups", ())
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     hasher: FeatureHasher = bundle["hasher"]
     classifier: SGDClassifier = bundle["classifier"]
-    for race_features in iter_race_feature_rows(conn, include_races=include_races):
+    for race_features in iter_race_feature_rows(
+        conn,
+        include_races=include_races,
+        drop_feature_groups=drop_feature_groups,
+    ):
         features = [to_hashable(item["features"]) for item in race_features]
         matrix = hasher.transform(features)
         probabilities = classifier.predict_proba(matrix)[:, 1].tolist()
@@ -343,14 +468,30 @@ def iter_scored_races(conn, *, bundle: dict[str, Any], include_races: set[str]) 
         yield rows
 
 
-def iter_training_entries(conn, *, include_races: set[str] | None = None) -> Iterable[tuple[dict[str, Any], int, dict[str, Any]]]:
-    for race_features in iter_race_feature_rows(conn, include_races=include_races):
+def iter_training_entries(
+    conn,
+    *,
+    include_races: set[str] | None = None,
+    drop_feature_groups: Iterable[str] | str | None = None,
+) -> Iterable[tuple[dict[str, Any], int, dict[str, Any]]]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
+    for race_features in iter_race_feature_rows(
+        conn,
+        include_races=include_races,
+        drop_feature_groups=drop_feature_groups,
+    ):
         for item in race_features:
             meta = item["meta"]
             yield item["features"], int(meta["label"]), meta
 
 
-def iter_race_feature_rows(conn, *, include_races: set[str] | None = None) -> Iterable[list[dict[str, Any]]]:
+def iter_race_feature_rows(
+    conn,
+    *,
+    include_races: set[str] | None = None,
+    drop_feature_groups: Iterable[str] | str | None = None,
+) -> Iterable[list[dict[str, Any]]]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     state = RollingState()
     current_date: str | None = None
     day_updates: list[list[Any]] = []
@@ -366,22 +507,38 @@ def iter_race_feature_rows(conn, *, include_races: set[str] | None = None) -> It
             current_date = race_date_value
         use_race = include_races is None or race_id_value in include_races
         if use_race:
-            yield build_race_features(race_rows, state)
+            yield build_race_features(race_rows, state, drop_feature_groups=drop_feature_groups)
         day_updates.append(race_rows)
     for rows in day_updates:
         state.update_race(rows)
 
 
-def build_race_features(race_rows: list[Any], state: RollingState) -> list[dict[str, Any]]:
-    relatives = race_relative_features(race_rows, {lane: {} for lane in range(1, 7)})
-    series_relatives = series_relative_features(race_rows)
+def build_race_features(
+    race_rows: list[Any],
+    state: RollingState,
+    *,
+    drop_feature_groups: Iterable[str] | str | None = None,
+) -> list[dict[str, Any]]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
+    dropped = set(drop_feature_groups)
+    relatives = (
+        race_relative_features(race_rows, {lane: {} for lane in range(1, 7)})
+        if "base_pastlog" not in dropped
+        else {}
+    )
+    series_relatives = series_relative_features(race_rows) if "series_relative" not in dropped else {}
     out = []
     for row in race_rows:
         lane = int(row["lane"])
-        item = base_pastlog_features(row, relatives[lane])
-        item.update(cached_series_features(row))
-        item.update(series_relatives[lane])
-        item.update(state.features_for(row))
+        item: dict[str, Any] = {}
+        if "base_pastlog" not in dropped:
+            item.update(base_pastlog_features(row, relatives[lane]))
+        if "series_cached" not in dropped:
+            item.update(cached_series_features(row))
+        if "series_relative" not in dropped:
+            item.update(series_relatives[lane])
+        if "rolling_history" not in dropped:
+            item.update(state.features_for(row))
         out.append(
             {
                 "features": item,
@@ -493,12 +650,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     train = sub.add_parser("train")
     add_common(train)
+    add_drop_feature_groups(train)
     train.add_argument("--model", default="data/models/win_model_pastlog_v7_stream_hash.joblib")
     train.add_argument("--batch-size", type=int, default=24000)
     train.add_argument("--epochs", type=int, default=1)
     train.set_defaults(func=_cmd_train)
     backtest = sub.add_parser("backtest")
     add_common(backtest)
+    add_drop_feature_groups(backtest)
     backtest.add_argument("--output", default="data/models/backtest_pastlog_v7_stream_hash.json")
     backtest.add_argument("--folds", type=int, default=5)
     backtest.add_argument("--min-train-races", type=int, default=500)
@@ -507,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     backtest.set_defaults(func=_cmd_backtest)
     bankroll = sub.add_parser("bankroll")
     add_common(bankroll)
+    add_drop_feature_groups(bankroll)
     bankroll.add_argument("--output", default="data/models/bankroll_backtest_pastlog_v7_stream_hash_10000.json")
     bankroll.add_argument("--daily-budget-yen", type=int, default=10000)
     bankroll.add_argument("--unit-yen", type=int, default=100)
@@ -518,6 +678,14 @@ def main(argv: list[str] | None = None) -> int:
     bankroll.add_argument("--batch-size", type=int, default=24000)
     bankroll.add_argument("--epochs", type=int, default=1)
     bankroll.set_defaults(func=_cmd_bankroll)
+    ablation = sub.add_parser("ablation")
+    add_common(ablation)
+    ablation.add_argument("--output", default="data/models/ablation_pastlog_v7_stream_hash.json")
+    ablation.add_argument("--folds", type=int, default=5)
+    ablation.add_argument("--min-train-races", type=int, default=500)
+    ablation.add_argument("--batch-size", type=int, default=24000)
+    ablation.add_argument("--epochs", type=int, default=1)
+    ablation.set_defaults(func=_cmd_ablation)
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
 
@@ -526,12 +694,23 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default="data/boatrace.sqlite")
 
 
+def add_drop_feature_groups(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--drop-feature-groups",
+        default=(),
+        type=_parse_drop_feature_groups,
+        metavar="GROUPS",
+        help=f"Comma-separated feature groups to drop: {', '.join(FEATURE_GROUPS)}",
+    )
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     init_db(args.db)
     with connection(args.db) as conn:
         result = train_streaming_model(
             conn,
             model_path=Path(args.model),
+            drop_feature_groups=args.drop_feature_groups,
             batch_size=args.batch_size,
             epochs=args.epochs,
         )
@@ -545,6 +724,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         result = backtest_streaming(
             conn,
             output_path=Path(args.output),
+            drop_feature_groups=args.drop_feature_groups,
             folds=args.folds,
             min_train_races=args.min_train_races,
             batch_size=args.batch_size,
@@ -560,6 +740,7 @@ def _cmd_bankroll(args: argparse.Namespace) -> int:
         result = bankroll_streaming(
             conn,
             output_path=Path(args.output),
+            drop_feature_groups=args.drop_feature_groups,
             daily_budget_yen=args.daily_budget_yen,
             unit_yen=args.unit_yen,
             folds=args.folds,
@@ -571,6 +752,21 @@ def _cmd_bankroll(args: argparse.Namespace) -> int:
             epochs=args.epochs,
         )
     print(json.dumps({key: value for key, value in result.items() if key != "daily"} | {"daily_rows": len(result.get("daily", []))}, ensure_ascii=False, indent=2), flush=True)
+    return 0
+
+
+def _cmd_ablation(args: argparse.Namespace) -> int:
+    init_db(args.db)
+    with connection(args.db) as conn:
+        result = ablation_streaming(
+            conn,
+            output_path=Path(args.output),
+            folds=args.folds,
+            min_train_races=args.min_train_races,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
 
 

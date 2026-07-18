@@ -376,40 +376,15 @@ def base_progress(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             (race_date,),
         ).fetchone()[0]
         historical_results = conn.execute(
-            """
-            SELECT COUNT(DISTINCT r.race_id)
-            FROM races r
-            WHERE r.race_date < ?
-              AND (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) >= 3
-            """,
+            "SELECT COUNT(*) FROM races WHERE race_date < ? AND status = 'final'",
             (race_date,),
         ).fetchone()[0]
-        today_row = conn.execute(
-            """
-            SELECT
-              COUNT(DISTINCT r.race_id) AS races,
-              SUM(CASE WHEN entry_counts.entries = 6 THEN 1 ELSE 0 END) AS racelists,
-              SUM(CASE WHEN odds_counts.odds_rows > 0 THEN 1 ELSE 0 END) AS odds_races,
-              SUM(CASE WHEN result_counts.result_rows >= 3 THEN 1 ELSE 0 END) AS finals
-            FROM races r
-            LEFT JOIN (
-              SELECT race_id, COUNT(*) AS entries FROM entries GROUP BY race_id
-            ) entry_counts ON entry_counts.race_id = r.race_id
-            LEFT JOIN (
-              SELECT race_id, COUNT(*) AS odds_rows FROM odds_snapshots GROUP BY race_id
-            ) odds_counts ON odds_counts.race_id = r.race_id
-            LEFT JOIN (
-              SELECT race_id, COUNT(*) AS result_rows FROM race_results WHERE rank IS NOT NULL GROUP BY race_id
-            ) result_counts ON result_counts.race_id = r.race_id
-            WHERE r.race_date = ?
-            """,
-            (race_date,),
-        ).fetchone()
+        day_rows = [dict_row(row) for row in _day_metric_rows(conn, race_date, include_predictions=False)]
     today_counts = {
-        "races": int(today_row["races"] or 0),
-        "racelists": int(today_row["racelists"] or 0),
-        "odds_races": int(today_row["odds_races"] or 0),
-        "finals": int(today_row["finals"] or 0),
+        "races": len(day_rows),
+        "racelists": sum(1 for row in day_rows if int(row.get("entries") or 0) == 6),
+        "odds_races": sum(1 for row in day_rows if int(row.get("odds_snapshots") or 0) > 0),
+        "finals": sum(1 for row in day_rows if int(row.get("result_rows") or 0) >= 3),
     }
     return {
         "date": race_date,
@@ -529,12 +504,13 @@ def summary_cached(db_path: Path) -> dict[str, Any]:
         return cached[1]
     with connect(db_path) as conn:
         payload = {
-            "races": _scalar(conn, "SELECT COUNT(*) FROM races"),
-            "entries": _scalar(conn, "SELECT COUNT(*) FROM entries"),
-            "results": _scalar(conn, "SELECT COUNT(DISTINCT race_id) FROM race_results WHERE rank IS NOT NULL"),
+            "races": None,
+            "entries": None,
+            "results": None,
             "odds_snapshots": _scalar(conn, "SELECT COUNT(*) FROM odds_snapshots"),
             "predictions": _scalar(conn, "SELECT COUNT(DISTINCT race_id) FROM predictions"),
             "latest_prediction": _scalar(conn, "SELECT MAX(generated_at) FROM predictions"),
+            "summary_scope": "lightweight",
         }
     _SUMMARY_CACHE[db_path] = (now, payload)
     return payload
@@ -1949,18 +1925,24 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Plato", "area": "WebUI/コード整理", "status": "完了", "task": "残存v系ファイル、WebUI性能、専用ページ確認の棚卸し"},
         {"name": "Hubble", "area": "v系依存解析", "status": "完了", "task": "番号付きファイル安定名移行の依存表作成"},
         {"name": "Dirac", "area": "特殊結果パーサ", "status": "完了", "task": "F/返還/不成立ケースの完了判定と保存方針"},
+        {"name": "Linnaeus", "area": "特殊結果実装", "status": "完了", "task": "結果取得済み/3連単評価不可の保存と再取得除外"},
+        {"name": "Helmholtz", "area": "資金運用", "status": "完了", "task": "100円単位・最低100円の適応型資金運用へ更新"},
+        {"name": "Ohm", "area": "実オッズ評価", "status": "完了", "task": "締切前実オッズ必須/欠損skipのバックチェック設計"},
+        {"name": "Sartre", "area": "特徴量ablation", "status": "完了", "task": "特徴量グループ別ablationの最小改修点"},
+        {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
+        {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
     ]
 
 
 def _roadmap_milestones() -> list[dict[str, Any]]:
     return [
         {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 70, "next": "表示を当日固定にし、重いAPIを段階読み込み・キャッシュで抑える"},
-        {"id": "M1", "title": "懸案・進捗ページ", "status": "進行中", "progress": 60, "next": "エージェント結果を回収して記録に反映する"},
-        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 45, "next": "結果待ち滞留と取得失敗を再試行キュー化する"},
+        {"id": "M1", "title": "懸案・進捗ページ", "status": "進行中", "progress": 82, "next": "回収済み実装をテスト済みgit履歴へ積み上げる"},
+        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 58, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 55, "next": "特徴量スイープを安定CLI化し、ROI改善に効く特徴量へ寄せる"},
+        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 65, "next": "ablationをSSHリモートで実行し、ROI改善に効く特徴量へ寄せる"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 40, "next": "適応型購入点数・金額でROI改善条件を再探索する"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 58, "next": "実オッズ必須バックチェックをSSHリモートで実行し、通常100円制約版と比較する"},
         {"id": "M7", "title": "v系ファイル整理", "status": "一部完了", "progress": 30, "next": "WebUI以外のモデル/収集v系依存を安定名へ移してから削除する"},
     ]
 
@@ -2015,6 +1997,8 @@ def _latest_model_artifacts(model_dir: Path) -> list[dict[str, Any]]:
 
 
 def _json_file_hint(path: Path) -> dict[str, Any]:
+    if path.stat().st_size > 512_000:
+        return {"hint": "large_json_skipped"}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:

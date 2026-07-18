@@ -38,11 +38,27 @@ def main(argv: list[str] | None = None) -> int:
             SELECT r.race_id, r.jcd, r.venue_name, r.rno, r.deadline_at,
                    (SELECT COUNT(*) FROM entries e WHERE e.race_id = r.race_id) AS entries,
                    (SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS odds_rows,
-                   (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows
+                   (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows,
+                   EXISTS(
+                     SELECT 1
+                     FROM race_result_status rs
+                     WHERE rs.race_id = r.race_id
+                       AND rs.status = 'final'
+                       AND rs.trifecta_evaluable = 0
+                   ) AS result_not_evaluable
             FROM races r
             WHERE r.race_date = ?
               AND r.deadline_at IS NOT NULL
-              AND (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) < 3
+              AND NOT (
+                (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) >= 3
+                OR EXISTS(
+                  SELECT 1
+                  FROM race_result_status rs
+                  WHERE rs.race_id = r.race_id
+                    AND rs.status = 'final'
+                    AND rs.trifecta_evaluable = 0
+                )
+              )
               AND (
                 (SELECT COUNT(*) FROM entries e WHERE e.race_id = r.race_id) = 6
                 OR (SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) > 0

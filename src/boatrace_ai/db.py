@@ -123,6 +123,18 @@ CREATE TABLE IF NOT EXISTS race_results (
   FOREIGN KEY (race_id) REFERENCES races(race_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS race_result_status (
+  race_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  trifecta_evaluable INTEGER NOT NULL DEFAULT 1,
+  reason TEXT,
+  finish_rows INTEGER NOT NULL DEFAULT 0,
+  payout_rows INTEGER NOT NULL DEFAULT 0,
+  raw_json TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (race_id) REFERENCES races(race_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS payouts (
   race_id TEXT NOT NULL,
   bet_type TEXT NOT NULL,
@@ -186,6 +198,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS idx_entries_racer_no ON entries(racer_no);
 CREATE INDEX IF NOT EXISTS idx_odds_race_snapshot ON odds_snapshots(race_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_results_rank ON race_results(race_id, rank);
+CREATE INDEX IF NOT EXISTS idx_result_status_eval ON race_result_status(status, trifecta_evaluable);
 CREATE INDEX IF NOT EXISTS idx_predictions_race ON predictions(race_id, generated_at);
 """
 

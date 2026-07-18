@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .constants import CLASS_RANK, LANES
@@ -217,6 +218,104 @@ def latest_trifecta_odds(conn: sqlite3.Connection, race_id: str) -> dict[str, fl
             (row["snapshot_id"],),
         ).fetchall()
     }
+
+
+def latest_trifecta_odds_before_deadline(
+    conn: sqlite3.Connection,
+    race_id: str,
+    *,
+    min_combinations: int = 120,
+) -> dict[str, Any] | None:
+    race = conn.execute(
+        """
+        SELECT deadline_at
+        FROM races
+        WHERE race_id = ?
+        """,
+        (race_id,),
+    ).fetchone()
+    if not race or not race["deadline_at"]:
+        return None
+
+    start_at = _parse_race_time(str(race["deadline_at"]))
+    if start_at is None:
+        return None
+    odds_deadline_at = start_at - timedelta(minutes=5)
+
+    snapshots = conn.execute(
+        """
+        SELECT
+          os.snapshot_id,
+          os.captured_at,
+          os.source_update_time,
+          COUNT(ot.odds) AS odds_count
+        FROM odds_snapshots os
+        JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
+        WHERE os.race_id = ?
+          AND os.bet_type = 'trifecta'
+          AND ot.odds IS NOT NULL
+          AND ot.odds > 0
+        GROUP BY os.snapshot_id, os.captured_at, os.source_update_time
+        HAVING COUNT(ot.odds) >= ?
+        """,
+        (race_id, min_combinations),
+    ).fetchall()
+
+    eligible = []
+    for snapshot in snapshots:
+        captured_at = _parse_snapshot_time(str(snapshot["captured_at"]), default_tz=odds_deadline_at.tzinfo)
+        if captured_at is None:
+            continue
+        if captured_at <= odds_deadline_at:
+            eligible.append((captured_at, int(snapshot["snapshot_id"]), snapshot))
+    if not eligible:
+        return None
+
+    _captured_at, snapshot_id, snapshot = max(eligible, key=lambda item: (item[0], item[1]))
+    odds_rows = conn.execute(
+        """
+        SELECT combination, odds
+        FROM odds_trifecta
+        WHERE snapshot_id = ?
+          AND odds IS NOT NULL
+          AND odds > 0
+        """,
+        (snapshot_id,),
+    ).fetchall()
+    odds = {row["combination"]: float(row["odds"]) for row in odds_rows}
+    if len(odds) < min_combinations:
+        return None
+
+    return {
+        "snapshot_id": snapshot_id,
+        "captured_at": snapshot["captured_at"],
+        "source_update_time": snapshot["source_update_time"],
+        "odds_deadline_at": odds_deadline_at.isoformat(timespec="seconds"),
+        "odds_count": len(odds),
+        "odds": odds,
+    }
+
+
+def _parse_race_time(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone(timedelta(hours=9)))
+    return parsed
+
+
+def _parse_snapshot_time(value: str, *, default_tz: timezone | None) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=default_tz or timezone.utc)
+    if default_tz is None:
+        return parsed
+    return parsed.astimezone(default_tz)
 
 
 def _aggregate_odds(rows: list[sqlite3.Row]) -> dict[int, dict[str, float]]:

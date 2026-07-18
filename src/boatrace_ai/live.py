@@ -14,13 +14,20 @@ from .db import (
 )
 from .http import fetch_text, save_payload
 from .official import race_index_url, race_page_url
+from .result_parser_v2 import parse_result_html_v2
 from .parsers import (
     parse_beforeinfo_html,
     parse_odds3t_html,
     parse_racelist_html,
     parse_result_html,
 )
-from .storage import insert_beforeinfo_rows, record_raw_page, upsert_payout, upsert_result_row
+from .storage import (
+    insert_beforeinfo_rows,
+    record_raw_page,
+    upsert_payout,
+    upsert_result_row,
+    upsert_result_status,
+)
 
 
 def utc_now_iso() -> str:
@@ -133,10 +140,13 @@ def collect_result(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) 
     html = _fetch_page(conn, page_type="result", race_date=race_date, jcd=jcd, rno=rno, url=url, raw_dir=raw_dir)
     if not html:
         return 0
-    parsed = parse_result_html(html)
+    parsed = parse_result_html_v2(html)
+    if parsed["status"] == "unknown":
+        parsed = parse_result_html(html)
     if parsed["status"] == "no_data":
         return 0
     _ensure_minimal_race(conn, race_date=race_date, jcd=jcd, rno=rno, status=parsed["status"])
+    upsert_result_status(conn, race_id=rid, row=parsed)
     for row in parsed["rows"]:
         upsert_result_row(conn, race_id=rid, row=row)
     for payout in parsed["payouts"]:

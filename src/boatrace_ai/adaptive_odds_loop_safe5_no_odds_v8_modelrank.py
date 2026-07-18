@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
                 seconds_to_start = (start_at - now).total_seconds()
 
                 if args.collect_results:
-                    result_wait = int(row["result_rows"] or 0) < 3
+                    result_wait = int(row["result_rows"] or 0) < 3 and not int(
+                        row["result_not_evaluable"] or 0
+                    )
                     result_due = result_interval(seconds_to_start)
                     result_age = (
                         (now - latest_result_attempt).total_seconds()
@@ -134,7 +136,14 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
         SELECT r.race_id, r.jcd, r.rno, r.deadline_at,
                (SELECT MAX(captured_at) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS latest_odds_at,
                (SELECT MAX(fetched_at) FROM raw_pages rp WHERE rp.race_id = r.race_id AND rp.page_type = 'result') AS latest_result_attempt_at,
-               (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows
+               (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows,
+               EXISTS(
+                 SELECT 1
+                 FROM race_result_status rs
+                 WHERE rs.race_id = r.race_id
+                   AND rs.status = 'final'
+                   AND rs.trifecta_evaluable = 0
+               ) AS result_not_evaluable
         FROM races r
         WHERE r.race_date = ?
           AND r.deadline_at IS NOT NULL
@@ -142,7 +151,16 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
             (SELECT COUNT(*) FROM entries e WHERE e.race_id = r.race_id) = 6
             OR (SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) > 0
           )
-          AND (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) < 3
+          AND NOT (
+            (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) >= 3
+            OR EXISTS(
+              SELECT 1
+              FROM race_result_status rs
+              WHERE rs.race_id = r.race_id
+                AND rs.status = 'final'
+                AND rs.trifecta_evaluable = 0
+            )
+          )
         ORDER BY r.deadline_at, r.jcd, r.rno
         """,
         (race_date.isoformat(),),

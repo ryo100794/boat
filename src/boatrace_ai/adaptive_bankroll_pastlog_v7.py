@@ -15,6 +15,7 @@ from .bankroll_backtest import (
     _load_trifecta_payouts,
 )
 from .db import connection, init_db
+from .features import latest_trifecta_odds_before_deadline
 from .modeling_pastlog_v7_stream_hash import (
     FEATURE_SET,
     iter_scored_races,
@@ -35,6 +36,7 @@ def adaptive_bankroll_streaming(
     min_train_races: int = 500,
     ev_threshold: float = 1.0,
     payout_prior_weight: float = 30.0,
+    require_real_odds: bool = False,
     fractional_kelly: float = 0.25,
     max_daily_exposure_fraction: float = 1.0,
     race_cap_fraction: float = 0.20,
@@ -62,6 +64,9 @@ def adaptive_bankroll_streaming(
     all_race_ids = [race_id for race_id, *_ in race_keys]
     payouts = _load_trifecta_payouts(conn)
 
+    real_odds_by_race: dict[str, dict[str, Any] | None] = {}
+    real_odds_races: set[str] = set()
+    skipped_no_real_odds = 0
     evaluated_races: set[str] = set()
     daily_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
@@ -82,6 +87,8 @@ def adaptive_bankroll_streaming(
         fold_candidate_count = 0
         fold_selected_count = 0
         fold_evaluated = 0
+        fold_real_odds_races = 0
+        fold_skipped_no_real_odds = 0
         current_date: str | None = None
         day_candidates: list[dict[str, Any]] = []
         day_evaluated: set[str] = set()
@@ -120,6 +127,17 @@ def adaptive_bankroll_streaming(
             payout = payouts.get(race_id_value)
             if len(rows) != 6 or not payout:
                 continue
+            real_odds_snapshot = None
+            if require_real_odds:
+                if race_id_value not in real_odds_by_race:
+                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(conn, race_id_value)
+                real_odds_snapshot = real_odds_by_race[race_id_value]
+                if real_odds_snapshot is None:
+                    skipped_no_real_odds += 1
+                    fold_skipped_no_real_odds += 1
+                    continue
+                real_odds_races.add(race_id_value)
+                fold_real_odds_races += 1
             evaluated_races.add(race_id_value)
             day_evaluated.add(race_id_value)
             fold_evaluated += 1
@@ -128,6 +146,7 @@ def adaptive_bankroll_streaming(
                 actual=payout,
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
+                real_odds_snapshot=real_odds_snapshot,
             )
             fold_candidate_count += len(race_candidates)
             day_candidates.extend(race_candidates)
@@ -163,6 +182,8 @@ def adaptive_bankroll_streaming(
             "evaluated_races": fold_evaluated,
             "candidate_tickets": fold_candidate_count,
             "selected_tickets": fold_selected_count,
+            "real_odds_races": fold_real_odds_races,
+            "skipped_no_real_odds": fold_skipped_no_real_odds,
         }
         fold_rows.append(fold_row)
         print(json.dumps(fold_row, ensure_ascii=False), flush=True)
@@ -171,12 +192,15 @@ def adaptive_bankroll_streaming(
         daily_rows,
         totals,
         evaluated_races=evaluated_races,
+        real_odds_races=real_odds_races,
+        skipped_no_real_odds=skipped_no_real_odds,
         all_race_count=len(all_race_ids),
         max_drawdown=max_drawdown,
         policy={
             "daily_budget_yen": daily_budget_yen,
             "bet_type": "3連単",
             "include_odds": False,
+            "require_real_odds": require_real_odds,
             "ev_threshold": ev_threshold,
             "stake_model": "adaptive_unit_yen",
             "unit_yen": stake_granularity_yen,
@@ -187,7 +211,7 @@ def adaptive_bankroll_streaming(
             "ticket_cap_fraction": ticket_cap_fraction,
             "stake_granularity_yen": stake_granularity_yen,
             "min_stake_yen": min_stake_yen,
-            "payout_estimator": "train-fold average payout by trifecta combination, blended with train-fold global average",
+            "payout_estimator": "deadline real odds" if require_real_odds else "train-fold average payout by trifecta combination, blended with train-fold global average",
             "payout_prior_weight": payout_prior_weight,
             "allocation": "stake is proportional to positive Kelly edge, capped by daily/race/ticket risk fractions; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
             "feature_set": FEATURE_SET,
@@ -342,8 +366,9 @@ def _allocate_adaptive_day(
 
 def _selection_sample(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = sorted(selected, key=lambda item: (item["stake_yen"], item["estimated_ev"]), reverse=True)[:12]
-    return [
-        {
+    sample = []
+    for item in rows:
+        row = {
             "race_id": item["race_id"],
             "combination": item["combination"],
             "stake_yen": item["stake_yen"],
@@ -352,8 +377,17 @@ def _selection_sample(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "hit": bool(item["hit"]),
             "return_yen": item["return_yen"],
         }
-        for item in rows
-    ]
+        for key in (
+            "odds_source",
+            "real_odds_snapshot_id",
+            "real_odds_captured_at",
+            "real_odds_deadline_at",
+            "real_odds_combinations",
+        ):
+            if item.get(key) is not None:
+                row[key] = item[key]
+        sample.append(row)
+    return sample
 
 
 def _append_day_result(
@@ -399,6 +433,8 @@ def _summarize(
     totals: dict[str, float],
     *,
     evaluated_races: set[str],
+    real_odds_races: set[str],
+    skipped_no_real_odds: int,
     all_race_count: int,
     max_drawdown: int,
     policy: dict[str, Any],
@@ -419,6 +455,8 @@ def _summarize(
         "examples": 0,
         "races": all_race_count,
         "evaluated_races": len(evaluated_races),
+        "real_odds_races": len(real_odds_races),
+        "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": int(totals["candidate_tickets"]),
         "positive_edge_tickets": int(totals["positive_edge_tickets"]),
         "race_days": race_days,
@@ -528,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-train-races", type=int, default=500)
     parser.add_argument("--ev-threshold", type=float, default=1.0)
     parser.add_argument("--payout-prior-weight", type=float, default=30.0)
+    parser.add_argument("--require-real-odds", action="store_true")
     parser.add_argument("--fractional-kelly", type=float, default=0.25)
     parser.add_argument("--max-daily-exposure-fraction", type=float, default=1.0)
     parser.add_argument("--race-cap-fraction", type=float, default=0.20)
@@ -547,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
             min_train_races=args.min_train_races,
             ev_threshold=args.ev_threshold,
             payout_prior_weight=args.payout_prior_weight,
+            require_real_odds=args.require_real_odds,
             fractional_kelly=args.fractional_kelly,
             max_daily_exposure_fraction=args.max_daily_exposure_fraction,
             race_cap_fraction=args.race_cap_fraction,
