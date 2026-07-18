@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 
@@ -55,6 +56,32 @@ def raw_file_exists(conn: sqlite3.Connection, *, kind: str, source_url: str) -> 
         (kind, source_url),
     ).fetchone()
     return row is not None
+
+
+def raw_file_cache_valid(
+    conn: sqlite3.Connection, *, kind: str, source_url: str, local_path: str | Path
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT status_code, bytes
+        FROM raw_files
+        WHERE kind = ? AND source_url = ?
+        LIMIT 1
+        """,
+        (kind, source_url),
+    ).fetchone()
+    if row is None:
+        return False
+
+    status_code, bytes_count = row
+    if status_code != 200 or not bytes_count or int(bytes_count) <= 0:
+        return False
+
+    path = Path(local_path)
+    try:
+        return path.exists() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def record_raw_page(

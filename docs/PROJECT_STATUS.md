@@ -40,6 +40,7 @@
 
 - Nietzsche M2/M3回収: 特殊結果は「取得済みだが3連単評価不可」として通常評価から分離する。`raw_files` は台帳だけでなく、ローカルファイル存在・HTTP 200・bytes>0 を有効キャッシュ条件にする。SQLiteロックは共通接続でWAL/busy_timeoutを入れる方針。
 - Raman M4/M6回収: `no_odds_v8` は特徴量ファミリー別ablation未整備。`pastlog_v7_adaptive` はROI 0.752655だが、1円単位平均8.03円/券で実運用制約外。次は100円丸め・最低100円・日次/券上限・実オッズ必須/skipを同一foldで比較する。
+- Turing M4/M6詳細: 現行ROI悪化は `stake_granularity_yen=1` / `min_stake_yen=1` と払戻実績推定オッズ利用を分けて検証する。比較条件は現行、100円制約のみ、100円+締切前実オッズ必須。ablationは `base_pastlog`、`series_cached`、`series_relative`、`rolling_history` から始める。
 
 ## 進行中
 
@@ -80,5 +81,5 @@
 - Dirac: F/返還/不成立など特殊結果パーサ修正方針の調査。完了。
 - Nietzsche: M2/M3 の特殊結果、raw欠損再取得、SQLiteロック対策の最小パッチ単位を回収。完了。
 - Raman: M4/M6 の特徴量ablation、100円実運用制約、実オッズ評価の最小改修点を回収。完了。
-- Singer: rawキャッシュ有効判定の最小実装を調査/作業中。
-- Turing: 資金運用制約と特徴量ablationの具体実装点を調査中。
+- Singer: rawキャッシュ有効判定を最小実装。`status_code=200`、`bytes>0`、ローカル実ファイル存在時だけskipする。完了。
+- Turing: 資金運用制約と特徴量ablationの具体実装点を回収。100円単位/実オッズ必須/欠損skipの3条件比較を次実装へ送る。完了。

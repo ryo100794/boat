@@ -11,7 +11,7 @@ from .db import connection, init_db
 from .historical_official4 import parse_official_archive
 from .http import fetch_bytes, save_payload
 from .official import historical_download_url
-from .storage import raw_file_exists, record_raw_file
+from .storage import raw_file_cache_valid, record_raw_file
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,7 +108,7 @@ def process_file(
         "parsed_results": 0,
         "parsed_payouts": 0,
     }
-    if local_path.exists() or raw_file_exists(conn, kind=kind, source_url=url):
+    if raw_file_cache_valid(conn, kind=kind, source_url=url, local_path=local_path):
         event["skipped"] = 1
     else:
         fetched = _fetch_and_record(conn, url=url, local_path=local_path, kind=kind, current=current, sleep=sleep)
