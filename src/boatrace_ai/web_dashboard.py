@@ -1938,7 +1938,7 @@ def _read_remote_eval_status(path: Path) -> dict[str, Any]:
 
 
 def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
-    bankrolls = _bankroll_gate_records(model_dir)
+    bankrolls = _bankroll_gate_records(model_dir) + _remote_bankroll_gate_records(remote_evaluations)
     best = max(bankrolls, key=lambda row: row.get("roi") or -1.0, default=None)
     latest = max(bankrolls, key=lambda row: row.get("modified_at") or "", default=None)
     remote_jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
@@ -1988,6 +1988,29 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "next": "監視JSONから結果JSON生成と失敗ログを回収する",
         },
     ]
+
+
+def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
+        if not str((job or {}).get("kind") or "").startswith("bankroll"):
+            continue
+        result = (job or {}).get("result") or {}
+        metrics = result.get("metrics") or {}
+        if metrics.get("roi") is None:
+            continue
+        rows.append(
+            {
+                "file": result.get("file") or job.get("name"),
+                "modified_at": result.get("modified_at") or remote_evaluations.get("generated_at") or "",
+                "roi": _float_or_none(metrics.get("roi")),
+                "profit_yen": metrics.get("profit_yen"),
+                "stake_yen": metrics.get("stake_yen"),
+                "evaluated_races": metrics.get("evaluated_races"),
+                "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+            }
+        )
+    return rows
 
 
 def _bankroll_gate_records(model_dir: Path) -> list[dict[str, Any]]:
@@ -2043,10 +2066,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-2",
             "milestone": "M6",
-            "status": "一部失敗/再実行",
-            "progress": 38,
+            "status": "再設計/再実行",
+            "progress": 45,
             "item": "資金配分パラメータ探索",
-            "next": "固定版PID 171806-171810でEV/Kelly/上限スイープを再評価中。data/remote_eval_status.jsonで結果回収待ち。",
+            "next": "旧スイープは候補あり選択0件のため停止。正規化KellyスイープPID 172555-172559で結果回収待ち。",
         },
         {
             "id": "M6-3",
@@ -2068,9 +2091,17 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
             "id": "M6-5",
             "milestone": "M6",
             "status": "修正済み/監視中",
-            "progress": 85,
+            "progress": 90,
             "item": "疎行列index互換",
-            "next": "FeatureHasher出力int32化を検証済み。監視JSONと懸案ページのリモート評価表で固定版ジョブ結果を回収する。",
+            "next": "FeatureHasher出力int32化を検証済み。正規化Kelly再実行でも同エラーが再発しないか監視する。",
+        },
+        {
+            "id": "M6-6",
+            "milestone": "M6",
+            "status": "修正済み/再評価中",
+            "progress": 55,
+            "item": "候補あり選択0件の解消",
+            "next": "日次上位候補制限とnormalized_kelly配分を追加。PID 172555-172559のfoldでselected_tickets>0を確認する。",
         },
     ]
 
@@ -2088,7 +2119,7 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Sartre", "area": "特徴量ablation", "status": "完了", "task": "特徴量グループ別ablationの最小改修点"},
         {"name": "Russell", "area": "資金運用実装", "status": "完了", "task": "--require-real-odds による実オッズ必須/skipモード"},
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
-        {"name": "Remote-M6", "area": "資金運用評価", "status": "再実行中", "task": "固定版PID 171805-171810 / 実オッズ検証と資金配分スイープ"},
+        {"name": "Remote-M6", "area": "資金運用評価", "status": "再実行中", "task": "PID 171805実オッズ / 172555-172559正規化Kelly資金配分"},
         {"name": "Remote-M4", "area": "特徴量評価", "status": "再実行中", "task": "固定版PID 171811 / drop-one-feature-group ablation"},
         {"name": "Ptolemy", "area": "懸案UI監査", "status": "完了", "task": "M6改善事項/完了ゲート/API表示の抜け漏れ確認。リモートPID静的表示のリスクを回収"},
         {"name": "Mendel", "area": "M7棚卸し", "status": "完了", "task": "v系ファイルをmust-keep依存とsafe-to-clean候補へ分離"},
@@ -2103,7 +2134,7 @@ def _roadmap_milestones() -> list[dict[str, Any]]:
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
         {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 68, "next": "リモートablation結果を回収して効く特徴量へ寄せる"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 64, "next": "改善事項M6-1..M6-5を追跡し、ROI/損益ゲート達成まで完了扱いしない"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 66, "next": "改善事項M6-1..M6-6を追跡し、ROI/損益ゲート達成まで完了扱いしない"},
         {"id": "M7", "title": "v系ファイル整理", "status": "棚卸し完了/移行待ち", "progress": 38, "next": "Mendel棚卸しのsafe-to-clean候補から安定名移行済み範囲を削除する"},
     ]
 

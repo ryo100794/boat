@@ -17,11 +17,11 @@ DEFAULT_OUTPUT = Path("data/remote_eval_status.json")
 
 JOBS: list[dict[str, Any]] = [
     {"pid": 171805, "name": "adaptive_real_odds_97cc181", "milestone": "M6", "kind": "real_odds", "output": "data/models/adaptive_real_odds_97cc181.json", "log": "logs/adaptive_real_odds_97cc181.log"},
-    {"pid": 171806, "name": "m6_bankroll_ev120_97cc181", "milestone": "M6", "kind": "bankroll_sweep", "output": "data/models/m6_bankroll_ev120_97cc181.json", "log": "logs/m6_bankroll_ev120_97cc181.log"},
-    {"pid": 171807, "name": "m6_bankroll_ev150_97cc181", "milestone": "M6", "kind": "bankroll_sweep", "output": "data/models/m6_bankroll_ev150_97cc181.json", "log": "logs/m6_bankroll_ev150_97cc181.log"},
-    {"pid": 171808, "name": "m6_bankroll_ev200_97cc181", "milestone": "M6", "kind": "bankroll_sweep", "output": "data/models/m6_bankroll_ev200_97cc181.json", "log": "logs/m6_bankroll_ev200_97cc181.log"},
-    {"pid": 171809, "name": "m6_adaptive_conservative_97cc181", "milestone": "M6", "kind": "bankroll_sweep", "output": "data/models/m6_adaptive_conservative_97cc181.json", "log": "logs/m6_adaptive_conservative_97cc181.log"},
-    {"pid": 171810, "name": "m6_adaptive_selective_97cc181", "milestone": "M6", "kind": "bankroll_sweep", "output": "data/models/m6_adaptive_selective_97cc181.json", "log": "logs/m6_adaptive_selective_97cc181.log"},
+    {"pid": 172555, "name": "m6_norm_ev105_top80_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev105_top80_19d5c35.json", "log": "logs/m6_norm_ev105_top80_19d5c35.log"},
+    {"pid": 172556, "name": "m6_norm_ev110_top40_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev110_top40_19d5c35.json", "log": "logs/m6_norm_ev110_top40_19d5c35.log"},
+    {"pid": 172557, "name": "m6_norm_ev120_top30_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev120_top30_19d5c35.json", "log": "logs/m6_norm_ev120_top30_19d5c35.log"},
+    {"pid": 172558, "name": "m6_norm_ev150_top20_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev150_top20_19d5c35.json", "log": "logs/m6_norm_ev150_top20_19d5c35.log"},
+    {"pid": 172559, "name": "m6_norm_ev200_top10_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev200_top10_19d5c35.json", "log": "logs/m6_norm_ev200_top10_19d5c35.log"},
     {"pid": 171811, "name": "feature_ablation_97cc181", "milestone": "M4", "kind": "feature_ablation", "output": "data/models/feature_ablation_97cc181.json", "log": "logs/feature_ablation_97cc181.log"},
 ]
 

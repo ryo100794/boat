@@ -39,8 +39,11 @@ def adaptive_bankroll_streaming(
     require_real_odds: bool = False,
     fractional_kelly: float = 0.25,
     max_daily_exposure_fraction: float = 1.0,
+    min_daily_exposure_fraction: float = 0.0,
     race_cap_fraction: float = 0.20,
     ticket_cap_fraction: float = 0.04,
+    max_daily_tickets: int | None = None,
+    allocation_mode: str = "kelly_floor",
     stake_granularity_yen: int = DEFAULT_STAKE_UNIT_YEN,
     min_stake_yen: int = DEFAULT_STAKE_UNIT_YEN,
     batch_size: int = 24_000,
@@ -50,8 +53,11 @@ def adaptive_bankroll_streaming(
         daily_budget_yen=daily_budget_yen,
         fractional_kelly=fractional_kelly,
         max_daily_exposure_fraction=max_daily_exposure_fraction,
+        min_daily_exposure_fraction=min_daily_exposure_fraction,
         race_cap_fraction=race_cap_fraction,
         ticket_cap_fraction=ticket_cap_fraction,
+        max_daily_tickets=max_daily_tickets,
+        allocation_mode=allocation_mode,
         stake_granularity_yen=stake_granularity_yen,
         min_stake_yen=min_stake_yen,
     )
@@ -106,8 +112,11 @@ def adaptive_bankroll_streaming(
                     daily_budget_yen=daily_budget_yen,
                     fractional_kelly=fractional_kelly,
                     max_daily_exposure_fraction=max_daily_exposure_fraction,
+                    min_daily_exposure_fraction=min_daily_exposure_fraction,
                     race_cap_fraction=race_cap_fraction,
                     ticket_cap_fraction=ticket_cap_fraction,
+                    max_daily_tickets=max_daily_tickets,
+                    allocation_mode=allocation_mode,
                     stake_granularity_yen=stake_granularity_yen,
                     min_stake_yen=min_stake_yen,
                 )
@@ -159,8 +168,11 @@ def adaptive_bankroll_streaming(
                 daily_budget_yen=daily_budget_yen,
                 fractional_kelly=fractional_kelly,
                 max_daily_exposure_fraction=max_daily_exposure_fraction,
+                min_daily_exposure_fraction=min_daily_exposure_fraction,
                 race_cap_fraction=race_cap_fraction,
                 ticket_cap_fraction=ticket_cap_fraction,
+                max_daily_tickets=max_daily_tickets,
+                allocation_mode=allocation_mode,
                 stake_granularity_yen=stake_granularity_yen,
                 min_stake_yen=min_stake_yen,
             )
@@ -207,13 +219,16 @@ def adaptive_bankroll_streaming(
             "max_tickets_per_race": None,
             "fractional_kelly": fractional_kelly,
             "max_daily_exposure_fraction": max_daily_exposure_fraction,
+            "min_daily_exposure_fraction": min_daily_exposure_fraction,
             "race_cap_fraction": race_cap_fraction,
             "ticket_cap_fraction": ticket_cap_fraction,
+            "max_daily_tickets": max_daily_tickets,
+            "allocation_mode": allocation_mode,
             "stake_granularity_yen": stake_granularity_yen,
             "min_stake_yen": min_stake_yen,
             "payout_estimator": "deadline real odds" if require_real_odds else "train-fold average payout by trifecta combination, blended with train-fold global average",
             "payout_prior_weight": payout_prior_weight,
-            "allocation": "stake is proportional to positive Kelly edge, capped by daily/race/ticket risk fractions; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
+            "allocation": "stake is proportional to positive Kelly edge; normalized-kelly can scale ranked positive edges up to min_daily_exposure_fraction before daily/race/ticket caps; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
             "feature_set": FEATURE_SET,
             "model": "win_model_pastlog_v7_stream_hash",
         },
@@ -269,8 +284,11 @@ def _allocate_adaptive_day(
     daily_budget_yen: int,
     fractional_kelly: float,
     max_daily_exposure_fraction: float,
+    min_daily_exposure_fraction: float,
     race_cap_fraction: float,
     ticket_cap_fraction: float,
+    max_daily_tickets: int | None,
+    allocation_mode: str,
     stake_granularity_yen: int,
     min_stake_yen: int,
 ) -> dict[str, Any]:
@@ -295,22 +313,27 @@ def _allocate_adaptive_day(
             }
         )
 
-    by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in prepared:
-        by_race[str(item["race_id"])].append(item)
-    for race_items in by_race.values():
-        race_total = sum(float(item["stake_fraction"]) for item in race_items)
-        if race_total > race_cap_fraction:
-            scale = race_cap_fraction / race_total
-            for item in race_items:
-                item["stake_fraction"] = float(item["stake_fraction"]) * scale
+    raw_positive_edge_tickets = len(prepared)
+    if max_daily_tickets is not None and max_daily_tickets > 0:
+        prepared = sorted(
+            prepared,
+            key=lambda row: (row["estimated_ev"], row["probability"], row["stake_fraction"]),
+            reverse=True,
+        )[:max_daily_tickets]
 
-    total_fraction = sum(float(item["stake_fraction"]) for item in prepared)
-    max_fraction = max_daily_exposure_fraction
-    if total_fraction > max_fraction:
-        scale = max_fraction / total_fraction
-        for item in prepared:
-            item["stake_fraction"] = float(item["stake_fraction"]) * scale
+    if allocation_mode == "normalized_kelly":
+        total_fraction = sum(float(item["stake_fraction"]) for item in prepared)
+        if total_fraction > 0.0 and total_fraction < min_daily_exposure_fraction:
+            target_fraction = min(max_daily_exposure_fraction, min_daily_exposure_fraction)
+            scale = target_fraction / total_fraction
+            for item in prepared:
+                item["stake_fraction"] = min(ticket_cap_fraction, float(item["stake_fraction"]) * scale)
+
+    _apply_fraction_caps(
+        prepared,
+        max_daily_exposure_fraction=max_daily_exposure_fraction,
+        race_cap_fraction=race_cap_fraction,
+    )
 
     selected = []
     stake_yen = 0
@@ -348,7 +371,8 @@ def _allocate_adaptive_day(
         "race_date": race_date,
         "evaluated_races": len(evaluated_races),
         "candidate_tickets": len(candidates),
-        "positive_edge_tickets": len(prepared),
+        "positive_edge_tickets": raw_positive_edge_tickets,
+        "allocation_candidate_tickets": len(prepared),
         "tickets": len(selected),
         "races_bet": len(selected_races),
         "hit_tickets": hit_tickets,
@@ -362,6 +386,29 @@ def _allocate_adaptive_day(
         "max_stake_yen": max((item["stake_yen"] for item in selected), default=0),
         "selected_sample": _selection_sample(selected),
     }
+
+
+def _apply_fraction_caps(
+    prepared: list[dict[str, Any]],
+    *,
+    max_daily_exposure_fraction: float,
+    race_cap_fraction: float,
+) -> None:
+    by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in prepared:
+        by_race[str(item["race_id"])].append(item)
+    for race_items in by_race.values():
+        race_total = sum(float(item["stake_fraction"]) for item in race_items)
+        if race_total > race_cap_fraction:
+            scale = race_cap_fraction / race_total
+            for item in race_items:
+                item["stake_fraction"] = float(item["stake_fraction"]) * scale
+
+    total_fraction = sum(float(item["stake_fraction"]) for item in prepared)
+    if total_fraction > max_daily_exposure_fraction:
+        scale = max_daily_exposure_fraction / total_fraction
+        for item in prepared:
+            item["stake_fraction"] = float(item["stake_fraction"]) * scale
 
 
 def _selection_sample(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -407,6 +454,7 @@ def _append_day_result(
     for key in (
         "candidate_tickets",
         "positive_edge_tickets",
+        "allocation_candidate_tickets",
         "tickets",
         "races_bet",
         "hit_tickets",
@@ -459,6 +507,7 @@ def _summarize(
         "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": int(totals["candidate_tickets"]),
         "positive_edge_tickets": int(totals["positive_edge_tickets"]),
+        "allocation_candidate_tickets": int(totals["allocation_candidate_tickets"]),
         "race_days": race_days,
         "days_with_bets": days_with_bets,
         "winning_days": int(totals["winning_days"]),
@@ -491,6 +540,7 @@ def _zero_totals() -> dict[str, float]:
     return {
         "candidate_tickets": 0.0,
         "positive_edge_tickets": 0.0,
+        "allocation_candidate_tickets": 0.0,
         "tickets": 0.0,
         "races_bet": 0.0,
         "hit_tickets": 0.0,
@@ -518,8 +568,11 @@ def _validate_policy(
     daily_budget_yen: int,
     fractional_kelly: float,
     max_daily_exposure_fraction: float,
+    min_daily_exposure_fraction: float,
     race_cap_fraction: float,
     ticket_cap_fraction: float,
+    max_daily_tickets: int | None,
+    allocation_mode: str,
     stake_granularity_yen: int,
     min_stake_yen: int,
 ) -> None:
@@ -533,8 +586,16 @@ def _validate_policy(
     ):
         if value <= 0.0 or not math.isfinite(value):
             raise ValueError(f"{name} must be positive")
+    if min_daily_exposure_fraction < 0.0 or not math.isfinite(min_daily_exposure_fraction):
+        raise ValueError("min_daily_exposure_fraction must be non-negative")
     if max_daily_exposure_fraction > 1.0:
         raise ValueError("max_daily_exposure_fraction must not exceed 1.0")
+    if min_daily_exposure_fraction > max_daily_exposure_fraction:
+        raise ValueError("min_daily_exposure_fraction must not exceed max_daily_exposure_fraction")
+    if allocation_mode not in {"kelly_floor", "normalized_kelly"}:
+        raise ValueError("allocation_mode must be kelly_floor or normalized_kelly")
+    if max_daily_tickets is not None and max_daily_tickets < 1:
+        raise ValueError("max_daily_tickets must be positive when set")
     if race_cap_fraction > max_daily_exposure_fraction:
         raise ValueError("race_cap_fraction must not exceed max_daily_exposure_fraction")
     if ticket_cap_fraction > race_cap_fraction:
@@ -569,8 +630,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-real-odds", action="store_true")
     parser.add_argument("--fractional-kelly", type=float, default=0.25)
     parser.add_argument("--max-daily-exposure-fraction", type=float, default=1.0)
+    parser.add_argument("--min-daily-exposure-fraction", type=float, default=0.0)
     parser.add_argument("--race-cap-fraction", type=float, default=0.20)
     parser.add_argument("--ticket-cap-fraction", type=float, default=0.04)
+    parser.add_argument("--max-daily-tickets", type=int, default=0, help="0 means no daily ticket limit before allocation")
+    parser.add_argument("--allocation-mode", choices=["kelly_floor", "normalized_kelly"], default="kelly_floor")
     parser.add_argument("--stake-granularity-yen", type=int, default=DEFAULT_STAKE_UNIT_YEN)
     parser.add_argument("--min-stake-yen", type=int, default=DEFAULT_STAKE_UNIT_YEN)
     parser.add_argument("--batch-size", type=int, default=24_000)
@@ -589,8 +653,11 @@ def main(argv: list[str] | None = None) -> int:
             require_real_odds=args.require_real_odds,
             fractional_kelly=args.fractional_kelly,
             max_daily_exposure_fraction=args.max_daily_exposure_fraction,
+            min_daily_exposure_fraction=args.min_daily_exposure_fraction,
             race_cap_fraction=args.race_cap_fraction,
             ticket_cap_fraction=args.ticket_cap_fraction,
+            max_daily_tickets=args.max_daily_tickets or None,
+            allocation_mode=args.allocation_mode,
             stake_granularity_yen=args.stake_granularity_yen,
             min_stake_yen=args.min_stake_yen,
             batch_size=args.batch_size,
