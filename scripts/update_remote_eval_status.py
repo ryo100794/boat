@@ -22,7 +22,9 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 172557, "name": "m6_norm_ev120_top30_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev120_top30_19d5c35.json", "log": "logs/m6_norm_ev120_top30_19d5c35.log"},
     {"pid": 172558, "name": "m6_norm_ev150_top20_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev150_top20_19d5c35.json", "log": "logs/m6_norm_ev150_top20_19d5c35.log"},
     {"pid": 172559, "name": "m6_norm_ev200_top10_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev200_top10_19d5c35.json", "log": "logs/m6_norm_ev200_top10_19d5c35.log"},
+    {"pid": 172873, "name": "m6_norm_sanity_fold_19d5c35", "milestone": "M6", "kind": "bankroll_sanity", "output": "data/models/m6_norm_sanity_fold_19d5c35.json", "log": "logs/m6_norm_sanity_fold_19d5c35.log"},
     {"pid": 171811, "name": "feature_ablation_97cc181", "milestone": "M4", "kind": "feature_ablation", "output": "data/models/feature_ablation_97cc181.json", "log": "logs/feature_ablation_97cc181.log"},
+    {"pid": 173485, "name": "feature_correlation_advanced_e07badb", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_e07badb.json", "log": "logs/feature_correlation_advanced_e07badb.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -39,6 +41,7 @@ METRIC_KEYS = (
     "tickets", "hit_tickets", "ticket_hit_rate", "race_hit_rate", "max_drawdown_yen",
     "skipped_no_real_odds", "real_odds_races", "entry_log_loss", "entry_brier",
     "winner_top1_accuracy", "trifecta_top5_hit_rate",
+    "examples", "races", "positive_labels", "global_win_rate",
 )
 
 def iso_mtime(path):
@@ -76,6 +79,12 @@ def result_summary(path):
         row["error"] = str(exc)
         return row
     row["metrics"] = {key: data.get(key) for key in METRIC_KEYS if key in data}
+    if "feature_family_summary" in data or "suspect_features" in data:
+        row["feature_family_summary"] = (data.get("feature_family_summary") or [])[:16]
+        row["suspect_features"] = (data.get("suspect_features") or [])[:24]
+        row["coefficient_alignment"] = (data.get("coefficient_alignment") or [])[:16]
+        row["action_items"] = (data.get("action_items") or data.get("diagnosis") or [])[:10]
+        row["roi_link"] = data.get("roi_link") or {}
     if "drop_results" in data:
         base = data.get("base") or {}
         row["base_metrics"] = {key: base.get(key) for key in METRIC_KEYS if key in base}

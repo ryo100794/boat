@@ -9,6 +9,7 @@ from typing import Any
 
 from .db import connect, init_db
 from .feature_result_correlation_v8 import (
+    _advanced_diagnostics,
     _category_summaries,
     _compact_backtest,
     _compact_bankroll,
@@ -81,6 +82,14 @@ def analyze_stream(
     coverage = _coverage(conn)
     backtest = _read_json(output_path.parent / "backtest_no_odds_v8.json")
     bankroll = _read_json(output_path.parent / "bankroll_backtest_no_odds_v8_10000.json")
+    advanced = _advanced_diagnostics(
+        coverage,
+        numeric_rows,
+        category_rows,
+        coefficients,
+        bankroll,
+        top_n=top_n,
+    )
     payload = {
         "generated_at": _now(),
         "feature_set": FEATURE_SET,
@@ -95,11 +104,12 @@ def analyze_stream(
             key=lambda row: (row["present_rate"], -abs(row["pearson"])),
         )[:top_n],
         "top_categorical_gap": category_rows[:top_n],
+        **advanced,
         "model_coefficients": coefficients,
         "coverage": coverage,
         "backtest": _compact_backtest(backtest),
         "bankroll_backtest": _compact_bankroll(bankroll),
-        "diagnosis": _diagnosis(coverage, numeric_rows, category_rows, coefficients),
+        "diagnosis": _diagnosis(coverage, numeric_rows, category_rows, coefficients) + advanced.get("diagnosis", []),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

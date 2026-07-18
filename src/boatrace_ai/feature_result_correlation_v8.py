@@ -23,6 +23,8 @@ DERIVED_NUMERIC_SUFFIXES = (
     "_scaled",
 )
 
+ORDINAL_ID_FEATURES = {"racer_no", "motor_no", "boat_no"}
+
 
 def analyze(
     conn: sqlite3.Connection,
@@ -76,6 +78,14 @@ def analyze(
     coverage = _coverage(conn)
     backtest = _read_json(output_path.parent / "backtest_no_odds_v8.json")
     bankroll = _read_json(output_path.parent / "bankroll_backtest_no_odds_v8_10000.json")
+    advanced = _advanced_diagnostics(
+        coverage,
+        numeric_rows,
+        category_rows,
+        coefficient_rows,
+        bankroll,
+        top_n=top_n,
+    )
 
     payload = {
         "generated_at": _now(),
@@ -90,11 +100,12 @@ def analyze(
             key=lambda row: (row["present_rate"], -abs(row["pearson"])),
         )[:top_n],
         "top_categorical_gap": category_rows[:top_n],
+        **advanced,
         "model_coefficients": coefficient_rows,
         "coverage": coverage,
         "backtest": _compact_backtest(backtest),
         "bankroll_backtest": _compact_bankroll(bankroll),
-        "diagnosis": _diagnosis(coverage, numeric_rows, category_rows, coefficient_rows),
+        "diagnosis": _diagnosis(coverage, numeric_rows, category_rows, coefficient_rows) + advanced.get("diagnosis", []),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -152,6 +163,7 @@ def _numeric_summary(
     present_corr = _pearson(present_stats) if present_stats and present_count > 1 else 0.0
     return {
         "feature": key,
+        "family": _feature_family(key),
         "count": int(count),
         "present_count": int(present_count),
         "present_rate": present_count / count if count else 0.0,
@@ -210,6 +222,7 @@ def _category_summaries(
         rows.append(
             {
                 "feature": key,
+                "family": _feature_family(key),
                 "distinct_values": len(values),
                 "covered_count": int(covered),
                 "covered_rate": covered / total_examples if total_examples else 0.0,
@@ -231,14 +244,40 @@ def _model_coefficients(model_path: Path | None, *, top_n: int) -> dict[str, Any
         return {"error": "pipeline lacks vectorizer or classifier"}
     names = list(vectorizer.get_feature_names_out())
     coefs = list(classifier.coef_[0])
-    rows = [
-        {"feature": str(name), "coefficient": float(coef), "abs_coefficient": abs(float(coef))}
-        for name, coef in zip(names, coefs)
-    ]
+    rows = []
+    family_stats: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"feature_dimensions": 0.0, "abs_coefficient_sum": 0.0, "max_abs_coefficient": 0.0}
+    )
+    for name, coef in zip(names, coefs):
+        feature_name = str(name)
+        abs_coef = abs(float(coef))
+        family = _feature_family(feature_name)
+        row = {
+            "feature": feature_name,
+            "base_feature": _base_feature_name(feature_name),
+            "family": family,
+            "coefficient": float(coef),
+            "abs_coefficient": abs_coef,
+        }
+        rows.append(row)
+        stats = family_stats[family]
+        stats["feature_dimensions"] += 1.0
+        stats["abs_coefficient_sum"] += abs_coef
+        stats["max_abs_coefficient"] = max(stats["max_abs_coefficient"], abs_coef)
     rows.sort(key=lambda row: row["coefficient"], reverse=True)
     positive = rows[:top_n]
     negative = sorted(rows, key=lambda row: row["coefficient"])[:top_n]
     by_abs = sorted(rows, key=lambda row: row["abs_coefficient"], reverse=True)[:top_n]
+    family_rows = [
+        {
+            "family": family,
+            "feature_dimensions": int(stats["feature_dimensions"]),
+            "abs_coefficient_sum": stats["abs_coefficient_sum"],
+            "max_abs_coefficient": stats["max_abs_coefficient"],
+        }
+        for family, stats in family_stats.items()
+    ]
+    family_rows.sort(key=lambda row: row["abs_coefficient_sum"], reverse=True)
     return {
         "model_path": str(model_path),
         "metadata": bundle.get("metadata", {}),
@@ -246,8 +285,8 @@ def _model_coefficients(model_path: Path | None, *, top_n: int) -> dict[str, Any
         "top_positive": positive,
         "top_negative": negative,
         "top_abs": by_abs,
+        "family_abs_coefficients": family_rows,
     }
-
 
 def _coverage(conn: sqlite3.Connection) -> dict[str, Any]:
     overview = dict(
@@ -367,6 +406,304 @@ def _diagnosis(
         notes.append("カテゴリ特徴量はレーン、場、レース番号、支部/出身の勝率差を示す。高カードinalityはローリング統計へ圧縮して使う。")
     return notes
 
+
+def _advanced_diagnostics(
+    coverage: dict[str, Any],
+    numeric_rows: list[dict[str, Any]],
+    category_rows: list[dict[str, Any]],
+    coefficients: dict[str, Any],
+    bankroll: dict[str, Any] | None,
+    *,
+    top_n: int,
+) -> dict[str, Any]:
+    family_summary = _feature_family_summary(numeric_rows, category_rows, coefficients, top_n=top_n)
+    suspect_features = _suspect_feature_rows(numeric_rows, coefficients, top_n=top_n)
+    coefficient_alignment = _coefficient_alignment(numeric_rows, coefficients, top_n=top_n)
+    roi_link = _roi_link(bankroll, family_summary, suspect_features)
+    action_items = _feature_action_items(coverage, family_summary, suspect_features, roi_link)
+    return {
+        "feature_family_summary": family_summary,
+        "suspect_features": suspect_features,
+        "coefficient_alignment": coefficient_alignment,
+        "roi_link": roi_link,
+        "action_items": action_items,
+        "diagnosis": action_items[:6],
+    }
+
+
+def _base_feature_name(feature: str) -> str:
+    text = str(feature)
+    if "=" in text:
+        return text.split("=", 1)[0]
+    return text
+
+
+def _feature_family(feature: str) -> str:
+    key = _base_feature_name(feature)
+    if key.startswith("hist_racer"):
+        return "履歴:選手"
+    if key.startswith("hist_motor"):
+        return "履歴:モーター"
+    if key.startswith("hist_boat"):
+        return "履歴:ボート"
+    if key.startswith("hist_venue") or key.startswith("hist_lane") or key.startswith("hist_rno"):
+        return "履歴:場/枠"
+    if key.startswith("series_"):
+        return "節間成績"
+    if key.startswith("odds_") or "odds" in key:
+        return "オッズ"
+    if key in {"lane", "lane_num"} or key.startswith("lane_"):
+        return "枠/進入"
+    if key in {"jcd", "rno", "race_type", "distance_m", "race_month", "race_weekday", "race_rno_bucket", "distance_bucket"}:
+        return "場/番組"
+    if key.startswith("racer") or key in {"branch", "origin", "age", "weight_kg", "f_count", "l_count", "avg_st", "class_rank", "racer_class"}:
+        return "選手基本"
+    if key.startswith("national_") or key.startswith("local_") or key.startswith("ability") or key == "best_count":
+        return "選手実績"
+    if key.startswith("motor_") or key in {"motor_no", "has_motor_no"}:
+        return "モーター"
+    if key.startswith("boat_") or key in {"boat_no", "has_boat_no"}:
+        return "ボート"
+    if key.startswith("before_") or key in {
+        "exhibition_time", "tilt", "adjusted_weight", "course", "start_timing", "weather",
+        "wind_direction", "wind_speed_m", "air_temp_c", "water_temp_c", "wave_cm",
+        "propeller", "parts_exchange", "has_weather", "has_wind_direction", "has_propeller",
+        "has_parts_exchange", "has_beforeinfo",
+    }:
+        return "展示/気象"
+    return "その他"
+
+
+def _feature_family_summary(
+    numeric_rows: list[dict[str, Any]],
+    category_rows: list[dict[str, Any]],
+    coefficients: dict[str, Any],
+    *,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    families: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "numeric_features": 0,
+            "categorical_features": 0,
+            "abs_pearson_sum": 0.0,
+            "max_abs_pearson": 0.0,
+            "low_coverage_features": 0,
+            "sentinel_heavy_features": 0,
+            "top_numeric": [],
+            "top_categorical": [],
+            "coefficient_abs_sum": 0.0,
+            "coefficient_dimensions": 0,
+            "max_abs_coefficient": 0.0,
+        }
+    )
+    for row in numeric_rows:
+        family = row.get("family") or _feature_family(row.get("feature", ""))
+        stats = families[family]
+        abs_corr = abs(float(row.get("present_only_pearson") or row.get("pearson") or 0.0))
+        stats["numeric_features"] += 1
+        stats["abs_pearson_sum"] += abs_corr
+        stats["max_abs_pearson"] = max(stats["max_abs_pearson"], abs_corr)
+        if float(row.get("present_rate") or 0.0) < 0.20:
+            stats["low_coverage_features"] += 1
+        if float(row.get("sentinel_minus_one_rate") or 0.0) > 0.50:
+            stats["sentinel_heavy_features"] += 1
+        stats["top_numeric"].append(
+            {
+                "feature": row.get("feature"),
+                "pearson": row.get("pearson"),
+                "present_only_pearson": row.get("present_only_pearson"),
+                "present_rate": row.get("present_rate"),
+            }
+        )
+    for row in category_rows:
+        family = row.get("family") or _feature_family(row.get("feature", ""))
+        stats = families[family]
+        stats["categorical_features"] += 1
+        stats["top_categorical"].append(
+            {
+                "feature": row.get("feature"),
+                "max_abs_gap": row.get("max_abs_gap"),
+                "covered_rate": row.get("covered_rate"),
+                "top_values": row.get("top_values", [])[:3],
+            }
+        )
+    for row in coefficients.get("family_abs_coefficients") or []:
+        family = row.get("family") or "その他"
+        stats = families[family]
+        stats["coefficient_abs_sum"] = float(row.get("abs_coefficient_sum") or 0.0)
+        stats["coefficient_dimensions"] = int(row.get("feature_dimensions") or 0)
+        stats["max_abs_coefficient"] = float(row.get("max_abs_coefficient") or 0.0)
+    out = []
+    for family, stats in families.items():
+        numeric_count = int(stats["numeric_features"])
+        top_numeric = sorted(stats["top_numeric"], key=lambda r: abs(float(r.get("present_only_pearson") or r.get("pearson") or 0.0)), reverse=True)[:5]
+        top_categorical = sorted(stats["top_categorical"], key=lambda r: float(r.get("max_abs_gap") or 0.0), reverse=True)[:5]
+        out.append(
+            {
+                "family": family,
+                "numeric_features": numeric_count,
+                "categorical_features": int(stats["categorical_features"]),
+                "avg_abs_pearson": (stats["abs_pearson_sum"] / numeric_count) if numeric_count else None,
+                "max_abs_pearson": stats["max_abs_pearson"],
+                "low_coverage_features": int(stats["low_coverage_features"]),
+                "sentinel_heavy_features": int(stats["sentinel_heavy_features"]),
+                "coefficient_abs_sum": stats["coefficient_abs_sum"],
+                "coefficient_dimensions": int(stats["coefficient_dimensions"]),
+                "max_abs_coefficient": stats["max_abs_coefficient"],
+                "top_numeric": top_numeric,
+                "top_categorical": top_categorical,
+            }
+        )
+    out.sort(
+        key=lambda row: (
+            float(row.get("coefficient_abs_sum") or 0.0),
+            float(row.get("max_abs_pearson") or 0.0),
+            int(row.get("numeric_features") or 0) + int(row.get("categorical_features") or 0),
+        ),
+        reverse=True,
+    )
+    return out[:top_n]
+
+
+def _suspect_feature_rows(
+    numeric_rows: list[dict[str, Any]],
+    coefficients: dict[str, Any],
+    *,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    suspects: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(feature: str, reason: str, row: dict[str, Any] | None, score: float) -> None:
+        key = (feature, reason)
+        if key in seen:
+            return
+        seen.add(key)
+        suspects.append(
+            {
+                "feature": feature,
+                "family": _feature_family(feature),
+                "reason": reason,
+                "score": score,
+                "pearson": row.get("pearson") if row else None,
+                "present_only_pearson": row.get("present_only_pearson") if row else None,
+                "present_rate": row.get("present_rate") if row else None,
+                "sentinel_minus_one_rate": row.get("sentinel_minus_one_rate") if row else None,
+            }
+        )
+
+    by_feature = {str(row.get("feature")): row for row in numeric_rows}
+    for row in numeric_rows:
+        feature = str(row.get("feature"))
+        abs_corr = abs(float(row.get("present_only_pearson") or row.get("pearson") or 0.0))
+        present_rate = float(row.get("present_rate") or 0.0)
+        sentinel_rate = float(row.get("sentinel_minus_one_rate") or 0.0)
+        if feature in ORDINAL_ID_FEATURES:
+            add(feature, "番号IDを数値順序として扱うリスク", row, 10.0 + abs_corr)
+        if present_rate < 0.20 and abs_corr > 0.006:
+            add(feature, "低充足率の見かけ相関", row, abs_corr + (0.20 - present_rate))
+        if sentinel_rate > 0.50 and abs_corr > 0.004:
+            add(feature, "-1欠損値が作る疑似相関", row, abs_corr + sentinel_rate)
+    for coef in coefficients.get("top_abs") or []:
+        feature = str(coef.get("feature"))
+        base = str(coef.get("base_feature") or _base_feature_name(feature))
+        row = by_feature.get(base)
+        abs_coef = float(coef.get("abs_coefficient") or 0.0)
+        abs_corr = abs(float((row or {}).get("present_only_pearson") or (row or {}).get("pearson") or 0.0))
+        if base in ORDINAL_ID_FEATURES:
+            add(base, "係数上位の番号ID", row, 20.0 + abs_coef)
+        elif row and abs_coef > 0.10 and abs_corr < 0.003:
+            add(base, "係数大だが単変量相関が弱い", row, abs_coef)
+    suspects.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
+    return suspects[:top_n]
+
+
+def _coefficient_alignment(
+    numeric_rows: list[dict[str, Any]],
+    coefficients: dict[str, Any],
+    *,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    by_feature = {str(row.get("feature")): row for row in numeric_rows}
+    rows = []
+    for coef in coefficients.get("top_abs") or []:
+        feature = str(coef.get("feature"))
+        base = str(coef.get("base_feature") or _base_feature_name(feature))
+        numeric = by_feature.get(base)
+        rows.append(
+            {
+                "feature": feature,
+                "base_feature": base,
+                "family": coef.get("family") or _feature_family(feature),
+                "coefficient": coef.get("coefficient"),
+                "abs_coefficient": coef.get("abs_coefficient"),
+                "pearson": numeric.get("pearson") if numeric else None,
+                "present_only_pearson": numeric.get("present_only_pearson") if numeric else None,
+                "present_rate": numeric.get("present_rate") if numeric else None,
+                "alignment": _alignment_label(coef, numeric),
+            }
+        )
+    return rows[:top_n]
+
+
+def _alignment_label(coef: dict[str, Any], numeric: dict[str, Any] | None) -> str:
+    if numeric is None:
+        return "カテゴリ/非数値"
+    coef_value = float(coef.get("coefficient") or 0.0)
+    corr = float(numeric.get("present_only_pearson") or numeric.get("pearson") or 0.0)
+    if abs(corr) < 0.003:
+        return "単変量弱"
+    if coef_value == 0 or corr == 0:
+        return "弱"
+    return "方向一致" if (coef_value > 0) == (corr > 0) else "方向不一致"
+
+
+def _roi_link(
+    bankroll: dict[str, Any] | None,
+    family_summary: list[dict[str, Any]],
+    suspect_features: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not bankroll:
+        return {"status": "未評価", "evidence": "資金運用バックチェックJSONなし", "next": "同じ特徴量診断と運用バックチェックを接続する"}
+    roi = _float_or_none(bankroll.get("roi"))
+    profit = bankroll.get("profit_yen")
+    weak = [row["family"] for row in family_summary if float(row.get("max_abs_pearson") or 0.0) < 0.02][:5]
+    status = "要改善" if roi is None or roi < 1.0 or (profit is not None and float(profit) <= 0) else "候補"
+    return {
+        "status": status,
+        "roi": roi,
+        "profit_yen": profit,
+        "stake_yen": bankroll.get("stake_yen"),
+        "evaluated_races": bankroll.get("evaluated_races"),
+        "weak_families": weak,
+        "suspect_count": len(suspect_features),
+        "evidence": f"ROI={roi:.3f}" if roi is not None else "ROI未算出",
+        "next": "弱い/疑似相関の特徴量を除外またはローリング統計化し、同一資金運用foldで再評価する",
+    }
+
+
+def _feature_action_items(
+    coverage: dict[str, Any],
+    family_summary: list[dict[str, Any]],
+    suspect_features: list[dict[str, Any]],
+    roi_link: dict[str, Any],
+) -> list[str]:
+    notes: list[str] = []
+    if roi_link.get("status") == "要改善":
+        notes.append("資金運用ROIが未達のため、的中率だけでなく購入候補抽出後のROIに効く特徴量へ絞り込む。")
+    suspect_names = [str(row.get("feature")) for row in suspect_features[:5]]
+    if suspect_names:
+        notes.append(f"疑似相関候補を優先確認する: {', '.join(suspect_names)}。")
+    weak_families = [row["family"] for row in family_summary if float(row.get("max_abs_pearson") or 0.0) < 0.02 and int(row.get("numeric_features") or 0)][:5]
+    if weak_families:
+        notes.append(f"単変量が弱い特徴量ファミリーは相互作用か除外候補として扱う: {', '.join(weak_families)}。")
+    overview = coverage.get("overview", {}) if isinstance(coverage, dict) else {}
+    result_races = max(1, int(overview.get("races_with_results") or 1))
+    odds_races = int(overview.get("races_with_odds") or 0)
+    if odds_races / result_races < 0.05:
+        notes.append("過去側のオッズ時系列充足率が低いため、リアルタイム併用モデルはshadow評価に限定し、過去ログ主系を維持する。")
+    notes.append("NNは主系置換ではなく、embedding/相互作用のshadowモデルとして同じ資金運用バックチェックで比較する。")
+    return notes
 
 def _compact_backtest(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not payload:
