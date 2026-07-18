@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/raw/
+data/processed/
+data/models/*.joblib
+data/models/backtest.json
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal

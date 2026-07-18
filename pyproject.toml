@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boatrace-ai"
+version = "0.1.0"
+description = "Japan BOAT RACE data collection, odds trend storage, and realtime prediction pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12",
+  "joblib>=1.3",
+  "numpy>=1.26",
+  "requests>=2.31",
+  "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+lzh = ["lhafile>=0.3.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+boat-ai = "boatrace_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
