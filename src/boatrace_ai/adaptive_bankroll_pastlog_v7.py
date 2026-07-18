@@ -23,6 +23,9 @@ from .modeling_pastlog_v7_stream_hash import (
 )
 
 
+DEFAULT_STAKE_UNIT_YEN = 100
+
+
 def adaptive_bankroll_streaming(
     conn,
     *,
@@ -36,8 +39,8 @@ def adaptive_bankroll_streaming(
     max_daily_exposure_fraction: float = 1.0,
     race_cap_fraction: float = 0.20,
     ticket_cap_fraction: float = 0.04,
-    stake_granularity_yen: int = 1,
-    min_stake_yen: int = 1,
+    stake_granularity_yen: int = DEFAULT_STAKE_UNIT_YEN,
+    min_stake_yen: int = DEFAULT_STAKE_UNIT_YEN,
     batch_size: int = 24_000,
     epochs: int = 1,
 ) -> dict[str, Any]:
@@ -175,8 +178,8 @@ def adaptive_bankroll_streaming(
             "bet_type": "3連単",
             "include_odds": False,
             "ev_threshold": ev_threshold,
-            "stake_model": "adaptive_continuous_yen",
-            "unit_yen": None,
+            "stake_model": "adaptive_unit_yen",
+            "unit_yen": stake_granularity_yen,
             "max_tickets_per_race": None,
             "fractional_kelly": fractional_kelly,
             "max_daily_exposure_fraction": max_daily_exposure_fraction,
@@ -186,7 +189,7 @@ def adaptive_bankroll_streaming(
             "min_stake_yen": min_stake_yen,
             "payout_estimator": "train-fold average payout by trifecta combination, blended with train-fold global average",
             "payout_prior_weight": payout_prior_weight,
-            "allocation": "stake is proportional to positive Kelly edge, capped by daily/race/ticket risk fractions; no fixed ticket count and no 100-yen unit split",
+            "allocation": "stake is proportional to positive Kelly edge, capped by daily/race/ticket risk fractions; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
             "feature_set": FEATURE_SET,
             "model": "win_model_pastlog_v7_stream_hash",
         },
@@ -498,10 +501,18 @@ def _validate_policy(
         raise ValueError("race_cap_fraction must not exceed max_daily_exposure_fraction")
     if ticket_cap_fraction > race_cap_fraction:
         raise ValueError("ticket_cap_fraction must not exceed race_cap_fraction")
-    if stake_granularity_yen <= 0:
-        raise ValueError("stake_granularity_yen must be positive")
-    if min_stake_yen <= 0:
-        raise ValueError("min_stake_yen must be positive")
+    if stake_granularity_yen < DEFAULT_STAKE_UNIT_YEN:
+        raise ValueError("stake_granularity_yen must be at least 100")
+    if stake_granularity_yen % DEFAULT_STAKE_UNIT_YEN:
+        raise ValueError("stake_granularity_yen must be divisible by 100")
+    if min_stake_yen < DEFAULT_STAKE_UNIT_YEN:
+        raise ValueError("min_stake_yen must be at least 100")
+    if min_stake_yen % DEFAULT_STAKE_UNIT_YEN:
+        raise ValueError("min_stake_yen must be divisible by 100")
+    if daily_budget_yen < min_stake_yen:
+        raise ValueError("daily_budget_yen must be at least min_stake_yen")
+    if daily_budget_yen % stake_granularity_yen:
+        raise ValueError("daily_budget_yen must be divisible by stake_granularity_yen")
 
 
 def _now() -> str:
@@ -521,8 +532,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-daily-exposure-fraction", type=float, default=1.0)
     parser.add_argument("--race-cap-fraction", type=float, default=0.20)
     parser.add_argument("--ticket-cap-fraction", type=float, default=0.04)
-    parser.add_argument("--stake-granularity-yen", type=int, default=1)
-    parser.add_argument("--min-stake-yen", type=int, default=1)
+    parser.add_argument("--stake-granularity-yen", type=int, default=DEFAULT_STAKE_UNIT_YEN)
+    parser.add_argument("--min-stake-yen", type=int, default=DEFAULT_STAKE_UNIT_YEN)
     parser.add_argument("--batch-size", type=int, default=24_000)
     parser.add_argument("--epochs", type=int, default=1)
     args = parser.parse_args(argv)
