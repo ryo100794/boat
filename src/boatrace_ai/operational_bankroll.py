@@ -7,6 +7,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from .bankroll_policy import (
+    filter_candidates,
+    select_temporal_policy,
+    split_calibration_dates,
+)
 from .bankroll_backtest import (
     _build_payout_model,
     _candidate_tickets,
@@ -54,6 +59,8 @@ def operational_adaptive_bankroll(
     min_stake_yen: int = 100,
     checkpoint_path: Path | None = None,
     resume: bool = False,
+    adaptive_no_bet: bool = False,
+    calibration_fraction: float = 0.25,
 ) -> dict[str, Any]:
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
@@ -67,6 +74,9 @@ def operational_adaptive_bankroll(
         stake_granularity_yen=stake_granularity_yen,
         min_stake_yen=min_stake_yen,
     )
+
+    if adaptive_no_bet and not 0.0 < calibration_fraction < 1.0:
+        raise ValueError("calibration_fraction must be between zero and one")
 
     features, labels, meta = load_training_examples(conn, include_odds=False)
     race_keys = race_keys_from_meta(meta)
@@ -97,6 +107,8 @@ def operational_adaptive_bankroll(
         allocation_mode=allocation_mode,
         stake_granularity_yen=stake_granularity_yen,
         min_stake_yen=min_stake_yen,
+        adaptive_no_bet=adaptive_no_bet,
+        calibration_fraction=calibration_fraction,
     )
     checkpoint_file = checkpoint_path or output_path.with_suffix(
         output_path.suffix + ".checkpoint"
@@ -178,15 +190,11 @@ def operational_adaptive_bankroll(
 
         candidates_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
         evaluated_by_day: dict[str, set[str]] = defaultdict(set)
-        fold_candidate_count = 0
-        fold_evaluated: set[str] = set()
         for race_id, rows in rows_by_race.items():
             payout = payouts.get(race_id)
             if len(rows) != 6 or not payout:
                 continue
             race_date = str(rows[0]["race_date"])
-            evaluated_races.add(race_id)
-            fold_evaluated.add(race_id)
             evaluated_by_day[race_date].add(race_id)
             race_candidates = _candidate_tickets(
                 rows,
@@ -194,28 +202,60 @@ def operational_adaptive_bankroll(
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
             )
-            fold_candidate_count += len(race_candidates)
             candidates_by_day[race_date].extend(race_candidates)
 
+        allocation_kwargs = {
+            "daily_budget_yen": daily_budget_yen,
+            "fractional_kelly": fractional_kelly,
+            "max_daily_exposure_fraction": max_daily_exposure_fraction,
+            "min_daily_exposure_fraction": min_daily_exposure_fraction,
+            "race_cap_fraction": race_cap_fraction,
+            "ticket_cap_fraction": ticket_cap_fraction,
+            "max_daily_tickets": max_daily_tickets,
+            "allocation_mode": allocation_mode,
+            "stake_granularity_yen": stake_granularity_yen,
+            "min_stake_yen": min_stake_yen,
+        }
+        calibration_dates: list[str] = []
+        evaluation_dates = sorted(test_dates)
+        selected_candidate_policy = {"name": "baseline"}
+        calibration_policy_results: list[dict[str, Any]] = []
+        if adaptive_no_bet:
+            calibration_dates, evaluation_dates = split_calibration_dates(
+                test_dates,
+                calibration_fraction=calibration_fraction,
+            )
+            selected_candidate_policy, calibration_policy_results = (
+                select_temporal_policy(
+                    calibration_dates,
+                    candidates_by_day,
+                    evaluated_by_day,
+                    allocate_day=_allocate_adaptive_day,
+                    allocation_kwargs=allocation_kwargs,
+                )
+            )
+
+        fold_evaluated = set().union(
+            *(evaluated_by_day.get(date, set()) for date in evaluation_dates)
+        )
+        evaluated_races.update(fold_evaluated)
+        fold_candidate_count = sum(
+            len(candidates_by_day.get(date, [])) for date in evaluation_dates
+        )
         fold_roi_attribution = new_roi_attribution()
         fold_stake = 0
         fold_return = 0
         fold_selected = 0
-        for race_date in sorted(test_dates):
+        for race_date in evaluation_dates:
+            filtered_candidates = filter_candidates(
+                candidates_by_day.get(race_date, []),
+                selected_candidate_policy,
+            )
             day_result = _allocate_adaptive_day(
                 race_date,
-                candidates_by_day.get(race_date, []),
+                filtered_candidates,
                 evaluated_by_day.get(race_date, set()),
-                daily_budget_yen=daily_budget_yen,
-                fractional_kelly=fractional_kelly,
-                max_daily_exposure_fraction=max_daily_exposure_fraction,
-                min_daily_exposure_fraction=min_daily_exposure_fraction,
-                race_cap_fraction=race_cap_fraction,
-                ticket_cap_fraction=ticket_cap_fraction,
-                max_daily_tickets=max_daily_tickets,
-                allocation_mode=allocation_mode,
-                stake_granularity_yen=stake_granularity_yen,
-                min_stake_yen=min_stake_yen,
+                **allocation_kwargs,
                 roi_attribution=fold_roi_attribution,
             )
             fold_stake += int(day_result["stake_yen"])
@@ -236,6 +276,10 @@ def operational_adaptive_bankroll(
             "train_races": len(train_races),
             "test_races": len(test_races),
             "test_days": len(test_dates),
+            "calibration_days": len(calibration_dates),
+            "evaluation_days": len(evaluation_dates),
+            "selected_candidate_policy": selected_candidate_policy,
+            "calibration_policy_results": calibration_policy_results,
             "evaluated_races": len(fold_evaluated),
             "candidate_tickets": fold_candidate_count,
             "selected_tickets": fold_selected,
@@ -437,6 +481,8 @@ def operational_policy(
     allocation_mode: str,
     stake_granularity_yen: int,
     min_stake_yen: int,
+    adaptive_no_bet: bool = False,
+    calibration_fraction: float = 0.25,
 ) -> dict[str, Any]:
     return {
         "daily_budget_yen": daily_budget_yen,
@@ -457,6 +503,13 @@ def operational_policy(
         "allocation_mode": allocation_mode,
         "stake_granularity_yen": stake_granularity_yen,
         "min_stake_yen": min_stake_yen,
+        "adaptive_no_bet": adaptive_no_bet,
+        "calibration_fraction": calibration_fraction if adaptive_no_bet else 0.0,
+        "candidate_policy_selection": (
+            "calibration-prefix profit with no-bet option"
+            if adaptive_no_bet
+            else "fixed baseline"
+        ),
         "model": MODEL_NAME,
         "feature_set": FEATURE_SET,
         "model_pipeline": "DictVectorizer + SparseIndex32 + MaxAbsScaler + LogisticRegression(liblinear,C=0.20,class_weight=None)",
@@ -493,6 +546,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-stake-yen", type=int, default=100)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--adaptive-no-bet", action="store_true")
+    parser.add_argument("--calibration-fraction", type=float, default=0.25)
     args = parser.parse_args(argv)
 
     init_db(args.db)
@@ -516,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
             min_stake_yen=args.min_stake_yen,
             checkpoint_path=args.checkpoint,
             resume=args.resume,
+            adaptive_no_bet=args.adaptive_no_bet,
+            calibration_fraction=args.calibration_fraction,
         )
     compact = {key: value for key, value in result.items() if key != "daily"}
     compact["daily_rows"] = len(result.get("daily") or [])

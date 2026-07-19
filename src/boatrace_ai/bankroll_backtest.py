@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .bankroll_policy import race_confidence
 from .db import connection, init_db
 from .features import latest_trifecta_odds_before_deadline, load_training_examples
 from .modeling import (
@@ -243,6 +244,7 @@ def _candidate_tickets(
     lane_probs = _normalize_lane_probs(
         {int(row["lane"]): float(row["probability"]) for row in rows}
     )
+    confidence = race_confidence(lane_probs)
     race = rows[0]
     real_odds = real_odds_snapshot.get("odds", {}) if real_odds_snapshot else None
     feature_context_by_combination: dict[str, dict[str, Any]] = {}
@@ -271,6 +273,7 @@ def _candidate_tickets(
         if estimated_ev < ev_threshold:
             continue
         item = {
+            **confidence,
             "race_id": race["race_id"],
             "race_date": race["race_date"],
             "jcd": race["jcd"],

@@ -53,6 +53,9 @@ class LoginSecrets:
             auth_secret=auth_secret,
         )
 
+    def __repr__(self) -> str:
+        return f"LoginSecrets(mode={self.mode!r}, credentials=<redacted>)"
+
     def as_payload(self) -> dict[str, str]:
         return {
             "mode": self.mode,

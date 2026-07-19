@@ -165,3 +165,21 @@ def test_operational_backtest_runs_end_to_end_on_time_folds(
     assert result["evaluated_races"] == 6
     assert result["tickets"] > 0
     assert result["stake_yen"] > 0
+
+    adaptive_output = tmp_path / "operational_adaptive_no_bet.json"
+    adaptive = operational_adaptive_bankroll(
+        object(),
+        output_path=adaptive_output,
+        folds=2,
+        min_train_races=2,
+        ev_threshold=1.0,
+        adaptive_no_bet=True,
+        calibration_fraction=0.5,
+    )
+
+    assert adaptive_output.exists()
+    assert adaptive["policy"]["adaptive_no_bet"] is True
+    assert adaptive["folds"][0]["calibration_days"] == 1
+    assert adaptive["folds"][0]["evaluation_days"] == 1
+    assert adaptive["folds"][0]["calibration_policy_results"]
+    assert "selected_candidate_policy" in adaptive["folds"][0]
