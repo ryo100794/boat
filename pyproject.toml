@@ -25,6 +25,7 @@ teleboat = ["playwright>=1.55"]
 boat-ai = "boatrace_ai.cli:main"
 teleboat-agent = "teleboat_agent.api:main"
 teleboat-login-probe = "teleboat_agent.login_probe:main"
+teleboat-journal-verify = "teleboat_agent.journal:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .login_secrets import LoginSecrets, SecretFileError, load_login_secrets
 
 
-MOBILE_URL = "https://spweb.brtb.jp/"
+MOBILE_URL = "https://mb.brtb.jp/"
 PC_URL = "https://ib.mbrace.or.jp/"
 MOBILE_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
@@ -175,14 +175,13 @@ class TeleboatLoginProbe:
             if mode == "pc":
                 page.locator("#loginButton").wait_for(state="visible")
                 return True
-            if not self._mobile_fields_visible(page):
+            if self._legacy_mobile_fields_visible(page):
+                return True
+            if not self._oidc_mobile_fields_visible(page):
                 self._visible_locator(page, ".btn-login").click()
-            fields = page.locator("input.login-input")
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
-                if fields.count() == 3 and all(
-                    fields.nth(index).is_visible() for index in range(3)
-                ):
+                if self._mobile_fields_visible(page):
                     return True
                 page.wait_for_timeout(200)
             return False
@@ -200,9 +199,14 @@ class TeleboatLoginProbe:
             ]
             button = page.locator("#loginButton")
         else:
-            locator = page.locator("input.login-input")
-            fields = [locator.nth(index) for index in range(3)]
-            button = self._visible_locator(page, ".btn-login")
+            legacy_fields = self._legacy_mobile_fields(page)
+            if all(field.count() == 1 for field in legacy_fields):
+                fields = legacy_fields
+                button = self._visible_locator(page, 'input[name="btnLogin"]')
+            else:
+                locator = page.locator("input.login-input")
+                fields = [locator.nth(index) for index in range(3)]
+                button = self._visible_locator(page, ".btn-login")
         for field, value in zip(
             fields,
             (secrets.member_number, secrets.pin, secrets.auth_secret),
@@ -213,29 +217,75 @@ class TeleboatLoginProbe:
     def _wait_until_authenticated(self, page, mode: str) -> bool:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            if not self._login_form_present(page, mode):
+            if (
+                not self._login_form_present(page, mode)
+                and self._authenticated_marker_visible(page, mode)
+            ):
                 return True
             page.wait_for_timeout(200)
         return False
 
+    @classmethod
+    def _authenticated_marker_visible(cls, page, mode: str) -> bool:
+        selectors = (
+            ('a:has-text("簡易投票する")', 'text="ログアウト"')
+            if mode == "mobile"
+            else ('text="ログアウト"',)
+        )
+        return any(
+            cls._any_visible(page.locator(selector)) for selector in selectors
+        )
+
+    @staticmethod
+    def _any_visible(candidates) -> bool:
+        return any(
+            candidates.nth(index).is_visible()
+            for index in range(candidates.count())
+        )
+
     def _logout(self, page, mode: str) -> bool:
         try:
-            if mode == "mobile":
+            logout = page.get_by_text("ログアウト", exact=True)
+            if mode == "mobile" and not any(
+                logout.nth(index).is_visible() for index in range(logout.count())
+            ):
                 self._visible_locator(page, ".menu-open").click()
-            page.get_by_text("ログアウト", exact=True).click()
+                logout = page.get_by_text("ログアウト", exact=True)
+            self._visible_from_locator(logout).click()
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
+                if self._logout_location_confirmed(page.url, mode):
+                    return True
                 if self._login_form_present(page, mode):
                     return True
                 page.wait_for_timeout(200)
+            return False
+        except LoginProbeError:
             return False
         except Exception as exc:
             if exc.__class__.__module__.startswith("playwright."):
                 return False
             raise
 
+    @classmethod
+    def _mobile_fields_visible(cls, page) -> bool:
+        return cls._legacy_mobile_fields_visible(page) or cls._oidc_mobile_fields_visible(page)
+
     @staticmethod
-    def _mobile_fields_visible(page) -> bool:
+    def _legacy_mobile_fields(page):
+        return [
+            page.locator('input[name="userId"]'),
+            page.locator('input[name="pwd"]'),
+            page.locator('input[name="pinNum"]'),
+        ]
+
+    @classmethod
+    def _legacy_mobile_fields_visible(cls, page) -> bool:
+        fields = cls._legacy_mobile_fields(page)
+        return all(field.count() == 1 and field.is_visible() for field in fields)
+
+    @staticmethod
+    def _oidc_mobile_fields_visible(page) -> bool:
         fields = page.locator("input.login-input")
         return fields.count() == 3 and all(
             fields.nth(index).is_visible() for index in range(3)
@@ -247,14 +297,30 @@ class TeleboatLoginProbe:
             return page.locator("#loginButton").is_visible()
         return cls._mobile_fields_visible(page)
 
+    @classmethod
+    def _visible_locator(cls, page, selector: str):
+        return cls._visible_from_locator(page.locator(selector), selector)
+
     @staticmethod
-    def _visible_locator(page, selector: str):
-        candidates = page.locator(selector)
+    def _visible_from_locator(candidates, selector: str = "locator"):
         for index in range(candidates.count() - 1, -1, -1):
             candidate = candidates.nth(index)
             if candidate.is_visible():
                 return candidate
         raise LoginProbeError(f"visible element was not found: {selector}")
+
+    @staticmethod
+    def _logout_location_confirmed(url: str, mode: str) -> bool:
+        parsed = urlsplit(url)
+        return bool(
+            mode == "mobile"
+            and parsed.scheme == "https"
+            and parsed.hostname == "mb.brtb.jp"
+            and (
+                "/F_PWTAUT_Logout/" in parsed.path
+                or "pwtautlogout_display" in parsed.path
+            )
+        )
 
     @staticmethod
     def _url(mode: str) -> str:
@@ -267,7 +333,7 @@ class TeleboatLoginProbe:
     @staticmethod
     def _assert_allowed_host(url: str, mode: str) -> None:
         expected = (
-            {"spweb.brtb.jp", "login.brtb.jp"}
+            {"mb.brtb.jp", "spweb.brtb.jp", "login.brtb.jp"}
             if mode == "mobile"
             else {"ib.mbrace.or.jp"}
         )

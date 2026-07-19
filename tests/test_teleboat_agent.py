@@ -6,8 +6,15 @@ from io import BytesIO
 import pytest
 
 from teleboat_agent.api import TeleboatApplication, VOTES_PATH
+from teleboat_agent.browser import (
+    SeleniumVoteExecutor,
+    VoteExecutionError,
+    verify_confirmation_text,
+)
 from teleboat_agent.config import Settings
 from teleboat_agent.models import (
+    BetMethod,
+    BetType,
     BettingNumber,
     Stadium,
     Ticket,
@@ -37,6 +44,7 @@ def settings(**overrides) -> Settings:
         "max_tickets_per_request": 30,
         "max_total_stake_yen": 10_000,
         "batch_size": 10,
+        "journal_path": "/tmp/teleboat-agent-test-journal.jsonl",
     }
     values.update(overrides)
     result = Settings(**values)
@@ -49,6 +57,9 @@ def test_original_value_objects_are_reimplemented() -> None:
     assert Stadium.parse(4).formal_tel_code == "04"
     assert Ticket.parse({"number": 654, "quantity": 999}).simple_betting_code(1) == (
         "0131654999"
+    )
+    assert Ticket.parse({"number": 241, "quantity": 1}).simple_betting_code(8) == (
+        "0831241001"
     )
     with pytest.raises(ValidationError):
         BettingNumber.parse(121)
@@ -165,3 +176,198 @@ def test_wsgi_api_uses_bearer_token_and_returns_dry_run() -> None:
 def test_settings_reject_insecure_authentication_destinations(overrides) -> None:
     with pytest.raises(RuntimeError):
         settings(**overrides)
+
+
+def test_verified_teleboat_selectors_use_current_named_controls() -> None:
+    assert SeleniumVoteExecutor.LOGIN_MEMBER_XPATH == '//input[@name="userId"]'
+    assert SeleniumVoteExecutor.LOGIN_PIN_XPATH == '//input[@name="pwd"]'
+    assert SeleniumVoteExecutor.LOGIN_MOBILE_XPATH == '//input[@name="pinNum"]'
+    assert SeleniumVoteExecutor.SIMPLE_VOTE_XPATH == '//a[normalize-space()="簡易投票する"]'
+    assert SeleniumVoteExecutor.STADIUM_XPATH == '//input[@name="jyoCode"]'
+    assert SeleniumVoteExecutor.REVIEW_XPATH == '//*[@id="btnAddList1"]'
+
+
+@pytest.mark.parametrize(
+    ("bet_type", "number", "label"),
+    [
+        ("win", "1", "単勝"),
+        ("place", "1", "複勝"),
+        ("exacta", "12", "2連単"),
+        ("quinella", "21", "2連複"),
+        ("quinella_place", "21", "拡連複"),
+        ("trifecta", "123", "3連単"),
+        ("trio", "321", "3連複"),
+    ],
+)
+def test_regular_request_supports_every_bet_type(
+    bet_type: str,
+    number: str,
+    label: str,
+) -> None:
+    request = VoteRequest.parse(
+        {
+            "race": {"stadium_tel_code": 20, "number": 11},
+            "bet_type": bet_type,
+            "method": "regular",
+            "tickets": [{"number": number, "quantity": 1}],
+        },
+        max_tickets=30,
+        max_total_stake_yen=10_000,
+    )
+
+    assert request.bet_type.label == label
+    assert request.method is BetMethod.REGULAR
+    assert request.total_stake_yen == 100
+    assert request.tickets[0].betting_number.value == (
+        number if request.bet_type.ordered else "".join(sorted(number))
+    )
+
+
+@pytest.mark.parametrize(
+    ("bet_type", "expected"),
+    [("exacta", 6), ("quinella", 3), ("quinella_place", 3), ("trifecta", 6), ("trio", 1)],
+)
+def test_box_expansion_matches_official_ticket_count(
+    bet_type: str,
+    expected: int,
+) -> None:
+    request = VoteRequest.parse(
+        {
+            "race": {"stadium_tel_code": 20, "number": 11},
+            "bet_type": bet_type,
+            "method": "box",
+            "selections": [1, 2, 3],
+            "quantity": 1,
+        },
+        max_tickets=30,
+        max_total_stake_yen=10_000,
+    )
+
+    assert request.expanded_ticket_count == expected
+    assert request.total_stake_yen == expected * 100
+
+
+@pytest.mark.parametrize(
+    ("bet_type", "formation", "expected"),
+    [
+        ("exacta", [[1], [2, 3]], 2),
+        ("quinella", [[1], [2, 3]], 2),
+        ("quinella_place", [[1], [2, 3]], 2),
+        ("trifecta", [[1], [2, 3], [2, 3, 4]], 4),
+        ("trio", [[1], [2], [3, 4]], 2),
+    ],
+)
+def test_formation_expansion_matches_official_ticket_count(
+    bet_type: str,
+    formation: list[list[int]],
+    expected: int,
+) -> None:
+    request = VoteRequest.parse(
+        {
+            "race": {"stadium_tel_code": 20, "number": 11},
+            "bet_type": bet_type,
+            "method": "formation",
+            "formation": formation,
+            "quantity": 1,
+        },
+        max_tickets=30,
+        max_total_stake_yen=10_000,
+    )
+
+    assert request.expanded_ticket_count == expected
+    assert len({ticket.betting_number.value for ticket in request.tickets}) == expected
+
+
+def test_invalid_method_combinations_and_expansion_limits_fail_closed() -> None:
+    with pytest.raises(ValidationError, match="not available"):
+        VoteRequest.parse(
+            {
+                "race": {"stadium_tel_code": 20, "number": 11},
+                "bet_type": "win",
+                "method": "box",
+                "selections": [1, 2],
+                "quantity": 1,
+            },
+            max_tickets=30,
+            max_total_stake_yen=10_000,
+        )
+    with pytest.raises(ValidationError, match="expanded ticket count"):
+        VoteRequest.parse(
+            {
+                "race": {"stadium_tel_code": 20, "number": 11},
+                "bet_type": "trifecta",
+                "method": "box",
+                "selections": [1, 2, 3, 4],
+                "quantity": 1,
+            },
+            max_tickets=20,
+            max_total_stake_yen=10_000,
+        )
+
+
+def test_confirmation_verifier_checks_identity_totals_and_every_ticket() -> None:
+    request = VoteRequest.parse(
+        {
+            "race": {"stadium_tel_code": 20, "number": 11},
+            "bet_type": "exacta",
+            "method": "box",
+            "selections": [1, 2, 3],
+            "quantity": 1,
+        },
+        max_tickets=30,
+        max_total_stake_yen=10_000,
+    )
+    text = (
+        "ベットリスト 本画面では投票未完了です。 "
+        "若松 11R 2連単 ボックス 123 6ベット×100円 =600円 "
+        "合計ベット数 6ベット 購入金額 600円 投票する"
+    )
+
+    summary = verify_confirmation_text(
+        text,
+        request=request,
+        final_button_ready=True,
+    )
+
+    assert summary.tickets == 6
+    assert summary.stake_yen == 600
+    with pytest.raises(VoteExecutionError, match="stake mismatch"):
+        verify_confirmation_text(
+            text.replace("600円", "500円"),
+            request=request,
+            final_button_ready=True,
+        )
+
+
+def test_uncertain_submission_keeps_idempotency_reservation() -> None:
+    class UncertainExecutor:
+        def execute(self, request):
+            raise VoteExecutionError(
+                "result page unavailable",
+                submission_may_have_occurred=True,
+            )
+
+    service = VoteTicketsService(
+        settings(
+            live_vote_enabled=True,
+            live_confirmation_secret="confirm-secret",
+            member_number="member",
+            pin="pin",
+            authorization_number_of_mobile="mobile",
+        ),
+        executor_factory=lambda _settings: UncertainExecutor(),
+    )
+    with pytest.raises(VoteExecutionError):
+        service.call(
+            payload(),
+            live_requested=True,
+            live_confirmation="confirm-secret",
+            idempotency_key="uncertain-1",
+        )
+    with pytest.raises(DuplicateRequestError):
+        service.call(
+            payload(),
+            live_requested=True,
+            live_confirmation="confirm-secret",
+            idempotency_key="uncertain-1",
+        )

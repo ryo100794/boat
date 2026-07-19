@@ -21,6 +21,7 @@ class Settings:
     pin: str | None = field(default=None, repr=False)
     authorization_number_of_mobile: str | None = field(default=None, repr=False)
     base_url: str = "https://mb.brtb.jp/"
+    journal_path: str = "data/teleboat_vote_journal.jsonl"
     max_tickets_per_request: int = 30
     max_total_stake_yen: int = 10_000
     batch_size: int = 10
@@ -42,6 +43,7 @@ class Settings:
                 os.getenv("TELEBOAT_AUTHORIZATION_NUMBER_OF_MOBILE") or None
             ),
             base_url=os.getenv("TELEBOAT_BASE_URL", "https://mb.brtb.jp/"),
+            journal_path=os.getenv("TELEBOAT_JOURNAL_PATH", "data/teleboat_vote_journal.jsonl"),
             max_tickets_per_request=int(
                 os.getenv("TELEBOAT_MAX_TICKETS_PER_REQUEST", "30")
             ),
@@ -66,12 +68,14 @@ class Settings:
         )
         if not valid_base_url:
             raise RuntimeError("TELEBOAT_BASE_URL must be https://mb.brtb.jp/")
+        if not self.journal_path.strip():
+            raise RuntimeError("TELEBOAT_JOURNAL_PATH must not be empty")
         if self.max_tickets_per_request <= 0:
             raise RuntimeError("TELEBOAT_MAX_TICKETS_PER_REQUEST must be positive")
         if self.max_total_stake_yen < 100:
             raise RuntimeError("TELEBOAT_MAX_TOTAL_STAKE_YEN must be at least 100")
-        if not 1 <= self.batch_size <= 12:
-            raise RuntimeError("TELEBOAT_BATCH_SIZE must be between 1 and 12")
+        if not 1 <= self.batch_size <= 10:
+            raise RuntimeError("TELEBOAT_BATCH_SIZE must be between 1 and 10")
         if self.live_vote_enabled:
             missing = [
                 name

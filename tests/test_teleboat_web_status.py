@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from boatrace_ai.web_dashboard import (
     HTML,
     TELEBOAT_REPORT_HTML,
+    TELEBOAT_SETUP_HTML,
+    _configure_teleboat_login,
     _roadmap_improvements,
+    _teleboat_setup_allowed,
+    _teleboat_setup_page,
     _roadmap_milestones,
     teleboat_status,
 )
@@ -101,3 +106,128 @@ def test_dashboard_links_to_sanitized_teleboat_report() -> None:
     assert "/api/reports/teleboat-status" in TELEBOAT_REPORT_HTML
     assert "加入番号" in TELEBOAT_REPORT_HTML
     assert "password" not in TELEBOAT_REPORT_HTML.lower()
+
+
+def test_teleboat_setup_is_localhost_only_and_masks_all_inputs() -> None:
+    local = SimpleNamespace(
+        client_address=("127.0.0.1", 54321),
+        headers={"Host": "localhost:10001"},
+    )
+    remote = SimpleNamespace(
+        client_address=("192.0.2.10", 54321),
+        headers={"Host": "localhost:10001"},
+    )
+    proxied = SimpleNamespace(
+        client_address=("127.0.0.1", 54321),
+        headers={"Host": "dashboard.example.invalid"},
+    )
+    secure_proxy = SimpleNamespace(
+        client_address=("127.0.0.1", 54321),
+        headers={
+            "Host": "dashboard.example.invalid",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+
+    page = _teleboat_setup_page("one-time-token", "<invalid>")
+
+    assert _teleboat_setup_allowed(local) is True
+    assert _teleboat_setup_allowed(remote) is False
+    assert _teleboat_setup_allowed(proxied) is False
+    assert _teleboat_setup_allowed(secure_proxy) is True
+    assert page.count("type=\"password\"") == 3
+    assert "one-time-token" in page
+    assert "&lt;invalid&gt;" in page
+    assert "__FORM__" not in page
+    assert "__ERROR__" not in page
+    assert "type=\"password\"" in TELEBOAT_SETUP_HTML or "__FORM__" in TELEBOAT_SETUP_HTML
+
+
+def test_web_setup_saves_owner_only_secret_and_reports_sanitized_probe(tmp_path: Path) -> None:
+    class FakeResult:
+        public_page_ready = True
+        authenticated = True
+        logout_confirmed = True
+        wager_actions = 0
+
+        def to_dict(self):
+            return {
+                "mode": "mobile",
+                "browser": "chromium",
+                "public_page_ready": True,
+                "authenticated": True,
+                "logout_confirmed": True,
+                "wager_actions": 0,
+                "attempts": 1,
+                "final_location": "https://spweb.brtb.jp/",
+                "elapsed_seconds": 0.1,
+            }
+
+    class FakeProbe:
+        def login_probe(self, login_secrets):
+            assert "12345678" not in repr(login_secrets)
+            return FakeResult()
+
+    secret_path = tmp_path / "private" / "login.json"
+    status_path = tmp_path / "teleboat_probe_status.json"
+    result = _configure_teleboat_login(
+        {
+            "member_number": "12345678",
+            "pin": "5678",
+            "auth_secret": "4321",
+        },
+        secret_path=secret_path,
+        status_path=status_path,
+        probe_factory=FakeProbe,
+    )
+    public_status = json.loads(status_path.read_text(encoding="utf-8"))
+    serialized_result = json.dumps(result)
+    serialized_status = json.dumps(public_status)
+
+    assert result["success"] is True
+    assert secret_path.stat().st_mode & 0o777 == 0o600
+    assert "12345678" not in serialized_result
+    assert "5678" not in serialized_result
+    assert "4321" not in serialized_result
+    assert "12345678" not in serialized_status
+    assert public_status["login"]["logout_confirmed"] is True
+
+
+def test_web_setup_classifies_rejected_credentials_without_leaking_them(tmp_path: Path) -> None:
+    class RejectedResult:
+        public_page_ready = True
+        authenticated = False
+        logout_confirmed = False
+        wager_actions = 0
+
+        def to_dict(self):
+            return {
+                "mode": "mobile",
+                "browser": "chromium",
+                "public_page_ready": True,
+                "authenticated": False,
+                "logout_confirmed": False,
+                "wager_actions": 0,
+                "attempts": 1,
+                "final_location": "https://login.brtb.jp/auth/realms/boat/",
+                "elapsed_seconds": 1.0,
+            }
+
+    class RejectedProbe:
+        def login_probe(self, login_secrets):
+            return RejectedResult()
+
+    result = _configure_teleboat_login(
+        {
+            "member_number": "12345678",
+            "pin": "5678",
+            "auth_secret": "4321",
+        },
+        secret_path=tmp_path / "private" / "login.json",
+        status_path=tmp_path / "status.json",
+        probe_factory=RejectedProbe,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "credentials_rejected"
+    assert "12345678" not in json.dumps(result)

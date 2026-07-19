@@ -129,11 +129,20 @@ def test_login_probe_performs_one_login_and_zero_wager_actions() -> None:
     assert probe.closed is True
 
 
-def test_login_probe_accepts_official_mobile_oidc_host() -> None:
-    TeleboatLoginProbe._assert_allowed_host(
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mb.brtb.jp/",
+        "https://spweb.brtb.jp/",
         "https://login.brtb.jp/auth/realms/boat/",
-        "mobile",
-    )
+    ],
+)
+def test_login_probe_accepts_official_mobile_hosts(url: str) -> None:
+    TeleboatLoginProbe._assert_allowed_host(url, "mobile")
+
+
+def test_mobile_probe_starts_at_migrated_agent_endpoint() -> None:
+    assert TeleboatLoginProbe._url("mobile") == "https://mb.brtb.jp/"
 
 
 def test_login_probe_rejects_nonofficial_redirect() -> None:
@@ -153,3 +162,18 @@ def test_arm64_uses_headless_compatibility_flags() -> None:
 
     assert options["headless"] is True
     assert "--disable-gpu" in options["args"]
+
+
+def test_mobile_logout_completion_url_is_confirmed() -> None:
+    assert TeleboatLoginProbe._logout_location_confirmed(
+        "https://mb.brtb.jp/tohyo-ap-smtohyo/PWTAUT/F_PWTAUT_Logout/pwtautlogout_displayBL.do",
+        "mobile",
+    )
+    assert not TeleboatLoginProbe._logout_location_confirmed(
+        "https://mb.brtb.jp/",
+        "mobile",
+    )
+    assert not TeleboatLoginProbe._logout_location_confirmed(
+        "https://example.invalid/F_PWTAUT_Logout/pwtautlogout_displayBL.do",
+        "mobile",
+    )

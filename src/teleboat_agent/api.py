@@ -9,6 +9,7 @@ from wsgiref.simple_server import make_server
 
 from .browser import VoteExecutionError
 from .config import Settings
+from .journal import VoteJournalError
 from .models import ValidationError
 from .service import (
     AuthorizationError,
@@ -39,10 +40,36 @@ class TeleboatApplication:
             status, payload = HTTPStatus.FORBIDDEN, {"errors": [{"message": str(exc)}]}
         except DuplicateRequestError as exc:
             status, payload = HTTPStatus.CONFLICT, {"errors": [{"message": str(exc)}]}
-        except VoteExecutionError:
+        except VoteJournalError:
+            status, payload = (
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "errors": [
+                        {
+                            "message": "vote journal is unavailable",
+                            "code": "journal_unavailable",
+                            "retry_allowed": True,
+                        }
+                    ]
+                },
+            )
+        except VoteExecutionError as exc:
+            unknown = exc.submission_may_have_occurred
             status, payload = (
                 HTTPStatus.BAD_GATEWAY,
-                {"errors": [{"message": "live vote execution failed"}]},
+                {
+                    "errors": [
+                        {
+                            "message": "live vote execution failed",
+                            "code": (
+                                "submission_state_unknown"
+                                if unknown
+                                else "pre_submission_failed"
+                            ),
+                            "retry_allowed": not unknown,
+                        }
+                    ]
+                },
             )
         except (json.JSONDecodeError, UnicodeDecodeError):
             status, payload = (
