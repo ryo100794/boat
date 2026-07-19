@@ -348,12 +348,12 @@ function renderVenues(items){
 function renderActionTable(rows, candidates, finished){
   let candidateMap = new Map((candidates || []).map(r => [r.race_id, r]));
   const upcoming = futureRows(rows);
-  const ongoing = rows.filter(r => Number(r.result_rows || 0) < 3 && ["出走待","出走","結果待"].includes(r.time_status || ""));
+  const ongoing = rows.filter(r => !r.is_final && ["出走待","出走","結果待"].includes(r.time_status || ""));
   candidateMap = fallbackCandidates(upcoming, candidateMap);
   const picks = upcoming.filter(r => candidateMap.has(r.race_id));
   const others = upcoming.filter(r => !candidateMap.has(r.race_id));
   const action = [
-    ...finished.map(r => ({ kind:(Number(r.result_rows || 0) >= 3 ? "確定" : (r.time_status || "結果待")), item:r, source:r, isPick:false, isFinal:true })),
+    ...finished.map(r => ({ kind:(r.is_final ? "確定" : (r.time_status || "結果待")), item:r, source:r, isPick:false, isFinal:true })),
     ...ongoing.map(r => ({ kind:r.time_status || "結果待", item:r, source:r, isPick:false, isFinal:true })),
     ...picks.map(r => ({ kind:"候補", item:candidateMap.get(r.race_id), source:r, isPick:true, isFinal:false })),
     ...others.map(r => ({ kind:"予定", item:r, source:r, isPick:false, isFinal:false })),
@@ -372,7 +372,7 @@ function renderActionTable(rows, candidates, finished){
     const shortRace = `${r.venue_name}${r.rno}R`;
     const when = timePair(r);
     if(row.isFinal){
-      const ready = Number(item.result_rows || 0) >= 3 && item.result_combination;
+      const ready = item.is_final && item.result_combination;
       const pendingStatus = item.time_status || "結果待";
       const mark = ready ? (item.top_hit ? "的中" : (item.top5_hit ? "上位5" : "外れ")) : pendingStatus;
       const result = ready ? `${item.result_combination} ${mark}` : (pendingStatus === "結果待" ? "結果待" : "-");

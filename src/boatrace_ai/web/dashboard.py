@@ -469,7 +469,7 @@ def base_progress(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
         "races": len(day_rows),
         "racelists": sum(1 for row in day_rows if int(row.get("entries") or 0) == 6),
         "odds_races": sum(1 for row in day_rows if int(row.get("odds_snapshots") or 0) > 0),
-        "finals": sum(1 for row in day_rows if int(row.get("result_rows") or 0) >= 3),
+        "finals": sum(1 for row in day_rows if _race_is_final(row)),
     }
 
     return {
@@ -1310,6 +1310,23 @@ def _float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
+def _race_is_final(row: Any) -> bool:
+    def value(key: str) -> Any:
+        if isinstance(row, dict):
+            return row.get(key)
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            return None
+
+    return (
+        int(value("result_rows") or 0) >= 3
+        or str(value("status") or "").lower() == "final"
+        or str(value("result_status") or "").lower() == "final"
+    )
+
+
 def _venue_display_row(
     rows: list[dict[str, Any]],
     *,
@@ -1318,7 +1335,7 @@ def _venue_display_row(
     ongoing: list[tuple[datetime, datetime, dict[str, Any]]] = []
     future: list[tuple[datetime, datetime, dict[str, Any]]] = []
     for row in rows:
-        if int(row.get("result_rows") or 0) >= 3:
+        if _race_is_final(row):
             continue
         start_at = stored_start_time(row.get("deadline_at"))
         deadline_at = estimated_deadline_from_start(start_at)
@@ -1354,7 +1371,7 @@ def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
         active_races = len(active_rows)
         racelists = sum(1 for row in active_rows if int(row.get("entries") or 0) == 6)
         odds_count = sum(int(row.get("odds_snapshots") or 0) for row in active_rows)
-        finals = sum(1 for row in active_rows if int(row.get("result_rows") or 0) >= 3)
+        finals = sum(1 for row in active_rows if _race_is_final(row))
         if active_races == 0:
             status = "開催なし"
         elif finals >= active_races:
@@ -1435,7 +1452,7 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             item = payloads[row["race_id"]]
             if int(item.get("entries") or 0) != 6:
                 continue
-            if int(item.get("result_rows") or 0) >= 3:
+            if _race_is_final(item):
                 continue
             buy_until = stored_start_time(item.get("buy_until_at"))
             if not buy_until or now > buy_until:
@@ -1459,7 +1476,7 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             item = payloads[row["race_id"]]
             if int(item.get("entries") or 0) != 6:
                 continue
-            if int(item.get("result_rows") or 0) < 3:
+            if not _race_is_final(item):
                 continue
             item.update(result_summary(conn, row["race_id"]))
             _attach_prediction_hits(conn, item)
@@ -1553,7 +1570,7 @@ def live_wipe_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
                     ),
                 }
             )
-            if int(item.get("result_rows") or 0) >= 3:
+            if _race_is_final(item):
                 item.update(result_summary(conn, row["race_id"]))
                 _attach_prediction_hits(conn, item)
         if items:
@@ -1588,7 +1605,7 @@ def progress_active_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str
         "races": len(active),
         "racelists": sum(1 for row in active if int(row.get("entries") or 0) == 6),
         "odds_races": sum(1 for row in active if int(row.get("odds_snapshots") or 0) > 0),
-        "finals": sum(1 for row in active if int(row.get("result_rows") or 0) >= 3),
+        "finals": sum(1 for row in active if _race_is_final(row)),
     }
     payload["today"].update(
         {
@@ -1700,6 +1717,8 @@ def _day_metric_rows(
             (SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS odds_snapshots,
             (SELECT MAX(captured_at) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS latest_odds_at,
             (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows,
+            (SELECT rs.status FROM race_result_status rs WHERE rs.race_id = r.race_id) AS result_status,
+            (SELECT rs.trifecta_evaluable FROM race_result_status rs WHERE rs.race_id = r.race_id) AS trifecta_evaluable,
             (SELECT MAX(generated_at) FROM predictions p WHERE p.race_id = r.race_id) AS latest_prediction
           FROM races r
           WHERE r.race_date = ? {jcd_sql}
@@ -1711,6 +1730,8 @@ def _day_metric_rows(
                 OR entries = 6
                 OR odds_snapshots > 0
                 OR result_rows >= 3
+                OR status = 'final'
+                OR result_status = 'final'
                 OR latest_prediction IS NOT NULL
               THEN 1 ELSE 0
             END AS is_active
@@ -1730,6 +1751,7 @@ def _day_metric_rows(
 
 def _race_payload_from_row(row: sqlite3.Row, *, now, before_minutes: int) -> dict[str, Any]:
     result_rows = int(row["result_rows"] or 0)
+    is_final = _race_is_final(row)
     item = {
         "race_id": row["race_id"],
         "race_date": row["race_date"],
@@ -1742,6 +1764,9 @@ def _race_payload_from_row(row: sqlite3.Row, *, now, before_minutes: int) -> dic
         "odds_snapshots": int(row["odds_snapshots"] or 0),
         "latest_odds_at": iso(parse_any_time(row["latest_odds_at"])),
         "result_rows": result_rows,
+        "result_status": row["result_status"],
+        "trifecta_evaluable": row["trifecta_evaluable"],
+        "is_final": is_final,
         "latest_prediction": row["latest_prediction"],
         "top_prediction": _prediction_from_row(row, "top"),
         "buy_prediction": _prediction_from_row(row, "buy"),
@@ -1753,7 +1778,14 @@ def _race_payload_from_row(row: sqlite3.Row, *, now, before_minutes: int) -> dic
         item["top5"] = [item["top_prediction"]]
     if item["buy_prediction"]:
         item["buy_top5"] = [item["buy_prediction"]]
-    item.update(time_fields_from_stored_start(row["deadline_at"], now=now, before_minutes=before_minutes, result_rows=result_rows))
+    item.update(
+        time_fields_from_stored_start(
+            row["deadline_at"],
+            now=now,
+            before_minutes=before_minutes,
+            result_rows=3 if is_final else result_rows,
+        )
+    )
     return item
 
 
