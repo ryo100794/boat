@@ -828,13 +828,13 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         elif _is_backtest_result(data):
             backtests.append(_backtest_summary(path, label, data))
             for fold in data.get("folds") or []:
-                fold_metrics.append(_fold_report_row(label, fold))
+                fold_metrics.append(_fold_report_row(label, fold, _evaluation_scope(path, data.get("daily") or [])))
         if isinstance(data.get("results"), list):
             for row in data["results"]:
                 if isinstance(row, dict):
                     sweeps.append(_sweep_report_row(path, row))
                     for fold in row.get("folds") or []:
-                        fold_metrics.append(_fold_report_row(str(row.get("variant") or path.stem), fold))
+                        fold_metrics.append(_fold_report_row(str(row.get("variant") or path.stem), fold, _evaluation_scope(path, row.get("daily") or [])))
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
@@ -1150,12 +1150,22 @@ def _report_label(path: Path, data: dict[str, Any]) -> str:
     return path.stem
 
 
+def _evaluation_scope(path: Path, daily: list[dict[str, Any]]) -> str:
+    if path.stem.startswith("standardized_365d_"):
+        return "standard_365d"
+    dates = sorted({str(row.get("race_date")) for row in daily if row.get("race_date")})
+    if dates:
+        return f"legacy:{dates[0]}:{dates[-1]}:{len(dates)}"
+    return "legacy:unknown"
+
+
 def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "name": label,
         "file": path.name,
         "generated_at": data.get("generated_at"),
+        "evaluation_scope": _evaluation_scope(path, data.get("daily") or []),
         "feature_set": data.get("feature_set"),
         "include_odds": data.get("include_odds"),
         "evaluated_races": data.get("evaluated_races"),
@@ -1174,6 +1184,7 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "name": label,
         "file": path.name,
         "generated_at": data.get("generated_at"),
+        "evaluation_scope": _evaluation_scope(path, data.get("daily") or []),
         "feature_set": data.get("feature_set") or policy.get("feature_set"),
         "model": data.get("model") or policy.get("model"),
         "daily_budget_yen": policy.get("daily_budget_yen"),
@@ -1227,6 +1238,10 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "name": job.get("name") or result.get("file") or "remote_bankroll",
                 "file": result.get("file") or job.get("output"),
                 "generated_at": result.get("modified_at") or remote_evaluations.get("generated_at"),
+                "evaluation_scope": _evaluation_scope(
+                    Path(str(result.get("file") or job.get("output") or "legacy")),
+                    result.get("daily") or [],
+                ),
                 "feature_set": result.get("feature_set"),
                 "model": result.get("model") or job.get("name"),
                 "daily_budget_yen": None,
@@ -1311,10 +1326,15 @@ def _sweep_report_row(path: Path, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fold_report_row(model: str, fold: dict[str, Any]) -> dict[str, Any]:
+def _fold_report_row(
+    model: str,
+    fold: dict[str, Any],
+    evaluation_scope: str = "legacy:unknown",
+) -> dict[str, Any]:
 
     return {
         "model": model,
+        "evaluation_scope": evaluation_scope,
         "fold": fold.get("fold"),
         "train_races": fold.get("train_races"),
         "test_races": fold.get("test_races"),
