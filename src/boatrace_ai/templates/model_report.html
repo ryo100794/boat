@@ -11,33 +11,44 @@
     h1 { margin:0; font-size:12px; } a,button,select { height:19px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--ink); padding:0 5px; text-decoration:none; font:inherit; } button,.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
     main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(6,minmax(92px,1fr)); gap:1px; border:1px solid var(--line); background:var(--line); }
     .kpi { background:#fff; padding:3px 4px; min-width:0; } .kpi b { display:block; font-size:12px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .kpi span { color:var(--muted); font-size:9px; }
-    .grid { display:grid; grid-template-columns:repeat(2,minmax(300px,1fr)); gap:6px; margin-top:6px; } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(300px,1fr)); gap:6px; margin-top:6px; } .grid.three { grid-template-columns:repeat(3,minmax(260px,1fr)); } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
+    .report-group { margin-top:7px; padding-top:4px; border-top:2px solid var(--ink); } .group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px; } .group-heading h2 { margin:0; font-size:12px; } .group-controls { display:flex; align-items:center; gap:4px; } .group-controls label { color:var(--muted); } .group-controls select { min-width:270px; max-width:52vw; }
     .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } canvas { width:100%; height:155px; border:1px solid var(--line); background:#fff; }
     table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:3px; } th,td { border-bottom:1px solid var(--line); padding:1px 3px; line-height:1.12; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } th { color:var(--muted); background:#fafbfb; } th:first-child,td:first-child { text-align:left; }
     .table-scroll { overflow-x:auto; } .model-table { table-layout:auto; min-width:1320px; } .model-table .name-cell { min-width:145px; max-width:210px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .model-table .model-file { min-width:190px; } .model-table .detail-cell { min-width:230px; max-width:310px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .wide-name-table { table-layout:auto; min-width:850px; } .wide-name-table .name-cell { min-width:190px; max-width:300px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; }
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
-    @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid{grid-template-columns:1fr;} }
+    @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;} }
   </style>
 </head>
 <body>
-<header><h1>モデル性能レポート</h1><div><select id="dailyModel"></select><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a href="/reports/teleboat">Teleboat</a><a class="primary" href="/">ダッシュボード</a></div></header>
+<header><h1>モデル性能レポート</h1><div><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a href="/reports/teleboat">Teleboat</a><a class="primary" href="/">ダッシュボード</a></div></header>
 <main>
   <div id="kpis" class="kpis"></div>
-  <div class="panel" style="margin-top:6px"><h2><span>モデル運用系統</span><span class="muted">教師・学習条件・本番とshadowを分離</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>モデル名</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>実odds</th><th>学習/評価R</th><th>BT</th><th>LogLoss</th><th>1着</th><th>3T5</th></tr></thead><tbody id="modelTrackRows"></tbody></table></div></div>
-  <div class="panel" style="margin-top:6px"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>fold</th><th>経過</th><th>ROI</th><th>損益</th><th>評価R/実od</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
-  <div class="grid">
-    <div class="panel"><h2><span>モデル別 的中率</span><span class="muted">1着 / 3連単Top5</span></h2><canvas id="hitChart" width="900" height="330"></canvas></div>
-    <div class="panel"><h2><span>fold別 LogLoss</span><span class="muted">低いほど良い</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
-    <div class="panel"><h2><span>資金運用 ROI</span><span class="muted">払戻 ÷ 投資</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
-    <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
-    <div class="panel"><h2><span>日次ROI推移</span><span class="muted">選択モデル</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
-    <div class="panel"><h2><span>日次購入密度</span><span class="muted">点数 / 使用率</span></h2><canvas id="ticketsChart" width="900" height="330"></canvas></div>
-  </div>
-  <div class="panel" style="margin-top:10px"><h2><span>総合表</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>投資</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
-  <div class="panel" style="margin-top:10px"><h2><span>スイープ</span><span class="muted">候補比較</span></h2><table><thead><tr><th>variant</th><th>LogLoss</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div>
-  <div class="panel" style="margin-top:10px"><h2><span>特徴量相関診断</span><span class="muted">ファミリー別</span></h2><table><thead><tr><th>診断</th><th>特徴群</th><th>数</th><th>max相関</th><th>平均相関</th><th>係数量</th><th>低充足</th><th>主な特徴</th></tr></thead><tbody id="featureFamilyRows"></tbody></table></div>
-  <div class="panel" style="margin-top:10px"><h2><span>疑似相関/要確認特徴</span><span class="muted">欠損・ID・係数ズレ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
-  <div class="panel" style="margin-top:10px"><h2><span>購入券ROI帰属</span><span class="muted">選択券の投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
+  <section id="allModelsGroup" class="report-group">
+    <div class="group-heading"><h2>全モデル横断集計</h2><span class="muted">全モデルを同一指標で比較</span></div>
+    <div class="panel"><h2><span>モデル運用系統</span><span class="muted">教師・学習条件・本番とshadowを分離</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>モデル名</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>実odds</th><th>学習/評価R</th><th>BT</th><th>LogLoss</th><th>1着</th><th>3T5</th></tr></thead><tbody id="modelTrackRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>fold</th><th>経過</th><th>ROI</th><th>損益</th><th>評価R/実od</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
+    <div class="grid three">
+      <div class="panel"><h2><span>モデル別 的中率</span><span class="muted">1着 / 3連単Top5</span></h2><canvas id="hitChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>fold別 LogLoss</span><span class="muted">全モデル・低いほど良い</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>資金運用 ROI</span><span class="muted">全モデル・払戻 ÷ 投資</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
+    </div>
+    <div class="panel"><h2><span>全モデル総合表</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>投資</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>全モデル・スイープ候補比較</span><span class="muted">候補比較</span></h2><table><thead><tr><th>variant</th><th>LogLoss</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div>
+  </section>
+  <section id="selectedModelGroup" class="report-group">
+    <div class="group-heading"><h2>モデル個別集計</h2><div class="group-controls"><label for="modelSelect">対象モデル</label><select id="modelSelect"></select></div></div>
+    <div class="panel"><h2><span>選択モデル性能表</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>投資</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
+    <div class="grid three">
+      <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>日次ROI推移</span><span class="muted">選択モデル</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>日次購入密度</span><span class="muted">点数 / 使用率</span></h2><canvas id="ticketsChart" width="900" height="330"></canvas></div>
+    </div>
+    <div class="panel"><h2><span>選択モデル日次表</span><span class="muted">日別資金運用</span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>日付</th><th>ROI</th><th>日次損益</th><th>累積損益</th><th>投資</th><th>払戻</th><th>点数</th><th>対象R</th><th>資金使用率</th></tr></thead><tbody id="dailyRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>特徴量相関診断</span><span class="muted">選択モデル・ファミリー別</span></h2><table><thead><tr><th>診断</th><th>特徴群</th><th>数</th><th>max相関</th><th>平均相関</th><th>係数量</th><th>低充足</th><th>主な特徴</th></tr></thead><tbody id="featureFamilyRows"></tbody></table></div>
+    <div class="panel"><h2><span>疑似相関/要確認特徴</span><span class="muted">選択モデル・欠損・ID・係数ズレ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
+    <div class="panel"><h2><span>購入券ROI帰属</span><span class="muted">選択モデルの投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
+  </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -56,14 +67,46 @@ function render(data){
   $("kpis").innerHTML=[["基準1着",baseline?pct(baseline.winner_top1_accuracy):"-"],["基準3T5",baseline?pct(baseline.trifecta_top5_hit_rate):"-"],["最高ROI", bestRoi?`${ratio(bestRoi.roi)} ${shortName(bestRoi.name)}`:"-"],["最新適応ROI", adaptive?ratio(adaptive.roi):"-"],["評価実行中",running],["相関診断", features.length]].map(([l,v])=>`<div class="kpi"><b title="${esc(v)}">${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
   renderModelTracks(tracks);
   renderEvaluationJobs(jobs,data.remote_generated_at);
-  const dailyNames=Object.keys(daily); $("dailyModel").innerHTML=dailyNames.map(n=>`<option>${esc(n)}</option>`).join(""); const defaultName=(adaptive&&daily[adaptive.name])?adaptive.name:dailyNames[dailyNames.length-1]; if(defaultName) $("dailyModel").value=defaultName;
-  $("dailyModel").onchange=()=>renderDaily(data); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${data.model_dir||""}`;
+  configureModelSelect(data, adaptive);
+  $("modelSelect").onchange=()=>renderSelectedModel(data); $("reload").onclick=loadReport; $("meta").textContent="生成 "+String(data.generated_at||"").replace("T"," ").slice(0,19)+" / "+(data.model_dir||"");
   drawGroupedBars($("hitChart"), tests.map(x=>({label:shortName(x.name), a:x.winner_top1_accuracy, b:x.trifecta_top5_hit_rate})), {a:"1着", b:"3T5", percent:true});
   drawLines($("lossChart"), groupFoldSeries(folds, "entry_log_loss"), {baseline:null});
   drawBars($("roiChart"), bank.map(x=>({label:shortName(x.name), value:x.roi})), {baseline:1});
   $("summaryRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("");
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>`;
-  renderFeatureDiagnostics(features); renderRoiAttribution(bank); renderDaily(data);
+  renderSelectedModel(data);
+}
+function modelKey(value){
+  return String(value||"").toLowerCase().replace(/\.(json|joblib)$/,"").replace(/^(?:(?:win_model_|bankroll_backtest_|backtest_))+/,"").replace(/(?:(?:_backtest|_10000))+$/,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+}
+function modelValues(row){ return [row&&row.name,row&&row.file,row&&row.model,row&&row.model_file,row&&row.id,row&&row.label,row&&row.variant].filter(Boolean); }
+function modelMatches(row,key){ return modelValues(row).some(value=>modelKey(value)===key); }
+function modelCatalog(data){
+  const byKey=new Map(), seenLabels=new Set();
+  const add=(value,label,group)=>{ const key=modelKey(value), text=String(label||value); if(key&&!byKey.has(key)&&!seenLabels.has(text)){ byKey.set(key,{key:key,label:text,group:group}); seenLabels.add(text); } };
+  (data.model_tracks||[]).forEach(x=>add(x.model_file||x.id,(x.label||x.id)+" / "+(x.model_file||x.id),"モデル系統"));
+  const identity=(group,x)=>group==="backtests"?(x.file||x.name):group==="bankroll"?(x.model||x.file||x.name):group==="fold_metrics"?(x.model||x.name):group==="sweeps"?(x.variant||x.name||x.file):(x.model||x.model_file||x.name||x.file||x.id||x.label);
+  const labels={backtests:"予測評価",bankroll:"資金運用",fold_metrics:"fold評価",evaluation_jobs:"実行ジョブ",feature_diagnostics:"特徴量診断",sweeps:"候補スイープ"};
+  ["backtests","bankroll","fold_metrics","evaluation_jobs","feature_diagnostics","sweeps"].forEach(group=>(data[group]||[]).forEach(x=>{ const value=identity(group,x); add(value,x.label||x.name||x.variant||value,labels[group]); }));
+  Object.keys(data.bankroll_daily||{}).forEach(value=>add(value,value,"日次資金運用"));
+  return [...byKey.values()].sort((a,b)=>a.group.localeCompare(b.group,"ja")||a.label.localeCompare(b.label,"ja"));
+}
+function configureModelSelect(data,adaptive){
+  const select=$("modelSelect"), previous=select.value, catalog=modelCatalog(data), groups=new Map();
+  catalog.forEach(row=>{ if(!groups.has(row.group)) groups.set(row.group,[]); groups.get(row.group).push(row); });
+  select.innerHTML=[...groups.entries()].map(([group,rows])=>'<optgroup label="'+esc(group)+'">'+rows.map(row=>'<option value="'+esc(row.key)+'">'+esc(row.label)+'</option>').join("")+'</optgroup>').join("");
+  const preferred=modelKey(adaptive&&adaptive.name), available=new Set(catalog.map(row=>row.key));
+  select.value=available.has(previous)?previous:available.has(preferred)?preferred:((catalog[0]||{}).key||"");
+}
+function renderSelectedModel(data){
+  const key=$("modelSelect").value, option=$("modelSelect").selectedOptions[0];
+  $("selectedModelMeta").textContent=option?option.textContent:"対象なし";
+  const tests=(data.backtests||[]).filter(x=>modelMatches(x,key));
+  const bank=(data.bankroll||[]).filter(x=>modelMatches(x,key));
+  $("modelDetailRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("") || '<tr><td colspan="9" class="muted">選択モデルの集計結果なし</td></tr>';
+  renderDaily(data,key);
+  renderFeatureDiagnostics((data.feature_diagnostics||[]).filter(x=>modelMatches(x,key)));
+  renderRoiAttribution(bank);
 }
 function renderModelTracks(tracks){
   $("modelTrackRows").innerHTML=tracks.map(x=>{ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":""; const volume=x.target_races?`${fmt(x.eligible_races)}/${fmt(x.target_races)}`:fmt(x.eligible_races); return `<tr><td class="name-cell">${esc(x.label)}</td><td class="name-cell model-file">${esc(x.model_file||"-")}</td><td class="detail-cell">${esc(x.teacher||"-")}</td><td class="detail-cell">${esc(x.training||"-")}</td><td>${esc(x.role)}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td>${x.include_odds?"有":"無"}</td><td>${volume}</td><td>${x.backtest_available?"済":"未"}</td><td>${ratio(x.entry_log_loss)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td></tr>`; }).join("") || `<tr><td colspan="12" class="muted">モデル系統情報なし</td></tr>`;
@@ -84,7 +127,16 @@ function renderRoiAttribution(bank){
   const rows=(bank||[]).flatMap(model=>{ const attribution=model.ticket_roi_attribution||{}, stable=(attribution.fold_stability||{}).signals||[]; return (attribution.top_signals||[]).map(signal=>({model:model.name||model.file,...signal,stability:stable.find(x=>x.dimension===signal.dimension)})); }).sort((a,b)=>(Number(b.roi_spread)||0)-(Number(a.roi_spread)||0));
   $("roiAttributionRows").innerHTML=rows.map(r=>'<tr><td title="'+esc(r.model)+'">'+esc(shortName(r.model))+'</td><td title="'+esc(r.dimension)+'">'+esc(r.dimension||"-")+'</td><td>'+esc(r.family||"-")+'</td><td>'+ratio(r.roi_spread)+'</td><td>'+esc(r.stability ? r.stability.status+" "+pct(r.stability.signal_fold_rate) : "-")+'</td><td title="'+esc(roiBucketText(r.best_bucket))+'">'+esc(roiBucketText(r.best_bucket))+'</td><td title="'+esc(roiBucketText(r.worst_bucket))+'">'+esc(roiBucketText(r.worst_bucket))+'</td></tr>').join("") || '<tr><td colspan="7" class="muted">ROI帰属つき資金運用バックテストを実行中</td></tr>';
 }
-function renderDaily(data){ const name=$("dailyModel").value; const rows=(data.bankroll_daily||{})[name]||[]; $("profitTitle").textContent=shortName(name); drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0}); drawLines($("dailyRoiChart"), [{label:"日次ROI", rows:rows.map(r=>({x:r.date, y:r.roi}))}], {baseline:1}); drawGroupedBars($("ticketsChart"), rows.slice(-90).map(r=>({label:String(r.date||"").slice(5), a:r.tickets, b:(r.budget_used_fraction||0)*100})), {a:"点数", b:"使用率%"}); }
+function renderDaily(data,key){
+  const daily=data.bankroll_daily||{};
+  const name=Object.keys(daily).find(value=>modelKey(value)===key)||"";
+  const rows=daily[name]||[];
+  $("profitTitle").textContent=name?shortName(name):"日次データなし";
+  drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0});
+  drawLines($("dailyRoiChart"), [{label:"日次ROI", rows:rows.map(r=>({x:r.date, y:r.roi}))}], {baseline:1});
+  drawGroupedBars($("ticketsChart"), rows.slice(-90).map(r=>({label:String(r.date||"").slice(5), a:r.tickets, b:(r.budget_used_fraction||0)*100})), {a:"点数", b:"使用率%"});
+  $("dailyRows").innerHTML=rows.map(r=>'<tr><td>'+esc(r.date||"-")+'</td><td>'+ratio(r.roi)+'</td><td class="'+(Number(r.profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.profit_yen)+'</td><td class="'+(Number(r.cumulative_profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.cumulative_profit_yen)+'</td><td>'+yen(r.stake_yen)+'</td><td>'+yen(r.return_yen)+'</td><td>'+fmt(r.tickets)+'</td><td>'+fmt(r.races)+'</td><td>'+pct(r.budget_used_fraction)+'</td></tr>').join("") || '<tr><td colspan="9" class="muted">選択モデルの日次資金運用データなし</td></tr>';
+}
 function groupFoldSeries(folds, key){ const by=new Map(); for(const f of folds){ if(f[key]==null) continue; const k=shortName(f.model); if(!by.has(k)) by.set(k, []); by.get(k).push({x:f.fold, y:f[key]}); } return [...by.entries()].slice(-8).map(([label, rows])=>({label, rows:rows.sort((a,b)=>Number(a.x)-Number(b.x))})); }
 const AX={l:54,t:12,b:30,r:8};
 function fmtAxis(v,opt={}){ const n=Number(v); if(!Number.isFinite(n)) return "-"; if(opt.percent) return `${(n*100).toFixed(0)}%`; if(opt.yen) return Math.abs(n)>=1000000 ? `${(n/1000000).toFixed(1)}M` : Math.abs(n)>=1000 ? `${Math.round(n/1000)}k` : `${Math.round(n)}`; if(Math.abs(n)>=1000) return Math.round(n).toLocaleString("ja-JP"); if(Math.abs(n)>=10) return n.toFixed(0); if(Math.abs(n)>=1) return n.toFixed(2); return n.toFixed(3); }

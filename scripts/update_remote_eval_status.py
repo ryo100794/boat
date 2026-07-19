@@ -24,13 +24,16 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 172559, "name": "m6_norm_ev200_top10_19d5c35", "milestone": "M6", "kind": "bankroll_norm", "output": "data/models/m6_norm_ev200_top10_19d5c35.json", "log": "logs/m6_norm_ev200_top10_19d5c35.log"},
     {"pid": 172873, "name": "m6_norm_sanity_fold_19d5c35", "milestone": "M6", "kind": "bankroll_sanity", "output": "data/models/m6_norm_sanity_fold_19d5c35.json", "log": "logs/m6_norm_sanity_fold_19d5c35.log"},
     {"pid": 171811, "name": "feature_ablation_97cc181", "milestone": "M4", "kind": "feature_ablation", "output": "data/models/feature_ablation_97cc181.json", "log": "logs/feature_ablation_97cc181.log"},
-    {"pid": 173485, "name": "feature_correlation_advanced_e07badb", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_diagnostics_stream_advanced_e07badb.json", "log": "logs/feature_correlation_advanced_e07badb.log"},
-    {"pid": 174501, "name": "feature_correlation_advanced_retry", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_diagnostics_stream_advanced_retry.json", "log": "logs/feature_correlation_advanced_retry.log"},
-    {"pid": 175652, "name": "m6_best_roi_attribution_b53debe", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_b53debe.json", "log": "logs/m6_best_roi_attribution_b53debe.log"},
+    {"pid": 173485, "name": "feature_correlation_advanced_e07badb", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_diagnostics_stream_advanced_e07badb.json", "log": "logs/feature_correlation_advanced_e07badb.log", "superseded_by": "feature_correlation_advanced_retry"},
+    {"pid": 174501, "name": "feature_correlation_advanced_retry", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_retry.json", "log": "logs/feature_correlation_advanced_retry.log"},
+    {"pid": 175652, "name": "m6_best_roi_attribution_b53debe", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_b53debe.json", "log": "logs/m6_best_roi_attribution_b53debe.log", "superseded_by": "m6_best_roi_attribution_retry3"},
     {"pid": 178254, "name": "m6_best_roi_attribution_retry3", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_retry3.json", "log": "logs/m6_best_roi_attribution_retry3.log"},
     {"pid": 184638, "name": "calibrated_linear_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_linear", "output": "data/models/calibrated_linear_shadow_2fold.json", "log": "logs/calibrated_linear_shadow_2fold.log"},
     {"pid": 184700, "name": "calibrated_mlp_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_mlp", "output": "data/models/calibrated_mlp_shadow_2fold.json", "log": "logs/calibrated_mlp_shadow_2fold.log"},
-    {"pid": 185957, "name": "bankroll_no_odds_v8_normalized_kelly_5fold", "milestone": "M6", "kind": "bankroll_operational_same_policy", "output": "data/models/bankroll_no_odds_v8_normalized_kelly_5fold.json", "log": "logs/bankroll_no_odds_v8_normalized_kelly_5fold.log"},
+    {"pid": 192206, "name": "bankroll_no_odds_v8_normalized_kelly_5fold", "milestone": "M6", "kind": "bankroll_operational_same_policy", "output": "data/models/bankroll_no_odds_v8_normalized_kelly_5fold.json", "log": "logs/bankroll_no_odds_v8_normalized_kelly_5fold.log"},
+    {"pid": 196980, "name": "listwise_feature_teacher_search_v1", "milestone": "M4-3", "kind": "feature_teacher_search", "output": "data/models/listwise_feature_teacher_search_v1.json", "log": "logs/listwise_feature_teacher_newton_loop.log"},
+    {"pid": 196979, "name": "listwise_newton_cg_v1", "milestone": "M4-3/M6", "kind": "newton_listwise_bankroll", "output": "data/models/listwise_newton_cg_v1.json", "log": "logs/listwise_feature_teacher_newton_loop.log", "wait_for": "data/models/listwise_feature_teacher_search_v1.json"},
+    {"pid": 199131, "name": "listwise_temporal_stability_v1", "milestone": "M4-3/M6", "kind": "listwise_temporal_stability", "output": "data/models/listwise_temporal_stability_v1.json", "log": "logs/listwise_temporal_stability_v1.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -46,9 +49,10 @@ METRIC_KEYS = (
     "roi", "profit_yen", "stake_yen", "return_yen", "evaluated_races", "selected_races",
     "tickets", "hit_tickets", "ticket_hit_rate", "race_hit_rate", "max_drawdown_yen",
     "skipped_no_real_odds", "real_odds_races", "entry_log_loss", "entry_brier",
-    "winner_top1_accuracy", "trifecta_top5_hit_rate",
+    "winner_top1_accuracy", "trifecta_top5_hit_rate", "ranking_log_loss",
     "examples", "races", "positive_labels", "global_win_rate", "race_days",
     "candidate_tickets", "winning_days", "losing_days", "budget_utilization",
+    "promotion_eligible", "holdout_races", "profitable_folds",
 )
 
 def iso_mtime(path):
@@ -76,6 +80,24 @@ def tail_text(path, lines=12):
     except Exception as exc:
         return [f"log_read_error: {exc}"]
 
+def completed_fold_count(path):
+    if not path.exists():
+        return 0
+    completed = 0
+    try:
+        with path.open(errors="replace") as handle:
+            for line in handle:
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    completed = max(completed, int(item.get("fold") or 0))
+    except Exception:
+        return completed
+    return completed
+
+
 def result_summary(path):
     if not path.exists():
         return None
@@ -86,6 +108,16 @@ def result_summary(path):
         row["error"] = str(exc)
         return row
     row["metrics"] = {key: data.get(key) for key in METRIC_KEYS if key in data}
+    holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
+    if isinstance(holdout, dict):
+        for key in METRIC_KEYS:
+            if key in holdout:
+                row["metrics"][key] = holdout.get(key)
+        bankroll = holdout.get("bankroll") or data.get("bankroll") or {}
+        if isinstance(bankroll, dict):
+            for key in METRIC_KEYS:
+                if key in bankroll:
+                    row["metrics"][key] = bankroll.get(key)
     if "feature_family_summary" in data or "suspect_features" in data:
         row["feature_family_summary"] = (data.get("feature_family_summary") or [])[:16]
         row["suspect_features"] = (data.get("suspect_features") or [])[:24]
@@ -123,8 +155,12 @@ for job in JOBS:
     log_tail = tail_text(log_path)
     log_joined = "\n".join(log_tail)
     error_seen = "Traceback" in log_joined or "ValueError" in log_joined or "Error" in log_joined
-    if proc:
-        status = "待機中" if log_tail and "waiting_for_pid" in log_tail[-1] else "実行中"
+    waiting_for = job.get("wait_for")
+    dependency_pending = bool(waiting_for and not (WORKDIR / waiting_for).exists())
+    if job.get("superseded_by") and not proc:
+        status = "差替済み"
+    elif proc:
+        status = "待機中" if dependency_pending or (log_tail and "waiting_for_pid" in log_tail[-1]) else "実行中"
     elif result and not result.get("error"):
         status = "完了"
     elif error_seen or (result and result.get("error")):
@@ -138,6 +174,7 @@ for job in JOBS:
         "process": proc,
         "result": result,
         "log_tail": log_tail,
+        "completed_folds": completed_fold_count(log_path),
     })
     jobs.append(item)
 

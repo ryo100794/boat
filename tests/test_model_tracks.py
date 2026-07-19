@@ -35,7 +35,12 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
             {"kind": "calibrated_mlp", "status": "待機中"},
         ]
     }
-    main, shadow, linear, mlp = _model_track_summaries(tmp_path, backtests, remote)
+    tracks = _model_track_summaries(tmp_path, backtests, remote)
+    by_id = {row["id"]: row for row in tracks}
+    main = by_id["historical_main"]
+    shadow = by_id["realtime_odds_shadow"]
+    linear = by_id["calibrated_linear"]
+    mlp = by_id["calibrated_mlp"]
 
     assert main["role"] == "本番予測"
     assert main["include_odds"] is False
@@ -56,3 +61,31 @@ def test_web_templates_identify_the_active_model_track() -> None:
     assert "本番とshadowを分離" in MODEL_REPORT_HTML
     assert "主系予測" in HTML
     assert 'bt.model_label || "過去ログ主系"' in HTML
+
+
+def test_model_report_separates_cross_model_and_selected_model_aggregates() -> None:
+    header = MODEL_REPORT_HTML.split("</header>", 1)[0]
+
+    assert 'id="modelSelect"' not in header
+    assert MODEL_REPORT_HTML.index('id="allModelsGroup"') < MODEL_REPORT_HTML.index('id="summaryRows"')
+    assert MODEL_REPORT_HTML.index('id="summaryRows"') < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
+    assert MODEL_REPORT_HTML.index('id="selectedModelGroup"') < MODEL_REPORT_HTML.index('id="modelSelect"')
+    assert MODEL_REPORT_HTML.index('id="modelSelect"') < MODEL_REPORT_HTML.index('id="modelDetailRows"')
+    assert "全モデル横断集計" in MODEL_REPORT_HTML
+    assert "モデル個別集計" in MODEL_REPORT_HTML
+
+
+def test_model_selector_catalog_includes_every_report_data_group() -> None:
+    catalog_source = MODEL_REPORT_HTML.split("function modelCatalog(data){", 1)[1].split("function configureModelSelect", 1)[0]
+
+    for group in (
+        "model_tracks",
+        "backtests",
+        "bankroll",
+        "fold_metrics",
+        "evaluation_jobs",
+        "feature_diagnostics",
+        "sweeps",
+        "bankroll_daily",
+    ):
+        assert group in catalog_source

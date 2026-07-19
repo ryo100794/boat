@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -51,6 +52,8 @@ def operational_adaptive_bankroll(
     allocation_mode: str = "normalized_kelly",
     stake_granularity_yen: int = 100,
     min_stake_yen: int = 100,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
@@ -81,6 +84,34 @@ def operational_adaptive_bankroll(
 
     payouts = _load_trifecta_payouts(conn)
     all_races = {race_id for race_id, *_ in race_keys}
+    policy = operational_policy(
+        daily_budget_yen=daily_budget_yen,
+        ev_threshold=ev_threshold,
+        payout_prior_weight=payout_prior_weight,
+        fractional_kelly=fractional_kelly,
+        max_daily_exposure_fraction=max_daily_exposure_fraction,
+        min_daily_exposure_fraction=min_daily_exposure_fraction,
+        race_cap_fraction=race_cap_fraction,
+        ticket_cap_fraction=ticket_cap_fraction,
+        max_daily_tickets=max_daily_tickets,
+        allocation_mode=allocation_mode,
+        stake_granularity_yen=stake_granularity_yen,
+        min_stake_yen=min_stake_yen,
+    )
+    checkpoint_file = checkpoint_path or output_path.with_suffix(
+        output_path.suffix + ".checkpoint"
+    )
+    checkpoint_signature = {
+        "version": 1,
+        "model": MODEL_NAME,
+        "feature_set": FEATURE_SET,
+        "policy": policy,
+        "folds": folds,
+        "min_train_races": min_train_races,
+        "race_count": len(race_keys),
+        "first_race": race_keys[0][0],
+        "last_race": race_keys[-1][0],
+    }
     evaluated_races: set[str] = set()
     daily_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
@@ -89,11 +120,27 @@ def operational_adaptive_bankroll(
     peak_profit = 0
     max_drawdown = 0
     roi_attribution = new_roi_attribution()
+    start_fold = 1
+    if resume and checkpoint_file.exists():
+        checkpoint = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+        if checkpoint.get("signature") != checkpoint_signature:
+            raise ValueError("checkpoint does not match the current model, data, or policy")
+        start_fold = max(1, int(checkpoint.get("next_fold") or 1))
+        daily_rows = list(checkpoint.get("daily_rows") or [])
+        fold_rows = list(checkpoint.get("fold_rows") or [])
+        totals.update(checkpoint.get("totals") or {})
+        evaluated_races = set(checkpoint.get("evaluated_races") or [])
+        cumulative_profit = int(checkpoint.get("cumulative_profit") or 0)
+        peak_profit = int(checkpoint.get("peak_profit") or 0)
+        max_drawdown = int(checkpoint.get("max_drawdown") or 0)
+        roi_attribution = dict(checkpoint.get("roi_attribution") or {})
 
     for fold_index, (train_races, test_races, test_dates) in enumerate(
         fold_specs,
         start=1,
     ):
+        if fold_index < start_fold:
+            continue
         train_indices = _indices_for_races(indices_by_race, train_races)
         test_indices = _indices_for_races(indices_by_race, test_races)
         if not train_indices or not test_indices:
@@ -201,22 +248,26 @@ def operational_adaptive_bankroll(
             ),
         }
         fold_rows.append(fold_row)
+        _write_json_atomic(
+            checkpoint_file,
+            {
+                "version": 1,
+                "signature": checkpoint_signature,
+                "next_fold": fold_index + 1,
+                "daily_rows": daily_rows,
+                "fold_rows": fold_rows,
+                "totals": totals,
+                "evaluated_races": sorted(evaluated_races),
+                "cumulative_profit": cumulative_profit,
+                "peak_profit": peak_profit,
+                "max_drawdown": max_drawdown,
+                "roi_attribution": roi_attribution,
+            },
+        )
         print(json.dumps(fold_row, ensure_ascii=False), flush=True)
+        del pipeline, probabilities, rows_by_race, candidates_by_day, payout_model
+        _release_fold_memory()
 
-    policy = operational_policy(
-        daily_budget_yen=daily_budget_yen,
-        ev_threshold=ev_threshold,
-        payout_prior_weight=payout_prior_weight,
-        fractional_kelly=fractional_kelly,
-        max_daily_exposure_fraction=max_daily_exposure_fraction,
-        min_daily_exposure_fraction=min_daily_exposure_fraction,
-        race_cap_fraction=race_cap_fraction,
-        ticket_cap_fraction=ticket_cap_fraction,
-        max_daily_tickets=max_daily_tickets,
-        allocation_mode=allocation_mode,
-        stake_granularity_yen=stake_granularity_yen,
-        min_stake_yen=min_stake_yen,
-    )
     result = _summarize_operational(
         daily_rows,
         totals,
@@ -237,12 +288,31 @@ def operational_adaptive_bankroll(
             "comparison_role": "operational_model_same_policy_backtest",
         }
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
+    _write_json_atomic(output_path, result)
+    checkpoint_file.unlink(missing_ok=True)
+    return result
+
+
+def _release_fold_memory() -> None:
+    gc.collect()
+    try:
+        import ctypes
+
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return result
+    temporary.replace(path)
 
 
 def _summarize_operational(
@@ -421,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--stake-granularity-yen", type=int, default=100)
     parser.add_argument("--min-stake-yen", type=int, default=100)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
 
     init_db(args.db)
@@ -442,6 +514,8 @@ def main(argv: list[str] | None = None) -> int:
             allocation_mode=args.allocation_mode,
             stake_granularity_yen=args.stake_granularity_yen,
             min_stake_yen=args.min_stake_yen,
+            checkpoint_path=args.checkpoint,
+            resume=args.resume,
         )
     compact = {key: value for key, value in result.items() if key != "daily"}
     compact["daily_rows"] = len(result.get("daily") or [])

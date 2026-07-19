@@ -1,5 +1,8 @@
-from boatrace_ai.web_dashboard import _roadmap_milestones
-
+from boatrace_ai.web_dashboard import (
+    _remote_evaluation_job_summaries,
+    _roadmap_improvements,
+    _roadmap_milestones,
+)
 
 def milestones_by_id(progress, processes=None, remote=None):
     return {
@@ -48,3 +51,80 @@ def test_model_milestones_follow_remote_evaluation_state() -> None:
 
     assert rows["M4"]["progress"] == 90
     assert rows["M6"]["progress"] == 78
+
+
+def test_m6_tracks_operational_same_policy_fold_progress() -> None:
+    remote = {
+        "jobs": [
+            {
+                "kind": "bankroll_operational_same_policy",
+                "status": "実行中",
+                "running": True,
+                "completed_folds": 2,
+                "process": {"cmd": "python -m worker --folds 5"},
+            }
+        ]
+    }
+
+    improvement = next(
+        row for row in _roadmap_improvements({}, [], remote) if row["id"] == "M6-8"
+    )
+    summary = _remote_evaluation_job_summaries(remote)[0]
+
+    assert improvement["status"] == "実行中"
+    assert improvement["progress"] == 45
+    assert "2/5" in improvement["next"]
+    assert summary["completed_folds"] == 2
+    assert summary["expected_folds"] == 5
+
+
+def test_m6_completed_operational_backtest_shows_metrics() -> None:
+    remote = {
+        "jobs": [
+            {
+                "kind": "bankroll_operational_same_policy",
+                "status": "完了",
+                "completed_folds": 5,
+                "result": {
+                    "folds": 5,
+                    "metrics": {
+                        "roi": 0.802518753,
+                        "profit_yen": -573920,
+                        "max_drawdown_yen": 574180,
+                    },
+                },
+            }
+        ]
+    }
+
+    improvement = next(
+        row for row in _roadmap_improvements({}, [], remote) if row["id"] == "M6-8"
+    )
+
+    assert improvement["status"] == "完了"
+    assert improvement["progress"] == 100
+    assert "ROI 0.8025" in improvement["next"]
+    assert "-573,920円" in improvement["next"]
+    assert "評価中" not in improvement["next"]
+
+
+def test_m8_completed_status_has_no_terminal_setup_instruction() -> None:
+    teleboat = {
+        "connection_status": "ログイン・ログアウト確認済み",
+        "public": {"success": True},
+    }
+    improvement = next(
+        row
+        for row in _roadmap_improvements({}, [], {}, teleboat)
+        if row["id"] == "M8-1"
+    )
+    milestone = next(
+        row
+        for row in _roadmap_milestones({}, [], {}, teleboat)
+        if row["id"] == "M8"
+    )
+
+    assert improvement["progress"] == 100
+    assert milestone["status"] == "完了"
+    assert "端末" not in improvement["next"]
+    assert "監査済み" in milestone["next"]

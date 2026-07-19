@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from boatrace_ai.historical_model import FEATURE_SET, make_pipeline
 from boatrace_ai.operational_bankroll import (
     MODEL_NAME,
@@ -123,15 +125,40 @@ def test_operational_backtest_runs_end_to_end_on_time_folds(
     )
 
     output = tmp_path / "operational.json"
+    checkpoint = tmp_path / "operational.checkpoint.json"
+    write_checkpoint = module._write_json_atomic
+
+    def interrupt_after_first_fold(path, payload):
+        write_checkpoint(path, payload)
+        if path == checkpoint and payload.get("next_fold") == 2:
+            raise RuntimeError("simulated worker interruption")
+
+    monkeypatch.setattr(module, "_write_json_atomic", interrupt_after_first_fold)
+    with pytest.raises(RuntimeError, match="simulated worker interruption"):
+        operational_adaptive_bankroll(
+            object(),
+            output_path=output,
+            checkpoint_path=checkpoint,
+            folds=2,
+            min_train_races=2,
+            ev_threshold=1.0,
+        )
+    assert checkpoint.exists()
+    assert not output.exists()
+
+    monkeypatch.setattr(module, "_write_json_atomic", write_checkpoint)
     result = operational_adaptive_bankroll(
         object(),
         output_path=output,
+        checkpoint_path=checkpoint,
+        resume=True,
         folds=2,
         min_train_races=2,
         ev_threshold=1.0,
     )
 
     assert output.exists()
+    assert not checkpoint.exists()
     assert result["model"] == MODEL_NAME
     assert result["comparison_role"] == "operational_model_same_policy_backtest"
     assert len(result["folds"]) == 2

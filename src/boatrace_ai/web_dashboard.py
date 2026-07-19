@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import html
 import importlib.util
+import ipaddress
 import json
 import re
+import secrets
 import sqlite3
 import stat
 import time
@@ -142,6 +145,31 @@ def send_html(handler: BaseHTTPRequestHandler, body: str, status: int = 200) -> 
     payload = body.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    try:
+        handler.wfile.write(payload)
+    except BrokenPipeError:
+        return
+
+
+def send_secure_html(
+    handler: BaseHTTPRequestHandler,
+    body: str,
+    status: int = 200,
+) -> None:
+    payload = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header(
+        "Content-Security-Policy",
+        "default-src \x27self\x27; style-src \x27unsafe-inline\x27; "
+        "form-action \x27self\x27; frame-ancestors \x27none\x27",
+    )
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     try:
@@ -501,7 +529,81 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _teleboat_setup_allowed(handler: BaseHTTPRequestHandler) -> bool:
+    try:
+        client = ipaddress.ip_address(str(handler.client_address[0]))
+    except (IndexError, ValueError):
+        return False
+    host = urlparse("//" + str(handler.headers.get("Host") or "")).hostname
+    forwarded_proto = str(handler.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+    local_host = host in {"localhost", "127.0.0.1", "::1"}
+    return client.is_loopback and (local_host or forwarded_proto == "https")
+
+
+def _teleboat_setup_page(token: str | None, error: str = "") -> str:
+    form = ""
+    if token:
+        escaped_token = html.escape(token, quote=True)
+        form = (
+            f"<form method=\"post\" action=\"/reports/teleboat/setup\" autocomplete=\"off\">\n"
+            f"  <input type=\"hidden\" name=\"token\" value=\"{escaped_token}\">\n"
+            "  <label>加入番号<input name=\"member_number\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{6,10}\" minlength=\"6\" maxlength=\"10\" required autocomplete=\"off\"></label>\n"
+            "  <label>暗証番号<input name=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{4,6}\" minlength=\"4\" maxlength=\"6\" required autocomplete=\"new-password\"></label>\n"
+            "  <label>認証番号<input name=\"auth_secret\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{4,6}\" minlength=\"4\" maxlength=\"6\" required autocomplete=\"new-password\"></label>\n"
+            "  <button type=\"submit\">保存して接続確認</button>\n"
+            "</form>"
+        )
+    return (
+        TELEBOAT_SETUP_HTML.replace("__ERROR__", html.escape(error))
+        .replace("__FORM__", form)
+    )
+
+
+def _configure_teleboat_login(
+    payload: dict[str, str],
+    *,
+    secret_path: Path,
+    status_path: Path,
+    probe_factory: Any | None = None,
+) -> dict[str, Any]:
+    from teleboat_agent.login_probe import (
+        LoginProbeError,
+        TeleboatLoginProbe,
+        write_probe_status,
+    )
+    from teleboat_agent.login_secrets import LoginSecrets, save_login_secrets
+
+    login_secrets = LoginSecrets.parse({"mode": "mobile", **payload})
+    save_login_secrets(secret_path, login_secrets)
+    probe = (probe_factory or TeleboatLoginProbe)()
+    try:
+        result = probe.login_probe(login_secrets)
+        response = result.to_dict()
+        response["success"] = bool(
+            result.public_page_ready
+            and result.authenticated
+            and result.logout_confirmed
+            and result.wager_actions == 0
+        )
+        if not result.authenticated:
+            response["error_code"] = "credentials_rejected"
+        elif not result.logout_confirmed:
+            response["error_code"] = "logout_not_confirmed"
+    except LoginProbeError as exc:
+        response = {
+            "success": False,
+            "error_type": type(exc).__name__,
+            "error_code": "browser_operation_failed",
+            "wager_actions": 0,
+        }
+    write_probe_status(status_path, "login", response)
+    return response
+
+
 def make_handler(db_path: Path, backtest_path: Path | None):
+    setup_token: str | None = secrets.token_urlsafe(32)
+    setup_attempts = 0
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -539,6 +641,13 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_json(self, roadmap_status(db_path, query))
                 elif parsed.path == "/reports/teleboat":
                     send_html(self, TELEBOAT_REPORT_HTML)
+                elif parsed.path == "/reports/teleboat/setup":
+                    if not _teleboat_setup_allowed(self):
+                        send_secure_html(self, _teleboat_setup_page(None, "localhost限定です"), status=403)
+                    elif setup_token is None:
+                        send_secure_html(self, _teleboat_setup_page(None, "設定受付は終了しました"))
+                    else:
+                        send_secure_html(self, _teleboat_setup_page(setup_token))
                 elif parsed.path == "/api/reports/teleboat-status":
                     send_json(self, teleboat_status(db_path))
                 elif parsed.path == "/api/archive/overview":
@@ -553,6 +662,72 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     self.send_error(404)
             except Exception as exc:
                 send_json(self, {"error": str(exc)}, status=500)
+
+        def do_POST(self) -> None:
+            nonlocal setup_attempts, setup_token
+            parsed = urlparse(self.path)
+            if parsed.path != "/reports/teleboat/setup":
+                self.send_error(404)
+                return
+            if not _teleboat_setup_allowed(self) or setup_token is None:
+                send_secure_html(self, _teleboat_setup_page(None, "設定を受け付けられません"), status=403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 2048:
+                send_secure_html(self, _teleboat_setup_page(setup_token, "入力サイズが不正です"), status=400)
+                return
+            content_type = str(self.headers.get("Content-Type") or "").lower()
+            if not content_type.startswith("application/x-www-form-urlencoded"):
+                send_secure_html(self, _teleboat_setup_page(setup_token, "入力形式が不正です"), status=415)
+                return
+            try:
+                values = parse_qs(
+                    self.rfile.read(length).decode("utf-8"),
+                    strict_parsing=True,
+                    max_num_fields=4,
+                )
+                submitted_token = required(values, "token")
+                if not secrets.compare_digest(submitted_token, setup_token):
+                    raise ValueError("invalid setup token")
+                payload = {
+                    "member_number": required(values, "member_number"),
+                    "pin": required(values, "pin"),
+                    "auth_secret": required(values, "auth_secret"),
+                }
+                setup_attempts += 1
+                result = _configure_teleboat_login(
+                    payload,
+                    secret_path=PROJECT_ROOT / ".secrets" / "teleboat-login.json",
+                    status_path=db_path.parent / TELEBOAT_STATUS_NAME,
+                )
+            except (UnicodeDecodeError, ValueError):
+                send_secure_html(self, _teleboat_setup_page(setup_token, "入力形式を確認してください"), status=400)
+                return
+            if result.get("success"):
+                setup_token = None
+                self.send_response(303)
+                self.send_header("Location", "/reports/teleboat")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            failure_message = {
+                "credentials_rejected": "公式サイトで3項目の組み合わせが拒否されました",
+                "logout_not_confirmed": "ログイン後のログアウト確認に失敗しました",
+                "browser_operation_failed": "Chrome操作中に接続確認が中断しました",
+            }.get(str(result.get("error_code") or ""), "接続確認に失敗しました")
+            if setup_attempts >= 3:
+                setup_token = None
+                send_secure_html(
+                    self,
+                    _teleboat_setup_page(None, f"{failure_message}。受付を終了しました"),
+                    status=401,
+                )
+                return
+            send_secure_html(self, _teleboat_setup_page(setup_token, failure_message), status=401)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return
@@ -752,6 +927,7 @@ def _model_track_summaries(
             "generated_at": shadow_state.get("generated_at"),
         },
         *_calibrated_model_tracks(remote_evaluations),
+        *_listwise_model_tracks(remote_evaluations),
     ]
 
 
@@ -797,16 +973,62 @@ def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[st
     return rows
 
 
-def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
-    for job in jobs or []:
+    specs = (
+        (
+            "feature_teacher_search",
+            "listwise 特徴量・教師探索",
+            "listwise_feature_teacher_search_v1.json",
+            "公式過去10年の確定6艇レース / 1着教師とPlackett-Luce上位3着教師を学習内比較",
+            "FeatureHasher 4,096 / 4特徴群drop-one / race-softmax / Adam / 未使用10% holdout",
+        ),
+        (
+            "newton_listwise_bankroll",
+            "listwise Newton-CG shadow",
+            "listwise_newton_cg_v1.json",
+            "探索で選択された特徴量群・教師 / 未使用holdoutは選択後に一度だけ評価",
+            "Adam warm start + 行列フリーNewton-CG / 厳密Hessian-vector積 / 資金1万円・100円単位",
+        ),
+        (
+            "listwise_temporal_stability",
+            "listwise 時系列安定性探索",
+            "listwise_temporal_stability_v1.json",
+            "3つの学習内時系列窓 / 特徴量群・1着/上位3着教師・正則化の期間安定性",
+            "平均順位損失+fold分散 / 平均Top1と最悪fold制約 / 最新区間は診断扱い / 資金1万円",
+        ),
+    )
+    rows = []
+    for kind, label, model_file, teacher, training in specs:
+        job = next((item for item in jobs or [] if item.get("kind") == kind), {})
         result = job.get("result") or {}
-        metrics = {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
-        command = str((job.get("process") or {}).get("cmd") or "")
-        expected_match = re.search(r"(?:^|\s)--folds\s+(\d+)(?:\s|$)", command)
-        expected_folds = int(expected_match.group(1)) if expected_match else None
-        completed_folds = 0
+        metrics = result.get("metrics") or {}
+        status = job.get("status") or "未登録"
+        rows.append({
+            "id": kind,
+            "label": label,
+            "role": "比較評価のみ",
+            "status": status,
+            "include_odds": False,
+            "model_file": model_file,
+            "teacher": teacher,
+            "training": training,
+            "eligible_races": metrics.get("evaluated_races") or metrics.get("holdout_races"),
+            "target_races": None,
+            "backtest_available": status == "完了" and bool(result),
+            "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+            "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
+            "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
+        })
+    return rows
+
+
+def _remote_job_fold_progress(job: dict[str, Any]) -> tuple[int, int | None]:
+    command = str((job.get("process") or {}).get("cmd") or "")
+    expected_match = re.search(r"(?:^|\s)--folds\s+(\d+)(?:\s|\Z)", command)
+    expected_folds = int(expected_match.group(1)) if expected_match else None
+    completed_folds = int(job.get("completed_folds") or 0)
+    if not completed_folds:
         for line in job.get("log_tail") or []:
             try:
                 parsed_line = json.loads(line)
@@ -814,8 +1036,20 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
                     completed_folds = max(completed_folds, int(parsed_line.get("fold") or 0))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
-        if job.get("status") == "完了" and expected_folds:
-            completed_folds = expected_folds
+    result_folds = int(((job.get("result") or {}).get("folds") or 0))
+    if job.get("status") == "完了":
+        expected_folds = expected_folds or result_folds or None
+        completed_folds = max(completed_folds, result_folds, expected_folds or 0)
+    return completed_folds, expected_folds
+
+
+def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
+    for job in jobs or []:
+        result = job.get("result") or {}
+        metrics = {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
+        completed_folds, expected_folds = _remote_job_fold_progress(job)
         rows.append({
             "name": job.get("name"),
             "milestone": job.get("milestone"),
@@ -2385,6 +2619,7 @@ _TELEBOAT_RESULT_KEYS = {
     "elapsed_seconds",
     "success",
     "error_type",
+    "error_code",
 }
 
 
@@ -2635,6 +2870,55 @@ def _roadmap_improvements(
     calibrated_complete = bool(calibrated_jobs) and all(
         row.get("status") == "完了" for row in calibrated_jobs
     )
+    listwise_search_job = next(
+        (row for row in ((remote_evaluations or {}).get("jobs") or []) if row.get("kind") == "feature_teacher_search"),
+        None,
+    )
+    listwise_newton_job = next(
+        (row for row in ((remote_evaluations or {}).get("jobs") or []) if row.get("kind") == "newton_listwise_bankroll"),
+        None,
+    )
+    listwise_search_status = str((listwise_search_job or {}).get("status") or "未登録")
+    listwise_newton_status = str((listwise_newton_job or {}).get("status") or "未登録")
+    operational_job = next(
+        (
+            row
+            for row in ((remote_evaluations or {}).get("jobs") or [])
+            if row.get("kind") == "bankroll_operational_same_policy"
+        ),
+        None,
+    )
+    operational_completed, operational_expected = _remote_job_fold_progress(
+        operational_job or {}
+    )
+    operational_expected = operational_expected or 5
+    operational_status = str((operational_job or {}).get("status") or "未実行")
+    operational_progress = (
+        100
+        if operational_status == "完了"
+        else min(90, 15 + int(75 * operational_completed / operational_expected))
+        if operational_status in {"実行中", "待機中"}
+        else 10
+    )
+    operational_metrics = (
+        ((operational_job or {}).get("result") or {}).get("metrics") or {}
+    )
+    if operational_status == "完了" and operational_metrics:
+        operational_next = (
+            "5fold完了。"
+            f"ROI {float(operational_metrics.get('roi') or 0):.4f}、"
+            f"損益 {int(operational_metrics.get('profit_yen') or 0):,}円、"
+            f"最大DD {int(operational_metrics.get('max_drawdown_yen') or 0):,}円。"
+            "ROI/損益ゲート未達はM6-3/M6-4で改善を続ける。"
+        )
+    elif operational_status == "完了":
+        operational_next = "5fold完了。結果JSONをM6完了ゲートへ反映する。"
+    else:
+        operational_next = (
+            "no_odds_v8を正規化Kelly・日次1万円の同一条件で評価中。"
+            f"完了fold {operational_completed}/{operational_expected}。"
+            "過去ログ候補とROI・損益・ドローダウンを同一基準で比較する。"
+        )
     return [
         {
             "id": "M4-1",
@@ -2655,10 +2939,18 @@ def _roadmap_improvements(
         {
             "id": "M4-3",
             "milestone": "M4/M6",
-            "status": "実装済み/評価回収待ち",
-            "progress": 80,
-            "item": "長時間モデル検証のI/O高速化",
-            "next": "foldごとのSQLite再走査を廃止し、時系列index走査で一時B-treeを除去。FeatureHasher結果を版管理付きCSRへ1回だけ構築しlinear/MLP間でも共有する。合成5foldで4.68倍、後続リモート実測を回収する。",
+            "status": (
+                "評価完了/ゲート判定"
+                if listwise_newton_status == "完了"
+                else "Newton-CG実行中"
+                if listwise_newton_status == "実行中"
+                else "特徴量・教師探索中"
+                if listwise_search_status == "実行中"
+                else "探索待ち"
+            ),
+            "progress": 100 if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
+            "item": "race-softmax/Plackett-Luce再設計とNewton-CG収束",
+            "next": "直近1,173R smokeは1着54.56%、3T5 30.52%、ROI 0.7079で未達。5特徴量構成×2教師×2正則化を学習内選択し、未使用holdout後に行列フリーNewton-CGと資金1万円バックチェックを実行する。未達は完了扱いにしない。",
         },
         {
             "id": "M5-1",
@@ -2725,6 +3017,14 @@ def _roadmap_improvements(
             "next": "Plackett-Luce 120通り計算をCPython C拡張へ置換。Python fallbackを維持し、今後の資金運用再評価へ適用する。",
         },
         {
+            "id": "M6-8",
+            "milestone": "M6",
+            "status": operational_status,
+            "progress": operational_progress,
+            "item": "本番モデル同一ポリシー5fold比較",
+            "next": operational_next,
+        },
+        {
             "id": "M8-1",
             "milestone": "M8",
             "status": (teleboat or {}).get(
@@ -2739,7 +3039,12 @@ def _roadmap_improvements(
                 else 45
             ),
             "item": "Teleboat本番ログイン接続監査",
-            "next": "端末で0600秘密ファイルを設定し、1回だけログイン・ログアウトを確認する。投票操作は無効のまま維持する。",
+            "next": (
+                "ログイン・ログアウト確認済み。0600秘密保存と投票操作0件を維持する。"
+                if (teleboat or {}).get("connection_status")
+                == "ログイン・ログアウト確認済み"
+                else "ダッシュボードのログイン設定から3項目を入力し、ログイン・ログアウトだけを1回確認する。"
+            ),
         },
     ]
 
@@ -2796,18 +3101,24 @@ def _roadmap_milestones(
     calibrated_jobs = [
         job for job in jobs if job.get("kind") in {"calibrated_linear", "calibrated_mlp"}
     ]
+    listwise_search = next((job for job in jobs if job.get("kind") == "feature_teacher_search"), None)
+    listwise_newton = next((job for job in jobs if job.get("kind") == "newton_listwise_bankroll"), None)
+    listwise_search_status = str((listwise_search or {}).get("status") or "")
+    listwise_newton_status = str((listwise_newton or {}).get("status") or "")
     ablation_status = str((ablation or {}).get("status") or "")
     sanity_status = str((sanity or {}).get("status") or "")
     m4_progress = (
-        95
-        if calibrated_jobs and all(job.get("status") == "完了" for job in calibrated_jobs)
+        100
+        if listwise_newton_status == "完了"
+        else 96
+        if listwise_newton_status == "実行中"
+        else 93
+        if listwise_search_status in {"実行中", "完了"}
         else 92
-        if calibrated_jobs
+        if calibrated_jobs and all(job.get("status") == "完了" for job in calibrated_jobs)
         else 90
         if ablation_status == "完了"
         else 85
-        if ablation_status == "実行中"
-        else 80
     )
     m6_progress = 82 if sanity_status == "完了" else 78 if sanity_status == "実行中" else 75
     realtime_readiness = float(realtime.get("readiness") or 0.0)
@@ -2858,13 +3169,9 @@ def _roadmap_milestones(
         {
             "id": "M4",
             "title": "過去ログ中心モデル",
-            "status": "進行中" if ablation_status != "完了" else "評価回収済み/改善中",
+            "status": "listwise評価完了/ゲート判定" if listwise_newton_status == "完了" else "listwise再設計を評価中",
             "progress": m4_progress,
-            "next": (
-                "特徴量ablationを回収し、除外候補を同一時間foldで再評価する"
-                if ablation_status != "完了"
-                else "ablation結果を維持し、較正linear/MLP shadowを同一foldで比較する"
-            ),
+            "next": "特徴量・教師選択、未使用holdout、Newton-CG収束、資金運用ROIを順に回収し、ROI 1.0と予測性能基準を同時に満たす場合だけ主系候補にする。",
         },
         {
             "id": "M5",
@@ -2902,7 +3209,11 @@ def _roadmap_milestones(
                 else "公開接続試験待ち"
             ),
             "progress": 100 if teleboat_complete else 75 if teleboat_public else 45,
-            "next": "認証情報をWebへ出さず、ログイン・ログアウトのみを1回確認する。投票機能は別ゲートで無効を維持する",
+            "next": (
+                "接続監査済み。認証情報非公開、0600秘密保存、投票操作0件を維持する"
+                if teleboat_complete
+                else "ダッシュボードのログイン設定から接続監査を実施し、投票機能は無効を維持する"
+            ),
         },
     ]
 
@@ -2989,6 +3300,8 @@ ROADMAP_REPORT_HTML = _load_template("roadmap_report.html")
 MODEL_REPORT_HTML = _load_template("model_report.html")
 
 TELEBOAT_REPORT_HTML = _load_template("teleboat_report.html")
+
+TELEBOAT_SETUP_HTML = _load_template("teleboat_setup.html")
 
 HTML = _load_template("dashboard.html")
 
