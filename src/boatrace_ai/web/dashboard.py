@@ -1438,6 +1438,12 @@ def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
                 before_minutes=5,
                 result_rows=int(row.get("result_rows") or 0),
             )["time_status"]
+            if status not in {"開催なし", "終了"} and next_time_status in {
+                "出走待",
+                "出走",
+                "結果待",
+            }:
+                status = str(next_time_status)
 
         latest_odds_values = [parse_any_time(str(row.get("latest_odds_at") or "")) for row in active_rows if row.get("latest_odds_at")]
         latest_odds = max((value for value in latest_odds_values if value), default=None)

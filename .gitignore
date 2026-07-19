@@ -8,6 +8,8 @@ __pycache__/
 .pytest_cache/
 data/raw/
 data/processed/
+data/logs/
+data/reports/
 data/*.log
 data/models/*.json
 data/models/*.joblib

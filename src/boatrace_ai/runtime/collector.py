@@ -207,8 +207,11 @@ def refresh_daily_schedule(
             for rno in RACES_PER_DAY
         ]
 
+    targets = _prioritize_schedule_targets(conn, race_date, targets, now=now_jst())
     for jcd, rno in targets:
-        if existing.get((jcd, rno), {}).get("entries", 0) >= 6 and existing.get((jcd, rno), {}).get("html"):
+        # The official program is already a complete, persisted racelist source.
+        # Re-fetching every HTML page here can delay imminent odds collection by minutes.
+        if existing.get((jcd, rno), {}).get("entries", 0) >= 6:
             continue
         try:
             if collect_racelist(conn, race_date=race_date, jcd=jcd, rno=rno, raw_dir=raw_dir):
@@ -227,6 +230,33 @@ def refresh_daily_schedule(
         "schedule_failed": failed,
         "schedule_discovery": discovery_mode,
     }
+
+
+def _prioritize_schedule_targets(
+    conn,
+    race_date: date,
+    targets: list[tuple[str, int]],
+    *,
+    now: datetime,
+) -> list[tuple[str, int]]:
+    starts = {
+        (str(row["jcd"]).zfill(2), int(row["rno"])): stored_start_time(row["deadline_at"])
+        for row in conn.execute(
+            "SELECT jcd, rno, deadline_at FROM races WHERE race_date = ?",
+            (race_date.isoformat(),),
+        )
+    }
+
+    def priority(target: tuple[str, int]) -> tuple[int, float, str, int]:
+        start = starts.get(target)
+        cutoff = estimated_deadline_from_start(start)
+        if cutoff is None:
+            return (2, 0.0, target[0], target[1])
+        if cutoff >= now:
+            return (0, cutoff.timestamp(), target[0], target[1])
+        return (1, -start.timestamp(), target[0], target[1])
+
+    return sorted(targets, key=priority)
 
 
 def scheduled_races(conn, race_date: date) -> list[Any]:

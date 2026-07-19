@@ -30,8 +30,16 @@ def load_daily_program(conn, *, race_date: date, raw_dir: Path) -> dict[str, Any
         """,
         (race_date.isoformat(),),
     ).fetchone()[0]
+    scheduled_races = conn.execute(
+        "SELECT COUNT(*) FROM races WHERE race_date = ? AND deadline_at IS NOT NULL",
+        (race_date.isoformat(),),
+    ).fetchone()[0]
     cached = raw_file_cache_valid(conn, kind="program", source_url=url, local_path=local_path)
-    if cached and int(complete_races or 0) > 0:
+    if (
+        cached
+        and int(scheduled_races or 0) > 0
+        and int(complete_races or 0) >= int(scheduled_races or 0)
+    ):
         return {
             "program_status": "cached_db",
             "program_url": url,

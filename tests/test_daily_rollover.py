@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,6 +47,65 @@ class DailyRolloverTest(unittest.TestCase):
             self.assertEqual(result["schedule_targets"], 24)
             self.assertTrue(expanded)
             self.assertEqual({jcd for jcd, _ in expanded}, {"01", "03"})
+
+    def test_schedule_targets_prioritize_imminent_cutoffs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "priority.sqlite"
+            init_db(db_path)
+            now = datetime(2026, 7, 19, 8, 0, tzinfo=timezone(timedelta(hours=9)))
+            with connection(db_path) as conn:
+                for jcd, start in (("01", "08:50"), ("02", "08:20"), ("03", "07:50")):
+                    upsert_race(
+                        conn,
+                        {
+                            "race_date": "2026-07-19",
+                            "jcd": jcd,
+                            "venue_name": jcd,
+                            "rno": 1,
+                            "deadline_at": f"2026-07-19T{start}:00+09:00",
+                        },
+                    )
+                ordered = adaptive_loop._prioritize_schedule_targets(
+                    conn,
+                    date(2026, 7, 19),
+                    [("01", 1), ("03", 1), ("04", 1), ("02", 1)],
+                    now=now,
+                )
+
+            self.assertEqual(ordered, [("02", 1), ("01", 1), ("03", 1), ("04", 1)])
+
+    def test_complete_program_entries_do_not_wait_for_racelist_html(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "program.sqlite"
+            raw_dir = Path(directory) / "raw"
+            init_db(db_path)
+            with connection(db_path) as conn:
+                race_id_value = upsert_race(
+                    conn,
+                    {
+                        "race_date": "2026-07-19",
+                        "jcd": "01",
+                        "venue_name": "桐生",
+                        "rno": 1,
+                        "deadline_at": "2026-07-19T09:00:00+09:00",
+                    },
+                )
+                conn.executemany(
+                    "INSERT INTO entries(race_id, lane) VALUES (?, ?)",
+                    [(race_id_value, lane) for lane in range(1, 7)],
+                )
+                with patch.object(adaptive_loop, "discover_races", return_value=[("01", 1)]), patch.object(
+                    adaptive_loop, "collect_racelist"
+                ) as collect:
+                    result = adaptive_loop.refresh_daily_schedule(
+                        conn,
+                        race_date=date(2026, 7, 19),
+                        raw_dir=raw_dir,
+                        sleep_seconds=0,
+                    )
+
+            collect.assert_not_called()
+            self.assertEqual(result["schedule_failed"], 0)
 
     def test_web_default_does_not_keep_previous_day_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
