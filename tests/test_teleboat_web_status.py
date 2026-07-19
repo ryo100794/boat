@@ -77,6 +77,8 @@ def test_web_status_filters_credentials_and_completes_m8(tmp_path: Path) -> None
     assert status["connection_status"] == "ログイン・ログアウト確認済み"
     assert status["readiness"]["secret_configured"] is True
     assert status["readiness"]["secret_permission_valid"] is True
+    assert status["readiness"]["execution_host"] == "local"
+    assert status["readiness"]["browser_mode"] == "headless"
     assert status["live_wager_enabled"] is False
     assert "member_number" not in serialized
     assert "pin" not in serialized

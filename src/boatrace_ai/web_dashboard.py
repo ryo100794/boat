@@ -2433,6 +2433,8 @@ def teleboat_status(
         "generated_at": raw.get("generated_at"),
         "latest_phase": raw.get("latest_phase"),
         "readiness": {
+            "execution_host": "local",
+            "browser_mode": "headless",
             "playwright": importlib.util.find_spec("playwright") is not None,
             "chromium": any(
                 TELEBOAT_PLAYWRIGHT_BROWSERS.glob("chromium-*")

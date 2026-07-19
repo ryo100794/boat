@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import tempfile
 import time
 from contextlib import contextmanager
@@ -25,6 +26,26 @@ LOGIN_CONFIRMATION = "LOGIN_ONLY_NO_WAGER"
 DEFAULT_STATUS_PATH = Path("data/teleboat_probe_status.json")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PLAYWRIGHT_BROWSERS = PROJECT_ROOT / ".tools" / "ms-playwright"
+
+
+def chromium_launch_options(machine: str | None = None) -> dict[str, object]:
+    """Run Chromium locally in headless mode, with ARM-only compatibility flags."""
+    architecture = (machine or platform.machine()).lower()
+    options: dict[str, object] = {"headless": True}
+    if architecture in {"aarch64", "arm64"}:
+        options.update(
+            {
+                "ignore_default_args": ["--enable-unsafe-swiftshader"],
+                "args": [
+                    "--disable-gpu",
+                    "--disable-gpu-compositing",
+                    "--disable-software-rasterizer",
+                    "--use-gl=disabled",
+                    "--disable-vulkan",
+                ],
+            }
+        )
+    return options
 
 
 class LoginProbeError(RuntimeError):
@@ -114,17 +135,7 @@ class TeleboatLoginProbe:
         )
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(
-                    headless=True,
-                    ignore_default_args=["--enable-unsafe-swiftshader"],
-                    args=[
-                        "--disable-gpu",
-                        "--disable-gpu-compositing",
-                        "--disable-software-rasterizer",
-                        "--use-gl=disabled",
-                        "--disable-vulkan",
-                    ],
-                )
+                browser = playwright.chromium.launch(**chromium_launch_options())
 
                 context = browser.new_context(
                     user_agent=MOBILE_USER_AGENT if mode == "mobile" else None,

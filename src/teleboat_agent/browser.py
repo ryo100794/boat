@@ -125,7 +125,6 @@ class SeleniumVoteExecutor:
             "--headless=new",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-gpu",
             f"--user-agent={self.USER_AGENT}",
         ):
             options.add_argument(argument)

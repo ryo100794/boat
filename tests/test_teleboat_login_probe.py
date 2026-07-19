@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from teleboat_agent.login_probe import LoginProbeError, TeleboatLoginProbe
+from teleboat_agent.login_probe import (
+    LoginProbeError,
+    TeleboatLoginProbe,
+    chromium_launch_options,
+)
 from teleboat_agent.login_secrets import (
     LoginSecrets,
     SecretFileError,
@@ -138,3 +142,14 @@ def test_login_probe_rejects_nonofficial_redirect() -> None:
             "https://example.invalid/login",
             "mobile",
         )
+
+
+def test_x86_64_uses_plain_local_headless_chromium() -> None:
+    assert chromium_launch_options("x86_64") == {"headless": True}
+
+
+def test_arm64_uses_headless_compatibility_flags() -> None:
+    options = chromium_launch_options("aarch64")
+
+    assert options["headless"] is True
+    assert "--disable-gpu" in options["args"]
