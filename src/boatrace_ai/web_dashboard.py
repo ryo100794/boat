@@ -2365,10 +2365,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "再評価中/要改善",
-            "progress": 70,
+            "status": "回収済み/要改善",
+            "progress": 85,
             "item": "相関監査とROI接続",
-            "next": "相関監査と正規化Kelly 5条件は回収済み。workspace/src明示のretry3 PID 178254で最良条件の選択券ROI帰属を時間fold再検証中。",
+            "next": "ROI帰属retry3は完了したが時間fold安定シグナルは0件。相関上位を本番採用せず、ablationと80foldで再現特徴を再探索する。",
         },
         {
             "id": "M6-1",
@@ -2400,7 +2400,7 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
             "status": "実装済み/評価待ち",
             "progress": 30,
             "item": "特徴量改善の反映",
-            "next": "選手/場/モーター/ボート/選択条件のROI帰属を資金運用出力へ追加。M4 ablationと最良Kelly条件を回収後、除外/採用候補を同一foldで再評価する。",
+            "next": "選手/場/モーター/ボート/選択条件のROI帰属を資金運用出力へ追加。ROI帰属retry3の安定シグナルは0件。ablation完了後に特徴群の除外候補を同一foldで再評価する。",
         },
         {
             "id": "M6-5",
@@ -2436,7 +2436,7 @@ def _roadmap_agents() -> list[dict[str, str]]:
         {"name": "Euler", "area": "特徴量実装", "status": "完了", "task": "drop-feature-groups と ablation サブコマンド"},
         {"name": "Noether", "area": "NN shadowモデル", "status": "完了", "task": "設計をM4-1改善事項へ移管して回収"},
         {"name": "Curie", "area": "相関監査", "status": "完了", "task": "retry PID 174501のフル相関診断を回収。採否判定はM4-2へ移管"},
-        {"name": "Fisher", "area": "ROI帰属", "status": "完了", "task": "ROI帰属実装を回収。PID 175652の評価待ちはM4-2/M6へ移管"},
+        {"name": "Fisher", "area": "ROI帰属", "status": "完了", "task": "ROI帰属をstable_signals=0で回収。再設計をM4-2/M6へ移管"},
         {"name": "Ptolemy", "area": "懸案UI監査", "status": "完了", "task": "M6改善事項/完了ゲート/API表示の抜け漏れ確認。リモートPID静的表示のリスクを回収"},
         {"name": "Mendel", "area": "M7棚卸し", "status": "完了", "task": "v系ファイルをmust-keep依存とsafe-to-clean候補へ分離"},
     ]
@@ -2448,9 +2448,9 @@ def _roadmap_milestones() -> list[dict[str, Any]]:
         {"id": "M1", "title": "懸案・進捗ページ", "status": "完了/運用中", "progress": 100, "next": "監視JSONと改善ゲートを120秒周期で自動更新する"},
         {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 82, "next": "出走5分後の結果優先取得を監視し、公式未確定と取得失敗を分離集計する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 80, "next": "ablation PID 171811とROI帰属retry3 PID 178254を回収し、時間foldで再現する特徴だけを採用候補にする"},
+        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 80, "next": "ROI帰属retry3はstable=0。ablation PID 171811を回収し、特徴群除外の再現性を再評価する"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 75, "next": "最高ROI 0.8935で未達。ROI帰属retry3と80fold sanityを回収し、再現特徴で再学習する"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 75, "next": "最高ROI 0.8935、ROI帰属stable=0で未達。80fold sanityとablationを回収して再設計する"},
         {"id": "M7", "title": "v系ファイル整理", "status": "完了", "progress": 100, "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない"},
     ]
 
