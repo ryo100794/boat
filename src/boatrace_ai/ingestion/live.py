@@ -5,23 +5,23 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .constants import RACES_PER_DAY, VENUE_BY_CODE, VENUES
-from .db import (
+from ..constants import RACES_PER_DAY, VENUE_BY_CODE, VENUES
+from ..db import (
     insert_odds_snapshot,
     race_id,
     upsert_entry,
     upsert_race,
 )
-from .http import fetch_text, save_payload
-from .official import race_index_url, race_page_url
-from .result_parser import parse_result_html_v2
+from ..http import fetch_text, save_payload
+from ..official import race_index_url, race_page_url
+from .result import parse_result_html_v2
 from .parsers import (
     parse_beforeinfo_html,
     parse_odds3t_html,
     parse_racelist_html,
     parse_result_html,
 )
-from .storage import (
+from ..storage import (
     insert_beforeinfo_rows,
     record_raw_page,
     upsert_payout,
@@ -172,7 +172,7 @@ def monitor_live(
     while True:
         collect_live_once(conn, race_date=race_date, raw_dir=raw_dir, jcd=jcd, rno=rno)
         if model_path.exists():
-            from .modeling import predict_open_races
+            from ..modeling import predict_open_races
 
             predict_open_races(conn, model_path=model_path, race_date=race_date, jcd=jcd, rno=rno)
             conn.commit()

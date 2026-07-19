@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .db import connection, init_db, upsert_entry, upsert_race
 from .official import race_page_url
-from .racelist_parser_dom import parse_racelist_html
+from .ingestion.racelist import parse_racelist_html
 
 
 def main(argv: list[str] | None = None) -> int:

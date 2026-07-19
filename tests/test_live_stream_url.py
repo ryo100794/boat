@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from boatrace_ai.web_dashboard import boatcast_live_player_url
+from boatrace_ai.web.dashboard import boatcast_live_player_url
 
 
 def test_live_stream_uses_direct_official_player_url() -> None:

@@ -4,8 +4,8 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-from .constants import CLASS_RANK, LANES, VENUE_BY_CODE
-from .db import race_id
+from ..constants import CLASS_RANK, LANES, VENUE_BY_CODE
+from ..db import race_id
 
 FULLWIDTH_TRANS = str.maketrans(
     "０１２３４５６７８９．：－　",

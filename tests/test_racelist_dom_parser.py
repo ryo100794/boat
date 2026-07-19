@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from boatrace_ai.parsers import parse_racelist_html
+from boatrace_ai.ingestion.parsers import parse_racelist_html
 
 
 def racelist_html(*, with_series_history: bool) -> str:

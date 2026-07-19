@@ -6,10 +6,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from boatrace_ai import realtime_collector as adaptive_loop
-from boatrace_ai import web_dashboard
+from boatrace_ai.runtime import collector as adaptive_loop
+from boatrace_ai.web import dashboard as web_dashboard
 from boatrace_ai.db import connection, init_db, upsert_race
-from boatrace_ai.time_semantics import operational_race_date
+from boatrace_ai.runtime.time_semantics import operational_race_date
 
 
 class DailyRolloverTest(unittest.TestCase):

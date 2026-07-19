@@ -1,4 +1,4 @@
-from boatrace_ai.web_dashboard import _roadmap_milestones
+from boatrace_ai.web.dashboard import _roadmap_milestones
 
 
 def test_m5_tracks_shadow_process_and_realtime_readiness() -> None:

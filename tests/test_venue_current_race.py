@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from boatrace_ai.web_dashboard import JST, _venue_display_row
+from boatrace_ai.web.dashboard import JST, _venue_display_row
 
 
 NOW = datetime(2026, 7, 19, 12, 3, tzinfo=JST)

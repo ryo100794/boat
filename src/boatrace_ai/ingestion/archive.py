@@ -1,37 +1,62 @@
 from __future__ import annotations
 
 import re
-from datetime import date
 from pathlib import Path
 from typing import Any
 
-from .constants import VENUE_BY_CODE
-from .db import race_id, upsert_entry, upsert_race
-from .historical_parser_core import decode_text, parse_result_text, read_lzh
+from .archive_extended import ENTRY_DEFAULTS, normalize, parse_result_text, read_lzh
+from ..series_form import extract_fixed_series_fields
 
 
-TRANS = str.maketrans("０１２３４５６７８９．：－　ＲＨｍ", "0123456789.:- RHm")
-ENTRY_DEFAULTS = {
-    "origin": None,
-    "f_count": None,
-    "l_count": None,
-    "avg_st": None,
-    "national_3_rate": None,
-    "local_3_rate": None,
-    "motor_3_rate": None,
-    "boat_3_rate": None,
-}
+def parse_program_entry(line: str) -> dict[str, Any] | None:
+    match = re.match(
+        r"^\s*(?P<lane>[1-6])\s*(?P<racer_no>\d{4})(?P<head>.+?)(?P<class>[AB]\d)\s+"
+        r"(?P<nwin>\d+\.\d{2})\s+(?P<n2>\d+\.\d{2})\s+"
+        r"(?P<lwin>\d+\.\d{2})\s+(?P<l2>\d+\.\d{2})\s+"
+        r"(?P<motor>\d+)\s*(?P<m2>\d+\.\d{2})\s*"
+        r"(?P<boat>\d{2,3})\s*(?P<b2>\d+\.\d{2})",
+        line,
+    )
+    if not match:
+        return None
+    head_match = re.match(
+        r"(?P<name>.*?)(?P<age>\d{2})(?P<branch>.{2})(?P<weight>\d{2})$",
+        match.group("head"),
+    )
+    if not head_match:
+        return None
+    return {
+        **ENTRY_DEFAULTS,
+        "lane": int(match.group("lane")),
+        "racer_no": int(match.group("racer_no")),
+        "racer_name": head_match.group("name").strip(),
+        "racer_class": match.group("class"),
+        "branch": head_match.group("branch").strip(),
+        "age": int(head_match.group("age")),
+        "weight_kg": float(head_match.group("weight")),
+        "national_win_rate": float(match.group("nwin")),
+        "national_2_rate": float(match.group("n2")),
+        "local_win_rate": float(match.group("lwin")),
+        "local_2_rate": float(match.group("l2")),
+        "motor_no": int(match.group("motor")),
+        "motor_2_rate": float(match.group("m2")),
+        "boat_no": int(match.group("boat")),
+        "boat_2_rate": float(match.group("b2")),
+        "source": "official_program_lzh_v6",
+        "raw_text": line,
+        **extract_fixed_series_fields(line, data_end=match.end()),
+    }
 
 
-def parse_official_archive(conn, *, path: Path, kind: str, race_date: date) -> dict[str, int]:
+def parse_official_archive_v6(conn, *, path: Path, kind: str, race_date) -> dict[str, int]:
     counters = {"races": 0, "entries": 0, "results": 0, "payouts": 0}
     for filename, payload in read_lzh(path):
-        text = decode_text(payload)
+        text = normalize_archive_text(payload)
         extracted_path = path.with_suffix("") / filename
         extracted_path.parent.mkdir(parents=True, exist_ok=True)
         extracted_path.write_text(text, encoding="utf-8")
         parsed = (
-            parse_program_text(conn, text=text, race_date=race_date)
+            parse_program_text_v6(conn, text=text, race_date=race_date)
             if kind == "program"
             else parse_result_text(conn, text=text, race_date=race_date)
         )
@@ -40,7 +65,10 @@ def parse_official_archive(conn, *, path: Path, kind: str, race_date: date) -> d
     return counters
 
 
-def parse_program_text(conn, *, text: str, race_date: date) -> dict[str, int]:
+def parse_program_text_v6(conn, *, text: str, race_date) -> dict[str, int]:
+    from ..constants import VENUE_BY_CODE
+    from ..db import race_id, upsert_entry, upsert_race
+
     counters = {"races": 0, "entries": 0}
     current_jcd: str | None = None
     current_race_id: str | None = None
@@ -86,44 +114,7 @@ def parse_program_text(conn, *, text: str, race_date: date) -> dict[str, int]:
     return counters
 
 
-def parse_program_entry(line: str) -> dict[str, Any] | None:
-    match = re.match(
-        r"^\s*(?P<lane>[1-6])\s*(?P<racer_no>\d{4})(?P<head>.+?)(?P<class>[AB]\d)\s+"
-        r"(?P<nwin>\d+\.\d{2})\s+(?P<n2>\d+\.\d{2})\s+"
-        r"(?P<lwin>\d+\.\d{2})\s+(?P<l2>\d+\.\d{2})\s+"
-        r"(?P<motor>\d+)\s*(?P<m2>\d+\.\d{2})\s*"
-        r"(?P<boat>\d{2,3})\s*(?P<b2>\d+\.\d{2})",
-        line,
-    )
-    if not match:
-        return None
-    head_match = re.match(
-        r"(?P<name>.*?)(?P<age>\d{2})(?P<branch>.{2})(?P<weight>\d{2})$",
-        match.group("head"),
-    )
-    if not head_match:
-        return None
-    return {
-        **ENTRY_DEFAULTS,
-        "lane": int(match.group("lane")),
-        "racer_no": int(match.group("racer_no")),
-        "racer_name": head_match.group("name").strip(),
-        "racer_class": match.group("class"),
-        "branch": head_match.group("branch").strip(),
-        "age": int(head_match.group("age")),
-        "weight_kg": float(head_match.group("weight")),
-        "national_win_rate": float(match.group("nwin")),
-        "national_2_rate": float(match.group("n2")),
-        "local_win_rate": float(match.group("lwin")),
-        "local_2_rate": float(match.group("l2")),
-        "motor_no": int(match.group("motor")),
-        "motor_2_rate": float(match.group("m2")),
-        "boat_no": int(match.group("boat")),
-        "boat_2_rate": float(match.group("b2")),
-        "source": "official_program_lzh_v4",
-        "raw_text": line,
-    }
+def normalize_archive_text(payload: bytes) -> str:
+    from .archive_core import decode_text
 
-
-def normalize(value: str) -> str:
-    return value.translate(TRANS).replace("\xa0", " ").strip()
+    return decode_text(payload)

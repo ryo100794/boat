@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from boatrace_ai.result_polling import due_result_rows, result_interval
+from boatrace_ai.runtime.result_polling import due_result_rows, result_interval
 
 
 def test_result_polling_starts_at_five_minutes_and_is_aggressive() -> None:

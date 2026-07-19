@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from boatrace_ai.web_dashboard import (
+from boatrace_ai.web.dashboard import (
     HTML,
     TELEBOAT_REPORT_HTML,
     TELEBOAT_SETUP_HTML,

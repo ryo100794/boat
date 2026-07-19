@@ -1,4 +1,4 @@
-from boatrace_ai.web_dashboard import (
+from boatrace_ai.web.dashboard import (
     _remote_evaluation_job_summaries,
     _roadmap_improvements,
     _roadmap_milestones,

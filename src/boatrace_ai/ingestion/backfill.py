@@ -6,9 +6,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from .http import fetch_bytes, save_payload
-from .official import historical_download_url
-from .storage import raw_file_exists, record_raw_file
+from ..http import fetch_bytes, save_payload
+from ..official import historical_download_url
+from ..storage import raw_file_exists, record_raw_file
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ def backfill_historical(
 
 
 def parse_archive(conn, *, path: Path, kind: str, race_date: date) -> dict[str, int]:
-    from .historical_archive import parse_official_archive_v6
+    from .archive import parse_official_archive_v6
 
     return parse_official_archive_v6(
         conn,

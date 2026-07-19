@@ -1,4 +1,4 @@
-from boatrace_ai.web_dashboard import HTML
+from boatrace_ai.web.dashboard import HTML
 
 
 def test_timeline_uses_countdown_only_in_verdict_column() -> None:

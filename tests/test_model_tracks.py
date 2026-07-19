@@ -1,6 +1,6 @@
 import json
 
-from boatrace_ai.web_dashboard import (
+from boatrace_ai.web.dashboard import (
     HTML,
     MODEL_REPORT_HTML,
     _model_track_summaries,

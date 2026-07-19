@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from boatrace_ai.archives import extract_lzh
+from boatrace_ai.ingestion.archives import extract_lzh
 
 
 def test_extract_lzh_reads_official_archive_without_context_manager() -> None:

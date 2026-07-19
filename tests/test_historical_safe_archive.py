@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 
 from boatrace_ai.db import connect, init_db
-from boatrace_ai.historical_safe import parse_archive
+from boatrace_ai.ingestion.backfill import parse_archive
 
 
 def test_safe_backfill_uses_official_fixed_width_parser(tmp_path: Path) -> None:

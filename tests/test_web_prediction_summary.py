@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from boatrace_ai.web_prediction_summary import attach_latest_prediction_summaries
+from boatrace_ai.web.prediction_summary import attach_latest_prediction_summaries
 
 
 def test_attaches_latest_model_and_ev_ranked_predictions() -> None:

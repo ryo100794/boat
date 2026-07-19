@@ -1,4 +1,4 @@
-from boatrace_ai.web_dashboard import MODEL_REPORT_HTML, _remote_evaluation_job_summaries
+from boatrace_ai.web.dashboard import MODEL_REPORT_HTML, _remote_evaluation_job_summaries
 
 
 def test_remote_job_summary_reports_fold_progress_and_metrics() -> None:

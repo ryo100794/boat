@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from boatrace_ai.web_dashboard import _latest_live_window_row, boatcast_live_player_url
+from boatrace_ai.web.dashboard import _latest_live_window_row, boatcast_live_player_url
 
 
 class LiveWipeTest(unittest.TestCase):

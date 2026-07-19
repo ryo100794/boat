@@ -1,6 +1,6 @@
 import sqlite3
 
-from boatrace_ai.model_cycle import dataset_counts
+from boatrace_ai.runtime.model_cycle import dataset_counts
 
 
 def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:

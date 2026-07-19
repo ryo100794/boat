@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from boatrace_ai.web_dashboard import JST, time_fields_from_stored_start
+from boatrace_ai.web.dashboard import JST, time_fields_from_stored_start
 
 
 START = datetime(2026, 7, 19, 12, 0, tzinfo=JST)

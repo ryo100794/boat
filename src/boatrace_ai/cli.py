@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .db import connection, init_db, race_id
-from .time_semantics import operational_race_date
+from .runtime.time_semantics import operational_race_date
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -122,7 +122,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     init_db(args.db)
     end = _parse_date(args.end) if args.end else date.today()
     start = _parse_date(args.start) if args.start else end - timedelta(days=365 * args.years)
-    from .historical_safe import backfill_historical
+    from .ingestion.backfill import backfill_historical
 
     with connection(args.db) as conn:
         stats = backfill_historical(
@@ -140,7 +140,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
 
 def cmd_fetch_racer_stats(args: argparse.Namespace) -> int:
     init_db(args.db)
-    from .historical import fetch_racer_stats
+    from .ingestion.historical import fetch_racer_stats
 
     with connection(args.db) as conn:
         stored = fetch_racer_stats(
@@ -189,7 +189,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def cmd_collect_live_once(args: argparse.Namespace) -> int:
     init_db(args.db)
-    from .live import collect_live_once
+    from .ingestion.live import collect_live_once
 
     with connection(args.db) as conn:
         result = collect_live_once(
@@ -206,7 +206,7 @@ def cmd_collect_live_once(args: argparse.Namespace) -> int:
 
 def cmd_monitor(args: argparse.Namespace) -> int:
     init_db(args.db)
-    from .live import collect_live_once
+    from .ingestion.live import collect_live_once
     from .modeling import predict_open_races, train_model
 
     fixed_date = _parse_date(args.date) if args.date else None

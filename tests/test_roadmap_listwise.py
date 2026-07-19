@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from boatrace_ai.web_dashboard import _roadmap_improvements, _roadmap_milestones
+from boatrace_ai.web.dashboard import _roadmap_improvements, _roadmap_milestones
 
 
 def remote_jobs(search_status: str, newton_status: str) -> dict:

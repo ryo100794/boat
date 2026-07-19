@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from boatrace_ai.web_dashboard import (
+from boatrace_ai.web.dashboard import (
     _quality_gates,
     _remote_bankroll_gate_records,
     _remote_bankroll_report_summaries,

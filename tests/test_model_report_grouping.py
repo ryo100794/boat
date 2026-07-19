@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from boatrace_ai.web_dashboard import MODEL_REPORT_HTML, _model_track_summaries
+from boatrace_ai.web.dashboard import MODEL_REPORT_HTML, _model_track_summaries
 
 
 def test_model_selector_groups_all_sources() -> None:

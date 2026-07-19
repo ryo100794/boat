@@ -7,8 +7,8 @@ from datetime import date
 from pathlib import Path
 
 from boatrace_ai.db import connection, init_db, upsert_entry
-from boatrace_ai.parsers import parse_racelist_html
-from boatrace_ai.time_semantics import operational_race_date
+from boatrace_ai.ingestion.parsers import parse_racelist_html
+from boatrace_ai.runtime.time_semantics import operational_race_date
 
 
 def main(argv: list[str] | None = None) -> int:

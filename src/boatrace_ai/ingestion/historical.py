@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Iterable
 
 from .archives import decode_japanese_text, extract_lzh
-from .constants import VENUE_BY_CODE
-from .db import race_id, upsert_entry, upsert_race
-from .http import fetch_bytes, save_payload
-from .official import historical_download_url, racer_stats_url
+from ..constants import VENUE_BY_CODE
+from ..db import race_id, upsert_entry, upsert_race
+from ..http import fetch_bytes, save_payload
+from ..official import historical_download_url, racer_stats_url
 from .parsers import parse_historical_result_text, parse_racer_stats_bytes, to_float, to_int
-from .storage import (
+from ..storage import (
     raw_file_exists,
     record_raw_file,
     upsert_racer_period_stats,

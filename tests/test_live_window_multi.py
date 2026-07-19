@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from boatrace_ai.web_dashboard import _live_window_rows
+from boatrace_ai.web.dashboard import _live_window_rows
 
 
 def test_live_window_returns_latest_four_started_races() -> None:

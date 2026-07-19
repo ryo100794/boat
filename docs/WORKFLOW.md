@@ -56,7 +56,7 @@ boat-ai monitor \
 
 ```bash
 cd /root/boat/src
-python3 -m boatrace_ai.web_dashboard \
+python3 -m boatrace_ai.web.dashboard \
   --db ../data/boatrace.sqlite \
   --host 0.0.0.0 \
   --port 10001 \
