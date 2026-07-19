@@ -6,14 +6,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from .archives import decode_japanese_text, extract_lzh
-from .constants import VENUE_BY_CODE
-from .db import upsert_entry, upsert_race
-from .historical import parse_historical_program_text
 from .http import fetch_bytes, save_payload
 from .official import historical_download_url
-from .parsers import parse_historical_result_text
-from .storage import raw_file_exists, record_raw_file, upsert_result_row
+from .storage import raw_file_exists, record_raw_file
 
 
 @dataclass(frozen=True)
@@ -90,37 +85,11 @@ def backfill_historical(
 
 
 def parse_archive(conn, *, path: Path, kind: str, race_date: date) -> dict[str, int]:
-    counters = {"races": 0, "entries": 0, "results": 0}
-    for filename, payload in extract_lzh(path):
-        text = decode_japanese_text(payload)
-        extracted_path = path.with_suffix("") / filename
-        extracted_path.parent.mkdir(parents=True, exist_ok=True)
-        extracted_path.write_text(text, encoding="utf-8")
-        if kind == "program":
-            for race_payload, entries in parse_historical_program_text(text, race_date=race_date):
-                rid = upsert_race(conn, race_payload)
-                counters["races"] += 1
-                for entry in entries:
-                    upsert_entry(conn, rid, entry)
-                    counters["entries"] += 1
-        elif kind == "result":
-            for row in parse_historical_result_text(text, race_date=race_date):
-                rid = row["race_id"]
-                race_date_part = rid[:10]
-                jcd = rid[11:13]
-                rno = int(rid[14:16])
-                venue = VENUE_BY_CODE.get(jcd)
-                upsert_race(
-                    conn,
-                    {
-                        "race_id": rid,
-                        "race_date": race_date_part,
-                        "jcd": jcd,
-                        "venue_name": venue.name if venue else jcd,
-                        "rno": rno,
-                        "status": "final",
-                    },
-                )
-                upsert_result_row(conn, race_id=rid, row=row)
-                counters["results"] += 1
-    return counters
+    from .historical_archive import parse_official_archive_v6
+
+    return parse_official_archive_v6(
+        conn,
+        path=path,
+        kind=kind,
+        race_date=race_date,
+    )

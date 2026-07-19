@@ -26,11 +26,16 @@ def _extract_with_lhafile(path: Path) -> list[tuple[str, bytes]]:
         return []
     try:
         result = []
-        with lhafile.Lhafile(str(path)) as archive:
+        archive = lhafile.LhaFile(str(path))
+        try:
             for info in archive.infolist():
                 if info.filename.endswith("/"):
                     continue
                 result.append((info.filename, archive.read(info.filename)))
+        finally:
+            close = getattr(archive, "close", None)
+            if close:
+                close()
         return result
     except Exception:
         return []

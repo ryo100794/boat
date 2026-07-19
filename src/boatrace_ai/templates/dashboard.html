@@ -172,7 +172,7 @@
     <section>
       <div class="timeline-frame">
         <h2><span>確定4件・購入候補・今後レース</span><span id="timelineInfo" class="muted"></span></h2>
-        <div class="timeline-scroll"><table><thead><tr><th>区分</th><th>場/R</th><th>締切/出</th><th>判定/結果</th><th>モデル予測</th><th>確率</th><th>オッズ</th><th>EV/払戻</th></tr></thead><tbody id="actionRows"></tbody></table></div>
+        <div class="timeline-scroll"><table><thead><tr><th>区分</th><th>場/R</th><th>締切/出</th><th>判定/結果</th><th>主系予測</th><th>確率</th><th>オッズ</th><th>EV/払戻</th></tr></thead><tbody id="actionRows"></tbody></table></div>
       </div>
       <div class="grid2">
         <div class="panel"><h2><span id="raceTitle">レース詳細</span><span id="accuracy" class="muted"></span></h2><div id="entries" class="entries"></div><div id="predictions" class="pred-matrix-grid"></div><h2 style="margin-top:6px;"><span>オッズ推移</span><select id="combo"></select></h2><canvas id="oddsChart" width="720" height="200"></canvas><div id="backtest" class="empty"></div></div>
@@ -308,7 +308,7 @@ async function loadSecondary(d, loadId){
   const bt = settledValue(backtestRes, null, "backtest");
   if(s && prog) $("dataStatus").textContent = footerStatus(s, prog, state.nowIso || new Date().toISOString());
   if(acc) $("accuracy").textContent = `本日 ${acc.evaluated || 0}R / 1着 ${pct(acc.winner_top1_accuracy)} / 3T5 ${pct(acc.trifecta_top5_hit_rate)}`;
-  if(bt) $("backtest").textContent = bt.available ? `BT ${bt.evaluated_races}R / 1着 ${pct(bt.winner_top1_accuracy)} / 3T5 ${pct(bt.trifecta_top5_hit_rate)}` : "バックテスト結果はまだありません。";
+  if(bt) $("backtest").textContent = bt.available ? (bt.model_label || "過去ログ主系") + ` BT ${bt.evaluated_races}R / 1着 ${pct(bt.winner_top1_accuracy)} / 3T5 ${pct(bt.trifecta_top5_hit_rate)}` : "バックテスト結果はまだありません。";
 }
 function settledValue(result, fallback, label){
   if(result.status === "fulfilled") return result.value;
@@ -536,7 +536,7 @@ function renderLiveWipe(payload){
   $("liveWipeTitle").textContent = multi ? `LIVE ${races.length}場 / 最大4` : `${r.jcd} ${r.venue_name} ${r.rno}R LIVE`;
   $("liveWipeMeta").innerHTML = [
     `開始 ${hm(r.race_time_at)} +${r.minutes_since_start ?? "-"}分`,
-    `モデル ${(r.top_prediction && r.top_prediction.combination) || "-"}`,
+    `主系 ${(r.top_prediction && r.top_prediction.combination) || "-"}`,
     `確率 ${pct(r.top_prediction && r.top_prediction.probability)}`,
     wipeResultText(r)
   ].map(v => `<span title="${escapeHtml(v)}">${escapeHtml(v)}</span>`).join("");
@@ -633,7 +633,7 @@ function renderArchiveToday(data){
         {key:"national_win_rate",label:"全国"},{key:"local_win_rate",label:"当地"},{key:"motor_no",label:"M",mono:true},{key:"motor_2_rate",label:"M2"},{key:"boat_no",label:"B",mono:true},{key:"boat_2_rate",label:"B2"},
         {key:"exhibition_time",label:"展示"},{key:"exhibition_course",label:"展進"},{key:"exhibition_start_timing",label:"展ST"},{key:"rank",label:"着"},{key:"result_start_timing",label:"ST"}
       ]) +
-      `<h3>モデル予測</h3>` + archiveTable(data.predictions || [], [{key:"combination",label:"3連単",mono:true},{key:"probability",label:"確率",format:pctCell},{key:"odds",label:"od"},{key:"expected_value",label:"EV"},{key:"generated_at",label:"生成"}]) +
+      `<h3>主系予測</h3>` + archiveTable(data.predictions || [], [{key:"combination",label:"3連単",mono:true},{key:"probability",label:"確率",format:pctCell},{key:"odds",label:"od"},{key:"expected_value",label:"EV"},{key:"generated_at",label:"生成"}]) +
       `<h3>払戻</h3>` + archiveTable(data.payouts || [], [{key:"bet_type",label:"式別"},{key:"combination",label:"組番",mono:true},{key:"payout_yen",label:"払戻",format:yenCell},{key:"popularity",label:"人気"}]);
     return;
   }

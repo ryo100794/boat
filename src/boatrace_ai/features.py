@@ -36,6 +36,8 @@ def load_training_examples(
     through_date: str | None = None,
     from_date: str | None = None,
     include_odds: bool = False,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
     filters = ["rr.rank IS NOT NULL"]
     params: list[Any] = []
@@ -45,6 +47,16 @@ def load_training_examples(
     if from_date:
         filters.append("r.race_date >= ?")
         params.append(from_date)
+    if min_odds_snapshots > 0:
+        filters.append(
+            "(SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) >= ?"
+        )
+        params.append(int(min_odds_snapshots))
+    if complete_results_only:
+        filters.append(
+            "(SELECT COUNT(rr2.rank) FROM race_results rr2 "
+            "WHERE rr2.race_id = r.race_id AND rr2.rank IS NOT NULL) = 6"
+        )
     rows = conn.execute(
         f"""
         SELECT

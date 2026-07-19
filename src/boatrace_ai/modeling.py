@@ -31,10 +31,18 @@ def train_model(
     model_path: Path,
     include_odds: bool = False,
     through_date: str | None = None,
+    from_date: str | None = None,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
     min_examples: int = 100,
 ) -> dict[str, Any]:
     X, y, meta = load_training_examples(
-        conn, through_date=through_date, include_odds=include_odds
+        conn,
+        through_date=through_date,
+        from_date=from_date,
+        include_odds=include_odds,
+        min_odds_snapshots=min_odds_snapshots,
+        complete_results_only=complete_results_only,
     )
     if len(X) < min_examples:
         raise ValueError(f"training examples are too few: {len(X)} < {min_examples}")
@@ -47,6 +55,7 @@ def train_model(
         "examples": len(X),
         "races": len({row["race_id"] for row in meta}),
         "through_date": through_date,
+        "from_date": from_date,
         "include_odds": include_odds,
         "target": "lane_win_probability",
     }
@@ -61,9 +70,18 @@ def backtest_model(
     output_path: Path,
     folds: int = 5,
     include_odds: bool = False,
+    from_date: str | None = None,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
     min_train_races: int = 500,
 ) -> dict[str, Any]:
-    X, y, meta = load_training_examples(conn, include_odds=include_odds)
+    X, y, meta = load_training_examples(
+        conn,
+        from_date=from_date,
+        include_odds=include_odds,
+        min_odds_snapshots=min_odds_snapshots,
+        complete_results_only=complete_results_only,
+    )
     if len(X) < 100:
         raise ValueError(f"not enough parsed historical examples: {len(X)}")
     races = sorted({row["race_id"] for row in meta})
@@ -124,6 +142,7 @@ def backtest_model(
         "examples": len(X),
         "races": len(races),
         "include_odds": include_odds,
+        "from_date": from_date,
         "entry_log_loss": _safe_log_loss(all_entry_labels, all_entry_probs),
         "entry_brier": brier_score_loss(all_entry_labels, all_entry_probs),
         **race_metrics,

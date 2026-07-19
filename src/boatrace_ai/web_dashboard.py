@@ -20,6 +20,8 @@ from .web_prediction_summary import attach_latest_prediction_summaries
 JST = timezone(timedelta(hours=9))
 START_TO_DEADLINE_MINUTES = 5
 HISTORICAL_TARGET_DAYS = 3650
+REALTIME_SHADOW_TARGET_RACES = 1000
+REALTIME_SHADOW_MIN_SNAPSHOTS = 10
 TODAY_TARGET_RACES = len(VENUES) * len(RACES_PER_DAY)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
@@ -406,6 +408,31 @@ def base_progress(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             (race_date,),
         ).fetchone()[0]
         day_rows = [dict_row(row) for row in _day_metric_rows(conn, race_date, include_predictions=False)]
+    with connect(db_path) as conn:
+        realtime_row = conn.execute(
+            """
+            WITH odds_per_race AS (
+                SELECT race_id, COUNT(*) AS snapshot_count
+                FROM odds_snapshots
+                GROUP BY race_id
+            ),
+            result_per_race AS (
+                SELECT race_id, COUNT(rank) AS result_rows
+                FROM race_results
+                WHERE rank IS NOT NULL
+                GROUP BY race_id
+            )
+            SELECT
+              COALESCE(SUM(o.snapshot_count), 0) AS snapshots,
+              COUNT(*) AS odds_races,
+              COALESCE(SUM(CASE WHEN o.snapshot_count >= ? THEN 1 ELSE 0 END), 0) AS trend_races,
+              COALESCE(SUM(CASE WHEN o.snapshot_count >= ? AND COALESCE(rr.result_rows, 0) = 6 THEN 1 ELSE 0 END), 0) AS eligible_races
+            FROM odds_per_race o
+            LEFT JOIN result_per_race rr ON rr.race_id = o.race_id
+            """,
+            (REALTIME_SHADOW_MIN_SNAPSHOTS, REALTIME_SHADOW_MIN_SNAPSHOTS),
+        ).fetchone()
+
     today_counts = {
         "races": len(day_rows),
         "racelists": sum(1 for row in day_rows if int(row.get("entries") or 0) == 6),
@@ -423,6 +450,16 @@ def base_progress(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             "result_remaining_days": max(0, HISTORICAL_TARGET_DAYS - int(result_days or 0)),
             "races": int(historical_races or 0),
             "result_races": int(historical_results or 0),
+        },
+        "realtime": {
+            "target_eligible_races": REALTIME_SHADOW_TARGET_RACES,
+            "min_snapshots_per_race": REALTIME_SHADOW_MIN_SNAPSHOTS,
+            "snapshots": int(realtime_row["snapshots"] or 0),
+            "odds_races": int(realtime_row["odds_races"] or 0),
+            "trend_races": int(realtime_row["trend_races"] or 0),
+            "eligible_races": int(realtime_row["eligible_races"] or 0),
+            "remaining_races": max(0, REALTIME_SHADOW_TARGET_RACES - int(realtime_row["eligible_races"] or 0)),
+            "readiness": min(1.0, int(realtime_row["eligible_races"] or 0) / REALTIME_SHADOW_TARGET_RACES),
         },
         "today": {
             "target_races": TODAY_TARGET_RACES,
@@ -550,7 +587,14 @@ def backtest_cached(path: Path | None) -> dict[str, Any]:
     cached = _BACKTEST_CACHE.get(path)
     if cached and cached[1] == stat.st_mtime_ns:
         return cached[2]
-    payload = {"available": True, **json.loads(path.read_text(encoding="utf-8"))}
+    is_shadow = "realtime_odds" in path.stem
+    payload = {
+        "available": True,
+        "track_id": "realtime_odds_shadow" if is_shadow else "historical_main",
+        "model_label": "実odds併用shadow" if is_shadow else "過去ログ主系",
+        "role": "比較評価のみ" if is_shadow else "本番予測",
+        **json.loads(path.read_text(encoding="utf-8")),
+    }
     _BACKTEST_CACHE[path] = (time.monotonic(), stat.st_mtime_ns, payload)
     return payload
 
@@ -620,6 +664,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model_dir": str(model_dir),
         "backtests": backtests,
+        "model_tracks": _model_track_summaries(model_dir, backtests),
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
@@ -632,6 +677,68 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
     return payload
 
+
+
+def _model_track_summaries(
+    model_dir: Path,
+    backtests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    main = next(
+        (row for row in backtests if row.get("file") == "backtest_no_odds_v8.json"),
+        None,
+    )
+    shadow = next(
+        (row for row in backtests if row.get("file") == "realtime_odds_shadow_backtest.json"),
+        None,
+    )
+    state_path = model_dir / "realtime_odds_shadow_state.json"
+    try:
+        shadow_state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        shadow_state = {}
+    eligible = int(shadow_state.get("eligible_races") or 0)
+    required = int(shadow_state.get("required_races") or REALTIME_SHADOW_TARGET_RACES)
+    shadow_status = (
+        "評価済み"
+        if shadow
+        else "学習・評価中"
+        if shadow_state.get("ready")
+        else "学習待ち/蓄積中"
+        if shadow_state
+        else "要復旧"
+    )
+
+    return [
+        {
+            "id": "historical_main",
+            "label": "過去ログ主系",
+            "role": "本番予測",
+            "status": "稼働中",
+            "include_odds": False,
+            "model_file": "win_model_no_odds_v8.joblib",
+            "eligible_races": main.get("evaluated_races") if main else None,
+            "target_races": None,
+            "backtest_available": bool(main),
+            "entry_log_loss": main.get("entry_log_loss") if main else None,
+            "winner_top1_accuracy": main.get("winner_top1_accuracy") if main else None,
+            "trifecta_top5_hit_rate": main.get("trifecta_top5_hit_rate") if main else None,
+        },
+        {
+            "id": "realtime_odds_shadow",
+            "label": "実odds併用shadow",
+            "role": "比較評価のみ",
+            "status": shadow_status,
+            "include_odds": True,
+            "model_file": "realtime_odds_shadow.joblib",
+            "eligible_races": eligible,
+            "target_races": required,
+            "backtest_available": bool(shadow),
+            "entry_log_loss": shadow.get("entry_log_loss") if shadow else None,
+            "winner_top1_accuracy": shadow.get("winner_top1_accuracy") if shadow else None,
+            "trifecta_top5_hit_rate": shadow.get("trifecta_top5_hit_rate") if shadow else None,
+            "generated_at": shadow_state.get("generated_at"),
+        },
+    ]
 
 
 def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2186,17 +2293,19 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         summary = {"error": str(exc)}
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
+    processes = _process_snapshots()
+    milestones = _roadmap_milestones(progress, processes, remote_evaluations)
 
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
         "date": race_date,
         "record_markdown": _read_project_status_markdown(),
-        "milestones": _roadmap_milestones(),
-        "improvements": _roadmap_improvements(),
+        "milestones": milestones,
+        "improvements": _roadmap_improvements(progress, processes),
         "agents": _roadmap_agents(),
         "progress": progress,
         "summary": summary,
-        "processes": _process_snapshots(),
+        "processes": processes,
         "remote_evaluations": remote_evaluations,
         "quality_gates": _quality_gates(db_path.parent / "models", remote_evaluations),
         "model_artifacts": _latest_model_artifacts(db_path.parent / "models"),
@@ -2364,7 +2473,17 @@ def _gate_bankroll_text(row: dict[str, Any] | None) -> str:
     return " / ".join(parts)
 
 
-def _roadmap_improvements() -> list[dict[str, Any]]:
+def _roadmap_improvements(
+    progress: dict[str, Any] | None = None,
+    processes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    realtime = (progress or {}).get("realtime") or {}
+    eligible_races = int(realtime.get("eligible_races") or 0)
+    readiness = min(1.0, float(realtime.get("readiness") or 0.0))
+    shadow_running = any(
+        str(row.get("kind") or "") == "リアルタイムshadow"
+        for row in (processes or [])
+    )
     return [
         {
             "id": "M4-1",
@@ -2377,10 +2496,18 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "回収済み/要改善",
-            "progress": 85,
+            "status": "ablation回収済み/要改善",
+            "progress": 90,
             "item": "相関監査とROI接続",
-            "next": "ROI帰属retry3は完了したが時間fold安定シグナルは0件。相関上位を本番採用せず、ablationと80foldで再現特徴を再探索する。",
+            "next": "ablationは完了。base_pastlog除外でLogLoss 1.279→2.290、1着55.85%→55.34%と悪化。他3群の除外もLogLossは改善せず、削除は見送る。80foldとNN shadowで構造改善を続ける。",
+        },
+        {
+            "id": "M5-1",
+            "milestone": "M5",
+            "status": "蓄積中" if shadow_running else "要復旧",
+            "progress": int(readiness * 100),
+            "item": "実オッズ併用shadowの自動学習ゲート",
+            "next": f"締切前oddsを10時点以上持つ確定R {eligible_races:,}/{REALTIME_SHADOW_TARGET_RACES:,}。到達までは過去ログ主系を維持し、到達後に自動学習・時間fold評価する。",
         },
         {
             "id": "M6-1",
@@ -2454,16 +2581,113 @@ def _roadmap_agents() -> list[dict[str, str]]:
     ]
 
 
-def _roadmap_milestones() -> list[dict[str, Any]]:
+def _roadmap_milestones(
+    progress: dict[str, Any] | None = None,
+    processes: list[dict[str, Any]] | None = None,
+    remote_evaluations: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    progress = progress or {}
+    processes = processes or []
+    remote_evaluations = remote_evaluations or {}
+    historical = progress.get("historical") or {}
+    realtime = progress.get("realtime") or {}
+    process_kinds = {str(row.get("kind") or "") for row in processes}
+    jobs = remote_evaluations.get("jobs") or []
+
+    target_days = max(1, int(historical.get("target_days") or HISTORICAL_TARGET_DAYS))
+    covered_days = min(
+        int(historical.get("program_days") or 0),
+        int(historical.get("result_days") or 0),
+    )
+    historical_complete = (
+        covered_days >= target_days
+        and int(historical.get("program_remaining_days") or 0) == 0
+        and int(historical.get("result_remaining_days") or 0) == 0
+    )
+    historical_progress = 100 if historical_complete else min(99, int(covered_days * 100 / target_days))
+
+    ablation = next((job for job in jobs if job.get("kind") == "feature_ablation"), None)
+    sanity = next((job for job in jobs if job.get("kind") == "bankroll_sanity"), None)
+    ablation_status = str((ablation or {}).get("status") or "")
+    sanity_status = str((sanity or {}).get("status") or "")
+    m4_progress = 90 if ablation_status == "完了" else 85 if ablation_status == "実行中" else 80
+    m6_progress = 82 if sanity_status == "完了" else 78 if sanity_status == "実行中" else 75
+    realtime_readiness = float(realtime.get("readiness") or 0.0)
+
+    web_running = "Webサーバ" in process_kinds
+    collector_running = "リアルタイム収集" in process_kinds
+    predictor_running = "予測ループ" in process_kinds
+    shadow_running = "リアルタイムshadow" in process_kinds
+
     return [
-        {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 88, "next": "日次APIの最新予測一括取得と段階読み込みを継続監視する"},
-        {"id": "M1", "title": "懸案・進捗ページ", "status": "完了/運用中", "progress": 100, "next": "監視JSONと改善ゲートを120秒周期で自動更新する"},
-        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 82, "next": "出走5分後の結果優先取得を監視し、公式未確定と取得失敗を分離集計する"},
-        {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 80, "next": "ROI帰属retry3はstable=0。ablation PID 171811を回収し、特徴群除外の再現性を再評価する"},
-        {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 75, "next": "最高ROI 0.8935、ROI帰属stable=0で未達。80fold sanityとablationを回収して再設計する"},
-        {"id": "M7", "title": "v系ファイル整理", "status": "完了", "progress": 100, "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない"},
+        {
+            "id": "M0",
+            "title": "当日ダッシュボード運用",
+            "status": "完了/運用中" if web_running else "要復旧",
+            "progress": 100 if web_running else 90,
+            "next": "10001の主要API、初回表示時間、日付自動切替を継続監視する",
+        },
+        {
+            "id": "M1",
+            "title": "懸案・進捗ページ",
+            "status": "完了/運用中",
+            "progress": 100,
+            "next": "監視JSONと改善ゲートを120秒周期で自動更新する",
+        },
+        {
+            "id": "M2",
+            "title": "公式データ収集",
+            "status": "完了/運用中" if collector_running and predictor_running else "要復旧",
+            "progress": 100 if collector_running and predictor_running else 90,
+            "next": "結果優先取得、締切直前オッズ、予測ループの常駐を監視する",
+        },
+        {
+            "id": "M3",
+            "title": "過去10年バックフィル",
+            "status": "完了" if historical_complete else "進行中",
+            "progress": historical_progress,
+            "next": (
+                "10年連続データを維持し、新着日を日次追加する"
+                if historical_complete
+                else "新しい日付から古い日付へ欠損日を優先して再取得する"
+            ),
+        },
+        {
+            "id": "M4",
+            "title": "過去ログ中心モデル",
+            "status": "進行中" if ablation_status != "完了" else "評価回収済み/改善中",
+            "progress": m4_progress,
+            "next": (
+                "特徴量ablationを回収し、除外候補を同一時間foldで再評価する"
+                if ablation_status != "完了"
+                else "ablation結果を資金運用同一foldへ反映しNN shadowと比較する"
+            ),
+        },
+        {
+            "id": "M5",
+            "title": "リアルタイム併用モデル",
+            "status": "並走/蓄積中" if shadow_running else "要起動",
+            "progress": min(70, 25 + int(realtime_readiness * 50)) if shadow_running else 20,
+            "next": f"実オッズ付き完了R {int(realtime.get("eligible_races") or 0):,}/{REALTIME_SHADOW_TARGET_RACES:,}。到達後に自動学習・時系列評価する",
+        },
+        {
+            "id": "M6",
+            "title": "資金運用モデル",
+            "status": "要改善",
+            "progress": m6_progress,
+            "next": (
+                "80fold sanityを回収し、ROI 1.0未達要因を再設計する"
+                if sanity_status != "完了"
+                else "80fold結果とablationを統合しROI/損益ゲートを再評価する"
+            ),
+        },
+        {
+            "id": "M7",
+            "title": "v系ファイル整理",
+            "status": "完了",
+            "progress": 100,
+            "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない",
+        },
     ]
 
 
@@ -2472,6 +2696,7 @@ def _process_snapshots() -> list[dict[str, Any]]:
         ("web_dashboard", "Webサーバ"),
         ("realtime_predictor", "予測ループ"),
         ("realtime_collector", "リアルタイム収集"),
+        ("model_cycle", "リアルタイムshadow"),
         ("predict_loop", "予測ループ"),
         ("adaptive_odds_loop", "リアルタイム収集"),
         ("live_slow", "ライブ収集"),

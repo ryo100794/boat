@@ -9,7 +9,7 @@
     * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:#fff; font-size:10px; }
     header { position:sticky; top:0; z-index:4; display:flex; align-items:center; justify-content:space-between; gap:6px; padding:4px 6px; border-bottom:1px solid var(--line); background:#fff; }
     h1 { margin:0; font-size:12px; white-space:nowrap; } a,button { height:19px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--ink); padding:1px 5px; text-decoration:none; font:inherit; } button,.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
-    main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(6,minmax(90px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
+    main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(7,minmax(82px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .kpi { background:#fff; padding:3px 4px; min-width:0; } .kpi b { display:block; font-size:12px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .kpi span { color:var(--muted); font-size:9px; }
     .grid { display:grid; grid-template-columns:1.25fr .75fr; gap:6px; margin-top:6px; align-items:start; } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
     .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } table { width:100%; border-collapse:collapse; table-layout:fixed; }
@@ -44,9 +44,9 @@ const bytes = v => { v=Number(v||0); if(v>1048576) return `${(v/1048576).toFixed
 function tag(status){ const s=String(status||""); const c=s.includes("完了")?"ok":s.includes("要")||s.includes("失敗")?"bad":s.includes("進行")||s.includes("調査")?"warn":""; return `<span class="tag ${c}">${esc(s)}</span>`; }
 async function load(){ const res=await fetch('/api/reports/roadmap-status',{cache:'no-store'}); const data=await res.json(); render(data); }
 function render(data){
-  const p=(data.progress||{}), t=(p.today||{}), h=(p.historical||{}), s=(data.summary||{}), v=(data.v_file_inventory||{});
+  const p=(data.progress||{}), t=(p.today||{}), h=(p.historical||{}), rt=(p.realtime||{}), s=(data.summary||{}), v=(data.v_file_inventory||{});
   $('meta').textContent=`更新 ${String(data.generated_at||'').replace('T',' ').slice(0,19)}`;
-  $('kpis').innerHTML=[['当日R',`${fmt(t.races)}/${fmt(t.target_races)}`],['当日結果残',fmt(t.final_remaining)],['過去結果日残',fmt(h.result_remaining_days)],['予測R',fmt(s.predictions)],['odds snap',fmt(s.odds_snapshots)],['v系py',fmt(v.count)]].map(([l,x])=>`<div class="kpi"><b title="${esc(x)}">${esc(x)}</b><span>${esc(l)}</span></div>`).join('');
+  $('kpis').innerHTML=[['当日R',`${fmt(t.races)}/${fmt(t.target_races)}`],['当日結果残',fmt(t.final_remaining)],['過去結果日残',fmt(h.result_remaining_days)],['実odds学習R',`${fmt(rt.eligible_races)}/${fmt(rt.target_eligible_races)}`],['予測R',fmt(s.predictions)],['odds snap',fmt(s.odds_snapshots)],['v系py',fmt(v.count)]].map(([l,x])=>`<div class="kpi"><b title="${esc(x)}">${esc(x)}</b><span>${esc(l)}</span></div>`).join('');
   $('record').textContent=data.record_markdown||'';
   $('processRows').innerHTML=(data.processes||[]).map(r=>`<tr><td>${esc(r.kind)}</td><td class="mono">${esc(r.pid)}</td><td title="${esc(r.cmd)}">${esc(r.cmd)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">稼働プロセスなし</td></tr>';
   $('milestoneRows').innerHTML=(data.milestones||[]).map(r=>`<tr><td class="mono" title="${esc(r.title)}">${esc(r.id)} ${esc(r.title)}</td><td>${tag(r.status)}</td><td><div class="bar"><i style="width:${Number(r.progress||0)}%"></i></div></td><td title="${esc(r.next)}">${esc(r.next)}</td></tr>`).join('');
