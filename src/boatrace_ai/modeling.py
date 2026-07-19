@@ -4,7 +4,6 @@ import json
 import math
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from itertools import permutations
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
 
 from .db import insert_prediction_rows, race_id
+from .fast_math import TRIFECTA_COMBINATIONS, plackett_luce_probabilities
 from .features import (
     entry_features,
     latest_trifecta_odds,
@@ -233,8 +233,12 @@ def trifecta_predictions(
 ) -> list[dict[str, Any]]:
     latest_odds = latest_odds or {}
     rows = []
-    for first, second, third in permutations(range(1, 7), 3):
-        probability = _pl_probability(lane_probs, first, second, third)
+    probabilities = plackett_luce_probabilities(
+        lane_probs[lane] for lane in range(1, 7)
+    )
+    for (first, second, third), probability in zip(
+        TRIFECTA_COMBINATIONS, probabilities
+    ):
         combination = f"{first}-{second}-{third}"
         odds = latest_odds.get(combination)
         rows.append(

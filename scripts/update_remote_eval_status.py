@@ -28,6 +28,8 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 174501, "name": "feature_correlation_advanced_retry", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_diagnostics_stream_advanced_retry.json", "log": "logs/feature_correlation_advanced_retry.log"},
     {"pid": 175652, "name": "m6_best_roi_attribution_b53debe", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_b53debe.json", "log": "logs/m6_best_roi_attribution_b53debe.log"},
     {"pid": 178254, "name": "m6_best_roi_attribution_retry3", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_retry3.json", "log": "logs/m6_best_roi_attribution_retry3.log"},
+    {"pid": 184638, "name": "calibrated_linear_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_linear", "output": "data/models/calibrated_linear_shadow_2fold.json", "log": "logs/calibrated_linear_shadow_2fold.log"},
+    {"pid": 184700, "name": "calibrated_mlp_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_mlp", "output": "data/models/calibrated_mlp_shadow_2fold.json", "log": "logs/calibrated_mlp_shadow_2fold.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -121,7 +123,7 @@ for job in JOBS:
     log_joined = "\n".join(log_tail)
     error_seen = "Traceback" in log_joined or "ValueError" in log_joined or "Error" in log_joined
     if proc:
-        status = "実行中"
+        status = "待機中" if log_tail and "waiting_for_pid" in log_tail[-1] else "実行中"
     elif result and not result.get("error"):
         status = "完了"
     elif error_seen or (result and result.get("error")):

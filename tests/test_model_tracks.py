@@ -29,7 +29,13 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
         }
     ]
 
-    main, shadow = _model_track_summaries(tmp_path, backtests)
+    remote = {
+        "jobs": [
+            {"kind": "calibrated_linear", "status": "待機中"},
+            {"kind": "calibrated_mlp", "status": "待機中"},
+        ]
+    }
+    main, shadow, linear, mlp = _model_track_summaries(tmp_path, backtests, remote)
 
     assert main["role"] == "本番予測"
     assert main["include_odds"] is False
@@ -37,6 +43,12 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
     assert shadow["status"] == "学習待ち/蓄積中"
     assert shadow["eligible_races"] == 217
     assert shadow["backtest_available"] is False
+    assert "1着=1" in main["teacher"]
+    assert "C=0.20" in main["training"]
+    assert linear["model_file"] == "calibrated_linear_shadow_2fold.json"
+    assert "SGDClassifier" in linear["training"]
+    assert mlp["model_file"] == "calibrated_mlp_shadow_2fold.json"
+    assert "MLP 64-16" in mlp["training"]
 
 
 def test_web_templates_identify_the_active_model_track() -> None:

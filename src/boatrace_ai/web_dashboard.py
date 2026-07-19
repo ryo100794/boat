@@ -664,7 +664,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model_dir": str(model_dir),
         "backtests": backtests,
-        "model_tracks": _model_track_summaries(model_dir, backtests),
+        "model_tracks": _model_track_summaries(model_dir, backtests, remote_evaluations),
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
@@ -682,6 +682,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 def _model_track_summaries(
     model_dir: Path,
     backtests: list[dict[str, Any]],
+    remote_evaluations: dict[str, Any],
 ) -> list[dict[str, Any]]:
     main = next(
         (row for row in backtests if row.get("file") == "backtest_no_odds_v8.json"),
@@ -716,6 +717,8 @@ def _model_track_summaries(
             "status": "稼働中",
             "include_odds": False,
             "model_file": "win_model_no_odds_v8.joblib",
+            "teacher": "公式過去10年の確定6艇レース / 1着=1・2着以下=0",
+            "training": "LogisticRegression C=0.20・L2 / StandardScaler / class_weightなし / 5fold時系列",
             "eligible_races": main.get("evaluated_races") if main else None,
             "target_races": None,
             "backtest_available": bool(main),
@@ -730,6 +733,8 @@ def _model_track_summaries(
             "status": shadow_status,
             "include_odds": True,
             "model_file": "realtime_odds_shadow.joblib",
+            "teacher": "締切前odds 10時点以上を持つ確定6艇レース / 1着=1・2着以下=0",
+            "training": "過去ログ特徴+odds系列 / LogisticRegression / 5fold時系列 / 1,000R到達後に学習",
             "eligible_races": eligible,
             "target_races": required,
             "backtest_available": bool(shadow),
@@ -738,7 +743,50 @@ def _model_track_summaries(
             "trifecta_top5_hit_rate": shadow.get("trifecta_top5_hit_rate") if shadow else None,
             "generated_at": shadow_state.get("generated_at"),
         },
+        *_calibrated_model_tracks(remote_evaluations),
     ]
+
+
+def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+    jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
+    specs = (
+        (
+            "calibrated_linear",
+            "較正linear shadow",
+            "calibrated_linear_shadow_2fold.json",
+            "FeatureHasher 16,384 / StandardScaler / SGDClassifier(log_loss,L2,alpha=1e-4,average) / class_weightなし / 2 epoch / 2fold",
+        ),
+        (
+            "calibrated_mlp",
+            "較正MLP shadow",
+            "calibrated_mlp_shadow_2fold.json",
+            "FeatureHasher 16,384 / StandardScaler / MLP 64-16・ReLU・Adam・alpha=1e-4 / class_weightなし / 2 epoch / 2fold",
+        ),
+    )
+    rows = []
+    for kind, label, model_file, training in specs:
+        job = next((item for item in jobs or [] if item.get("kind") == kind), {})
+        result = job.get("result") or {}
+        metrics = result.get("metrics") or {}
+        rows.append(
+            {
+                "id": kind,
+                "label": label,
+                "role": "比較評価のみ",
+                "status": job.get("status") or "未登録",
+                "include_odds": False,
+                "model_file": model_file,
+                "teacher": "公式過去10年の確定6艇レース / 1着=1・2着以下=0",
+                "training": training,
+                "eligible_races": metrics.get("evaluated_races"),
+                "target_races": None,
+                "backtest_available": job.get("status") == "完了" and bool(result),
+                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
+                "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
+            }
+        )
+    return rows
 
 
 def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2301,7 +2349,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         "date": race_date,
         "record_markdown": _read_project_status_markdown(),
         "milestones": milestones,
-        "improvements": _roadmap_improvements(progress, processes),
+        "improvements": _roadmap_improvements(progress, processes, remote_evaluations),
         "agents": _roadmap_agents(),
         "progress": progress,
         "summary": summary,
@@ -2476,6 +2524,7 @@ def _gate_bankroll_text(row: dict[str, Any] | None) -> str:
 def _roadmap_improvements(
     progress: dict[str, Any] | None = None,
     processes: list[dict[str, Any]] | None = None,
+    remote_evaluations: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     realtime = (progress or {}).get("realtime") or {}
     eligible_races = int(realtime.get("eligible_races") or 0)
@@ -2484,14 +2533,22 @@ def _roadmap_improvements(
         str(row.get("kind") or "") == "リアルタイムshadow"
         for row in (processes or [])
     )
+    calibrated_jobs = [
+        row
+        for row in ((remote_evaluations or {}).get("jobs") or [])
+        if row.get("kind") in {"calibrated_linear", "calibrated_mlp"}
+    ]
+    calibrated_complete = bool(calibrated_jobs) and all(
+        row.get("status") == "完了" for row in calibrated_jobs
+    )
     return [
         {
             "id": "M4-1",
             "milestone": "M4/M5",
-            "status": "設計",
-            "progress": 10,
-            "item": "NN shadowモデル導入",
-            "next": "選手/場/モーター/ボートのembedding、天候/展示/時系列実績、オッズ系列branchを持つNNを別系統で短縮学習し、資金運用バックチェックで既存主系と比較する。",
+            "status": "評価回収済み" if calibrated_complete else "実装済み/評価待ち",
+            "progress": 70 if calibrated_complete else 45,
+            "item": "較正linear/MLP shadow導入",
+            "next": "StandardScalerとFeatureHasherをストリーミング適用し、class weightなしのlinear/MLPを同一2foldで比較する。80fold終了後にlinear、続いてMLPを実行し、主系より較正性能が良い場合だけ資金運用評価へ進める。",
         },
         {
             "id": "M4-2",
@@ -2557,6 +2614,14 @@ def _roadmap_improvements(
             "item": "候補あり選択0件の解消",
             "next": "normalized_kelly 5条件すべてでselected_tickets>0を確認。80fold sanityは再現性監査として継続。",
         },
+        {
+            "id": "M6-7",
+            "milestone": "M6",
+            "status": "完了",
+            "progress": 100,
+            "item": "三連単シミュレーションC高速化",
+            "next": "Plackett-Luce 120通り計算をCPython C拡張へ置換。Python fallbackを維持し、今後の資金運用再評価へ適用する。",
+        },
     ]
 
 
@@ -2608,9 +2673,22 @@ def _roadmap_milestones(
 
     ablation = next((job for job in jobs if job.get("kind") == "feature_ablation"), None)
     sanity = next((job for job in jobs if job.get("kind") == "bankroll_sanity"), None)
+    calibrated_jobs = [
+        job for job in jobs if job.get("kind") in {"calibrated_linear", "calibrated_mlp"}
+    ]
     ablation_status = str((ablation or {}).get("status") or "")
     sanity_status = str((sanity or {}).get("status") or "")
-    m4_progress = 90 if ablation_status == "完了" else 85 if ablation_status == "実行中" else 80
+    m4_progress = (
+        95
+        if calibrated_jobs and all(job.get("status") == "完了" for job in calibrated_jobs)
+        else 92
+        if calibrated_jobs
+        else 90
+        if ablation_status == "完了"
+        else 85
+        if ablation_status == "実行中"
+        else 80
+    )
     m6_progress = 82 if sanity_status == "完了" else 78 if sanity_status == "実行中" else 75
     realtime_readiness = float(realtime.get("readiness") or 0.0)
 
@@ -2660,7 +2738,7 @@ def _roadmap_milestones(
             "next": (
                 "特徴量ablationを回収し、除外候補を同一時間foldで再評価する"
                 if ablation_status != "完了"
-                else "ablation結果を資金運用同一foldへ反映しNN shadowと比較する"
+                else "ablation結果を維持し、較正linear/MLP shadowを同一foldで比較する"
             ),
         },
         {
