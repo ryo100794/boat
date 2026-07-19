@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import time
 from datetime import datetime, timezone
@@ -100,6 +101,12 @@ def policy_kwargs(policy: dict[str, Any]) -> dict[str, Any]:
     return {key: policy[key] for key in keys if policy.get(key) is not None}
 
 
+def supported_policy_kwargs(policy: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    kwargs = policy_kwargs(policy)
+    supported = inspect.signature(adaptive_bankroll_streaming).parameters
+    dropped = sorted(key for key in kwargs if key not in supported)
+    return {key: value for key, value in kwargs.items() if key in supported}, dropped
+
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -129,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
     )
     source_path, source = select_best(rows)
-    kwargs = policy_kwargs(source.get("policy") or {})
+    kwargs, dropped_kwargs = supported_policy_kwargs(source.get("policy") or {})
     print(
         json.dumps(
             {
@@ -139,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                 "source_roi": source.get("roi"),
                 "source_profit_yen": source.get("profit_yen"),
                 "policy": kwargs,
+                "dropped_unsupported_policy": dropped_kwargs,
             },
             ensure_ascii=False,
         ),

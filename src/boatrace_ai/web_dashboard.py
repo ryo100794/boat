@@ -86,12 +86,17 @@ def time_fields_from_stored_start(
         status = "確定"
     elif not start_at:
         status = "時刻未取得"
-    elif deadline_at and now >= deadline_at:
-        status = "締切後"
-    elif buy_until_at and now > buy_until_at:
-        status = "T-5超過"
+    elif deadline_at and now < deadline_at:
+        if buy_until_at and now > buy_until_at:
+            status = "T-5超過"
+        else:
+            status = "候補"
+    elif now < start_at:
+        status = "出走待"
+    elif now < start_at + timedelta(minutes=5):
+        status = "出走"
     else:
-        status = "候補"
+        status = "結果待"
     return {
         "stored_schedule_at": iso(start_at),
         "deadline_at": iso(deadline_at),
@@ -998,7 +1003,8 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
         closed = []
         for row in sorted(rows, key=lambda item: item["deadline_at"] or "", reverse=True):
             start_at = stored_start_time(row["deadline_at"])
-            if not start_at or start_at > now:
+            deadline_at = estimated_deadline_from_start(start_at)
+            if not deadline_at or deadline_at > now:
                 continue
             item = _race_payload_from_row(row, now=now, before_minutes=before_minutes)
             if int(item.get("entries") or 0) != 6:
@@ -1009,7 +1015,6 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             else:
                 item.update(
                     {
-                        "time_status": "結果待",
                         "result_combination": None,
                         "trifecta_payout_yen": None,
                         "trifecta_popularity": None,
@@ -2269,10 +2274,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "実行中/要改善",
-            "progress": 45,
+            "status": "再評価中/要改善",
+            "progress": 70,
             "item": "相関監査とROI接続",
-            "next": "単相関だけでは採否を決めない。相関監査retry PID 174501と正規化Kelly 5条件を回収し、PID 175652が最良条件の選択券ROI帰属を時間foldで自動再検証する。",
+            "next": "相関監査と正規化Kelly 5条件は回収済み。workspace/src明示のretry3 PID 178254で最良条件の選択券ROI帰属を時間fold再検証中。",
         },
         {
             "id": "M6-1",
@@ -2285,10 +2290,10 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-2",
             "milestone": "M6",
-            "status": "再設計/再実行",
-            "progress": 45,
+            "status": "完了",
+            "progress": 100,
             "item": "資金配分パラメータ探索",
-            "next": "旧スイープは候補あり選択0件のため停止。正規化KellyスイープPID 172555-172559で結果回収待ち。",
+            "next": "正規化Kelly 5条件を全期間で回収。最高はEV2.0・日次10券のROI 0.8935、損益 -112,270円。完了ゲート未達はM6-3で継続。",
         },
         {
             "id": "M6-3",
@@ -2309,18 +2314,18 @@ def _roadmap_improvements() -> list[dict[str, Any]]:
         {
             "id": "M6-5",
             "milestone": "M6",
-            "status": "修正済み/監視中",
-            "progress": 90,
+            "status": "完了",
+            "progress": 100,
             "item": "疎行列index互換",
-            "next": "FeatureHasher出力int32化を検証済み。正規化Kelly再実行でも同エラーが再発しないか監視する。",
+            "next": "FeatureHasher出力int32化後、正規化Kelly5条件が疎行列indexエラーなしで完走。",
         },
         {
             "id": "M6-6",
             "milestone": "M6",
-            "status": "修正済み/再評価中",
-            "progress": 55,
+            "status": "完了",
+            "progress": 100,
             "item": "候補あり選択0件の解消",
-            "next": "日次上位候補制限とnormalized_kelly配分を追加。sanity PID 172873と本評価PID 172555-172559でselected_tickets>0を確認する。",
+            "next": "normalized_kelly 5条件すべてでselected_tickets>0を確認。80fold sanityは再現性監査として継続。",
         },
     ]
 
@@ -2348,13 +2353,13 @@ def _roadmap_agents() -> list[dict[str, str]]:
 
 def _roadmap_milestones() -> list[dict[str, Any]]:
     return [
-        {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 70, "next": "表示を当日固定にし、重いAPIを段階読み込み・キャッシュで抑える"},
-        {"id": "M1", "title": "懸案・進捗ページ", "status": "進行中", "progress": 86, "next": "リモート評価監視JSONを10001へ反映し、ジョブ結果を継続回収する"},
-        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 58, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
+        {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 78, "next": "表示を当日固定にし、重いAPIを段階読み込み・キャッシュで抑える"},
+        {"id": "M1", "title": "懸案・進捗ページ", "status": "完了/運用中", "progress": 100, "next": "監視JSONと改善ゲートを120秒周期で自動更新する"},
+        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 75, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
-        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 74, "next": "retry相関診断とROI帰属バックテストを回収し、時間foldで再現する特徴だけを採用候補にする"},
+        {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 80, "next": "ablation PID 171811とROI帰属retry3 PID 178254を回収し、時間foldで再現する特徴だけを採用候補にする"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
-        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 68, "next": "正規化Kelly結果と選択券ROI帰属を回収し、ROI/損益/fold再現性ゲート達成まで完了扱いしない"},
+        {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 75, "next": "最高ROI 0.8935で未達。ROI帰属retry3と80fold sanityを回収し、再現特徴で再学習する"},
         {"id": "M7", "title": "v系ファイル整理", "status": "棚卸し完了/移行待ち", "progress": 38, "next": "Mendel棚卸しのsafe-to-clean候補から安定名移行済み範囲を削除する"},
     ]
 

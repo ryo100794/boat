@@ -27,6 +27,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 173485, "name": "feature_correlation_advanced_e07badb", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_e07badb.json", "log": "logs/feature_correlation_advanced_e07badb.log"},
     {"pid": 174501, "name": "feature_correlation_advanced_retry", "milestone": "M4-2", "kind": "feature_correlation", "output": "data/models/feature_result_correlation_v8_stream_advanced_retry.json", "log": "logs/feature_correlation_advanced_retry.log"},
     {"pid": 175652, "name": "m6_best_roi_attribution_b53debe", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_b53debe.json", "log": "logs/m6_best_roi_attribution_b53debe.log"},
+    {"pid": 178254, "name": "m6_best_roi_attribution_retry3", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_retry3.json", "log": "logs/m6_best_roi_attribution_retry3.log"},
 ]
 
 REMOTE_CODE = r'''

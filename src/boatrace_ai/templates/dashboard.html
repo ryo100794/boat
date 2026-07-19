@@ -26,7 +26,7 @@
     .subline { display:grid; grid-template-columns:28px 1fr; gap:2px; color:var(--muted); font-size:9px; line-height:1.1; white-space:nowrap; overflow:hidden; }
     .subline strong { color:var(--ink); font-weight:600; overflow:hidden; text-overflow:ellipsis; }
     .badge { display:inline-block; border-radius:999px; padding:1px 4px; color:#fff; background:var(--muted); font-size:9px; font-weight:700; white-space:nowrap; }
-    .live,.候補 { background:var(--accent); } .結果待 { background:var(--warn); } .done,.確定 { background:var(--ok); } .wait,.T-10超過,.T-5超過 { background:var(--warn); } .締切後 { background:var(--bad); } .venue.s-live { background:#effafa; } .venue.s-wait { background:#fff8e8; } .venue.s-done { background:#eef8f2; } .venue.s-none { background:#fafbfb; } .venue.urgent { background:#fff1e6; border-color:#d99a5b; } .venue.due { background:#ffe4db; border-color:#c95c43; } tr.near { background:#fff7db; } tr.soon { background:#fff0e3; } tr.due { background:#ffe2d8; } tr.pick { background:#eaf8f6; } tr.pick.due { background:#ffdcd2; }
+    .live,.候補,.出走 { background:var(--accent); } .出走待,.結果待 { background:var(--warn); } .done,.確定 { background:var(--ok); } .wait,.T-10超過,.T-5超過 { background:var(--warn); } .締切後 { background:var(--bad); } .venue.s-live { background:#effafa; } .venue.s-wait { background:#fff8e8; } .venue.s-done { background:#eef8f2; } .venue.s-none { background:#fafbfb; } .venue.urgent { background:#fff1e6; border-color:#d99a5b; } .venue.due { background:#ffe4db; border-color:#c95c43; } tr.near { background:#fff7db; } tr.soon { background:#fff0e3; } tr.due { background:#ffe2d8; } tr.pick { background:#eaf8f6; } tr.pick.due { background:#ffdcd2; }
     .timeline-frame { border:1px solid var(--line); border-top:2px solid var(--accent); background:#fff; margin-bottom:7px; }
     .timeline-frame h2 { margin:0; padding:3px 5px; font-size:12px; letter-spacing:0; display:flex; justify-content:space-between; gap:6px; border-bottom:1px solid var(--line); }
     .timeline-scroll { max-height:190px; overflow-y:auto; scrollbar-gutter:stable; } .timeline-scroll table { table-layout:fixed; } .timeline-scroll th,.timeline-scroll td { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .timeline-scroll th:nth-child(1),.timeline-scroll td:nth-child(1){width:34px;} .timeline-scroll th:nth-child(2),.timeline-scroll td:nth-child(2){width:70px;} .timeline-scroll th:nth-child(3),.timeline-scroll td:nth-child(3){width:76px;} .timeline-scroll th:nth-child(4),.timeline-scroll td:nth-child(4){width:82px;} .timeline-scroll th:nth-child(5),.timeline-scroll td:nth-child(5){width:56px;} .timeline-scroll th:nth-child(6),.timeline-scroll td:nth-child(6){width:50px;} .timeline-scroll th:nth-child(7),.timeline-scroll td:nth-child(7){width:50px;} .timeline-scroll th:nth-child(8),.timeline-scroll td:nth-child(8){width:64px;}
@@ -218,6 +218,8 @@ function num(v){ return v == null ? "-" : Number(v).toFixed(3); }
 function hm(v){ if(!v) return "-"; return new Date(v).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Tokyo"}); }
 function age(v){ if(!v) return "-"; const m = Math.floor((Date.now()-new Date(v).getTime())/60000); return `${hm(v)} (${m}分前)`; }
 function minLabel(v){ return v == null ? "-" : `${v}分`; }
+function deadlineCountdown(value){ if(!value) return "締切--:--前"; const seconds=Math.max(0,Math.ceil((new Date(value).getTime()-Date.now())/1000)); const mm=String(Math.floor(seconds/60)).padStart(2,"0"); const ss=String(seconds%60).padStart(2,"0"); return `締切${mm}:${ss}前`; }
+function updateDeadlineCountdowns(){ document.querySelectorAll("[data-deadline-countdown]").forEach(el => { el.textContent=deadlineCountdown(el.dataset.deadlineCountdown); }); }
 function cls(v){ return String(v || "").replaceAll(" ",""); }
 function statusClass(v){ return v==="監視中" ? "live" : v==="終了" ? "done" : (v==="未取得"||v==="開催なし") ? "" : "wait"; }
 function footerStatus(s, prog, nowIso){ const h=prog.historical||{}, t=prog.today||{}; return `過去分: 番組LZH 残${h.program_remaining_days ?? "-"}日 / 結果LZH 残${h.result_remaining_days ?? "-"}日 / parsed ${h.races ?? "-"}R / 結果 ${h.result_races ?? "-"}R | 本日分: レース 残${t.race_remaining ?? "-"} / 出走 残${t.racelist_remaining ?? "-"} / odds 残${t.odds_remaining ?? "-"} / 結果 残${t.final_remaining ?? "-"} / 予測 ${s.predictions} | 更新 ${nowIso.replace("T"," ").slice(0,19)}`; }
@@ -339,7 +341,7 @@ function renderActionTable(rows, candidates, finished){
   const picks = upcoming.filter(r => candidateMap.has(r.race_id));
   const others = upcoming.filter(r => !candidateMap.has(r.race_id));
   const action = [
-    ...finished.map(r => ({ kind:(Number(r.result_rows || 0) >= 3 ? "確定" : "結果待"), item:r, source:r, isPick:false, isFinal:true })),
+    ...finished.map(r => ({ kind:(Number(r.result_rows || 0) >= 3 ? "確定" : (r.time_status || "結果待")), item:r, source:r, isPick:false, isFinal:true })),
     ...picks.map(r => ({ kind:"候補", item:candidateMap.get(r.race_id), source:r, isPick:true, isFinal:false })),
     ...others.map(r => ({ kind:"予定", item:r, source:r, isPick:false, isFinal:false })),
   ].sort((a,b) => {
@@ -348,7 +350,7 @@ function renderActionTable(rows, candidates, finished){
     if(av !== bv) return av - bv;
     return String(a.source.jcd).localeCompare(String(b.source.jcd)) || Number(a.source.rno || 0) - Number(b.source.rno || 0);
   });
-  $("timelineInfo").textContent = `直近終了 ${finished.length}R / 候補 ${picks.length}R / 今後 ${upcoming.length}R / 締切昇順`;
+  $("timelineInfo").textContent = `締切後 ${finished.length}R / 候補 ${picks.length}R / 今後 ${upcoming.length}R / 締切昇順`;
   $("actionRows").innerHTML = action.map((row,idx) => {
     const r = row.source;
     const item = row.item || r;
@@ -358,16 +360,18 @@ function renderActionTable(rows, candidates, finished){
     const when = timePair(r);
     if(row.isFinal){
       const ready = Number(item.result_rows || 0) >= 3 && item.result_combination;
-      const mark = ready ? (item.top_hit ? "的中" : (item.top5_hit ? "上位5" : "外れ")) : "結果待";
-      const result = ready ? `${item.result_combination} ${mark}` : "結果待";
+      const pendingStatus = item.time_status || "結果待";
+      const mark = ready ? (item.top_hit ? "的中" : (item.top5_hit ? "上位5" : "外れ")) : pendingStatus;
+      const result = ready ? `${item.result_combination} ${mark}` : (pendingStatus === "結果待" ? "結果待" : "-");
       const payout = ready ? (item.trifecta_payout_yen == null ? "-" : `${Number(item.trifecta_payout_yen).toLocaleString("ja-JP")}円`) : "-";
-      const badge = ready ? "確定" : "結果待";
+      const badge = ready ? "確定" : pendingStatus;
       return `<tr class="${ready ? "final" : "pending"}" data-race="${r.race_id}"><td><span class="badge ${badge}">${badge}</span></td><td title="${r.venue_name} ${r.rno}R ${r.title || ""}"><b>${shortRace}</b></td><td class="mono" title="締切 ${hm(r.deadline_at)} / 出走 ${hm(r.race_time_at)}">${when}</td><td class="mono" title="${result}">${result}</td><td class="mono">${p.combination || "-"}</td><td>${pct(p.probability)}</td><td>${num(p.odds)}</td><td class="mono">${payout}</td></tr>`;
     }
     const status = r.time_status === "T-10超過" ? "T-5超過" : r.time_status;
-    const verdict = `<span class="badge ${cls(status)}">${status}</span>${row.isPick ? ` <span class="badge 候補">候補</span>` : ""}`;
+    const statusBadge = status === "T-5超過" ? `<span class="badge ${cls(status)}" data-deadline-countdown="${r.deadline_at || ""}">${deadlineCountdown(r.deadline_at)}</span>` : `<span class="badge ${cls(status)}">${status}</span>`;
+    const verdict = `${statusBadge}${row.isPick ? ` <span class="badge 候補">候補</span>` : ""}`;
     const tone = rowTone(r, row.isPick, idx);
-    return `<tr class="${tone}" data-race="${r.race_id}"><td><span class="badge ${row.isPick ? "候補" : ""}">${row.kind}</span></td><td title="${r.venue_name} ${r.rno}R ${r.title || ""}"><b>${shortRace}</b></td><td class="mono" title="締切 ${hm(r.deadline_at)} / 出走 ${hm(r.race_time_at)}">${when} <span class="muted">${minLabel(r.minutes_to_deadline)}</span></td><td>${verdict}</td><td class="mono">${p.combination || "-"}</td><td>${pct(p.probability)}</td><td>${num(p.odds)}</td><td>${num(ev)}</td></tr>`;
+    return `<tr class="${tone}" data-race="${r.race_id}"><td><span class="badge ${row.isPick ? "候補" : ""}">${row.kind}</span></td><td title="${r.venue_name} ${r.rno}R ${r.title || ""}"><b>${shortRace}</b></td><td class="mono" title="締切 ${hm(r.deadline_at)} / 出走 ${hm(r.race_time_at)}">${when}</td><td>${verdict}</td><td class="mono">${p.combination || "-"}</td><td>${pct(p.probability)}</td><td>${num(p.odds)}</td><td>${num(ev)}</td></tr>`;
   }).join("") || `<tr><td colspan="8" class="empty">表示対象のレース情報はありません。</td></tr>`;
   document.querySelectorAll("#actionRows tr[data-race]").forEach(row => row.onclick = () => selectRace(row.dataset.race));
 }
@@ -632,7 +636,7 @@ function wireArchiveNav(){
 }
 wireArchiveNav();
 
-loadAll(); setInterval(loadAll,30000);
+loadAll(); setInterval(loadAll,30000); setInterval(updateDeadlineCountdowns,1000);
 </script>
 </body>
 </html>
