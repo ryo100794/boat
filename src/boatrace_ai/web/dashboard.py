@@ -2774,7 +2774,7 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "target": "M6 ROI",
             "status": "達成候補" if roi_ok else "未達",
             "evidence": _gate_bankroll_text(best),
-            "next": "ROI 1.0以上の候補を正規化KellyスイープPID 172555-172559で確認する" if not roi_ok else "損益/ドローダウン/購入日数も確認する",
+            "next": "既存Kelly探索は完了。市場較正とno-bet条件を再設計し、未使用時間foldでROI 1.0以上を検証する" if not roi_ok else "損益/ドローダウン/購入日数も確認する",
         },
         {
             "target": "M6 損益",
@@ -2786,7 +2786,7 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
             "target": "M6 最新適応型",
             "status": "未達" if latest_roi is not None and latest_roi < 1.0 else "確認中",
             "evidence": _gate_bankroll_text(latest),
-            "next": "正規化KellyスイープPID 172555-172559の結果で置き換える",
+            "next": "既存スイープ・80fold結果は回収済み。次候補を同一条件で比較する",
         },
         {
             "target": "M6 ドローダウン",
@@ -2801,13 +2801,13 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
                 f"{attribution_best.get('file')} / stable={int(attribution_best.get('stable_signals') or 0)} / gate={attribution_best.get('roi_attribution_gate')}"
                 if attribution_best else "ROI帰属つき時間fold成果物なし"
             ),
-            "next": "同じ方向が後続foldでも再現し、資金運用ROI/損益も改善するか確認する" if attribution_candidate else "最良Kelly条件でROI帰属つき時間foldバックテストを実行する",
+            "next": "同じ方向が後続foldでも再現し、資金運用ROI/損益も改善するか確認する" if attribution_candidate else "評価完了。stable=0のため相関上位特徴の直接採用を見送る",
         },
         {
             "target": "Remote Eval",
             "status": "実行中" if remote_counts.get("実行中") else ("完了" if remote_counts.get("完了") else str(remote_evaluations.get("status") or "未取得")),
             "evidence": remote_text,
-            "next": "監視JSONから結果JSON生成と失敗ログを回収する",
+            "next": "全ジョブ終端済み。完了16件・差替済み2件の成果物を維持する",
         },
     ]
 
@@ -2902,6 +2902,23 @@ def _roadmap_improvements(
     calibrated_complete = bool(calibrated_jobs) and all(
         row.get("status") == "完了" for row in calibrated_jobs
     )
+    calibrated_metrics = {
+        str(row.get("kind")): ((row.get("result") or {}).get("metrics") or {})
+        for row in calibrated_jobs
+    }
+    linear_metrics = calibrated_metrics.get("calibrated_linear") or {}
+    mlp_metrics = calibrated_metrics.get("calibrated_mlp") or {}
+    calibrated_next = (
+        "2fold評価完了。"
+        f"linear LogLoss {float(linear_metrics.get('entry_log_loss') or 0):.4f}、"
+        f"1着 {float(linear_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%。"
+        f"MLP LogLoss {float(mlp_metrics.get('entry_log_loss') or 0):.4f}、"
+        f"1着 {float(mlp_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%、"
+        f"3T5 {float(mlp_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
+        "主系基準を同時に上回らないため昇格見送り。"
+        if calibrated_complete
+        else "linear/MLPを同一2foldで比較し、主系より較正性能が良い場合だけ資金運用評価へ進める。"
+    )
     listwise_search_job = next(
         (row for row in ((remote_evaluations or {}).get("jobs") or []) if row.get("kind") == "feature_teacher_search"),
         None,
@@ -2912,6 +2929,19 @@ def _roadmap_improvements(
     )
     listwise_search_status = str((listwise_search_job or {}).get("status") or "未登録")
     listwise_newton_status = str((listwise_newton_job or {}).get("status") or "未登録")
+    listwise_metrics = ((listwise_newton_job or {}).get("result") or {}).get("metrics") or {}
+    listwise_promoted = bool(listwise_metrics.get("promotion_eligible"))
+    listwise_next = (
+        "未使用holdout 9,404Rの評価完了。"
+        f"1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%、"
+        f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%、"
+        f"順位LogLoss {float(listwise_metrics.get('ranking_log_loss') or 0):.4f}、"
+        f"資金運用ROI {float(listwise_metrics.get('roi') or 0):.4f}、"
+        f"損益 {int(listwise_metrics.get('profit_yen') or 0):,}円。"
+        + ("昇格候補として次段評価へ進める。" if listwise_promoted else "ROI/収束ゲート未達のため昇格見送り。")
+        if listwise_newton_status == "完了" and listwise_metrics
+        else "直近smoke ROI 0.7079。特徴量・教師選択、未使用holdout、Newton-CG、資金運用を順に評価する。"
+    )
     operational_job = next(
         (
             row
@@ -2955,24 +2985,24 @@ def _roadmap_improvements(
         {
             "id": "M4-1",
             "milestone": "M4/M5",
-            "status": "評価回収済み" if calibrated_complete else "実装済み/評価待ち",
-            "progress": 70 if calibrated_complete else 45,
+            "status": "評価完了/昇格見送り" if calibrated_complete else "実装済み/評価待ち",
+            "progress": 100 if calibrated_complete else 45,
             "item": "較正linear/MLP shadow導入",
-            "next": "StandardScalerとFeatureHasherをストリーミング適用し、class weightなしのlinear/MLPを同一2foldで比較する。80fold終了後にlinear、続いてMLPを実行し、主系より較正性能が良い場合だけ資金運用評価へ進める。",
+            "next": calibrated_next,
         },
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "ablation回収済み/要改善",
-            "progress": 90,
+            "status": "評価完了/安定根拠なし",
+            "progress": 100,
             "item": "相関監査とROI接続",
-            "next": "ablationは完了。base_pastlog除外でLogLoss 1.279→2.290、1着55.85%→55.34%と悪化。他3群の除外もLogLossは改善せず、削除は見送る。80foldとNN shadowで構造改善を続ける。",
+            "next": "ablationとROI帰属評価は完了。4特徴量群はいずれも除外でLogLossが悪化し、ROI帰属は時間fold安定シグナル0件。特徴削除・直接採用は行わず、この評価サイクルを終了する。",
         },
         {
             "id": "M4-3",
             "milestone": "M4/M6",
             "status": (
-                "評価完了/ゲート判定"
+                ("評価完了/昇格候補" if listwise_promoted else "評価完了/昇格見送り")
                 if listwise_newton_status == "完了"
                 else "Newton-CG実行中"
                 if listwise_newton_status == "実行中"
@@ -2982,7 +3012,7 @@ def _roadmap_improvements(
             ),
             "progress": 100 if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
             "item": "race-softmax/Plackett-Luce再設計とNewton-CG収束",
-            "next": "直近1,173R smokeは1着54.56%、3T5 30.52%、ROI 0.7079で未達。5特徴量構成×2教師×2正則化を学習内選択し、未使用holdout後に行列フリーNewton-CGと資金1万円バックチェックを実行する。未達は完了扱いにしない。",
+            "next": listwise_next,
         },
         {
             "id": "M5-1",
@@ -2995,10 +3025,10 @@ def _roadmap_improvements(
         {
             "id": "M6-1",
             "milestone": "M6",
-            "status": "実行中",
-            "progress": 25,
+            "status": "蓄積待ち" if readiness < 1.0 else "評価開始待ち",
+            "progress": int(readiness * 100),
             "item": "実オッズ履歴不足の扱い",
-            "next": "実オッズ必須バックチェックはfold1で全skipを確認。リアルタイム蓄積が増えるまでは過去ログ中心評価を主判定にする。",
+            "next": f"実オッズ必須評価は履歴不足で全skipを確認済み。対象 {eligible_races:,}/{REALTIME_SHADOW_TARGET_RACES:,}R。到達までは過去ログ中心評価を主判定にする。",
         },
         {
             "id": "M6-2",
@@ -3011,7 +3041,7 @@ def _roadmap_improvements(
         {
             "id": "M6-3",
             "milestone": "M6",
-            "status": "未達/動的判定",
+            "status": "未完了/収益ゲート未達",
             "progress": 35,
             "item": "完了ゲート",
             "next": "ROI 1.0以上、損益プラス、ドローダウン許容、購入日数/的中率劣化なしを完了ゲート表で動的判定する。",
@@ -3019,10 +3049,10 @@ def _roadmap_improvements(
         {
             "id": "M6-4",
             "milestone": "M6",
-            "status": "実装済み/評価待ち",
-            "progress": 30,
+            "status": "評価完了/安定根拠なし",
+            "progress": 100,
             "item": "特徴量改善の反映",
-            "next": "選手/場/モーター/ボート/選択条件のROI帰属を資金運用出力へ追加。ROI帰属retry3の安定シグナルは0件。ablation完了後に特徴群の除外候補を同一foldで再評価する。",
+            "next": "選手/場/モーター/ボート/選択条件のROI帰属評価は完了。時間fold安定シグナル0件のため特徴変更は不採用。収益ゲート未達はM6-3で継続する。",
         },
         {
             "id": "M6-5",
@@ -3038,7 +3068,7 @@ def _roadmap_improvements(
             "status": "完了",
             "progress": 100,
             "item": "候補あり選択0件の解消",
-            "next": "normalized_kelly 5条件すべてでselected_tickets>0を確認。80fold sanityは再現性監査として継続。",
+            "next": "normalized_kelly 5条件すべてでselected_tickets>0を確認し、80fold sanityも完了。",
         },
         {
             "id": "M6-7",
@@ -3137,6 +3167,8 @@ def _roadmap_milestones(
     listwise_newton = next((job for job in jobs if job.get("kind") == "newton_listwise_bankroll"), None)
     listwise_search_status = str((listwise_search or {}).get("status") or "")
     listwise_newton_status = str((listwise_newton or {}).get("status") or "")
+    listwise_metrics = ((listwise_newton or {}).get("result") or {}).get("metrics") or {}
+    listwise_promoted = bool(listwise_metrics.get("promotion_eligible"))
     ablation_status = str((ablation or {}).get("status") or "")
     sanity_status = str((sanity or {}).get("status") or "")
     m4_progress = (
@@ -3201,9 +3233,22 @@ def _roadmap_milestones(
         {
             "id": "M4",
             "title": "過去ログ中心モデル",
-            "status": "listwise評価完了/ゲート判定" if listwise_newton_status == "完了" else "listwise再設計を評価中",
+            "status": (
+                "評価完了/昇格候補"
+                if listwise_newton_status == "完了" and listwise_promoted
+                else "評価完了/主系維持"
+                if listwise_newton_status == "完了"
+                else "listwise再設計を評価中"
+            ),
             "progress": m4_progress,
-            "next": "特徴量・教師選択、未使用holdout、Newton-CG収束、資金運用ROIを順に回収し、ROI 1.0と予測性能基準を同時に満たす場合だけ主系候補にする。",
+            "next": (
+                f"未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
+                f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"
+                f"ROI {float(listwise_metrics.get('roi') or 0):.4f}。"
+                + ("次段評価へ進める。" if listwise_promoted else "ROI/収束ゲート未達のため現行主系を維持する。")
+                if listwise_newton_status == "完了" and listwise_metrics
+                else "ROI 1.0と予測性能基準を満たす場合だけ昇格する。特徴量・教師選択、未使用holdout、Newton-CG、資金運用を順に回収する。"
+            ),
         },
         {
             "id": "M5",
@@ -3215,12 +3260,12 @@ def _roadmap_milestones(
         {
             "id": "M6",
             "title": "資金運用モデル",
-            "status": "要改善",
+            "status": "未完了/収益ゲート未達",
             "progress": m6_progress,
             "next": (
                 "80fold sanityを回収し、ROI 1.0未達要因を再設計する"
                 if sanity_status != "完了"
-                else "80fold結果とablationを統合しROI/損益ゲートを再評価する"
+                else "全既存評価を回収済み。最高ROI 0.8935・損益 -112,270円のため、市場較正/no-bet条件を次候補として再設計する"
             ),
         },
         {
@@ -3312,7 +3357,7 @@ def _json_file_hint(path: Path) -> dict[str, Any]:
 
 
 def _v_file_inventory(src_dir: Path) -> dict[str, Any]:
-    files = sorted(path.name for path in src_dir.glob("*.py") if _looks_versioned(path.name))
+    files = sorted(str(path.relative_to(src_dir)) for path in src_dir.rglob("*.py") if _looks_versioned(path.name))
 
     return {
         "count": len(files),
