@@ -11,7 +11,7 @@
     h1 { margin:0; font-size:12px; letter-spacing:0; white-space:nowrap; } main { display:grid; grid-template-columns:600px 1fr; min-height:calc(100vh - 29px); padding-bottom:18px; }
     aside { background:var(--band); border-right:1px solid var(--line); padding:5px; overflow:auto; } section { padding:6px 8px; min-width:0; }
     input, select, button { height:22px; border:1px solid var(--line); border-radius:4px; padding:0 5px; background:#fff; color:var(--ink); font:inherit; }
-    button { background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer; } .toolbar { display:flex; gap:4px; align-items:center; justify-content:flex-end; flex-wrap:nowrap; min-width:0; overflow:hidden; } #clock { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } #raceDate { display:none; } #venueFilter { width:74px; }
+    button { background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer; } .toolbar { display:flex; gap:4px; align-items:center; justify-content:flex-end; flex-wrap:nowrap; min-width:0; overflow:hidden; } #clock { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } #raceDate { display:none; }
     .stats { display:grid; grid-template-columns:repeat(5,minmax(68px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .stat { background:#fff; padding:6px; min-width:0; } .stat b { display:block; font-size:17px; line-height:1.1; } .stat span { color:var(--muted); font-size:10px; }
     .venue-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:3px; margin-top:0; }
@@ -19,13 +19,14 @@
     .venue.active { border-color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
     .venue b { display:flex; align-items:center; justify-content:space-between; gap:3px; font-size:10px; line-height:1.05; white-space:nowrap; overflow:hidden; }
     .venue .next { display:grid; grid-template-columns:minmax(34px,1fr) auto auto; gap:2px; align-items:center; margin:1px 0 0; padding:1px 2px; background:#f8fafb; border:1px solid #edf1f2; border-radius:3px; }
-    .venue .next strong { font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .venue .next span { color:var(--muted); font-size:9px; white-space:nowrap; } .venue .next .od { color:var(--ink); font-weight:600; overflow:hidden; text-overflow:ellipsis; }
+    .venue .next strong { font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .venue .next span { color:var(--muted); font-size:9px; white-space:nowrap; } .venue .next .badge { color:#fff; } .venue .next .od { color:var(--ink); font-weight:600; overflow:hidden; text-overflow:ellipsis; }
     .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; margin-bottom:1px; background:var(--line); border:1px solid var(--line); }
     .metric { background:#fff; padding:1px 2px; text-align:right; min-width:0; }
     .metric b { display:inline; font-size:9px; line-height:1; } .metric span { display:inline; color:var(--muted); font-size:8px; line-height:1; margin-left:1px; }
     .subline { display:grid; grid-template-columns:28px 1fr; gap:2px; color:var(--muted); font-size:9px; line-height:1.1; white-space:nowrap; overflow:hidden; }
     .subline strong { color:var(--ink); font-weight:600; overflow:hidden; text-overflow:ellipsis; }
     .badge { display:inline-block; border-radius:999px; padding:1px 4px; color:#fff; background:var(--muted); font-size:9px; font-weight:700; white-space:nowrap; }
+    .venue.s-racing { background:#d9f6f2; border-color:#008f87; box-shadow:inset 3px 0 #008f87; }
     .live,.候補,.出走 { background:var(--accent); } .出走待,.結果待 { background:var(--warn); } .done,.確定 { background:var(--ok); } .wait,.T-10超過,.T-5超過 { background:var(--warn); } .締切後 { background:var(--bad); } .venue.s-live { background:#effafa; } .venue.s-wait { background:#fff8e8; } .venue.s-done { background:#eef8f2; } .venue.s-none { background:#fafbfb; } .venue.urgent { background:#fff1e6; border-color:#d99a5b; } .venue.due { background:#ffe4db; border-color:#c95c43; } tr.near { background:#fff7db; } tr.soon { background:#fff0e3; } tr.due { background:#ffe2d8; } tr.pick { background:#eaf8f6; } tr.pick.due { background:#ffdcd2; }
     .timeline-frame { border:1px solid var(--line); border-top:2px solid var(--accent); background:#fff; margin-bottom:7px; }
     .timeline-frame h2 { margin:0; padding:3px 5px; font-size:12px; letter-spacing:0; display:flex; justify-content:space-between; gap:6px; border-bottom:1px solid var(--line); }
@@ -165,7 +166,7 @@
   </style>
 </head>
 <body>
-  <header><h1>BOAT RACE AI Ops</h1><div class="toolbar"><input id="raceDate" type="hidden"><select id="venueFilter"><option value="">全場</option></select><button id="reload">更新</button><button id="navPast" class="navbtn" type="button">過去</button><button id="navToday" class="navbtn" type="button">当日</button><button id="navStats" class="navbtn" type="button">統計</button><a href="/reports/models" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">モデル</a><a href="/reports/roadmap" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">懸案</a><span id="clock" class="muted mono"></span></div></header>
+  <header><h1>BOAT RACE AI Ops</h1><div class="toolbar"><input id="raceDate" type="hidden"><button id="reload">更新</button><button id="navPast" class="navbtn" type="button">過去</button><button id="navToday" class="navbtn" type="button">当日</button><button id="navStats" class="navbtn" type="button">統計</button><a href="/reports/models" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">モデル</a><a href="/reports/roadmap" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">懸案</a><span id="clock" class="muted mono"></span></div></header>
   <main>
     <aside><div id="venueGrid" class="venue-grid"></div></aside>
     <section>
@@ -221,7 +222,6 @@ function jstDate(){
 const today = jstDate();
 $("raceDate").value = "";
 $("reload").onclick = loadAll;
-$("venueFilter").onchange = () => { state.jcd = $("venueFilter").value; state.raceId = null; loadAll(); };
 $("combo").onchange = () => { state.combo = $("combo").value; loadOdds(); };
 async function getJson(url){ const res = await fetch(url,{cache:"no-store"}); if(!res.ok) throw new Error(await res.text()); return await res.json(); }
 function stat(label,value){ return `<div class="stat"><b>${value ?? "-"}</b><span>${label}</span></div>`; }
@@ -236,7 +236,8 @@ function cls(v){ return String(v || "").replaceAll(" ",""); }
 function statusClass(v){ return v==="監視中" ? "live" : v==="終了" ? "done" : (v==="未取得"||v==="開催なし") ? "" : "wait"; }
 function footerStatus(s, prog, nowIso){ const h=prog.historical||{}, t=prog.today||{}; return `過去分: 番組LZH 残${h.program_remaining_days ?? "-"}日 / 結果LZH 残${h.result_remaining_days ?? "-"}日 / parsed ${h.races ?? "-"}R / 結果 ${h.result_races ?? "-"}R | 本日分: レース 残${t.race_remaining ?? "-"} / 出走 残${t.racelist_remaining ?? "-"} / odds 残${t.odds_remaining ?? "-"} / 結果 残${t.final_remaining ?? "-"} / 予測 ${s.predictions} | 更新 ${nowIso.replace("T"," ").slice(0,19)}`; }
 function statusTitle(v){ return v==="監視中" ? "出走表とオッズを取得済みで、ライブ更新対象です。" : v==="出走表" ? "出走表は取得済み、オッズは未取得です。" : v==="開催なし" ? "本日はこの場の開催が確認されていません。" : v==="取得中" ? "当日レース情報を取得中です。" : v==="終了" ? "全レースの結果が入っています。" : "当日データはまだ未取得です。"; }
-function venueTone(v){ const m = v.minutes_to_next_deadline; if(m != null && m <= 5) return "due"; if(m != null && m <= 15) return "urgent"; if(v.status==="監視中") return "s-live"; if(v.status==="終了") return "s-done"; if(v.status==="未取得" || v.status==="開催なし") return "s-none"; return "s-wait"; }
+function venueTone(v){ if(v.next_time_status==="出走") return "s-racing"; if(["出走待","結果待"].includes(v.next_time_status || "")) return "s-wait"; const m = v.minutes_to_next_deadline; if(m != null && m <= 5) return "due"; if(m != null && m <= 15) return "urgent"; if(v.status==="監視中") return "s-live"; if(v.status==="終了") return "s-done"; if(v.status==="未取得" || v.status==="開催なし") return "s-none"; return "s-wait"; }
+function venueRaceLabel(v){ const s=v.next_time_status || ""; return ["出走待","出走","結果待"].includes(s) ? `<span class="badge ${cls(s)}">${s}</span>` : `<span>${minLabel(v.minutes_to_next_deadline)}</span>`; }
 function rowTone(r, isPick, idx){ const m = r.minutes_to_deadline; const parts = []; if(isPick) parts.push("pick"); if(m != null && m <= 5) parts.push("due"); else if(m != null && m <= 15) parts.push("soon"); else if(idx < 4) parts.push("near"); return parts.join(" "); }
 function guideScore(r){ const p=r.buy_prediction||r.top_prediction||{}; return Number(p.expected_value ?? p.probability ?? 0); }
 function fallbackCandidates(upcoming, candidateMap){ if(candidateMap.size) return candidateMap; const rows=upcoming.filter(r => r.top_prediction && r.entries === 6 && r.time_status !== "締切後" && r.time_status !== "確定" && (r.minutes_to_deadline == null || r.minutes_to_deadline >= 5)).sort((a,b)=>guideScore(b)-guideScore(a)).slice(0,8); return new Map(rows.map(r => [r.race_id, r])); }
@@ -336,24 +337,24 @@ function scheduleSelectedDetail(allowRefresh){
 }
 
 function renderVenues(items){
-  $("venueFilter").innerHTML = `<option value="">全場</option>` + items.map(v => `<option value="${v.code}">${v.name}</option>`).join("");
-  $("venueFilter").value = state.jcd;
   $("venueGrid").innerHTML = items.map(v => `<div class="venue ${v.code === state.jcd ? "active" : ""} ${venueTone(v)}" data-jcd="${v.code}">
     <b><span>${v.code} ${v.name}</span><span><button class="venue-archive" type="button" data-jcd="${v.code}" title="場の履歴">履</button><span class="badge ${statusClass(v.status)}" title="${statusTitle(v.status)}">${v.status}</span></span></b>
-    <div class="next"><strong>${v.next_rno ? `${v.next_rno}R ${hm(v.next_deadline_at)}` : "-"}</strong><span>${minLabel(v.minutes_to_next_deadline)}</span><span class="od">od ${hm(v.latest_odds_at)}</span></div>
+    <div class="next"><strong>${v.next_rno ? `${v.next_rno}R ${hm(v.next_deadline_at)}` : "-"}</strong>${venueRaceLabel(v)}<span class="od">od ${hm(v.latest_odds_at)}</span></div>
   </div>`).join("");
-  document.querySelectorAll(".venue").forEach(el => el.onclick = () => { state.jcd = el.dataset.jcd; state.raceId = null; loadAll(); });
+  document.querySelectorAll(".venue").forEach(el => el.onclick = () => { state.jcd = state.jcd === el.dataset.jcd ? "" : el.dataset.jcd; state.raceId = null; loadAll(); });
   document.querySelectorAll(".venue-archive").forEach(btn => btn.onclick = ev => { ev.stopPropagation(); loadArchiveView("history", { kind:"venue", jcd:btn.dataset.jcd || "" }); });
 }
 
 function renderActionTable(rows, candidates, finished){
   let candidateMap = new Map((candidates || []).map(r => [r.race_id, r]));
   const upcoming = futureRows(rows);
+  const ongoing = rows.filter(r => Number(r.result_rows || 0) < 3 && ["出走待","出走","結果待"].includes(r.time_status || ""));
   candidateMap = fallbackCandidates(upcoming, candidateMap);
   const picks = upcoming.filter(r => candidateMap.has(r.race_id));
   const others = upcoming.filter(r => !candidateMap.has(r.race_id));
   const action = [
     ...finished.map(r => ({ kind:(Number(r.result_rows || 0) >= 3 ? "確定" : (r.time_status || "結果待")), item:r, source:r, isPick:false, isFinal:true })),
+    ...ongoing.map(r => ({ kind:r.time_status || "結果待", item:r, source:r, isPick:false, isFinal:true })),
     ...picks.map(r => ({ kind:"候補", item:candidateMap.get(r.race_id), source:r, isPick:true, isFinal:false })),
     ...others.map(r => ({ kind:"予定", item:r, source:r, isPick:false, isFinal:false })),
   ].sort((a,b) => {
@@ -362,7 +363,7 @@ function renderActionTable(rows, candidates, finished){
     if(av !== bv) return av - bv;
     return String(a.source.jcd).localeCompare(String(b.source.jcd)) || Number(a.source.rno || 0) - Number(b.source.rno || 0);
   });
-  $("timelineInfo").textContent = `締切後 ${finished.length}R / 候補 ${picks.length}R / 今後 ${upcoming.length}R / 締切昇順`;
+  $("timelineInfo").textContent = `確定 ${finished.length}R / 進行 ${ongoing.length}R / 候補 ${picks.length}R / 今後 ${upcoming.length}R / 締切昇順`;
   $("actionRows").innerHTML = action.map((row,idx) => {
     const r = row.source;
     const item = row.item || r;
@@ -515,7 +516,7 @@ function renderLiveWipe(payload){
   const grid = $("liveWipeGrid");
   if(!box || !grid) return;
   const source = payload && payload.active ? ((payload.races && payload.races.length) ? payload.races : [payload.race]) : [];
-  const races = source.filter(r => r && (r.live_embed_url || r.live_url)).slice(0,4);
+  const races = source.filter(r => r && (r.live_embed_url || r.live_url)).sort((a,b) => new Date(b.race_time_at || 0).getTime() - new Date(a.race_time_at || 0).getTime()).slice(0,4);
   if(!races.length){ stopLiveWipe(box); return; }
   const windowKey = races.map(r => String(r.race_id || "")).join("|");
   if(localStorage.getItem("boatLiveWipeClosedWindowKey") === windowKey){ stopLiveWipe(box); return; }

@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
 REMOTE_EVAL_STATUS_NAME = "remote_eval_status.json"
 TEMPLATE_DIR = Path(__file__).with_name("templates")
-LIVE_WINDOW_MINUTES = 10
+RACING_WINDOW_MINUTES = 7
 BOATCAST_STADIUMS = {
     "01": "01kiryu", "02": "02toda", "03": "03edogawa", "04": "04heiwajima",
     "05": "05tamagawa", "06": "06hamanako", "07": "07gamagori", "08": "08tokoname",
@@ -103,7 +103,7 @@ def time_fields_from_stored_start(
             status = "候補"
     elif now < start_at:
         status = "出走待"
-    elif now < start_at + timedelta(minutes=5):
+    elif now < start_at + timedelta(minutes=RACING_WINDOW_MINUTES):
         status = "出走"
     else:
         status = "結果待"
@@ -913,6 +913,32 @@ def _float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
+def _venue_display_row(
+    rows: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> tuple[datetime, datetime, dict[str, Any]] | None:
+    ongoing: list[tuple[datetime, datetime, dict[str, Any]]] = []
+    future: list[tuple[datetime, datetime, dict[str, Any]]] = []
+    for row in rows:
+        if int(row.get("result_rows") or 0) >= 3:
+            continue
+        start_at = stored_start_time(row.get("deadline_at"))
+        deadline_at = estimated_deadline_from_start(start_at)
+        if not start_at or not deadline_at:
+            continue
+        target = (start_at, deadline_at, row)
+        if deadline_at <= now:
+            ongoing.append(target)
+        else:
+            future.append(target)
+    if ongoing:
+        return max(ongoing, key=lambda item: item[0])
+    if future:
+        return min(future, key=lambda item: item[1])
+    return None
+
+
 def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
     now = now_jst()
@@ -946,16 +972,17 @@ def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
         next_deadline = None
         next_start = None
         next_rno = None
-        for row in sorted(active_rows, key=lambda item: (item.get("deadline_at") is None, item.get("deadline_at") or "", item.get("rno") or 0)):
-            if int(row.get("result_rows") or 0) >= 3:
-                continue
-            start_at = stored_start_time(row.get("deadline_at"))
-            deadline_at = estimated_deadline_from_start(start_at)
-            if deadline_at and deadline_at >= now:
-                next_deadline = deadline_at
-                next_start = start_at
-                next_rno = int(row.get("rno") or 0)
-                break
+        next_time_status = None
+        selected_row = _venue_display_row(active_rows, now=now)
+        if selected_row:
+            next_start, next_deadline, row = selected_row
+            next_rno = int(row.get("rno") or 0)
+            next_time_status = time_fields_from_stored_start(
+                row.get("deadline_at"),
+                now=now,
+                before_minutes=5,
+                result_rows=int(row.get("result_rows") or 0),
+            )["time_status"]
 
         latest_odds_values = [parse_any_time(str(row.get("latest_odds_at") or "")) for row in active_rows if row.get("latest_odds_at")]
         latest_odds = max((value for value in latest_odds_values if value), default=None)
@@ -975,6 +1002,7 @@ def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
                 "next_rno": next_rno,
                 "next_deadline_at": iso(next_deadline),
                 "next_race_time_at": iso(next_start),
+                "next_time_status": next_time_status,
                 "minutes_to_next_deadline": minutes_between(now, next_deadline),
             }
         )
@@ -1025,8 +1053,7 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             later = [item for item in candidates if item["buy_until_at"] != first_cutoff]
             candidates = sorted(same_cutoff, key=buy_score, reverse=True) + later
 
-        closed_pending = []
-        closed_final = []
+        closed = []
         for row in sorted(rows, key=lambda item: item["deadline_at"] or "", reverse=True):
             start_at = stored_start_time(row["deadline_at"])
             deadline_at = estimated_deadline_from_start(start_at)
@@ -1035,28 +1062,13 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             item = payloads[row["race_id"]]
             if int(item.get("entries") or 0) != 6:
                 continue
-            if int(item.get("result_rows") or 0) >= 3:
-                item.update(result_summary(conn, row["race_id"]))
-                _attach_prediction_hits(conn, item)
-                if len(closed_final) < min_final:
-                    closed_final.append(item)
-            else:
-                item.update(
-                    {
-                        "result_combination": None,
-                        "trifecta_payout_yen": None,
-                        "trifecta_popularity": None,
-                        "top_hit": False,
-                        "top5_hit": False,
-                    }
-                )
-                if len(closed_pending) < finished_limit:
-                    closed_pending.append(item)
-            if len(closed_final) >= min_final and len(closed_pending) >= finished_limit:
+            if int(item.get("result_rows") or 0) < 3:
+                continue
+            item.update(result_summary(conn, row["race_id"]))
+            _attach_prediction_hits(conn, item)
+            closed.append(item)
+            if len(closed) >= finished_limit:
                 break
-
-
-        closed = closed_final + closed_pending[: max(0, finished_limit - len(closed_final))]
 
     return {
         "date": race_date,
@@ -1085,7 +1097,7 @@ def _live_window_rows(
     rows: list[Any],
     *,
     now: datetime,
-    window_minutes: int = LIVE_WINDOW_MINUTES,
+    window_minutes: int = RACING_WINDOW_MINUTES,
     limit: int = 4,
 ) -> list[Any]:
     eligible = []
@@ -1104,7 +1116,7 @@ def _latest_live_window_row(
     rows: list[Any],
     *,
     now: datetime,
-    window_minutes: int = LIVE_WINDOW_MINUTES,
+    window_minutes: int = RACING_WINDOW_MINUTES,
 ) -> Any | None:
     selected = _live_window_rows(rows, now=now, window_minutes=window_minutes, limit=1)
     return selected[0] if selected else None
@@ -1128,7 +1140,7 @@ def live_wipe_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
             item.update(
                 {
                     "minutes_since_start": int((now - start_at).total_seconds() // 60) if start_at else None,
-                    "live_window_seconds": LIVE_WINDOW_MINUTES * 60,
+                    "live_window_seconds": RACING_WINDOW_MINUTES * 60,
                     "live_url": stream_url,
                     "live_embed_url": stream_url,
                     "official_url": race_page_url(

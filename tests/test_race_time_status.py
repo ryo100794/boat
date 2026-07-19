@@ -24,8 +24,8 @@ def test_post_deadline_status_boundaries() -> None:
     assert status_at(deadline) == "出走待"
     assert status_at(START - timedelta(seconds=1)) == "出走待"
     assert status_at(START) == "出走"
-    assert status_at(START + timedelta(minutes=5) - timedelta(seconds=1)) == "出走"
-    assert status_at(START + timedelta(minutes=5)) == "結果待"
+    assert status_at(START + timedelta(minutes=7) - timedelta(seconds=1)) == "出走"
+    assert status_at(START + timedelta(minutes=7)) == "結果待"
 
 
 def test_final_result_overrides_time_status() -> None:
