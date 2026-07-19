@@ -34,6 +34,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 196980, "name": "listwise_feature_teacher_search_v1", "milestone": "M4-3", "kind": "feature_teacher_search", "output": "data/models/listwise_feature_teacher_search_v1.json", "log": "logs/listwise_feature_teacher_newton_loop.log"},
     {"pid": 196979, "name": "listwise_newton_cg_v1", "milestone": "M4-3/M6", "kind": "newton_listwise_bankroll", "output": "data/models/listwise_newton_cg_v1.json", "log": "logs/listwise_feature_teacher_newton_loop.log", "wait_for": "data/models/listwise_feature_teacher_search_v1.json"},
     {"pid": 199131, "name": "listwise_temporal_stability_v1", "milestone": "M4-3/M6", "kind": "listwise_temporal_stability", "output": "data/models/listwise_temporal_stability_v1.json", "log": "logs/listwise_temporal_stability_v1.log"},
+    {"pid": 205032, "name": "bankroll_no_odds_v8_temporal_no_bet_5fold", "milestone": "M6", "kind": "bankroll_temporal_no_bet", "output": "data/models/bankroll_no_odds_v8_temporal_no_bet_5fold.json", "log": "logs/bankroll_no_odds_v8_temporal_no_bet_5fold.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -53,6 +54,11 @@ METRIC_KEYS = (
     "examples", "races", "positive_labels", "global_win_rate", "race_days",
     "candidate_tickets", "winning_days", "losing_days", "budget_utilization",
     "promotion_eligible", "holdout_races", "profitable_folds",
+)
+DAILY_KEYS = (
+    "race_date", "evaluated_races", "tickets", "races_bet", "stake_yen",
+    "return_yen", "profit_yen", "roi", "cumulative_profit_yen",
+    "budget_used_fraction",
 )
 
 def iso_mtime(path):
@@ -108,6 +114,9 @@ def result_summary(path):
         row["error"] = str(exc)
         return row
     row["metrics"] = {key: data.get(key) for key in METRIC_KEYS if key in data}
+    row["model"] = data.get("model")
+    row["feature_set"] = data.get("feature_set")
+    row["comparison_role"] = data.get("comparison_role")
     holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
     if isinstance(holdout, dict):
         for key in METRIC_KEYS:
@@ -143,7 +152,13 @@ def result_summary(path):
     if "folds" in data:
         row["folds"] = len(data.get("folds") or [])
     if "daily" in data:
-        row["daily_rows"] = len(data.get("daily") or [])
+        daily = data.get("daily") or []
+        row["daily_rows"] = len(daily)
+        row["daily"] = [
+            {key: item.get(key) for key in DAILY_KEYS if key in item}
+            for item in daily
+            if isinstance(item, dict)
+        ]
     return row
 
 jobs = []

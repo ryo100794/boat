@@ -839,6 +839,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
     bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
+    bankroll_daily.update(_remote_bankroll_daily(remote_evaluations))
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
@@ -1214,7 +1215,7 @@ def _compact_ticket_roi_attribution(value: Any) -> dict[str, Any] | None:
 def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
-        if not str(job.get("kind") or "").startswith("bankroll"):
+        if "bankroll" not in str(job.get("kind") or ""):
             continue
         result = job.get("result") or {}
         metrics = result.get("metrics") or {}
@@ -1226,8 +1227,8 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "name": job.get("name") or result.get("file") or "remote_bankroll",
                 "file": result.get("file") or job.get("output"),
                 "generated_at": result.get("modified_at") or remote_evaluations.get("generated_at"),
-                "feature_set": None,
-                "model": "remote",
+                "feature_set": result.get("feature_set"),
+                "model": result.get("model") or job.get("name"),
                 "daily_budget_yen": None,
                 "stake_model": None,
                 "evaluated_races": metrics.get("evaluated_races"),
@@ -1251,6 +1252,26 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "remote": True,
             }
         )
+    return rows
+
+
+def _remote_bankroll_daily(
+    remote_evaluations: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    rows: dict[str, list[dict[str, Any]]] = {}
+    jobs = (
+        remote_evaluations.get("jobs")
+        if isinstance(remote_evaluations, dict)
+        else []
+    ) or []
+    for job in jobs:
+        if "bankroll" not in str(job.get("kind") or ""):
+            continue
+        result = job.get("result") or {}
+        daily_rows = _daily_report_rows(result.get("daily") or [])
+        if daily_rows:
+            label = str(job.get("name") or result.get("file") or "remote_bankroll")
+            rows[label] = daily_rows
     return rows
 
 
@@ -2815,7 +2836,7 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
 def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
-        if not str((job or {}).get("kind") or "").startswith("bankroll"):
+        if "bankroll" not in str((job or {}).get("kind") or ""):
             continue
         result = (job or {}).get("result") or {}
         metrics = result.get("metrics") or {}

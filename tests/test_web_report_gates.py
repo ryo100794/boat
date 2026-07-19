@@ -7,6 +7,7 @@ from pathlib import Path
 from boatrace_ai.web.dashboard import (
     _quality_gates,
     _remote_bankroll_gate_records,
+    _remote_bankroll_daily,
     _remote_bankroll_report_summaries,
 )
 
@@ -18,11 +19,25 @@ class WebReportGateTest(unittest.TestCase):
             "jobs": [
                 {
                     "name": "remote-roi",
-                    "kind": "bankroll_norm",
+                    "kind": "newton_listwise_bankroll",
                     "status": "完了",
                     "result": {
                         "file": "data/models/remote-roi.json",
                         "modified_at": "2026-07-18T00:00:00+00:00",
+                        "model": "listwise_newton_cg_v1",
+                        "daily": [
+                            {
+                                "race_date": "2026-07-17",
+                                "roi": 1.05,
+                                "profit_yen": 5000,
+                                "cumulative_profit_yen": 5000,
+                                "stake_yen": 100000,
+                                "return_yen": 105000,
+                                "tickets": 20,
+                                "races_bet": 10,
+                                "budget_used_fraction": 0.5,
+                            }
+                        ],
                         "metrics": {
                             "roi": 1.05,
                             "profit_yen": 5_000,
@@ -51,6 +66,10 @@ class WebReportGateTest(unittest.TestCase):
             report_rows[0]["ticket_roi_attribution"]["fold_stability"]["gate"],
             "candidate",
         )
+        self.assertEqual(report_rows[0]["model"], "listwise_newton_cg_v1")
+        daily = _remote_bankroll_daily(remote)
+        self.assertEqual(daily["remote-roi"][0]["date"], "2026-07-17")
+        self.assertEqual(daily["remote-roi"][0]["cumulative_profit_yen"], 5000)
 
         with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             gates = _quality_gates(Path(tmp), remote)
