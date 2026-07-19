@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 
 JST = timezone(timedelta(hours=9))
@@ -8,6 +8,15 @@ JST = timezone(timedelta(hours=9))
 
 def now_jst() -> datetime:
     return datetime.now(timezone.utc).astimezone(JST)
+
+
+def operational_race_date(fixed_date: date | None = None, *, at: datetime | None = None) -> date:
+    if fixed_date is not None:
+        return fixed_date
+    current = at or now_jst()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=JST)
+    return current.astimezone(JST).date()
 
 
 def parse_jst(value: str | None) -> datetime | None:

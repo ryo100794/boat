@@ -118,6 +118,83 @@ def _lane_marker(line: str) -> int | None:
     return None
 
 
+def _parse_racelist_dom_entries(html: str) -> list[dict[str, Any]]:
+    soup = _soup(html)
+    if soup is None:
+        return []
+    entries: list[dict[str, Any]] = []
+    for body in soup.find_all("tbody"):
+        lane_cell = body.find(class_=re.compile(r"^is-boatColor[1-6]$"))
+        if lane_cell is None:
+            continue
+        lane_class = next(
+            (value for value in lane_cell.get("class", []) if re.fullmatch(r"is-boatColor[1-6]", value)),
+            None,
+        )
+        if not lane_class:
+            continue
+        lane = int(lane_class[-1])
+        values = [normalize_text(value) for value in body.stripped_strings if normalize_text(value)]
+        block_text = "\n".join(values)
+        racer_match = re.search(r"\b(?P<no>\d{4})\s*/", block_text)
+        racer_class = next((value for value in values if re.fullmatch(r"[AB]\d", value)), None)
+        if not racer_match or not racer_class:
+            continue
+        name_node = body.select_one(".is-fs18.is-fBold a")
+        name = normalize_text(name_node.get_text(" ", strip=True)) if name_node else None
+        branch_origin = next(
+            (value for value in values if re.fullmatch(r"[^/\d]+/[^/\d]+", value)),
+            None,
+        )
+        branch = origin = None
+        if branch_origin:
+            branch, origin = (normalize_text(value) for value in branch_origin.split("/", 1))
+        age_match = re.search(r"(?P<age>\d{1,2})歳\s*/\s*(?P<weight>\d{2,3}(?:\.\d)?)kg", block_text)
+        f_match = re.search(r"\bF(?P<count>\d+)", block_text)
+        l_match = re.search(r"\bL(?P<count>\d+)", block_text)
+        l_index = next((index for index, value in enumerate(values) if re.fullmatch(r"L\d+", value)), -1)
+        stats: list[float] = []
+        if l_index >= 0:
+            for value in values[l_index + 1 :]:
+                if not re.fullmatch(r"(?:\d+(?:\.\d+)?|\.\d+)", value):
+                    continue
+                number = to_float(value)
+                if number is not None:
+                    stats.append(number)
+                if len(stats) >= 13:
+                    break
+        entries.append(
+            {
+                "lane": lane,
+                "racer_no": int(racer_match.group("no")),
+                "racer_name": name,
+                "racer_class": racer_class,
+                "branch": branch,
+                "origin": origin,
+                "age": int(age_match.group("age")) if age_match else None,
+                "weight_kg": float(age_match.group("weight")) if age_match else None,
+                "f_count": int(f_match.group("count")) if f_match else None,
+                "l_count": int(l_match.group("count")) if l_match else None,
+                "avg_st": stats[0] if len(stats) > 0 else None,
+                "national_win_rate": stats[1] if len(stats) > 1 else None,
+                "national_2_rate": stats[2] if len(stats) > 2 else None,
+                "national_3_rate": stats[3] if len(stats) > 3 else None,
+                "local_win_rate": stats[4] if len(stats) > 4 else None,
+                "local_2_rate": stats[5] if len(stats) > 5 else None,
+                "local_3_rate": stats[6] if len(stats) > 6 else None,
+                "motor_no": int(stats[7]) if len(stats) > 7 else None,
+                "motor_2_rate": stats[8] if len(stats) > 8 else None,
+                "motor_3_rate": stats[9] if len(stats) > 9 else None,
+                "boat_no": int(stats[10]) if len(stats) > 10 else None,
+                "boat_2_rate": stats[11] if len(stats) > 11 else None,
+                "boat_3_rate": stats[12] if len(stats) > 12 else None,
+                "source": "racelist_html_dom",
+            }
+        )
+    unique = {int(entry["lane"]): entry for entry in entries}
+    return [unique[lane] for lane in sorted(unique)]
+
+
 def parse_racelist_html(
     html: str,
     *,
@@ -129,6 +206,10 @@ def parse_racelist_html(
     meta = parse_race_meta(
         html, race_date=race_date, jcd=jcd, rno=rno, source_url=source_url
     )
+    dom_entries = _parse_racelist_dom_entries(html)
+    if len(dom_entries) == 6:
+        return meta, dom_entries
+
     lines = text_lines_from_html(html)
     starts: list[tuple[int, int]] = []
     for index, line in enumerate(lines):

@@ -106,6 +106,28 @@ class RoiAttributionTest(unittest.TestCase):
         self.assertEqual(stability["gate"], "candidate")
         self.assertEqual(stability["signals"][0]["status"], "stable")
 
+    def test_fold_stability_uses_bucket_lift_against_remainder(self) -> None:
+        def fold(lift: float) -> dict:
+            return {
+                "dimensions": [{
+                    "dimension": "feature:first_motor_2_rate_rank",
+                    "family": "motor",
+                    "buckets": [
+                        {"bucket": "1", "eligible": True, "roi_vs_rest": lift, "stake_yen": 20_000, "return_yen": 22_000},
+                        {"bucket": "2-4", "eligible": True, "roi_vs_rest": -lift, "stake_yen": 20_000, "return_yen": 18_000},
+                    ],
+                }]
+            }
+
+        stable = summarize_fold_signal_stability([fold(0.20), fold(0.15), fold(0.12), fold(0.10), fold(-0.02)])
+        target = next(row for row in stable["signals"] if row["bucket"] == "1")
+        self.assertEqual(stable["gate"], "candidate")
+        self.assertEqual(target["status"], "stable")
+        self.assertEqual(target["direction_consistency"], 0.8)
+
+        unstable = summarize_fold_signal_stability([fold(0.20), fold(-0.20), fold(0.15), fold(-0.15), fold(0.10)])
+        self.assertEqual(unstable["gate"], "insufficient")
+
     def test_candidate_ticket_carries_role_specific_feature_context(self) -> None:
         rows = []
         for lane in range(1, 7):

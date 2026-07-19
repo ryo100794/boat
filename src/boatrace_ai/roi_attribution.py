@@ -100,6 +100,15 @@ def summarize_roi_attribution(
                     "eligible": tickets >= min_tickets and stake >= min_stake_yen,
                 }
             )
+        total_stake = sum(row["stake_yen"] for row in buckets)
+        total_return = sum(row["return_yen"] for row in buckets)
+        for row in buckets:
+            rest_stake = total_stake - row["stake_yen"]
+            rest_return = total_return - row["return_yen"]
+            rest_roi = rest_return / rest_stake if rest_stake else None
+            row["rest_stake_yen"] = rest_stake
+            row["rest_roi"] = rest_roi
+            row["roi_vs_rest"] = row["roi"] - rest_roi if row["roi"] is not None and rest_roi is not None else None
         buckets.sort(key=lambda row: (-row["stake_yen"], str(row["bucket"])))
         eligible = [row for row in buckets if row["eligible"] and row["roi"] is not None]
         best = max(eligible, key=lambda row: row["roi"], default=None)
@@ -152,6 +161,96 @@ def summarize_roi_attribution(
 
 def summarize_fold_signal_stability(fold_attributions: list[dict[str, Any]]) -> dict[str, Any]:
     fold_count = len(fold_attributions)
+    required_folds = min(3, max(2, fold_count)) if fold_count else 2
+    by_bucket: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for fold_index, attribution in enumerate(fold_attributions, start=1):
+        for dimension_row in (attribution or {}).get("dimensions") or []:
+            dimension = str(dimension_row.get("dimension") or "")
+            if not dimension:
+                continue
+            for bucket in dimension_row.get("buckets") or []:
+                lift = _finite_float(bucket.get("roi_vs_rest"))
+                if not bucket.get("eligible") or lift is None:
+                    continue
+                bucket_name = str(bucket.get("bucket") or "missing")
+                row = by_bucket.setdefault(
+                    (dimension, bucket_name),
+                    {
+                        "dimension": dimension,
+                        "bucket": bucket_name,
+                        "family": dimension_row.get("family") or "other",
+                        "folds": [],
+                        "lifts": [],
+                        "stakes": [],
+                        "returns": [],
+                    },
+                )
+                row["folds"].append(fold_index)
+                row["lifts"].append(lift)
+                row["stakes"].append(int(bucket.get("stake_yen") or 0))
+                row["returns"].append(int(bucket.get("return_yen") or 0))
+
+    rows = []
+    for row in by_bucket.values():
+        observations = len(row["folds"])
+        positive = sum(1 for value in row["lifts"] if value > 0)
+        negative = sum(1 for value in row["lifts"] if value < 0)
+        direction_count = max(positive, negative)
+        direction = "beneficial" if positive >= negative else "harmful"
+        consistency = direction_count / observations if observations else 0.0
+        total_stake = sum(row["stakes"])
+        weighted_lift = (
+            sum(lift * stake for lift, stake in zip(row["lifts"], row["stakes"])) / total_stake
+            if total_stake
+            else 0.0
+        )
+        stable = observations >= required_folds and consistency >= 0.75 and abs(weighted_lift) >= 0.05
+        rows.append(
+            {
+                "dimension": row["dimension"],
+                "bucket": row["bucket"],
+                "family": row["family"],
+                "signal_folds": row["folds"],
+                "signal_fold_rate": observations / fold_count if fold_count else 0.0,
+                "direction": direction,
+                "positive_folds": positive,
+                "negative_folds": negative,
+                "direction_consistency": consistency,
+                "weighted_roi_lift_vs_rest": weighted_lift,
+                "stake_yen": total_stake,
+                "return_yen": sum(row["returns"]),
+                "status": "stable" if stable else "unstable",
+            }
+        )
+
+    if not rows:
+        rows = _legacy_fold_signal_stability(fold_attributions, required_folds)
+    rows.sort(
+        key=lambda row: (
+            row["status"] == "stable",
+            row["signal_fold_rate"],
+            row["direction_consistency"],
+            abs(row.get("weighted_roi_lift_vs_rest") or row.get("mean_roi_spread") or 0.0),
+        ),
+        reverse=True,
+    )
+    stable_count = sum(1 for row in rows if row["status"] == "stable")
+    return {
+        "method": "bucket ROI lift versus same-dimension remainder across forward time folds",
+        "folds": fold_count,
+        "required_folds": required_folds,
+        "minimum_direction_consistency": 0.75,
+        "minimum_abs_roi_lift": 0.05,
+        "stable_signals": stable_count,
+        "signals": rows[:48],
+        "gate": "candidate" if stable_count else "insufficient",
+    }
+
+
+def _legacy_fold_signal_stability(
+    fold_attributions: list[dict[str, Any]], required_folds: int
+) -> list[dict[str, Any]]:
     by_dimension: dict[str, dict[str, Any]] = {}
     for fold_index, attribution in enumerate(fold_attributions, start=1):
         for signal in (attribution or {}).get("top_signals") or []:
@@ -160,64 +259,33 @@ def summarize_fold_signal_stability(fold_attributions: list[dict[str, Any]]) -> 
                 continue
             row = by_dimension.setdefault(
                 dimension,
-                {
-                    "dimension": dimension,
-                    "family": signal.get("family") or "other",
-                    "signal_folds": [],
-                    "roi_spreads": [],
-                    "best_buckets": {},
-                    "worst_buckets": {},
-                },
+                {"family": signal.get("family") or "other", "folds": [], "spreads": [], "directions": []},
             )
-            row["signal_folds"].append(fold_index)
-            if signal.get("roi_spread") is not None:
-                row["roi_spreads"].append(float(signal["roi_spread"]))
-            for field, target in (("best_bucket", "best_buckets"), ("worst_bucket", "worst_buckets")):
-                bucket = (signal.get(field) or {}).get("bucket")
-                if bucket is not None:
-                    row[target][str(bucket)] = int(row[target].get(str(bucket), 0)) + 1
-
+            best = str((signal.get("best_bucket") or {}).get("bucket") or "")
+            worst = str((signal.get("worst_bucket") or {}).get("bucket") or "")
+            row["folds"].append(fold_index)
+            row["spreads"].append(float(signal.get("roi_spread") or 0.0))
+            row["directions"].append((best, worst))
     rows = []
-    for row in by_dimension.values():
-        signal_folds = len(row["signal_folds"])
-        best_bucket, best_count = _most_common(row["best_buckets"])
-        worst_bucket, worst_count = _most_common(row["worst_buckets"])
-        consistency = min(best_count, worst_count) / signal_folds if signal_folds else 0.0
-        rows.append(
-            {
-                "dimension": row["dimension"],
-                "family": row["family"],
-                "signal_folds": row["signal_folds"],
-                "signal_fold_rate": signal_folds / fold_count if fold_count else 0.0,
-                "mean_roi_spread": sum(row["roi_spreads"]) / len(row["roi_spreads"]) if row["roi_spreads"] else None,
-                "common_best_bucket": best_bucket,
-                "common_worst_bucket": worst_bucket,
-                "direction_consistency": consistency,
-                "status": "stable" if signal_folds >= 2 and consistency >= 0.5 else "unstable",
-            }
-        )
-    rows.sort(
-        key=lambda row: (
-            row["status"] == "stable",
-            row["signal_fold_rate"],
-            row["direction_consistency"],
-            row["mean_roi_spread"] or 0.0,
-        ),
-        reverse=True,
-    )
-    return {
-        "folds": fold_count,
-        "stable_signals": sum(1 for row in rows if row["status"] == "stable"),
-        "signals": rows[:24],
-        "gate": "candidate" if any(row["status"] == "stable" for row in rows) else "insufficient",
-    }
-
-
-def _most_common(counts: dict[str, int]) -> tuple[str | None, int]:
-    if not counts:
-        return None, 0
-    return max(counts.items(), key=lambda item: (item[1], item[0]))
-
+    fold_count = len(fold_attributions)
+    for dimension, raw in by_dimension.items():
+        observations = len(raw["folds"])
+        counts: dict[tuple[str, str], int] = {}
+        for direction in raw["directions"]:
+            counts[direction] = counts.get(direction, 0) + 1
+        consistency = max(counts.values(), default=0) / observations if observations else 0.0
+        mean_spread = sum(raw["spreads"]) / observations if observations else 0.0
+        stable = observations >= required_folds and consistency >= 0.75 and mean_spread >= 0.05
+        rows.append({
+            "dimension": dimension,
+            "family": raw["family"],
+            "signal_folds": raw["folds"],
+            "signal_fold_rate": observations / fold_count if fold_count else 0.0,
+            "direction_consistency": consistency,
+            "mean_roi_spread": mean_spread,
+            "status": "stable" if stable else "unstable",
+        })
+    return rows
 
 def _ticket_dimensions(ticket: dict[str, Any]) -> list[tuple[str, str, str]]:
     rows = [

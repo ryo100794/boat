@@ -3,21 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .constants import RACES_PER_DAY, VENUES
+from .daily_program import load_daily_program
 from .db import connection, init_db
 from .live_safe_patch4 import install
 from .modeling_no_odds_v8_modelrank import predict_open_races
-from .time_semantics import estimated_deadline_from_start, stored_start_time
+from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
 
 install()
 
-from .live import collect_odds, collect_result
-
-
-JST = timezone(timedelta(hours=9))
+from .live import collect_odds, collect_racelist, collect_result, discover_races
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--model", default="data/models/win_model_no_odds_v8.joblib")
     parser.add_argument("--raw-dir", default="data/raw")
-    parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument("--date", help="Fix one race date; omit to follow the current JST date automatically.")
     parser.add_argument("--sleep-loop", type=float, default=10.0)
     parser.add_argument("--sleep-page", type=float, default=0.4)
     parser.add_argument("--max-loops", type=int)
@@ -34,12 +33,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     init_db(args.db)
-    target_date = date.fromisoformat(args.date)
+    fixed_date = date.fromisoformat(args.date) if args.date else None
     raw_dir = Path(args.raw_dir)
     model_path = Path(args.model)
     loop = 0
+    schedule_date: date | None = None
+    next_schedule_refresh = 0.0
 
     while True:
+        now = now_jst()
+        target_date = operational_race_date(fixed_date, at=now)
         counters = {
             "loop": loop,
             "odds_targets": 0,
@@ -51,9 +54,33 @@ def main(argv: list[str] | None = None) -> int:
             "predicted": 0,
             "prediction_failed": 0,
             "time_basis": "stored_deadline_at_is_race_start",
+            "race_date": target_date.isoformat(),
+            "date_mode": "fixed" if fixed_date else "jst_auto",
+            "schedule_targets": 0,
+            "schedule_loaded": 0,
+            "schedule_failed": 0,
+            "program_status": "not_due",
+            "program_races": 0,
+            "program_entries": 0,
         }
-        now = datetime.now(timezone.utc).astimezone(JST)
         with connection(args.db) as conn:
+            refresh_due = fixed_date is None and (
+                schedule_date != target_date or time.monotonic() >= next_schedule_refresh
+            )
+            if refresh_due:
+                try:
+                    counters.update(load_daily_program(conn, race_date=target_date, raw_dir=raw_dir))
+                except Exception as exc:
+                    counters["program_status"] = f"error:{type(exc).__name__}"
+                schedule = refresh_daily_schedule(
+                    conn,
+                    race_date=target_date,
+                    raw_dir=raw_dir,
+                    sleep_seconds=args.sleep_page,
+                )
+                counters.update(schedule)
+                schedule_date = target_date
+                next_schedule_refresh = time.monotonic() + 15 * 60
             for row in scheduled_races(conn, target_date):
                 start_at = stored_start_time(row["deadline_at"])
                 cutoff_at = estimated_deadline_from_start(start_at)
@@ -128,6 +155,90 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_loops is not None and loop >= args.max_loops:
             return 0
         time.sleep(args.sleep_loop)
+
+
+def refresh_daily_schedule(
+    conn,
+    *,
+    race_date: date,
+    raw_dir: Path,
+    sleep_seconds: float,
+) -> dict[str, int]:
+    targets = discover_races(race_date, sleep_seconds=sleep_seconds, fallback_all=False)
+    existing = {
+        (str(row["jcd"]).zfill(2), int(row["rno"])): {
+            "entries": int(row["entries"] or 0),
+            "html": bool(row["has_html"]),
+        }
+        for row in conn.execute(
+            """
+            SELECT r.jcd, r.rno, COUNT(e.lane) AS entries,
+                   EXISTS(SELECT 1 FROM raw_pages rp WHERE rp.race_id = r.race_id AND rp.page_type = "racelist") AS has_html
+            FROM races r
+            LEFT JOIN entries e ON e.race_id = r.race_id
+            WHERE r.race_date = ?
+            GROUP BY r.race_id, r.jcd, r.rno
+            """,
+            (race_date.isoformat(),),
+        )
+    }
+    loaded = 0
+    failed = 0
+    discovery_mode = "official_index"
+
+    if not targets:
+        discovery_mode = "venue_probe"
+        active_venues: set[str] = set()
+        for venue in VENUES:
+            key = (venue.code, 1)
+            if existing.get(key, {}).get("entries", 0) >= 6:
+                active_venues.add(venue.code)
+                continue
+            try:
+                available = collect_racelist(
+                    conn,
+                    race_date=race_date,
+                    jcd=venue.code,
+                    rno=1,
+                    raw_dir=raw_dir,
+                )
+                if available:
+                    active_venues.add(venue.code)
+                    existing[key] = {"entries": 6, "html": True}
+                    loaded += 1
+                    conn.commit()
+            except Exception:
+                failed += 1
+                conn.rollback()
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+        targets = [
+            (venue.code, int(rno))
+            for venue in VENUES
+            if venue.code in active_venues
+            for rno in RACES_PER_DAY
+        ]
+
+    for jcd, rno in targets:
+        if existing.get((jcd, rno), {}).get("entries", 0) >= 6 and existing.get((jcd, rno), {}).get("html"):
+            continue
+        try:
+            if collect_racelist(conn, race_date=race_date, jcd=jcd, rno=rno, raw_dir=raw_dir):
+                loaded += 1
+                conn.commit()
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+            conn.rollback()
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+    return {
+        "schedule_targets": len(targets),
+        "schedule_loaded": loaded,
+        "schedule_failed": failed,
+        "schedule_discovery": discovery_mode,
+    }
 
 
 def scheduled_races(conn, race_date: date) -> list[Any]:

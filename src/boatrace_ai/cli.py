@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .db import connection, init_db, race_id
+from .time_semantics import operational_race_date
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,7 +105,7 @@ def add_db_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_live_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument("--date", help="Fix one race date; omit to follow the current JST date automatically.")
     parser.add_argument("--jcd")
     parser.add_argument("--rno", type=int)
     parser.add_argument("--raw-dir", default="data/raw")
@@ -193,7 +194,7 @@ def cmd_collect_live_once(args: argparse.Namespace) -> int:
     with connection(args.db) as conn:
         result = collect_live_once(
             conn,
-            race_date=_parse_date(args.date),
+            race_date=operational_race_date(_parse_date(args.date) if args.date else None),
             raw_dir=Path(args.raw_dir),
             sleep_seconds=args.sleep,
             jcd=args.jcd,
@@ -208,10 +209,11 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     from .live import collect_live_once
     from .modeling import predict_open_races, train_model
 
-    race_date = _parse_date(args.date)
+    fixed_date = _parse_date(args.date) if args.date else None
     model_path = Path(args.model)
     loop = 0
     while True:
+        race_date = operational_race_date(fixed_date)
         with connection(args.db) as conn:
             collected = collect_live_once(
                 conn,

@@ -34,17 +34,20 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def discover_races(race_date: date, *, sleep_seconds: float = 0.0) -> list[tuple[str, int]]:
+def discover_races(
+    race_date: date, *, sleep_seconds: float = 0.0, fallback_all: bool = True
+) -> list[tuple[str, int]]:
     url = race_index_url(race_date)
     status_code, html, _ = fetch_text(url, sleep_seconds=sleep_seconds)
+    fallback = [(venue.code, rno) for venue in VENUES for rno in RACES_PER_DAY] if fallback_all else []
     if status_code != 200:
-        return [(venue.code, rno) for venue in VENUES for rno in RACES_PER_DAY]
+        return fallback
     found = set()
     for match in re.finditer(r"[?&]jcd=(\d{2}).*?[?&]rno=(\d{1,2})", html):
         found.add((match.group(1), int(match.group(2))))
     for match in re.finditer(r"[?&]rno=(\d{1,2}).*?[?&]jcd=(\d{2})", html):
         found.add((match.group(2), int(match.group(1))))
-    return sorted(found) or [(venue.code, rno) for venue in VENUES for rno in RACES_PER_DAY]
+    return sorted(found) or fallback
 
 
 def collect_live_once(
@@ -90,7 +93,7 @@ def collect_racelist(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path
     if not html:
         return False
     meta, entries = parse_racelist_html(html, race_date=race_date, jcd=jcd, rno=rno, source_url=url)
-    if meta.get("status") == "no_data" or not entries:
+    if meta.get("status") == "no_data" or len(entries) != 6:
         return False
     rid = upsert_race(conn, meta)
     for entry in entries:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -229,13 +230,21 @@ def connection(path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def init_db(path: str | Path) -> None:
-    with connection(path) as conn:
-        conn.executescript(SCHEMA)
-        conn.executemany(
-            "INSERT OR IGNORE INTO venues(code, name) VALUES (?, ?)",
-            [(venue.code, venue.name) for venue in VENUES],
-        )
+def init_db(path: str | Path, *, attempts: int = 6, retry_seconds: float = 5.0) -> None:
+    for attempt in range(attempts):
+        try:
+            with connection(path) as conn:
+                conn.executescript(SCHEMA)
+                conn.executemany(
+                    "INSERT OR IGNORE INTO venues(code, name) VALUES (?, ?)",
+                    [(venue.code, venue.name) for venue in VENUES],
+                )
+            return
+        except sqlite3.OperationalError as exc:
+            locked = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+            if not locked or attempt + 1 >= attempts:
+                raise
+            time.sleep(retry_seconds)
 
 
 def upsert_race(conn: sqlite3.Connection, payload: dict[str, Any]) -> str:
@@ -266,12 +275,12 @@ def upsert_race(conn: sqlite3.Connection, payload: dict[str, Any]) -> str:
           :distance_m, :deadline_at, :status, :source_url
         )
         ON CONFLICT(race_id) DO UPDATE SET
-          title=excluded.title,
-          race_type=excluded.race_type,
-          distance_m=excluded.distance_m,
-          deadline_at=excluded.deadline_at,
-          status=excluded.status,
-          source_url=excluded.source_url,
+          title=COALESCE(excluded.title, races.title),
+          race_type=COALESCE(excluded.race_type, races.race_type),
+          distance_m=COALESCE(excluded.distance_m, races.distance_m),
+          deadline_at=COALESCE(excluded.deadline_at, races.deadline_at),
+          status=CASE WHEN races.status = "final" THEN races.status ELSE COALESCE(excluded.status, races.status) END,
+          source_url=COALESCE(excluded.source_url, races.source_url),
           updated_at=CURRENT_TIMESTAMP
         """,
         values,
@@ -301,28 +310,28 @@ def upsert_entry(conn: sqlite3.Connection, race_id_value: str, entry: dict[str, 
           :boat_3_rate, :raw_json
         )
         ON CONFLICT(race_id, lane) DO UPDATE SET
-          racer_no=excluded.racer_no,
-          racer_name=excluded.racer_name,
-          racer_class=excluded.racer_class,
-          branch=excluded.branch,
-          origin=excluded.origin,
-          age=excluded.age,
-          weight_kg=excluded.weight_kg,
-          f_count=excluded.f_count,
-          l_count=excluded.l_count,
-          avg_st=excluded.avg_st,
-          national_win_rate=excluded.national_win_rate,
-          national_2_rate=excluded.national_2_rate,
-          national_3_rate=excluded.national_3_rate,
-          local_win_rate=excluded.local_win_rate,
-          local_2_rate=excluded.local_2_rate,
-          local_3_rate=excluded.local_3_rate,
-          motor_no=excluded.motor_no,
-          motor_2_rate=excluded.motor_2_rate,
-          motor_3_rate=excluded.motor_3_rate,
-          boat_no=excluded.boat_no,
-          boat_2_rate=excluded.boat_2_rate,
-          boat_3_rate=excluded.boat_3_rate,
+          racer_no=COALESCE(excluded.racer_no, entries.racer_no),
+          racer_name=COALESCE(excluded.racer_name, entries.racer_name),
+          racer_class=COALESCE(excluded.racer_class, entries.racer_class),
+          branch=COALESCE(excluded.branch, entries.branch),
+          origin=COALESCE(excluded.origin, entries.origin),
+          age=COALESCE(excluded.age, entries.age),
+          weight_kg=COALESCE(excluded.weight_kg, entries.weight_kg),
+          f_count=COALESCE(excluded.f_count, entries.f_count),
+          l_count=COALESCE(excluded.l_count, entries.l_count),
+          avg_st=COALESCE(excluded.avg_st, entries.avg_st),
+          national_win_rate=COALESCE(excluded.national_win_rate, entries.national_win_rate),
+          national_2_rate=COALESCE(excluded.national_2_rate, entries.national_2_rate),
+          national_3_rate=COALESCE(excluded.national_3_rate, entries.national_3_rate),
+          local_win_rate=COALESCE(excluded.local_win_rate, entries.local_win_rate),
+          local_2_rate=COALESCE(excluded.local_2_rate, entries.local_2_rate),
+          local_3_rate=COALESCE(excluded.local_3_rate, entries.local_3_rate),
+          motor_no=COALESCE(excluded.motor_no, entries.motor_no),
+          motor_2_rate=COALESCE(excluded.motor_2_rate, entries.motor_2_rate),
+          motor_3_rate=COALESCE(excluded.motor_3_rate, entries.motor_3_rate),
+          boat_no=COALESCE(excluded.boat_no, entries.boat_no),
+          boat_2_rate=COALESCE(excluded.boat_2_rate, entries.boat_2_rate),
+          boat_3_rate=COALESCE(excluded.boat_3_rate, entries.boat_3_rate),
           raw_json=excluded.raw_json,
           updated_at=CURRENT_TIMESTAMP
         """,

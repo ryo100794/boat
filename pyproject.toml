@@ -26,5 +26,8 @@ boat-ai = "boatrace_ai.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+boatrace_ai = ["templates/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
