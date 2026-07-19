@@ -35,7 +35,8 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 196979, "name": "listwise_newton_cg_v1", "milestone": "M4-3/M6", "kind": "newton_listwise_bankroll", "output": "data/models/listwise_newton_cg_v1.json", "log": "logs/listwise_feature_teacher_newton_loop.log", "wait_for": "data/models/listwise_feature_teacher_search_v1.json"},
     {"pid": 199131, "name": "listwise_temporal_stability_v1", "milestone": "M4-3/M6", "kind": "listwise_temporal_stability", "output": "data/models/listwise_temporal_stability_v1.json", "log": "logs/listwise_temporal_stability_v1.log"},
     {"pid": 205032, "name": "bankroll_no_odds_v8_temporal_no_bet_5fold", "milestone": "M6", "kind": "bankroll_temporal_no_bet", "output": "data/models/bankroll_no_odds_v8_temporal_no_bet_5fold.json", "log": "logs/bankroll_no_odds_v8_temporal_no_bet_5fold.log"},
-    {"pid": 205496, "name": "listwise_newton_cg_v1_artifact_refresh", "milestone": "M4-3", "kind": "listwise_live_artifact", "output": "data/models/listwise_newton_cg_v1_artifact_refresh.json", "log": "logs/listwise_newton_cg_v1_artifact_refresh.log"},
+    {"pid": 205497, "name": "listwise_newton_cg_v1_artifact_refresh", "milestone": "M4-3", "kind": "listwise_live_artifact", "output": "data/models/listwise_newton_cg_v1_artifact_refresh.json", "log": "logs/listwise_newton_cg_v1_artifact_refresh.log"},
+    {"pid": 205734, "name": "standardized_365d_all_models", "milestone": "M4-1/M4-3/M6", "kind": "standardized_365d_queue", "output": "data/models/standardized_365d_listwise_newton.json", "log": "logs/standardized_365d_runner.log"},
 ]
 
 REMOTE_CODE = r'''
