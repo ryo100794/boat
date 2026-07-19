@@ -603,8 +603,8 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
           e.boat_no, e.boat_2_rate, e.boat_3_rate,
           {SERIES_SELECT},
           rr.rank, rr.course AS result_course, rr.start_timing AS result_start_timing
-        FROM entries e
-        JOIN races r ON r.race_id = e.race_id
+        FROM races r INDEXED BY idx_races_training_order
+        CROSS JOIN entries e ON e.race_id = r.race_id
         JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
         LEFT JOIN entry_series_features sf ON sf.race_id = e.race_id AND sf.lane = e.lane
         WHERE rr.rank IS NOT NULL

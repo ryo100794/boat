@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,10 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
 from .db import connection, init_db
+from .hashed_feature_dataset import (
+    HashedRaceDataset,
+    load_or_build_hashed_dataset,
+)
 try:
     from . import feature_tuning as _feature_source
 except ImportError:
@@ -33,6 +38,93 @@ from .modeling import _race_level_metrics
 
 FEATURE_SET = "pastlog_calibrated_hash_shadow"
 MODEL_KINDS = ("linear", "mlp")
+
+
+def train_bundle_from_dataset(
+    dataset: HashedRaceDataset,
+    *,
+    train_race_count: int,
+    model_kind: str,
+    batch_size: int = 12_000,
+    epochs: int = 2,
+    alpha: float = 0.0001,
+) -> dict[str, Any]:
+    model_kind = normalize_model_kind(model_kind)
+    train_count = min(dataset.race_count, int(train_race_count))
+    train_end = train_count * 6
+    if train_end <= 0:
+        raise ValueError("no cached training examples")
+    labels = (dataset.ranks[:train_count].reshape(-1) == 1).astype(np.int64)
+    if len(labels) != train_end:
+        raise ValueError("cached label shape mismatch")
+    scaler = StandardScaler(with_mean=False)
+    for start, end in matrix_batch_ranges(train_end, batch_size):
+        scaler.partial_fit(dataset.matrix[start:end])
+
+    classifier = make_classifier(model_kind, alpha=alpha, batch_size=batch_size)
+    first = True
+    for _epoch in range(max(1, int(epochs))):
+        for start, end in matrix_batch_ranges(train_end, batch_size):
+            matrix = scaler.transform(dataset.matrix[start:end])
+            kwargs = {"classes": np.asarray([0, 1], dtype=np.int64)} if first else {}
+            classifier.partial_fit(matrix, labels[start:end], **kwargs)
+            first = False
+    if first:
+        raise ValueError("no cached classifier examples")
+    return {
+        "scaler": scaler,
+        "classifier": classifier,
+        "model_kind": model_kind,
+        "drop_feature_groups": list(dataset.drop_feature_groups),
+        "examples": train_end,
+        "n_features": dataset.n_features,
+        "epochs": max(1, int(epochs)),
+        "alpha": float(alpha),
+        "matrix_cached": True,
+    }
+
+
+def score_dataset_fold(
+    dataset: HashedRaceDataset,
+    *,
+    bundle: dict[str, Any],
+    race_start: int,
+    race_end: int,
+    batch_size: int,
+) -> Iterable[list[dict[str, Any]]]:
+    row_slice = dataset.row_slice(race_start, race_end)
+    matrix = dataset.matrix[row_slice]
+    raw_parts = []
+    for start, end in matrix_batch_ranges(matrix.shape[0], batch_size):
+        transformed = bundle["scaler"].transform(matrix[start:end])
+        raw_parts.append(bundle["classifier"].predict_proba(transformed)[:, 1])
+    if not raw_parts:
+        return
+    raw = np.concatenate(raw_parts).reshape(-1, 6)
+    totals = raw.sum(axis=1)
+    totals[totals == 0.0] = 1.0
+    normalized = raw / totals[:, None]
+    for local_race, race_index in enumerate(range(race_start, race_end)):
+        race_id, race_date, jcd, rno = dataset.race_keys[race_index]
+        yield [
+            {
+                "race_id": race_id,
+                "race_date": race_date,
+                "jcd": jcd,
+                "rno": int(rno),
+                "lane": lane,
+                "rank": int(dataset.ranks[race_index, lane - 1]),
+                "label": 1 if int(dataset.ranks[race_index, lane - 1]) == 1 else 0,
+                "probability": float(normalized[local_race, lane - 1]),
+            }
+            for lane in range(1, 7)
+        ]
+
+
+def matrix_batch_ranges(row_count: int, batch_size: int) -> Iterable[tuple[int, int]]:
+    size = max(1, int(batch_size))
+    for start in range(0, int(row_count), size):
+        yield start, min(int(row_count), start + size)
 
 
 def train_bundle(
@@ -211,6 +303,7 @@ def backtest_model(
     batch_size: int = 12_000,
     epochs: int = 2,
     alpha: float = 0.0001,
+    feature_cache: Path | None = None,
 ) -> dict[str, Any]:
     model_kind = normalize_model_kind(model_kind)
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
@@ -218,6 +311,28 @@ def backtest_model(
     races = [race_id for race_id, *_ in race_keys]
     if len(races) < min_train_races + folds:
         raise ValueError(f"not enough parsed races: {len(races)}")
+
+    hasher = FeatureHasher(
+        n_features=max(256, int(n_features)),
+        input_type="dict",
+        alternate_sign=False,
+    )
+    cache_started = time.perf_counter()
+    dataset, cache_source = load_or_build_hashed_dataset(
+        cache_prefix=feature_cache,
+        race_keys=race_keys,
+        race_rows=lambda: iter_race_feature_rows(
+            conn,
+            include_races=set(races),
+            drop_feature_groups=drop_feature_groups,
+        ),
+        hasher=hasher,
+        to_hashable=to_hashable,
+        ensure_sparse_index32=_ensure_sparse_index32,
+        drop_feature_groups=drop_feature_groups,
+        batch_size=batch_size,
+    )
+    cache_elapsed = time.perf_counter() - cache_started
     test_window = max(1, (len(races) - min_train_races) // folds)
     all_labels: list[int] = []
     all_probs: list[float] = []
@@ -225,23 +340,30 @@ def backtest_model(
     fold_rows = []
 
     for fold in range(folds):
+        fold_started = time.perf_counter()
         test_start = min_train_races + fold * test_window
-        test_end = len(races) if fold == folds - 1 else min(len(races), test_start + test_window)
-        train_races = set(races[:test_start])
-        test_races = set(races[test_start:test_end])
-        bundle = train_bundle(
-            conn,
-            include_races=train_races,
+        test_end = (
+            len(races)
+            if fold == folds - 1
+            else min(len(races), test_start + test_window)
+        )
+        bundle = train_bundle_from_dataset(
+            dataset,
+            train_race_count=test_start,
             model_kind=model_kind,
-            drop_feature_groups=drop_feature_groups,
-            n_features=n_features,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
         )
         labels: list[int] = []
         probs: list[float] = []
-        for rows in iter_scored_races(conn, bundle=bundle, include_races=test_races):
+        for rows in score_dataset_fold(
+            dataset,
+            bundle=bundle,
+            race_start=test_start,
+            race_end=test_end,
+            batch_size=batch_size,
+        ):
             for row in rows:
                 label = int(row["label"])
                 probability = float(row["probability"])
@@ -262,9 +384,13 @@ def backtest_model(
             "test_races": test_end - test_start,
             "entry_log_loss": safe_log_loss(labels, probs),
             "entry_brier": float(brier_score_loss(labels, probs)),
+            "elapsed_seconds": round(time.perf_counter() - fold_started, 3),
         }
         fold_rows.append(fold_row)
-        print(json.dumps({"model_kind": model_kind, **fold_row}, ensure_ascii=False), flush=True)
+        print(
+            json.dumps({"model_kind": model_kind, **fold_row}, ensure_ascii=False),
+            flush=True,
+        )
 
     result = {
         "generated_at": now_iso(),
@@ -274,11 +400,16 @@ def backtest_model(
         "feature_set": FEATURE_SET,
         "drop_feature_groups": list(drop_feature_groups),
         "include_odds": False,
-        "scaler": "StandardScaler(with_mean=False, streaming partial_fit)",
+        "scaler": "StandardScaler(with_mean=False, cached CSR partial_fit)",
         "class_weight": None,
         "n_features": int(n_features),
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
+        "feature_cache_source": cache_source,
+        "feature_cache_prefix": str(feature_cache) if feature_cache else None,
+        "feature_cache_seconds": round(cache_elapsed, 3),
+        "matrix_shape": list(dataset.matrix.shape),
+        "matrix_nnz": int(dataset.matrix.nnz),
         "folds": fold_rows,
         "examples": len(all_labels),
         "races": len(races),
@@ -288,7 +419,10 @@ def backtest_model(
         **_race_level_metrics(race_predictions),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return result
 
 
@@ -347,6 +481,10 @@ def main(argv: list[str] | None = None) -> int:
     backtest.add_argument("--output", required=True)
     backtest.add_argument("--folds", type=int, default=5)
     backtest.add_argument("--min-train-races", type=int, default=500)
+    backtest.add_argument(
+        "--feature-cache",
+        default="data/models/calibrated_shadow_features_16384",
+    )
     backtest.set_defaults(handler=run_backtest)
     train = subparsers.add_parser("train")
     add_common(train)
@@ -378,6 +516,7 @@ def run_backtest(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             epochs=args.epochs,
             alpha=args.alpha,
+            feature_cache=Path(args.feature_cache) if args.feature_cache else None,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0

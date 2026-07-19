@@ -30,6 +30,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 178254, "name": "m6_best_roi_attribution_retry3", "milestone": "M4-2/M6", "kind": "bankroll_roi_attribution", "output": "data/models/m6_best_roi_attribution_retry3.json", "log": "logs/m6_best_roi_attribution_retry3.log"},
     {"pid": 184638, "name": "calibrated_linear_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_linear", "output": "data/models/calibrated_linear_shadow_2fold.json", "log": "logs/calibrated_linear_shadow_2fold.log"},
     {"pid": 184700, "name": "calibrated_mlp_shadow_2fold", "milestone": "M4-1", "kind": "calibrated_mlp", "output": "data/models/calibrated_mlp_shadow_2fold.json", "log": "logs/calibrated_mlp_shadow_2fold.log"},
+    {"pid": 185957, "name": "bankroll_no_odds_v8_normalized_kelly_5fold", "milestone": "M6", "kind": "bankroll_operational_same_policy", "output": "data/models/bankroll_no_odds_v8_normalized_kelly_5fold.json", "log": "logs/bankroll_no_odds_v8_normalized_kelly_5fold.log"},
 ]
 
 REMOTE_CODE = r'''

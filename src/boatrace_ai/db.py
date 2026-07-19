@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   FOREIGN KEY (race_id) REFERENCES races(race_id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_races_training_order ON races(race_date, jcd, rno, race_id);
 CREATE INDEX IF NOT EXISTS idx_entries_racer_no ON entries(racer_no);
 CREATE INDEX IF NOT EXISTS idx_odds_race_snapshot ON odds_snapshots(race_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_results_rank ON race_results(race_id, rank);

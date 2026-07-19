@@ -2559,6 +2559,14 @@ def _roadmap_improvements(
             "next": "ablationは完了。base_pastlog除外でLogLoss 1.279→2.290、1着55.85%→55.34%と悪化。他3群の除外もLogLossは改善せず、削除は見送る。80foldとNN shadowで構造改善を続ける。",
         },
         {
+            "id": "M4-3",
+            "milestone": "M4/M6",
+            "status": "実装済み/評価回収待ち",
+            "progress": 80,
+            "item": "長時間モデル検証のI/O高速化",
+            "next": "foldごとのSQLite再走査を廃止し、時系列index走査で一時B-treeを除去。FeatureHasher結果を版管理付きCSRへ1回だけ構築しlinear/MLP間でも共有する。合成5foldで4.68倍、後続リモート実測を回収する。",
+        },
+        {
             "id": "M5-1",
             "milestone": "M5",
             "status": "蓄積中" if shadow_running else "要復旧",
