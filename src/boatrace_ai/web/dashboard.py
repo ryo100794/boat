@@ -838,6 +838,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
+    backtests.extend(_remote_backtest_report_summaries(remote_evaluations))
     bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
     bankroll_daily.update(_remote_bankroll_daily(remote_evaluations))
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
@@ -1264,6 +1265,51 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "avg_tickets_per_selected_race": None,
                 "max_drawdown_yen": metrics.get("max_drawdown_yen"),
                 "ticket_roi_attribution": attribution,
+                "remote": True,
+            }
+        )
+    return rows
+
+
+def _remote_backtest_report_summaries(
+    remote_evaluations: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    jobs = (
+        remote_evaluations.get("jobs")
+        if isinstance(remote_evaluations, dict)
+        else []
+    ) or []
+    for job in jobs:
+        kind = str(job.get("kind") or "")
+        if not kind.startswith("standardized_365d_"):
+            continue
+        result = job.get("result") or {}
+        metrics = result.get("metrics") or {}
+        if metrics.get("entry_log_loss") is None:
+            continue
+        file_name = str(result.get("file") or job.get("output") or "")
+        rows.append(
+            {
+                "name": job.get("name") or file_name or "remote_backtest",
+                "file": file_name,
+                "generated_at": result.get("modified_at")
+                or remote_evaluations.get("generated_at"),
+                "evaluation_scope": _evaluation_scope(Path(file_name), []),
+                "feature_set": result.get("feature_set"),
+                "include_odds": result.get("include_odds"),
+                "evaluated_races": metrics.get("evaluated_races"),
+                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "entry_brier": _float_or_none(metrics.get("entry_brier")),
+                "winner_top1_accuracy": _float_or_none(
+                    metrics.get("winner_top1_accuracy")
+                ),
+                "trifecta_top1_hit_rate": _float_or_none(
+                    metrics.get("trifecta_top1_hit_rate")
+                ),
+                "trifecta_top5_hit_rate": _float_or_none(
+                    metrics.get("trifecta_top5_hit_rate")
+                ),
                 "remote": True,
             }
         )
@@ -2791,7 +2837,12 @@ def _read_remote_eval_status(path: Path) -> dict[str, Any]:
 
 
 def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
-    bankrolls = _bankroll_gate_records(model_dir) + _remote_bankroll_gate_records(remote_evaluations)
+    all_bankrolls = _bankroll_gate_records(model_dir) + _remote_bankroll_gate_records(remote_evaluations)
+    standardized = [
+        row for row in all_bankrolls
+        if row.get("evaluation_scope") == "standard_365d"
+    ]
+    bankrolls = standardized or all_bankrolls
     best = max(bankrolls, key=lambda row: row.get("roi") or -1.0, default=None)
     latest = max(bankrolls, key=lambda row: row.get("modified_at") or "", default=None)
     remote_jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
@@ -2800,6 +2851,8 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
         status = str((job or {}).get("status") or "不明")
         remote_counts[status] = remote_counts.get(status, 0) + 1
     remote_text = " / ".join(f"{key}:{value}" for key, value in sorted(remote_counts.items())) or "未取得"
+    remote_running = bool(remote_counts.get("実行中") or remote_counts.get("待機中"))
+    remote_failed = bool(remote_counts.get("失敗") or remote_counts.get("未生成"))
 
     best_roi = _float_or_none(best.get("roi") if best else None)
     best_profit = _float_or_none(best.get("profit_yen") if best else None)
@@ -2852,9 +2905,9 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
         },
         {
             "target": "Remote Eval",
-            "status": "実行中" if remote_counts.get("実行中") else ("完了" if remote_counts.get("完了") else str(remote_evaluations.get("status") or "未取得")),
+            "status": "実行中" if remote_running else "要対応" if remote_failed else "完了" if remote_counts.get("完了") else str(remote_evaluations.get("status") or "未取得"),
             "evidence": remote_text,
-            "next": "全ジョブ終端済み。完了16件・差替済み2件の成果物を維持する",
+            "next": "実行中ジョブの完了を回収する" if remote_running else "失敗/未生成ジョブを再実行または明示的に終了判定する" if remote_failed else "全ジョブ終端済み。成果物と比較レポートを維持する",
         },
     ]
 
@@ -2879,6 +2932,10 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
                 "stake_yen": metrics.get("stake_yen"),
                 "evaluated_races": metrics.get("evaluated_races"),
                 "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+                "evaluation_scope": _evaluation_scope(
+                    Path(str(result.get("file") or job.get("output") or "legacy")),
+                    result.get("daily") or [],
+                ),
                 "roi_attribution_gate": stability.get("gate"),
                 "stable_signals": stability.get("stable_signals"),
             }
@@ -2908,6 +2965,7 @@ def _bankroll_gate_records(model_dir: Path) -> list[dict[str, Any]]:
                 "stake_yen": data.get("stake_yen"),
                 "evaluated_races": data.get("evaluated_races"),
                 "max_drawdown_yen": data.get("max_drawdown_yen"),
+                "evaluation_scope": _evaluation_scope(path, data.get("daily") or []),
                 "roi_attribution_gate": ((data.get("ticket_roi_attribution") or {}).get("fold_stability") or {}).get("gate"),
                 "stable_signals": ((data.get("ticket_roi_attribution") or {}).get("fold_stability") or {}).get("stable_signals"),
             }
@@ -2935,6 +2993,56 @@ def _roadmap_improvements(
     teleboat: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     realtime = (progress or {}).get("realtime") or {}
+    remote_jobs = ((remote_evaluations or {}).get("jobs") or [])
+    standardized_jobs = [
+        row
+        for row in remote_jobs
+        if str(row.get("kind") or "").startswith("standardized_365d_")
+        and row.get("kind") != "standardized_365d_queue"
+    ]
+    standardized_complete = sum(
+        row.get("status") == "完了" for row in standardized_jobs
+    )
+    standardized_expected = 8
+    standardized_bankrolls = [
+        row
+        for row in standardized_jobs
+        if "bankroll" in str(row.get("kind") or "")
+        and (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
+    ]
+    best_standardized = max(
+        standardized_bankrolls,
+        key=lambda row: float(
+            ((row.get("result") or {}).get("metrics") or {}).get("roi") or -1
+        ),
+        default=None,
+    )
+    best_standardized_metrics = (
+        ((best_standardized or {}).get("result") or {}).get("metrics") or {}
+    )
+    standard_no_odds = next(
+        (
+            row
+            for row in standardized_jobs
+            if row.get("name") == "standardized_365d_no_odds_v8_backtest"
+        ),
+        None,
+    )
+    standard_no_odds_metrics = (
+        ((standard_no_odds or {}).get("result") or {}).get("metrics") or {}
+    )
+    temporal_no_bet = next(
+        (row for row in remote_jobs if row.get("kind") == "bankroll_temporal_no_bet"),
+        None,
+    )
+    temporal_status = str((temporal_no_bet or {}).get("status") or "未登録")
+    temporal_completed, temporal_expected = _remote_job_fold_progress(
+        temporal_no_bet or {}
+    )
+    temporal_expected = temporal_expected or 5
+    temporal_metrics = (
+        ((temporal_no_bet or {}).get("result") or {}).get("metrics") or {}
+    )
     eligible_races = int(realtime.get("eligible_races") or 0)
     readiness = min(1.0, float(realtime.get("readiness") or 0.0))
     shadow_running = any(
@@ -3030,6 +3138,22 @@ def _roadmap_improvements(
         )
     return [
         {
+            "id": "M2-1",
+            "milestone": "M2",
+            "status": "完了",
+            "progress": 100,
+            "item": "2026-07-19リアルタイム収集完全性監査",
+            "next": "実開催16場192Rで出走表・結果・払戻・120通りoddsは192/192。締切60秒以内188R、予測190R。復元不能な芦屋1R締切前oddsと2Rのlive予測欠損を品質記録として維持する。",
+        },
+        {
+            "id": "M2-2",
+            "milestone": "M2",
+            "status": "完了/運用中",
+            "progress": 100,
+            "item": "起動直後の締切優先収集",
+            "next": "日次番組で6艇が揃ったレースのHTML再巡回を抑止し、未取得レースは締切順で補完する。collectorのodds_failed/prediction_failedを継続監視する。",
+        },
+        {
             "id": "M4-1",
             "milestone": "M4/M5",
             "status": "評価完了/昇格見送り" if calibrated_complete else "実装済み/評価待ち",
@@ -3060,6 +3184,30 @@ def _roadmap_improvements(
             "progress": 100 if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
             "item": "race-softmax/Plackett-Luce再設計とNewton-CG収束",
             "next": listwise_next,
+        },
+        {
+            "id": "M4-4",
+            "milestone": "M4/M6",
+            "status": (
+                "完了"
+                if standardized_complete >= standardized_expected
+                else "評価中"
+            ),
+            "progress": min(
+                100,
+                int(standardized_complete * 100 / standardized_expected),
+            ),
+            "item": "全モデル標準365日同一holdout比較",
+            "next": (
+                f"2025-07-19..2026-07-18の48,294Rで8成果物を完走。"
+                f"no_odds_v8は1着 {float(standard_no_odds_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
+                f"3T5 {float(standard_no_odds_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
+                f"資金運用最高は{str((best_standardized or {}).get('name') or '-')}のROI "
+                f"{float(best_standardized_metrics.get('roi') or 0):.4f}・損益 "
+                f"{int(best_standardized_metrics.get('profit_yen') or 0):,}円。"
+                if standardized_complete >= standardized_expected
+                else f"標準365日成果物 {standardized_complete}/{standardized_expected}件を回収中。"
+            ),
         },
         {
             "id": "M5-1",
@@ -3134,6 +3282,24 @@ def _roadmap_improvements(
             "next": operational_next,
         },
         {
+            "id": "M6-9",
+            "milestone": "M6",
+            "status": temporal_status,
+            "progress": (
+                100
+                if temporal_status == "完了"
+                else min(95, int(temporal_completed * 100 / temporal_expected))
+            ),
+            "item": "学習内選択temporal no-bet 5fold",
+            "next": (
+                f"5fold完了。ROI {float(temporal_metrics.get('roi') or 0):.4f}、"
+                f"損益 {int(temporal_metrics.get('profit_yen') or 0):,}円、"
+                f"購入券 {int(temporal_metrics.get('tickets') or 0):,}。収益ゲートで採否判定する。"
+                if temporal_status == "完了"
+                else f"チェックポイントからfold {temporal_completed}/{temporal_expected}を再開中。holdoutを見ず学習内calibrationだけでno-bet条件を選ぶ。"
+            ),
+        },
+        {
             "id": "M8-1",
             "milestone": "M8",
             "status": (teleboat or {}).get(
@@ -3192,6 +3358,37 @@ def _roadmap_milestones(
     realtime = progress.get("realtime") or {}
     process_kinds = {str(row.get("kind") or "") for row in processes}
     jobs = remote_evaluations.get("jobs") or []
+    standardized_jobs = [
+        row
+        for row in jobs
+        if str(row.get("kind") or "").startswith("standardized_365d_")
+        and row.get("kind") != "standardized_365d_queue"
+    ]
+    standardized_complete = (
+        len(standardized_jobs) >= 8
+        and all(row.get("status") == "完了" for row in standardized_jobs)
+    )
+    standard_bankrolls = [
+        row
+        for row in standardized_jobs
+        if "bankroll" in str(row.get("kind") or "")
+        and (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
+    ]
+    best_standard = max(
+        standard_bankrolls,
+        key=lambda row: float(
+            ((row.get("result") or {}).get("metrics") or {}).get("roi") or -1
+        ),
+        default=None,
+    )
+    best_standard_metrics = (
+        ((best_standard or {}).get("result") or {}).get("metrics") or {}
+    )
+    temporal_no_bet = next(
+        (row for row in jobs if row.get("kind") == "bankroll_temporal_no_bet"),
+        None,
+    )
+    temporal_status = str((temporal_no_bet or {}).get("status") or "")
 
     target_days = max(1, int(historical.get("target_days") or HISTORICAL_TARGET_DAYS))
     covered_days = min(
@@ -3231,7 +3428,19 @@ def _roadmap_milestones(
         if ablation_status == "完了"
         else 85
     )
-    m6_progress = 82 if sanity_status == "完了" else 78 if sanity_status == "実行中" else 75
+    m6_progress = (
+        90
+        if standardized_complete and temporal_status == "完了"
+        else 86
+        if standardized_complete and temporal_status in {"実行中", "待機中"}
+        else 84
+        if standardized_complete
+        else 82
+        if sanity_status == "完了"
+        else 78
+        if sanity_status == "実行中"
+        else 75
+    )
     realtime_readiness = float(realtime.get("readiness") or 0.0)
 
     web_running = "Webサーバ" in process_kinds
@@ -3289,7 +3498,9 @@ def _roadmap_milestones(
             ),
             "progress": m4_progress,
             "next": (
-                f"未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
+                "標準365日・48,294Rで全モデル比較完了。予測主系と候補の指標を同一期間で比較し、主系を維持する。"
+                if standardized_complete
+                else f"未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"
                 f"ROI {float(listwise_metrics.get('roi') or 0):.4f}。"
                 + ("次段評価へ進める。" if listwise_promoted else "ROI/収束ゲート未達のため現行主系を維持する。")
@@ -3310,9 +3521,15 @@ def _roadmap_milestones(
             "status": "未完了/収益ゲート未達",
             "progress": m6_progress,
             "next": (
-                "80fold sanityを回収し、ROI 1.0未達要因を再設計する"
-                if sanity_status != "完了"
-                else "全既存評価を回収済み。最高ROI 0.8935・損益 -112,270円のため、市場較正/no-bet条件を次候補として再設計する"
+                f"標準365日最高ROI {float(best_standard_metrics.get('roi') or 0):.4f}・"
+                f"損益 {int(best_standard_metrics.get('profit_yen') or 0):,}円。"
+                + (
+                    "temporal no-bet 5foldを回収し、収益ゲートで終了判定する。"
+                    if temporal_status != "完了"
+                    else "全評価を回収済み。ROI/損益未達のため本番購入はno-betを維持する。"
+                )
+                if standardized_complete
+                else "標準365日同一holdout比較とtemporal no-bet評価を回収する。"
             ),
         },
         {

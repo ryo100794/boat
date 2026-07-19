@@ -48,6 +48,72 @@ def completed_remote_evaluations() -> dict:
     }
 
 
+def standardized_remote_evaluations() -> dict:
+    jobs = [
+        {
+            "kind": "standardized_365d_backtest",
+            "name": "standardized_365d_no_odds_v8_backtest",
+            "status": "完了",
+            "result": {
+                "metrics": {
+                    "winner_top1_accuracy": 0.567441,
+                    "trifecta_top5_hit_rate": 0.315298,
+                }
+            },
+        },
+        {
+            "kind": "standardized_365d_bankroll",
+            "name": "standardized_365d_no_odds_v8_bankroll",
+            "status": "完了",
+            "result": {"metrics": {"roi": 0.761072, "profit_yen": -335120}},
+        },
+        {
+            "kind": "standardized_365d_backtest",
+            "name": "standardized_365d_pastlog_v7_backtest",
+            "status": "完了",
+            "result": {"metrics": {"winner_top1_accuracy": 0.558993}},
+        },
+        {
+            "kind": "standardized_365d_bankroll",
+            "name": "standardized_365d_pastlog_v7_bankroll",
+            "status": "完了",
+            "result": {"metrics": {"roi": 0.8808429, "profit_yen": -232130}},
+        },
+        {
+            "kind": "standardized_365d_calibrated_linear",
+            "name": "standardized_365d_calibrated_linear",
+            "status": "完了",
+            "result": {"metrics": {"entry_log_loss": 4.941831}},
+        },
+        {
+            "kind": "standardized_365d_calibrated_mlp",
+            "name": "standardized_365d_calibrated_mlp",
+            "status": "完了",
+            "result": {"metrics": {"entry_log_loss": 0.326569}},
+        },
+        {
+            "kind": "standardized_365d_listwise_bankroll",
+            "name": "standardized_365d_listwise_feature_teacher",
+            "status": "完了",
+            "result": {"metrics": {"roi": 0.678485, "profit_yen": -309490}},
+        },
+        {
+            "kind": "standardized_365d_listwise_bankroll",
+            "name": "standardized_365d_listwise_newton",
+            "status": "完了",
+            "result": {"metrics": {"roi": 0.717211, "profit_yen": -269470}},
+        },
+        {
+            "kind": "bankroll_temporal_no_bet",
+            "name": "bankroll_no_odds_v8_temporal_no_bet_5fold",
+            "status": "実行中",
+            "process": {"cmdline": "evaluate --folds 5"},
+            "completed_folds": 4,
+        },
+    ]
+    return {"jobs": jobs}
+
+
 def test_completed_model_evaluations_show_final_outcomes() -> None:
     progress = {"realtime": {"eligible_races": 350, "readiness": 0.35}}
     improvements = {
@@ -108,6 +174,36 @@ def test_completed_remote_gate_has_no_stale_pid_instruction(tmp_path) -> None:
 
     gates = _quality_gates(tmp_path, remote)
     assert all("PID" not in row["next"] for row in gates)
+
+
+def test_standardized_comparison_and_temporal_progress_are_visible() -> None:
+    remote = standardized_remote_evaluations()
+    improvements = {
+        row["id"]: row
+        for row in _roadmap_improvements(
+            {"realtime": {"eligible_races": 350, "readiness": 0.35}},
+            [{"kind": "リアルタイムshadow"}],
+            remote,
+        )
+    }
+
+    assert improvements["M4-4"]["status"] == "完了"
+    assert improvements["M4-4"]["progress"] == 100
+    assert "0.8808" in improvements["M4-4"]["next"]
+    assert improvements["M6-9"]["status"] == "実行中"
+    assert improvements["M6-9"]["progress"] == 80
+
+    milestones = {
+        row["id"]: row
+        for row in _roadmap_milestones(
+            {"realtime": {"eligible_races": 350, "readiness": 0.35}},
+            [{"kind": "リアルタイムshadow"}],
+            remote,
+        )
+    }
+    assert "標準365日" in milestones["M4"]["next"]
+    assert milestones["M6"]["progress"] == 86
+    assert "0.8808" in milestones["M6"]["next"]
 
 
 def test_versioned_inventory_scans_nested_packages(tmp_path) -> None:
