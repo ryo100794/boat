@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from boatrace_ai.feature_tuning import FEATURE_GROUPS
-from boatrace_ai.listwise_feature_search import day_boundary, feature_variants
+from boatrace_ai.listwise.feature_search import day_boundary, feature_variants
 
 
 def test_feature_search_covers_full_and_each_single_group_ablation() -> None:

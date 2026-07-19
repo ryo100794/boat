@@ -10,12 +10,9 @@ from typing import Any
 from .constants import RACES_PER_DAY, VENUES
 from .daily_program import load_daily_program
 from .db import connection, init_db
-from .live_runtime import install
 from .operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
 from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
-
-install()
 
 from .live import collect_odds, collect_racelist, collect_result, discover_races
 

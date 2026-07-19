@@ -4,13 +4,13 @@ import numpy as np
 from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
-from boatrace_ai.listwise_ranking_model import (
+from boatrace_ai.listwise.model import (
     evaluate_range,
     pl_loss_and_score_gradient,
     stable_softmax,
     train_listwise_model,
 )
-from boatrace_ai.listwise_validation import full_day_fold_boundaries, nested_select_candidate
+from boatrace_ai.listwise.validation import full_day_fold_boundaries, nested_select_candidate
 
 
 def synthetic_dataset(races: int = 90) -> HashedRaceDataset:

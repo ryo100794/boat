@@ -3225,8 +3225,6 @@ def _process_snapshots() -> list[dict[str, Any]]:
         ("realtime_collector", "リアルタイム収集"),
         ("model_cycle", "リアルタイムshadow"),
         ("predict_loop", "予測ループ"),
-        ("adaptive_odds_loop", "リアルタイム収集"),
-        ("live_slow", "ライブ収集"),
         ("backfill", "過去バックフィル"),
     ]
     rows: list[dict[str, Any]] = []

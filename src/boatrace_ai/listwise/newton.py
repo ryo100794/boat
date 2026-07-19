@@ -6,8 +6,8 @@ from typing import Any
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, cg
 
-from .hashed_feature_dataset import HashedRaceDataset
-from .listwise_ranking_model import ListwiseLinearModel, pl_loss_and_score_gradient, stable_softmax
+from ..hashed_feature_dataset import HashedRaceDataset
+from .model import ListwiseLinearModel, pl_loss_and_score_gradient, stable_softmax
 
 
 def pl_hessian_score_product(

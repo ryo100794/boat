@@ -4,13 +4,13 @@ import numpy as np
 from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
-from boatrace_ai.listwise_newton import (
+from boatrace_ai.listwise.newton import (
     hessian_vector_product,
     objective_gradient,
     pl_hessian_score_product,
     refine_newton_cg,
 )
-from boatrace_ai.listwise_ranking_model import train_listwise_model
+from boatrace_ai.listwise.model import train_listwise_model
 
 
 def dataset() -> HashedRaceDataset:
@@ -38,7 +38,7 @@ def test_score_hessian_product_matches_gradient_difference() -> None:
     ranks = np.asarray([[2, 4, 1, 3, 6, 5]])
     vector = np.asarray([[0.3, -0.2, 0.1, 0.5, -0.4, 0.2]])
     analytic = pl_hessian_score_product(scores, ranks, vector, target="top3_pl")
-    from boatrace_ai.listwise_ranking_model import pl_loss_and_score_gradient
+    from boatrace_ai.listwise.model import pl_loss_and_score_gradient
 
     epsilon = 1e-6
     _, plus = pl_loss_and_score_gradient(scores + epsilon * vector, ranks, target="top3_pl")

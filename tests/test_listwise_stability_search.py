@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from boatrace_ai.listwise_stability_search import candidate_key, summarize_candidate
+from boatrace_ai.listwise.stability_search import candidate_key, summarize_candidate
 
 
 def fold(top1: float, loss: float, top5: float = 0.31) -> dict:
