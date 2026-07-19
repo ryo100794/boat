@@ -1,4 +1,8 @@
 .venv/
+.tools/
+.secrets/
+data/teleboat_probe_status.json
+data/.teleboat_probe_status.json.*.tmp
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-<header><h1>モデル性能レポート</h1><div><select id="dailyModel"></select><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a class="primary" href="/">ダッシュボード</a></div></header>
+<header><h1>モデル性能レポート</h1><div><select id="dailyModel"></select><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a href="/reports/teleboat">Teleboat</a><a class="primary" href="/">ダッシュボード</a></div></header>
 <main>
   <div id="kpis" class="kpis"></div>
   <div class="panel" style="margin-top:6px"><h2><span>モデル運用系統</span><span class="muted">教師・学習条件・本番とshadowを分離</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>モデル名</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>実odds</th><th>学習/評価R</th><th>BT</th><th>LogLoss</th><th>1着</th><th>3T5</th></tr></thead><tbody id="modelTrackRows"></tbody></table></div></div>

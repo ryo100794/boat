@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sqlite3
+import stat
 import time
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +28,8 @@ TODAY_TARGET_RACES = len(VENUES) * len(RACES_PER_DAY)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
 REMOTE_EVAL_STATUS_NAME = "remote_eval_status.json"
+TELEBOAT_STATUS_NAME = "teleboat_probe_status.json"
+TELEBOAT_PLAYWRIGHT_BROWSERS = PROJECT_ROOT / ".tools" / "ms-playwright"
 TEMPLATE_DIR = Path(__file__).with_name("templates")
 RACING_WINDOW_MINUTES = 7
 BOATCAST_STADIUMS = {
@@ -533,6 +537,10 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_html(self, ROADMAP_REPORT_HTML)
                 elif parsed.path == "/api/reports/roadmap-status":
                     send_json(self, roadmap_status(db_path, query))
+                elif parsed.path == "/reports/teleboat":
+                    send_html(self, TELEBOAT_REPORT_HTML)
+                elif parsed.path == "/api/reports/teleboat-status":
+                    send_json(self, teleboat_status(db_path))
                 elif parsed.path == "/api/archive/overview":
                     send_json(self, archive_overview(db_path, query))
                 elif parsed.path == "/api/archive/today":
@@ -2342,25 +2350,108 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
     processes = _process_snapshots()
-    milestones = _roadmap_milestones(progress, processes, remote_evaluations)
+    teleboat = teleboat_status(db_path)
+    milestones = _roadmap_milestones(progress, processes, remote_evaluations, teleboat)
 
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
         "date": race_date,
         "record_markdown": _read_project_status_markdown(),
         "milestones": milestones,
-        "improvements": _roadmap_improvements(progress, processes, remote_evaluations),
+        "improvements": _roadmap_improvements(progress, processes, remote_evaluations, teleboat),
         "agents": _roadmap_agents(),
         "progress": progress,
         "summary": summary,
         "processes": processes,
         "remote_evaluations": remote_evaluations,
+        "teleboat": teleboat,
         "quality_gates": _quality_gates(db_path.parent / "models", remote_evaluations),
         "model_artifacts": _latest_model_artifacts(db_path.parent / "models"),
         "v_file_inventory": _v_file_inventory(PROJECT_ROOT / "src" / "boatrace_ai"),
     }
     _ROADMAP_CACHE[db_path] = (now, payload)
     return payload
+
+
+_TELEBOAT_RESULT_KEYS = {
+    "mode",
+    "browser",
+    "public_page_ready",
+    "authenticated",
+    "logout_confirmed",
+    "wager_actions",
+    "attempts",
+    "final_location",
+    "elapsed_seconds",
+    "success",
+    "error_type",
+}
+
+
+def teleboat_status(
+    db_path: Path,
+    *,
+    secret_path: Path | None = None,
+) -> dict[str, Any]:
+    status_path = db_path.parent / TELEBOAT_STATUS_NAME
+    try:
+        raw = json.loads(status_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def filtered(phase: str) -> dict[str, Any] | None:
+        value = raw.get(phase)
+        if not isinstance(value, dict):
+            return None
+        return {key: value[key] for key in _TELEBOAT_RESULT_KEYS if key in value}
+
+    configured_path = secret_path or PROJECT_ROOT / ".secrets" / "teleboat-login.json"
+    configured = False
+    permission_valid = False
+    try:
+        configured = configured_path.is_file() and not configured_path.is_symlink()
+        permission_valid = (
+            configured and stat.S_IMODE(configured_path.stat().st_mode) == 0o600
+        )
+    except OSError:
+        configured = False
+        permission_valid = False
+
+    public = filtered("public")
+    login = filtered("login")
+    public_success = bool(public and public.get("success"))
+    login_success = bool(
+        login
+        and login.get("success")
+        and login.get("authenticated")
+        and login.get("logout_confirmed")
+        and int(login.get("wager_actions") or 0) == 0
+    )
+    return {
+        "generated_at": raw.get("generated_at"),
+        "latest_phase": raw.get("latest_phase"),
+        "readiness": {
+            "playwright": importlib.util.find_spec("playwright") is not None,
+            "chromium": any(
+                TELEBOAT_PLAYWRIGHT_BROWSERS.glob("chromium-*")
+            ),
+            "secret_configured": configured,
+            "secret_permission_valid": permission_valid,
+        },
+        "public": public,
+        "login": login,
+        "connection_status": (
+            "ログイン・ログアウト確認済み"
+            if login_success
+            else "ログイン試験待ち"
+            if public_success
+            else "公開接続試験待ち"
+        ),
+        "live_wager_enabled": False,
+        "wager_actions": int((login or {}).get("wager_actions") or 0),
+    }
 
 
 def _read_project_status_markdown() -> str:
@@ -2525,6 +2616,7 @@ def _roadmap_improvements(
     progress: dict[str, Any] | None = None,
     processes: list[dict[str, Any]] | None = None,
     remote_evaluations: dict[str, Any] | None = None,
+    teleboat: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     realtime = (progress or {}).get("realtime") or {}
     eligible_races = int(realtime.get("eligible_races") or 0)
@@ -2630,6 +2722,23 @@ def _roadmap_improvements(
             "item": "三連単シミュレーションC高速化",
             "next": "Plackett-Luce 120通り計算をCPython C拡張へ置換。Python fallbackを維持し、今後の資金運用再評価へ適用する。",
         },
+        {
+            "id": "M8-1",
+            "milestone": "M8",
+            "status": (teleboat or {}).get(
+                "connection_status", "公開接続試験待ち"
+            ),
+            "progress": (
+                100
+                if (teleboat or {}).get("connection_status")
+                == "ログイン・ログアウト確認済み"
+                else 75
+                if ((teleboat or {}).get("public") or {}).get("success")
+                else 45
+            ),
+            "item": "Teleboat本番ログイン接続監査",
+            "next": "端末で0600秘密ファイルを設定し、1回だけログイン・ログアウトを確認する。投票操作は無効のまま維持する。",
+        },
     ]
 
 
@@ -2658,6 +2767,7 @@ def _roadmap_milestones(
     progress: dict[str, Any] | None = None,
     processes: list[dict[str, Any]] | None = None,
     remote_evaluations: dict[str, Any] | None = None,
+    teleboat: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     progress = progress or {}
     processes = processes or []
@@ -2704,6 +2814,11 @@ def _roadmap_milestones(
     collector_running = "リアルタイム収集" in process_kinds
     predictor_running = "予測ループ" in process_kinds
     shadow_running = "リアルタイムshadow" in process_kinds
+    teleboat = teleboat or {}
+    teleboat_complete = (
+        teleboat.get("connection_status") == "ログイン・ログアウト確認済み"
+    )
+    teleboat_public = bool((teleboat.get("public") or {}).get("success"))
 
     return [
         {
@@ -2773,6 +2888,19 @@ def _roadmap_milestones(
             "status": "完了",
             "progress": 100,
             "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない",
+        },
+        {
+            "id": "M8",
+            "title": "Teleboat接続監査",
+            "status": (
+                "完了"
+                if teleboat_complete
+                else "ログイン試験待ち"
+                if teleboat_public
+                else "公開接続試験待ち"
+            ),
+            "progress": 100 if teleboat_complete else 75 if teleboat_public else 45,
+            "next": "認証情報をWebへ出さず、ログイン・ログアウトのみを1回確認する。投票機能は別ゲートで無効を維持する",
         },
     ]
 
@@ -2857,6 +2985,8 @@ def _looks_versioned(name: str) -> bool:
 ROADMAP_REPORT_HTML = _load_template("roadmap_report.html")
 
 MODEL_REPORT_HTML = _load_template("model_report.html")
+
+TELEBOAT_REPORT_HTML = _load_template("teleboat_report.html")
 
 HTML = _load_template("dashboard.html")
 

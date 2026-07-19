@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teleboat 接続監査</title>
+  <style>
+    :root { --ink:#172126; --muted:#637279; --line:#d8e0e3; --accent:#006d77; --ok:#247a4b; --warn:#a76300; --bad:#a33a3a; font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:#fff; font-size:10px; }
+    header { position:sticky; top:0; z-index:4; display:flex; align-items:center; justify-content:space-between; gap:6px; padding:4px 6px; border-bottom:1px solid var(--line); background:#fff; }
+    h1 { margin:0; font-size:12px; white-space:nowrap; } a,button { height:19px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--ink); padding:1px 5px; text-decoration:none; font:inherit; } button,.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(6,minmax(100px,1fr)); gap:1px; border:1px solid var(--line); background:var(--line); }
+    .kpi { min-width:0; padding:3px 4px; background:#fff; } .kpi b { display:block; font-size:12px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .kpi span { color:var(--muted); font-size:9px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
+    h2 { display:flex; justify-content:space-between; gap:5px; margin:0 0 2px; font-size:11px; } table { width:100%; border-collapse:collapse; table-layout:fixed; } th,td { border-bottom:1px solid var(--line); padding:2px 3px; line-height:1.1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } th { width:42%; color:var(--muted); background:#fafbfb; }
+    .tag { display:inline-block; border-radius:999px; color:#fff; background:var(--muted); padding:0 4px; font-size:9px; } .ok { background:var(--ok); } .warn { background:var(--warn); } .bad { background:var(--bad); } .muted { color:var(--muted); } .notice { margin-top:6px; padding:4px 5px; border:1px solid var(--line); background:#fafbfb; }
+    @media (max-width:760px){ .kpis{grid-template-columns:repeat(2,minmax(110px,1fr));}.grid{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+<header><h1>Teleboat 接続監査</h1><div><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a class="primary" href="/">ダッシュボード</a></div></header>
+<main>
+  <div id="kpis" class="kpis"></div>
+  <div class="grid">
+    <section class="panel"><h2><span>実行環境</span><span class="muted">値・パス非公開</span></h2><table><tbody id="readinessRows"></tbody></table></section>
+    <section class="panel"><h2><span>公開接続</span><span id="publicMeta" class="muted"></span></h2><table><tbody id="publicRows"></tbody></table></section>
+    <section class="panel"><h2><span>ログイン接続</span><span id="loginMeta" class="muted"></span></h2><table><tbody id="loginRows"></tbody></table></section>
+    <section class="panel"><h2><span>安全ゲート</span><span class="muted">接続試験専用</span></h2><table><tbody id="policyRows"></tbody></table></section>
+  </div>
+  <div class="notice">この画面は監査済みの状態のみ表示します。加入番号、暗証番号、認証番号、秘密ファイルのパスはWeb APIへ返しません。</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+const yes=v=>v?'<span class="tag ok">正常</span>':'<span class="tag bad">未確認</span>';
+const row=(k,v)=>'<tr><th>'+esc(k)+'</th><td>'+v+'</td></tr>';
+function phaseRows(x){ if(!x) return row('状態','<span class="tag warn">未実行</span>'); return [row('成功',yes(x.success)),row('公式ページ',yes(x.public_page_ready)),row('認証',yes(x.authenticated)),row('ログアウト',yes(x.logout_confirmed)),row('試行回数',esc(x.attempts??0)),row('投票操作',esc(x.wager_actions??0)),row('所要秒',esc(x.elapsed_seconds??'-')),row('接続先',esc(x.final_location??'-')),row('エラー種別',esc(x.error_type??'-'))].join(''); }
+async function load(){ const res=await fetch('/api/reports/teleboat-status',{cache:'no-store'}); const d=await res.json(); const r=d.readiness||{}; $('kpis').innerHTML=[['接続状態',d.connection_status||'-'],['公開ページ',d.public&&d.public.success?'正常':'未確認'],['ログイン',d.login&&d.login.authenticated?'確認済':'未確認'],['ログアウト',d.login&&d.login.logout_confirmed?'確認済':'未確認'],['投票操作',String(d.wager_actions??0)+'件'],['更新',String(d.generated_at||'-').replace('T',' ').slice(0,19)]].map(x=>'<div class="kpi"><b title="'+esc(x[1])+'">'+esc(x[1])+'</b><span>'+esc(x[0])+'</span></div>').join(''); $('readinessRows').innerHTML=[row('Playwright',yes(r.playwright)),row('Chromium',yes(r.chromium)),row('秘密設定',yes(r.secret_configured)),row('秘密権限 0600',yes(r.secret_permission_valid))].join(''); $('publicRows').innerHTML=phaseRows(d.public); $('loginRows').innerHTML=phaseRows(d.login); $('policyRows').innerHTML=[row('実投票',d.live_wager_enabled?'<span class="tag bad">有効</span>':'<span class="tag ok">無効</span>'),row('投票操作数',esc(d.wager_actions??0)),row('認証値のWeb公開','<span class="tag ok">なし</span>')].join(''); $('publicMeta').textContent=d.latest_phase==='public'?'最新実行':''; $('loginMeta').textContent=d.latest_phase==='login'?'最新実行':''; }
+$('reload').onclick=load; load(); setInterval(load,30000);
+</script>
+</body>
+</html>
