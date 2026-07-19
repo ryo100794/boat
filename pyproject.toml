@@ -19,9 +19,11 @@ dependencies = [
 [project.optional-dependencies]
 lzh = ["lhafile>=0.3.0"]
 dev = ["pytest>=8.0"]
+teleboat = ["selenium>=4.22"]
 
 [project.scripts]
 boat-ai = "boatrace_ai.cli:main"
+teleboat-agent = "teleboat_agent.api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
