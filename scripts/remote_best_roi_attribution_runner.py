@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from boatrace_ai.adaptive_bankroll_pastlog_v7 import adaptive_bankroll_streaming
+from boatrace_ai.bankroll_optimizer import adaptive_bankroll_streaming
 from boatrace_ai.db import connection, init_db
 
 

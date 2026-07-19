@@ -1,0 +1,124 @@
+{
+  "status": "applied",
+  "renamed": [
+    {
+      "from": "src/boatrace_ai/adaptive_bankroll_pastlog_v7.py",
+      "to": "src/boatrace_ai/bankroll_optimizer.py"
+    },
+    {
+      "from": "src/boatrace_ai/adaptive_odds_loop_safe5_no_odds_v8_modelrank.py",
+      "to": "src/boatrace_ai/realtime_collector.py"
+    },
+    {
+      "from": "src/boatrace_ai/feature_result_correlation_v8_stream2.py",
+      "to": "src/boatrace_ai/feature_diagnostics_stream.py"
+    },
+    {
+      "from": "src/boatrace_ai/feature_result_correlation_v8.py",
+      "to": "src/boatrace_ai/feature_diagnostics.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_no_odds_v3.py",
+      "to": "src/boatrace_ai/base_features.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_no_odds_v9.py",
+      "to": "src/boatrace_ai/contextual_features.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_pastlog_v1.py",
+      "to": "src/boatrace_ai/series_features_base.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_pastlog_v2.py",
+      "to": "src/boatrace_ai/series_features_relative.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_pastlog_v3.py",
+      "to": "src/boatrace_ai/series_features_form.py"
+    },
+    {
+      "from": "src/boatrace_ai/features_pastlog_v5.py",
+      "to": "src/boatrace_ai/operational_features.py"
+    },
+    {
+      "from": "src/boatrace_ai/historical_official3.py",
+      "to": "src/boatrace_ai/historical_parser_core.py"
+    },
+    {
+      "from": "src/boatrace_ai/historical_official4.py",
+      "to": "src/boatrace_ai/historical_parser_extended.py"
+    },
+    {
+      "from": "src/boatrace_ai/historical_official6.py",
+      "to": "src/boatrace_ai/historical_archive.py"
+    },
+    {
+      "from": "src/boatrace_ai/live_safe_patch2.py",
+      "to": "src/boatrace_ai/live_patch_base.py"
+    },
+    {
+      "from": "src/boatrace_ai/live_safe_patch4.py",
+      "to": "src/boatrace_ai/live_runtime.py"
+    },
+    {
+      "from": "src/boatrace_ai/modeling_no_odds_v4.py",
+      "to": "src/boatrace_ai/model_core.py"
+    },
+    {
+      "from": "src/boatrace_ai/modeling_no_odds_v6.py",
+      "to": "src/boatrace_ai/model_extended.py"
+    },
+    {
+      "from": "src/boatrace_ai/modeling_no_odds_v8_modelrank.py",
+      "to": "src/boatrace_ai/operational_model.py"
+    },
+    {
+      "from": "src/boatrace_ai/modeling_no_odds_v8.py",
+      "to": "src/boatrace_ai/historical_model.py"
+    },
+    {
+      "from": "src/boatrace_ai/modeling_pastlog_v7_stream_hash.py",
+      "to": "src/boatrace_ai/feature_tuning.py"
+    },
+    {
+      "from": "src/boatrace_ai/predict_loop_no_odds_v8_modelrank.py",
+      "to": "src/boatrace_ai/realtime_predictor.py"
+    },
+    {
+      "from": "src/boatrace_ai/result_parser_v2.py",
+      "to": "src/boatrace_ai/result_parser.py"
+    }
+  ],
+  "updated_references": [
+    "docs/GPU_WORKSPACE.md",
+    "docs/PROJECT_STATUS.md",
+    "scripts/remote_best_roi_attribution_runner.py",
+    "scripts/remote_runtime_probe.py",
+    "scripts/update_remote_eval_status.py",
+    "scripts/versioned_module_inventory.py",
+    "src/boatrace_ai/bankroll_optimizer.py",
+    "src/boatrace_ai/contextual_features.py",
+    "src/boatrace_ai/daily_program.py",
+    "src/boatrace_ai/feature_diagnostics.py",
+    "src/boatrace_ai/feature_diagnostics_stream.py",
+    "src/boatrace_ai/feature_tuning.py",
+    "src/boatrace_ai/historical_archive.py",
+    "src/boatrace_ai/historical_model.py",
+    "src/boatrace_ai/historical_parser_extended.py",
+    "src/boatrace_ai/live.py",
+    "src/boatrace_ai/live_runtime.py",
+    "src/boatrace_ai/model_core.py",
+    "src/boatrace_ai/model_extended.py",
+    "src/boatrace_ai/operational_features.py",
+    "src/boatrace_ai/operational_model.py",
+    "src/boatrace_ai/realtime_collector.py",
+    "src/boatrace_ai/realtime_predictor.py",
+    "src/boatrace_ai/series_features_base.py",
+    "src/boatrace_ai/series_features_form.py",
+    "src/boatrace_ai/series_features_relative.py",
+    "src/boatrace_ai/templates/model_report.html",
+    "tests/test_daily_rollover.py",
+    "tests/test_roi_attribution.py"
+  ]
+}

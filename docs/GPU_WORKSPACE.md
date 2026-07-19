@@ -19,10 +19,10 @@ Current CPU-safe sequence:
 
 ```bash
 cd /workspace/boat-no-odds-v4/src
-../.venv/bin/python -m boatrace_ai.feature_result_correlation_v8_stream2 \
+../.venv/bin/python -m boatrace_ai.feature_diagnostics_stream \
   --db ../data/boatrace.sqlite \
   --model ../data/models/win_model_no_odds_v8.joblib \
-  --output ../data/models/feature_result_correlation_v8_stream.json
+  --output ../data/models/feature_diagnostics_stream.json
 
 ../.venv/bin/python -m boatrace_ai.modeling_pastlog_v2 train \
   --db ../data/boatrace.sqlite \

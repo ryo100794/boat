@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+from .legacy_model_aliases import load_model_bundle
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss
@@ -140,7 +141,7 @@ def predict_race(
     top_n: int = 30,
     store: bool = True,
 ) -> list[dict[str, Any]]:
-    bundle = joblib.load(model_path)
+    bundle = load_model_bundle(model_path)
     pipeline = bundle["pipeline"]
     entries = load_race_entries(conn, race_id=race_id_value)
     if len(entries) != 6:

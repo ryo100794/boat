@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from .constants import RACES_PER_DAY, VENUES
 from .db import connect, init_db
 from .official import race_page_url, ymd
+from .web_prediction_summary import attach_latest_prediction_summaries
 
 
 JST = timezone(timedelta(hours=9))
@@ -24,6 +25,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
 REMOTE_EVAL_STATUS_NAME = "remote_eval_status.json"
 TEMPLATE_DIR = Path(__file__).with_name("templates")
+LIVE_WINDOW_MINUTES = 10
+BOATCAST_STADIUMS = {
+    "01": "01kiryu", "02": "02toda", "03": "03edogawa", "04": "04heiwajima",
+    "05": "05tamagawa", "06": "06hamanako", "07": "07gamagori", "08": "08tokoname",
+    "09": "09tsu", "10": "10mikuni", "11": "11biwako", "12": "12suminoe",
+    "13": "13amagasaki", "14": "14naruto", "15": "15marugame", "16": "16kojima",
+    "17": "17miyajima", "18": "18tokuyama", "19": "19shimonoseki", "20": "20wakamatsu",
+    "21": "21ashiya", "22": "22fukuoka", "23": "23karatsu", "24": "24omura",
+}
 
 
 def _load_template(name: str) -> str:
@@ -97,6 +107,7 @@ def time_fields_from_stored_start(
         status = "出走"
     else:
         status = "結果待"
+
     return {
         "stored_schedule_at": iso(start_at),
         "deadline_at": iso(deadline_at),
@@ -231,6 +242,7 @@ def predictions_model_rank(db_path: Path, query: dict[str, list[str]]) -> dict[s
                 """,
                 (race_id, latest["generated_at"]),
             ).fetchall()
+
     return {
         "race": dict_row(race) if race else None,
         "entries": [dict_row(row) for row in entries],
@@ -322,6 +334,7 @@ def accuracy_model_rank(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             winner_hits += 1 if top.split("-")[0] == actual_winner else 0
             trifecta_top1_hits += 1 if top == actual_combo else 0
             trifecta_top5_hits += 1 if actual_combo in top5 else 0
+
     return {
         "date": race_date,
         "evaluated": evaluated,
@@ -365,6 +378,7 @@ def result_summary(conn: sqlite3.Connection, race_id: str) -> dict[str, Any]:
         if payout_row:
             payout = payout_row["payout_yen"]
             popularity = payout_row["popularity"]
+
     return {
         "result_combination": combination,
         "trifecta_payout_yen": payout,
@@ -398,6 +412,7 @@ def base_progress(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
         "odds_races": sum(1 for row in day_rows if int(row.get("odds_snapshots") or 0) > 0),
         "finals": sum(1 for row in day_rows if int(row.get("result_rows") or 0) >= 3),
     }
+
     return {
         "date": race_date,
         "historical": {
@@ -675,6 +690,7 @@ def _feature_correlation_summary(path: Path, label: str, data: dict[str, Any]) -
     roi_link = data.get("roi_link") or {}
     families = data.get("feature_family_summary") or []
     suspects = data.get("suspect_features") or []
+
     return {
         "name": label,
         "file": path.name,
@@ -737,6 +753,7 @@ def _report_label(path: Path, data: dict[str, Any]) -> str:
 
 
 def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
+
     return {
         "name": label,
         "file": path.name,
@@ -754,6 +771,7 @@ def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
 
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
     policy = data.get("policy") or {}
+
     return {
         "name": label,
         "file": path.name,
@@ -786,6 +804,7 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
 def _compact_ticket_roi_attribution(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+
     return {
         "method": value.get("method"),
         "diagnosis": value.get("diagnosis"),
@@ -861,6 +880,7 @@ def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _sweep_report_row(path: Path, row: dict[str, Any]) -> dict[str, Any]:
+
     return {
         "name": str(row.get("variant") or path.stem),
         "file": path.name,
@@ -874,6 +894,7 @@ def _sweep_report_row(path: Path, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fold_report_row(model: str, fold: dict[str, Any]) -> dict[str, Any]:
+
     return {
         "model": model,
         "fold": fold.get("fold"),
@@ -966,8 +987,9 @@ def day_overview_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, A
     lite = (query.get("lite", ["0"])[0] or "0").lower() in {"1", "true", "yes"}
     now = now_jst()
     with connect(db_path) as conn:
-        rows = _day_metric_rows(conn, race_date, jcd=jcd, include_predictions=not lite)
-    races = [_race_payload_from_row(row, now=now, before_minutes=5) for row in rows if _is_active_row(row)]
+        rows = _day_metric_rows(conn, race_date, jcd=jcd, include_predictions=False)
+        races = [_race_payload_from_row(row, now=now, before_minutes=5) for row in rows if _is_active_row(row)]
+        attach_latest_prediction_summaries(conn, races)
     return {"date": race_date, "now_jst": iso(now), "races": races}
 
 
@@ -976,13 +998,16 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
     before_minutes = int(query.get("before_minutes", ["5"])[0])
     limit = int(query.get("limit", ["16"])[0])
     finished_limit = int(query.get("finished_limit", ["4"])[0])
+    min_final = min(finished_limit, max(0, int(query.get("min_final", ["2"])[0])))
     now = now_jst()
 
     with connect(db_path) as conn:
-        rows = [row for row in _day_metric_rows(conn, race_date, include_predictions=True) if _is_active_row(row)]
+        rows = [row for row in _day_metric_rows(conn, race_date, include_predictions=False) if _is_active_row(row)]
+        payloads = {row["race_id"]: _race_payload_from_row(row, now=now, before_minutes=before_minutes) for row in rows}
+        attach_latest_prediction_summaries(conn, payloads.values())
         candidates = []
         for row in rows:
-            item = _race_payload_from_row(row, now=now, before_minutes=before_minutes)
+            item = payloads[row["race_id"]]
             if int(item.get("entries") or 0) != 6:
                 continue
             if int(item.get("result_rows") or 0) >= 3:
@@ -1000,18 +1025,21 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             later = [item for item in candidates if item["buy_until_at"] != first_cutoff]
             candidates = sorted(same_cutoff, key=buy_score, reverse=True) + later
 
-        closed = []
+        closed_pending = []
+        closed_final = []
         for row in sorted(rows, key=lambda item: item["deadline_at"] or "", reverse=True):
             start_at = stored_start_time(row["deadline_at"])
             deadline_at = estimated_deadline_from_start(start_at)
             if not deadline_at or deadline_at > now:
                 continue
-            item = _race_payload_from_row(row, now=now, before_minutes=before_minutes)
+            item = payloads[row["race_id"]]
             if int(item.get("entries") or 0) != 6:
                 continue
             if int(item.get("result_rows") or 0) >= 3:
                 item.update(result_summary(conn, row["race_id"]))
                 _attach_prediction_hits(conn, item)
+                if len(closed_final) < min_final:
+                    closed_final.append(item)
             else:
                 item.update(
                     {
@@ -1022,9 +1050,13 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
                         "top5_hit": False,
                     }
                 )
-            closed.append(item)
-            if len(closed) >= finished_limit:
+                if len(closed_pending) < finished_limit:
+                    closed_pending.append(item)
+            if len(closed_final) >= min_final and len(closed_pending) >= finished_limit:
                 break
+
+
+        closed = closed_final + closed_pending[: max(0, finished_limit - len(closed_final))]
 
     return {
         "date": race_date,
@@ -1032,12 +1064,30 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
         "before_minutes": before_minutes,
         "candidates": candidates[:limit],
         "finished": closed,
+        "minimum_final_rows": min_final,
         "prediction_rank_basis": "model_probability",
         "time_basis": "stored_deadline_at_is_race_start",
     }
 
 
-def _latest_live_window_row(rows: list[Any], *, now: datetime, window_minutes: int = 5) -> Any | None:
+def boatcast_live_player_url(jcd: str) -> str | None:
+    venue_code = str(jcd).zfill(2)
+    stadium = BOATCAST_STADIUMS.get(venue_code)
+    if stadium is None:
+        return None
+    return (
+        "https://front.player.boatrace-cdn.jp/player/live"
+        f"?service=boatcast&stadium={stadium}&sourceType=mix&dvr=1"
+        "&audioMode=0&autoplay=1&bitrate=low"
+    )
+
+def _live_window_rows(
+    rows: list[Any],
+    *,
+    now: datetime,
+    window_minutes: int = LIVE_WINDOW_MINUTES,
+    limit: int = 4,
+) -> list[Any]:
     eligible = []
     for row in rows:
         start_at = stored_start_time(row["deadline_at"])
@@ -1046,36 +1096,73 @@ def _latest_live_window_row(rows: list[Any], *, now: datetime, window_minutes: i
         elapsed = (now - start_at).total_seconds()
         if 0 <= elapsed < window_minutes * 60:
             eligible.append((start_at, row))
-    return max(eligible, key=lambda item: item[0], default=(None, None))[1]
+    eligible.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in eligible[:limit]]
+
+
+def _latest_live_window_row(
+    rows: list[Any],
+    *,
+    now: datetime,
+    window_minutes: int = LIVE_WINDOW_MINUTES,
+) -> Any | None:
+    selected = _live_window_rows(rows, now=now, window_minutes=window_minutes, limit=1)
+    return selected[0] if selected else None
 
 
 def live_wipe_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
     now = now_jst()
     with connect(db_path) as conn:
-        rows = [row for row in _day_metric_rows(conn, race_date, include_predictions=True) if _is_active_row(row)]
-        row = _latest_live_window_row(rows, now=now, window_minutes=5)
-        if row is not None:
+        rows = [
+            row
+            for row in _day_metric_rows(conn, race_date, include_predictions=False)
+            if _is_active_row(row)
+        ]
+        selected = _live_window_rows(rows, now=now, limit=4)
+        items = [_race_payload_from_row(row, now=now, before_minutes=5) for row in selected]
+        attach_latest_prediction_summaries(conn, items)
+        for row, item in zip(selected, items):
             start_at = stored_start_time(row["deadline_at"])
-            item = _race_payload_from_row(row, now=now, before_minutes=5)
+            stream_url = boatcast_live_player_url(str(row["jcd"]))
             item.update(
                 {
                     "minutes_since_start": int((now - start_at).total_seconds() // 60) if start_at else None,
-                    "live_window_seconds": 300,
-                    "live_url": f"https://race.boatcast.jp/replay?jo={str(row['jcd']).zfill(2)}",
-                    "live_embed_url": f"https://race.boatcast.jp/replay?jo={str(row['jcd']).zfill(2)}",
-                    "official_url": race_page_url("racelist", date.fromisoformat(str(row["race_date"])), str(row["jcd"]).zfill(2), int(row["rno"])),
+                    "live_window_seconds": LIVE_WINDOW_MINUTES * 60,
+                    "live_url": stream_url,
+                    "live_embed_url": stream_url,
+                    "official_url": race_page_url(
+                        "racelist",
+                        date.fromisoformat(str(row["race_date"])),
+                        str(row["jcd"]).zfill(2),
+                        int(row["rno"]),
+                    ),
                     "official_result_url": (
                         f"https://www.boatrace.jp/owpc/pc/race/raceresult"
-                        f"?rno={int(row['rno'])}&jcd={str(row['jcd']).zfill(2)}&hd={ymd(date.fromisoformat(str(row['race_date'])))}"
+                        f"?rno={int(row['rno'])}&jcd={str(row['jcd']).zfill(2)}"
+                        f"&hd={ymd(date.fromisoformat(str(row['race_date'])))}"
                     ),
                 }
             )
             if int(item.get("result_rows") or 0) >= 3:
                 item.update(result_summary(conn, row["race_id"]))
                 _attach_prediction_hits(conn, item)
-            return {"date": race_date, "now_jst": iso(now), "active": True, "race": item}
-    return {"date": race_date, "now_jst": iso(now), "active": False, "race": None}
+        if items:
+            return {
+                "date": race_date,
+                "now_jst": iso(now),
+                "active": True,
+                "race": items[0],
+                "races": items,
+            }
+    return {
+        "date": race_date,
+        "now_jst": iso(now),
+        "active": False,
+        "race": None,
+        "races": [],
+    }
+
 
 def progress_active_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
@@ -1265,6 +1352,7 @@ def _prediction_from_row(row: sqlite3.Row, prefix: str) -> dict[str, Any] | None
     combination = row[f"{prefix}_combination"]
     if not combination:
         return None
+
     return {
         "combination": combination,
         "probability": row[f"{prefix}_probability"],
@@ -1418,6 +1506,7 @@ def archive_overview(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
             ORDER BY jcd
             """,
         )
+
     return {
         "date": race_date,
         "generated_at": _archive_now(),
@@ -1463,6 +1552,7 @@ def archive_today(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             """,
             tuple(params),
         )
+
     return {
         "date": race_date,
         "jcd": jcd,
@@ -1515,6 +1605,7 @@ def archive_stats(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     with connect(db_path) as conn:
         cutoff_date, latest_date = _recent_cutoff(conn, days)
         rows = _stat_rows_fast(conn, scope, cutoff_date, limit, min_starts)
+
 
     return {
         "scope": scope,
@@ -2353,20 +2444,22 @@ def _roadmap_agents() -> list[dict[str, str]]:
 
 def _roadmap_milestones() -> list[dict[str, Any]]:
     return [
-        {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 78, "next": "表示を当日固定にし、重いAPIを段階読み込み・キャッシュで抑える"},
+        {"id": "M0", "title": "当日ダッシュボード運用", "status": "進行中", "progress": 88, "next": "日次APIの最新予測一括取得と段階読み込みを継続監視する"},
         {"id": "M1", "title": "懸案・進捗ページ", "status": "完了/運用中", "progress": 100, "next": "監視JSONと改善ゲートを120秒周期で自動更新する"},
-        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 75, "next": "特殊結果適用後の常駐収集ループを監視し、残る取得失敗を再試行キュー化する"},
+        {"id": "M2", "title": "公式データ収集", "status": "進行中", "progress": 82, "next": "出走5分後の結果優先取得を監視し、公式未確定と取得失敗を分離集計する"},
         {"id": "M3", "title": "過去10年バックフィル", "status": "進行中", "progress": 35, "next": "新しい日付から古い日付へ、欠損日を優先して再取得する"},
         {"id": "M4", "title": "過去ログ中心モデル", "status": "進行中", "progress": 80, "next": "ablation PID 171811とROI帰属retry3 PID 178254を回収し、時間foldで再現する特徴だけを採用候補にする"},
         {"id": "M5", "title": "リアルタイム併用モデル", "status": "設計/並走", "progress": 25, "next": "リアルタイムオッズ系列が十分貯まるまでは shadow 評価に限定する"},
         {"id": "M6", "title": "資金運用モデル", "status": "要改善", "progress": 75, "next": "最高ROI 0.8935で未達。ROI帰属retry3と80fold sanityを回収し、再現特徴で再学習する"},
-        {"id": "M7", "title": "v系ファイル整理", "status": "棚卸し完了/移行待ち", "progress": 38, "next": "Mendel棚卸しのsafe-to-clean候補から安定名移行済み範囲を削除する"},
+        {"id": "M7", "title": "v系ファイル整理", "status": "完了", "progress": 100, "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない"},
     ]
 
 
 def _process_snapshots() -> list[dict[str, Any]]:
     patterns = [
         ("web_dashboard", "Webサーバ"),
+        ("realtime_predictor", "予測ループ"),
+        ("realtime_collector", "リアルタイム収集"),
         ("predict_loop", "予測ループ"),
         ("adaptive_odds_loop", "リアルタイム収集"),
         ("live_slow", "ライブ収集"),
@@ -2426,10 +2519,11 @@ def _json_file_hint(path: Path) -> dict[str, Any]:
 
 def _v_file_inventory(src_dir: Path) -> dict[str, Any]:
     files = sorted(path.name for path in src_dir.glob("*.py") if _looks_versioned(path.name))
+
     return {
         "count": len(files),
         "sample": files[:30],
-        "note": "WebUIの webserver_operational 系は削除対象。モデル/収集のv系は稼働中依存を安定名へ移してから整理する。",
+        "note": "番号付きpackage Pythonは整理完了。安定版入口と旧joblib互換を継続監視する。",
     }
 
 

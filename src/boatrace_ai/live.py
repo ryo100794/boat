@@ -14,7 +14,7 @@ from .db import (
 )
 from .http import fetch_text, save_payload
 from .official import race_index_url, race_page_url
-from .result_parser_v2 import parse_result_html_v2
+from .result_parser import parse_result_html_v2
 from .parsers import (
     parse_beforeinfo_html,
     parse_odds3t_html,

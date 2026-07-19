@@ -5,7 +5,7 @@ import inspect
 import json
 import sys
 
-import boatrace_ai.adaptive_bankroll_pastlog_v7 as bankroll
+import boatrace_ai.bankroll_optimizer as bankroll
 
 
 print(

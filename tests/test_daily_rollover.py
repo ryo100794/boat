@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from boatrace_ai import adaptive_odds_loop_safe5_no_odds_v8_modelrank as adaptive_loop
+from boatrace_ai import realtime_collector as adaptive_loop
 from boatrace_ai import web_dashboard
 from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.time_semantics import operational_race_date

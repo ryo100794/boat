@@ -150,6 +150,18 @@
     .venue-archive { height:15px; min-width:18px; padding:0 3px; margin-left:3px; font-size:9px; border-radius:3px; background:#fff; color:var(--accent); border-color:#9bbdc1; }
     @media (max-width:720px) { .archive-kv { grid-template-columns:repeat(2,minmax(86px,1fr)); } .archive-content { max-height:320px; } }
 
+    .live-wipe-grid { position:absolute; inset:0; display:grid; gap:1px; background:#263b40; }
+    .live-wipe-grid.single { grid-template-columns:1fr; grid-template-rows:1fr; }
+    .live-wipe-grid.multi { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(2,minmax(0,1fr)); }
+    .live-stream-tile { position:relative; min-width:0; min-height:0; overflow:hidden; background:#050808; border:0; cursor:pointer; }
+    .live-stream-tile iframe { position:absolute; inset:0; width:100% !important; height:100% !important; border:0; transform:none !important; background:#050808; }
+    .live-stream-empty { min-width:0; min-height:0; background:#0b1113; }
+    .live-stream-label { position:absolute; left:3px; bottom:3px; z-index:2; max-width:calc(100% - 6px); padding:1px 3px; background:rgba(0,0,0,.72); color:#fff; font-size:8px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+    .live-wipe.multi { width:min(540px,calc(100vw - 16px)); max-width:min(540px,calc(100vw - 16px)); }
+    .live-wipe.multi #liveWipeZoom { display:none; }
+    .live-wipe.multi .live-wipe-meta { display:none; }
+    .live-wipe.multi .live-wipe-video iframe { width:100% !important; height:100% !important; transform:none !important; }
+    @media (max-width:720px) { .live-wipe.multi { width:calc(100vw - 10px); max-width:calc(100vw - 10px); } }
   </style>
 </head>
 <body>
@@ -183,7 +195,7 @@
   <footer id="dataStatus" class="ops-status">取得状態を読み込み中</footer>
   <div id="liveWipe" class="live-wipe hidden">
     <div class="live-wipe-video">
-      <iframe id="liveWipeFrame" title="BOATCAST live" allow="autoplay; fullscreen; picture-in-picture"></iframe>
+      <div id="liveWipeGrid" class="live-wipe-grid single"></div>
       <div class="live-wipe-head">
         <div id="liveWipeTitle" class="live-wipe-title">LIVE</div>
         <div class="live-wipe-actions">
@@ -378,7 +390,7 @@ function renderActionTable(rows, candidates, finished){
 function actionTime(row){
   const r = row.source || {};
   const item = row.item || r;
-  const value = row.isFinal ? (item.race_time_at || item.deadline_at || item.latest_odds_at) : (r.deadline_at || item.deadline_at);
+  const value = r.deadline_at || item.deadline_at || item.race_time_at || item.latest_odds_at;
   const parsed = value ? new Date(value).getTime() : Number.MAX_SAFE_INTEGER;
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
@@ -485,36 +497,57 @@ async function selectRace(raceId){
 async function loadOdds(){ if(!state.raceId) return; const data = await getJson(`/api/odds?race_id=${encodeURIComponent(state.raceId)}&combination=${encodeURIComponent(state.combo || "1-2-3")}`); drawTrend(data.trend || []); }
 function drawTrend(rows){ const c=$("oddsChart"),ctx=c.getContext("2d"); ctx.clearRect(0,0,c.width,c.height); ctx.strokeStyle="#d8e0e3"; ctx.beginPath(); ctx.moveTo(34,16); ctx.lineTo(34,178); ctx.lineTo(700,178); ctx.stroke(); const vals=rows.map(r=>Number(r.odds)).filter(Number.isFinite); if(vals.length<2){ ctx.fillStyle="#637279"; ctx.fillText("オッズ推移の点が不足しています。",46,98); return; } const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(.01,max-min); ctx.strokeStyle="#8f2d56"; ctx.lineWidth=2; ctx.beginPath(); vals.forEach((v,i)=>{ const x=42+(640*i/Math.max(1,vals.length-1)); const y=170-((v-min)/span)*140; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke(); ctx.fillStyle="#172126"; ctx.fillText(`min ${num(min)} / max ${num(max)}`,46,26); }
 function stopLiveWipe(box){
-  const frame = $("liveWipeFrame");
-  if(frame){ frame.src = "about:blank"; delete frame.dataset.src; }
-  if(box) box.classList.add("hidden");
+  const grid = $("liveWipeGrid");
+  if(grid){
+    grid.querySelectorAll("iframe").forEach(frame => { frame.src = "about:blank"; frame.remove(); });
+    grid.replaceChildren();
+    delete grid.dataset.windowKey;
+  }
+  if(box){ box.classList.add("hidden"); box.classList.remove("multi","zoom"); }
+}
+function liveTileHtml(r){
+  const src = r.live_embed_url || r.live_url || "";
+  const label = `${r.venue_name || r.jcd} ${r.rno}R　開始${hm(r.race_time_at)} +${r.minutes_since_start ?? "-"}分`;
+  return `<div class="live-stream-tile" data-race="${escapeHtml(r.race_id || "")}" title="${escapeHtml(label)}"><iframe src="${escapeHtml(src)}" title="${escapeHtml(label)}" allow="autoplay; fullscreen; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><div class="live-stream-label">${escapeHtml(label)}</div></div>`;
 }
 function renderLiveWipe(payload){
   const box = $("liveWipe");
-  if(!box) return;
-  const r = payload && payload.active ? payload.race : null;
-  if(!r){ stopLiveWipe(box); return; }
-  const closedId = localStorage.getItem("boatLiveWipeClosedRaceId");
-  if(closedId === String(r.race_id || "")){ stopLiveWipe(box); return; }
+  const grid = $("liveWipeGrid");
+  if(!box || !grid) return;
+  const source = payload && payload.active ? ((payload.races && payload.races.length) ? payload.races : [payload.race]) : [];
+  const races = source.filter(r => r && (r.live_embed_url || r.live_url)).slice(0,4);
+  if(!races.length){ stopLiveWipe(box); return; }
+  const windowKey = races.map(r => String(r.race_id || "")).join("|");
+  if(localStorage.getItem("boatLiveWipeClosedWindowKey") === windowKey){ stopLiveWipe(box); return; }
+  const multi = races.length >= 2;
   box.classList.remove("hidden");
-  $("liveWipeTitle").textContent = `${r.jcd} ${r.venue_name} ${r.rno}R LIVE`;
+  box.classList.toggle("multi", multi);
+  grid.className = `live-wipe-grid ${multi ? "multi" : "single"}`;
+  if(grid.dataset.windowKey !== windowKey){
+    grid.querySelectorAll("iframe").forEach(frame => { frame.src = "about:blank"; });
+    const slots = races.map(liveTileHtml);
+    while(slots.length < (multi ? 4 : 1)) slots.push(`<div class="live-stream-empty" aria-hidden="true"></div>`);
+    grid.innerHTML = slots.join("");
+    grid.dataset.windowKey = windowKey;
+    grid.querySelectorAll(".live-stream-tile[data-race]").forEach(tile => tile.onclick = () => selectRace(tile.dataset.race));
+  }
+  const r = races[0];
+  $("liveWipeTitle").textContent = multi ? `LIVE ${races.length}場 / 最大4` : `${r.jcd} ${r.venue_name} ${r.rno}R LIVE`;
   $("liveWipeMeta").innerHTML = [
     `開始 ${hm(r.race_time_at)} +${r.minutes_since_start ?? "-"}分`,
     `モデル ${(r.top_prediction && r.top_prediction.combination) || "-"}`,
     `確率 ${pct(r.top_prediction && r.top_prediction.probability)}`,
     wipeResultText(r)
-  ].map(v => `<span title="${String(v).replaceAll('"',"&quot;")}">${v}</span>`).join("");
-  const src = r.live_embed_url || r.live_url;
-  const frame = $("liveWipeFrame");
-  if(frame && src && frame.dataset.src !== src){ frame.src = src; frame.dataset.src = src; }
+  ].map(v => `<span title="${escapeHtml(v)}">${escapeHtml(v)}</span>`).join("");
   $("liveWipeOpen").href = r.live_url || "#";
   $("liveWipeOfficial").href = r.official_url || "#";
   $("liveWipeSelect").onclick = () => selectRace(r.race_id);
   $("liveWipeClose").onclick = () => {
-    localStorage.setItem("boatLiveWipeClosedRaceId", String(r.race_id || ""));
+    localStorage.setItem("boatLiveWipeClosedWindowKey", windowKey);
     stopLiveWipe(box);
   };
   $("liveWipeZoom").onclick = () => {
+    if(multi) return;
     box.classList.toggle("zoom");
     $("liveWipeZoom").textContent = box.classList.contains("zoom") ? "同意用" : "動画";
   };

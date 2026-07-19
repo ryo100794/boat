@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connection, init_db
-from .historical_official6 import parse_official_archive_v6
+from .historical_archive import parse_official_archive_v6
 from .http import fetch_bytes, save_payload
 from .official import historical_download_url
 from .storage import raw_file_cache_valid, record_raw_file

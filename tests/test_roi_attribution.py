@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from boatrace_ai.adaptive_bankroll_pastlog_v7 import _allocate_adaptive_day
+from boatrace_ai.bankroll_optimizer import _allocate_adaptive_day
 from boatrace_ai.bankroll_backtest import _candidate_tickets
 from boatrace_ai.roi_attribution import (
     merge_roi_attribution,
