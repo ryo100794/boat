@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+
+import joblib
 import time
 from pathlib import Path
 from typing import Any
+
+from sklearn.feature_extraction import FeatureHasher
 
 from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
@@ -128,6 +132,25 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         gate["top1_pass"],
         gate["ranking_loss_not_worse"],
     ))
+    artifact_path = Path(args.model_output)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "model": refined,
+            "hasher": FeatureHasher(
+                n_features=int(search_result["n_features"]),
+                input_type="dict",
+                alternate_sign=False,
+            ),
+            "feature_variant": selected["feature_variant"],
+            "drop_feature_groups": dropped,
+            "n_features": int(search_result["n_features"]),
+            "trained_races": selection_end,
+            "trained_through": race_keys[selection_end - 1],
+        },
+        artifact_path,
+    )
+    result["model_artifact"] = str(artifact_path)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp")
@@ -141,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--search-result", default="data/models/listwise_feature_teacher_search_v1.json")
     parser.add_argument("--output", default="data/models/listwise_newton_cg_v1.json")
+    parser.add_argument(
+        "--model-output",
+        default="data/models/listwise_newton_cg_v1.joblib",
+    )
     parser.add_argument("--cache-dir", default="data/models/listwise_search_cache")
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--adam-epochs", type=int, default=2)
