@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boatrace_ai.legacy_model_aliases import load_model_bundle
+import boatrace_ai.web.postgresql_dashboard as postgresql_dashboard
+from boatrace_ai.historical_model import SparseIndex32
+from boatrace_ai.legacy_model_aliases import (
+    install_legacy_model_aliases,
+    load_model_bundle,
+)
 
 
 def test_current_operational_artifact_loads_after_module_migration() -> None:
@@ -12,3 +17,9 @@ def test_current_operational_artifact_loads_after_module_migration() -> None:
     bundle = load_model_bundle(path)
     assert "pipeline" in bundle
     assert "metadata" in bundle
+
+
+def test_installs_sparse_transformer_on_legacy_dashboard_module() -> None:
+    install_legacy_model_aliases()
+
+    assert postgresql_dashboard.SparseIndex32 is SparseIndex32
