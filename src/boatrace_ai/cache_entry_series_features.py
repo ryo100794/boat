@@ -61,6 +61,9 @@ CACHE_FIELDS = (
 
 
 def ensure_series_cache_table(conn) -> None:
+    if getattr(conn, "dialect", None) == "postgresql":
+        conn.execute("SELECT 1 FROM entry_series_features LIMIT 0")
+        return
     conn.executescript(SERIES_CACHE_SCHEMA)
 
 

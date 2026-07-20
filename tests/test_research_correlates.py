@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from boatrace_ai.base_features import is_home_branch, race_relative_features
+from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
 from boatrace_ai.contextual_features import RollingState
 from boatrace_ai.feature_tuning import build_race_features
 
@@ -118,3 +119,21 @@ def test_course_change_and_research_group_ablation() -> None:
     )
     assert any(key.startswith("research_") for key in full[0]["features"])
     assert not any(key.startswith("research_") for key in dropped[0]["features"])
+
+
+def test_postgresql_series_cache_check_is_read_only() -> None:
+    class FakePostgresql:
+        dialect = "postgresql"
+
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement: str) -> None:
+            self.statements.append(statement)
+
+        def executescript(self, _statement: str) -> None:
+            raise AssertionError("PostgreSQL schema must not be mutated by evaluation")
+
+    conn = FakePostgresql()
+    ensure_series_cache_table(conn)
+    assert conn.statements == ["SELECT 1 FROM entry_series_features LIMIT 0"]
