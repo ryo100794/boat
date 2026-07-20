@@ -19,6 +19,12 @@ from urllib.parse import parse_qs, urlparse
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
 from ..official import race_page_url, ymd
+from ..standard_evaluation import (
+    MODEL_SOURCES,
+    POLICY as STANDARD_POLICY,
+    PROTOCOL_ID as STANDARD_PROTOCOL_ID,
+    protocol_sha256 as standard_protocol_sha256,
+)
 from .intraday_bankroll import day_bankroll_simulation
 from .prediction_summary import attach_latest_prediction_summaries
 
@@ -527,6 +533,11 @@ _DAY_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
 _GUIDE_API_CACHE: dict[tuple[Path, str, int, int, int], tuple[float, dict[str, Any]]] = {}
 _PREDICTION_API_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
 _ODDS_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
+_ARCHIVE_CACHE_TTL_SECONDS = 300.0
+_ARCHIVE_API_CACHE: dict[
+    tuple[str, str, tuple[tuple[str, tuple[str, ...]], ...]],
+    tuple[float, dict[str, Any]],
+] = {}
 
 
 def day_bankroll_cached(
@@ -710,9 +721,9 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                 elif parsed.path == "/api/archive/today":
                     send_json(self, archive_today(db_path, query))
                 elif parsed.path == "/api/archive/history":
-                    send_json(self, archive_history(db_path, query))
+                    send_json(self, archive_history_cached(db_path, query))
                 elif parsed.path == "/api/archive/stats":
-                    send_json(self, archive_stats(db_path, query))
+                    send_json(self, archive_stats_cached(db_path, query))
                 else:
                     self.send_error(404)
             except Exception as exc:
@@ -796,6 +807,11 @@ def _ensure_dashboard_indexes(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_races_date_deadline ON races(race_date, deadline_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_race_generated_prob ON predictions(race_id, generated_at, probability)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_race_generated_ev ON predictions(race_id, generated_at, expected_value)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_races_jcd_date_race ON races(jcd, race_date, race_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_racer_race ON entries(racer_no, race_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_motor_race ON entries(motor_no, race_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_boat_race ON entries(boat_no, race_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_payouts_type_combo_race ON payouts(bet_type, combination, race_id)")
         conn.commit()
 
 
@@ -878,6 +894,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     sweeps: list[dict[str, Any]] = []
     feature_diagnostics: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    standardized = _load_standardized_v2_bundle(model_dir)
 
     for path in sorted(model_dir.glob("*.json")):
         try:
@@ -904,7 +921,20 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                     for fold in row.get("folds") or []:
                         fold_metrics.append(_fold_report_row(str(row.get("variant") or path.stem), fold, _evaluation_scope(path, row.get("daily") or [])))
 
+    if standardized["ready"]:
+        for model_id, path, data in standardized["models"]:
+            label = f"standardized_365d_v2_{model_id}"
+            backtests.append(_backtest_summary(path, label, data))
+            bankroll.append(_bankroll_summary(path, label, data))
+            daily_rows = _daily_report_rows(data.get("daily") or [])
+            if daily_rows:
+                bankroll_daily[label] = daily_rows
+
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
+    remote_evaluations = _merge_standardized_v2_status(
+        remote_evaluations,
+        standardized,
+    )
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
     backtests.extend(_remote_backtest_report_summaries(remote_evaluations))
     bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
@@ -925,9 +955,200 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "feature_diagnostics": feature_diagnostics,
         "evaluation_jobs": _remote_evaluation_job_summaries(remote_evaluations),
         "remote_generated_at": remote_evaluations.get("generated_at"),
+        "standardized_evaluation": _standardized_v2_public_status(standardized),
         "errors": errors,
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
+    return payload
+
+
+def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
+    root = model_dir / "standardized_365d_v2"
+    manifest_path = root / "manifest.json"
+    protocol_path = root / "protocol.json"
+    expected_ids = [source.model_id for source in MODEL_SOURCES]
+    result: dict[str, Any] = {
+        "ready": False,
+        "root": root,
+        "manifest": {},
+        "protocol": {},
+        "models": [],
+        "errors": [],
+    }
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        result["errors"].append("manifest missing")
+        return result
+    except (OSError, json.JSONDecodeError) as exc:
+        result["errors"].append(f"manifest unreadable: {exc}")
+        return result
+    try:
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        protocol = manifest
+    except (OSError, json.JSONDecodeError) as exc:
+        result["errors"].append(f"protocol unreadable: {exc}")
+        return result
+    result["manifest"] = manifest
+    result["protocol"] = protocol
+    manifest_hash = str(manifest.get("protocol_sha256") or "")
+    protocol_hash = str(protocol.get("protocol_sha256") or "")
+    checks = (
+        (manifest.get("protocol_id") == STANDARD_PROTOCOL_ID, "protocol id mismatch"),
+        (manifest.get("policy") == STANDARD_POLICY, "policy mismatch"),
+        (
+            bool(manifest_hash)
+            and manifest_hash == standard_protocol_sha256(manifest),
+            "manifest protocol fingerprint mismatch",
+        ),
+        (manifest_hash == protocol_hash, "current protocol is not consolidated"),
+        (bool(manifest.get("comparison_ready")), "comparison not ready"),
+        (
+            manifest.get("comparison_model_ids") == expected_ids,
+            "comparison model registry mismatch",
+        ),
+        (
+            int(manifest.get("valid_model_count") or 0) == len(expected_ids),
+            "valid model count mismatch",
+        ),
+        (not manifest.get("failed_models"), "manifest contains failed models"),
+        (
+            bool((manifest.get("promotion_decision") or {}).get("status")),
+            "promotion decision missing",
+        ),
+    )
+    result["errors"].extend(message for passed, message in checks if not passed)
+    manifest_models = {
+        str(row.get("model_id")): row
+        for row in manifest.get("models") or []
+        if isinstance(row, dict)
+    }
+    for model_id in expected_ids:
+        summary = manifest_models.get(model_id) or {}
+        path = root / f"{model_id}.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            result["errors"].append(f"{model_id}: result missing")
+            continue
+        except (OSError, json.JSONDecodeError) as exc:
+            result["errors"].append(f"{model_id}: result unreadable: {exc}")
+            continue
+        validation = data.get("validation") or {}
+        model_checks = (
+            (data.get("model_id") == model_id, "model id mismatch"),
+            (data.get("protocol_sha256") == manifest_hash, "protocol mismatch"),
+            (data.get("policy") == STANDARD_POLICY, "policy mismatch"),
+            (bool(validation.get("passed")), "validation failed"),
+            (bool((summary.get("validation") or {}).get("passed")), "manifest validation failed"),
+        )
+        result["errors"].extend(
+            f"{model_id}: {message}"
+            for passed, message in model_checks
+            if not passed
+        )
+        result["models"].append((model_id, path, data))
+    result["ready"] = (
+        not result["errors"] and len(result["models"]) == len(expected_ids)
+    )
+    return result
+
+
+def _standardized_v2_public_status(bundle: dict[str, Any]) -> dict[str, Any]:
+    manifest = bundle.get("manifest") or {}
+    protocol = bundle.get("protocol") or {}
+    source = manifest if bundle.get("ready") else protocol
+    return {
+        "ready": bool(bundle.get("ready")),
+        "status": (
+            str((manifest.get("promotion_decision") or {}).get("status"))
+            if bundle.get("ready")
+            else "evaluating"
+        ),
+        "protocol_id": source.get("protocol_id"),
+        "protocol_sha256": source.get("protocol_sha256"),
+        "holdout_start": source.get("holdout_start"),
+        "holdout_end": source.get("holdout_end"),
+        "prediction_races": source.get("prediction_races"),
+        "bankroll_evaluable_races": source.get("bankroll_evaluable_races"),
+        "policy": source.get("policy") or {},
+        "promotion_decision": (
+            manifest.get("promotion_decision") if bundle.get("ready") else None
+        ),
+        "errors": list(bundle.get("errors") or []),
+    }
+
+
+def _merge_standardized_v2_status(
+    remote_evaluations: dict[str, Any],
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(remote_evaluations or {})
+    jobs = [
+        dict(row)
+        for row in payload.get("jobs") or []
+        if str(row.get("kind") or "") != "standardized_365d_v2_model"
+        and "standardized_365d_v2_" not in str(row.get("name") or "")
+    ]
+    if bundle.get("ready"):
+        manifest = bundle.get("manifest") or {}
+        generated_at = manifest.get("generated_at") or payload.get("generated_at")
+        for model_id, _path, data in bundle.get("models") or []:
+            jobs.append(
+                {
+                    "name": f"standardized_365d_v2_{model_id}",
+                    "milestone": "M4/M6",
+                    "kind": "standardized_365d_v2_model",
+                    "status": "完了",
+                    "running": False,
+                    "result": {
+                        "file": f"standardized_365d_v2/{model_id}.json",
+                        "modified_at": generated_at,
+                        "protocol_id": data.get("protocol_id"),
+                        "metrics": {
+                            key: data.get(key)
+                            for key in (
+                                "evaluated_races",
+                                "bankroll_evaluated_races",
+                                "entry_log_loss",
+                                "entry_brier",
+                                "winner_top1_accuracy",
+                                "trifecta_top5_hit_rate",
+                                "roi",
+                                "profit_yen",
+                                "stake_yen",
+                                "return_yen",
+                                "selected_races",
+                                "tickets",
+                                "hit_tickets",
+                                "ticket_hit_rate",
+                                "max_drawdown_yen",
+                            )
+                        },
+                    },
+                }
+            )
+        payload["generated_at"] = generated_at
+    else:
+        jobs.append(
+            {
+                "name": "standardized_365d_v2_current_protocol",
+                "milestone": "M4/M6",
+                "kind": "standardized_365d_v2_queue",
+                "status": "実行中",
+                "running": True,
+                "result": {
+                    "protocol_id": STANDARD_PROTOCOL_ID,
+                    "metrics": {
+                        "evaluated_races": (
+                            (bundle.get("protocol") or {}).get("prediction_races")
+                        )
+                    },
+                },
+            }
+        )
+    payload["jobs"] = jobs
     return payload
 
 
@@ -2194,6 +2415,52 @@ def archive_today(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
+def _archive_cache_key(
+    db_path: Path,
+    endpoint: str,
+    query: dict[str, list[str]],
+) -> tuple[str, str, tuple[tuple[str, tuple[str, ...]], ...]]:
+    normalized = tuple(
+        sorted((str(key), tuple(str(value) for value in values)) for key, values in query.items())
+    )
+    return (str(db_path), endpoint, normalized)
+
+
+def _archive_cached_payload(
+    key: tuple[str, str, tuple[tuple[str, tuple[str, ...]], ...]],
+) -> dict[str, Any] | None:
+    cached = _ARCHIVE_API_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < _ARCHIVE_CACHE_TTL_SECONDS:
+        return cached[1]
+    if cached:
+        _ARCHIVE_API_CACHE.pop(key, None)
+    return None
+
+
+def archive_history_cached(
+    db_path: Path, query: dict[str, list[str]]
+) -> dict[str, Any]:
+    key = _archive_cache_key(db_path, "history", query)
+    cached = _archive_cached_payload(key)
+    if cached is not None:
+        return cached
+    payload = archive_history(db_path, query)
+    _ARCHIVE_API_CACHE[key] = (time.monotonic(), payload)
+    return payload
+
+
+def archive_stats_cached(
+    db_path: Path, query: dict[str, list[str]]
+) -> dict[str, Any]:
+    key = _archive_cache_key(db_path, "stats", query)
+    cached = _archive_cached_payload(key)
+    if cached is not None:
+        return cached
+    payload = archive_stats(db_path, query)
+    _ARCHIVE_API_CACHE[key] = (time.monotonic(), payload)
+    return payload
+
+
 def archive_history(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     kind = (_archive_one(query, "kind", "racer") or "racer").lower()
     days = _bounded_int(_archive_one(query, "days", str(_DEFAULT_HISTORY_DAYS)), _DEFAULT_HISTORY_DAYS, 1, _MAX_DAYS)
@@ -2312,13 +2579,8 @@ def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str) ->
         _archive_row(
             conn,
             """
-            WITH recent AS MATERIALIZED (
-              SELECT race_id, race_date, jcd, venue_name, rno, title
-              FROM races
-              WHERE race_date >= ?
-            )
             SELECT
-              e.racer_no,
+              MAX(e.racer_no) AS racer_no,
               MAX(e.racer_name) AS racer_name,
               MAX(e.racer_class) AS latest_class,
               MAX(e.branch) AS branch,
@@ -2332,36 +2594,31 @@ def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str) ->
               AVG(e.national_win_rate) AS avg_national_win_rate,
               AVG(e.local_win_rate) AS avg_local_win_rate
             FROM entries e
-            JOIN recent r ON r.race_id = e.race_id
+            JOIN races r ON r.race_id = e.race_id
             LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
-            WHERE e.racer_no = ?
+            WHERE e.racer_no = ? AND r.race_date >= ?
             """,
-            (cutoff_date, racer_no),
+            (racer_no, cutoff_date),
         )
     )
     summary.setdefault("racer_no", racer_no)
     rows = _archive_rows(
         conn,
         """
-        WITH recent AS MATERIALIZED (
-          SELECT race_id, race_date, jcd, venue_name, rno, title
-          FROM races
-          WHERE race_date >= ?
-        )
         SELECT
           r.race_id, r.race_date, r.jcd, r.venue_name, r.rno, r.title,
           e.lane, e.racer_no, e.racer_name, e.racer_class,
           e.motor_no, e.boat_no, rr.rank, rr.course, rr.start_timing,
           p.combination AS result_combination, p.payout_yen
         FROM entries e
-        JOIN recent r ON r.race_id = e.race_id
+        JOIN races r ON r.race_id = e.race_id
         LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
         LEFT JOIN payouts p ON p.race_id = e.race_id AND p.bet_type = '3連単'
-        WHERE e.racer_no = ?
+        WHERE e.racer_no = ? AND r.race_date >= ?
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC
         LIMIT 80
         """,
-        (cutoff_date, racer_no),
+        (racer_no, cutoff_date),
     )
     return {"kind": "racer", "generated_at": _archive_now(), "summary": summary, "rows": rows}
 
@@ -2416,8 +2673,8 @@ def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: st
     column = "motor_no" if kind == "motor" else "boat_no"
     rate2 = "motor_2_rate" if kind == "motor" else "boat_2_rate"
     rate3 = "motor_3_rate" if kind == "motor" else "boat_3_rate"
-    params: list[Any] = [cutoff_date, number]
-    filters = [f"e.{column} = ?"]
+    params: list[Any] = [number, cutoff_date]
+    filters = [f"e.{column} = ?", "r.race_date >= ?"]
     if jcd:
         filters.append("r.jcd = ?")
         params.append(jcd.zfill(2))
@@ -2426,15 +2683,10 @@ def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: st
         _archive_row(
             conn,
             f"""
-            WITH recent AS MATERIALIZED (
-              SELECT race_id, race_date, jcd, venue_name, rno
-              FROM races
-              WHERE race_date >= ?
-            )
             SELECT
               MAX(r.jcd) AS jcd,
               MAX(r.venue_name) AS venue_name,
-              e.{column} AS number,
+              MAX(e.{column}) AS number,
               COUNT(*) AS starts,
               SUM(CASE WHEN rr.rank IS NOT NULL THEN 1 ELSE 0 END) AS result_rows,
               SUM(CASE WHEN rr.rank = 1 THEN 1 ELSE 0 END) AS wins,
@@ -2443,8 +2695,8 @@ def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: st
               AVG(rr.start_timing) AS avg_start,
               AVG(e.{rate2}) AS avg_2_rate,
               AVG(e.{rate3}) AS avg_3_rate
-            FROM recent r
-            JOIN entries e ON e.race_id = r.race_id
+            FROM entries e
+            JOIN races r ON r.race_id = e.race_id
             LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
             WHERE {where}
             """,
@@ -2455,17 +2707,12 @@ def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: st
     rows = _archive_rows(
         conn,
         f"""
-        WITH recent AS MATERIALIZED (
-          SELECT race_id, race_date, jcd, venue_name, rno
-          FROM races
-          WHERE race_date >= ?
-        )
         SELECT
           r.race_id, r.race_date, r.jcd, r.venue_name, r.rno,
           e.lane, e.racer_no, e.racer_name, e.racer_class,
           e.motor_no, e.boat_no, rr.rank, rr.course, rr.start_timing
-        FROM recent r
-        JOIN entries e ON e.race_id = r.race_id
+        FROM entries e
+        JOIN races r ON r.race_id = e.race_id
         LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
         WHERE {where}
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC
@@ -2806,6 +3053,10 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         summary = {"error": str(exc)}
 
     remote_evaluations = _read_remote_eval_status(db_path.parent / REMOTE_EVAL_STATUS_NAME)
+    remote_evaluations = _merge_standardized_v2_status(
+        remote_evaluations,
+        _load_standardized_v2_bundle(db_path.parent / "models"),
+    )
     processes = _process_snapshots()
     teleboat = teleboat_status(db_path)
     milestones = _roadmap_milestones(progress, processes, remote_evaluations, teleboat)

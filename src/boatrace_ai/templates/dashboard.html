@@ -118,14 +118,15 @@
 
 
     .entries { grid-template-columns:repeat(6,minmax(86px,1fr)); gap:2px; background:transparent; border:0; }
-    .entry { min-height:44px; padding:3px 4px; border:1px solid rgba(0,0,0,.18); color:#111; overflow:hidden; }
+    .entry { display:grid; grid-template-columns:minmax(0,1fr) 26px; grid-template-rows:minmax(26px,auto) 18px; column-gap:3px; min-height:44px; padding:3px 4px; border:1px solid rgba(0,0,0,.18); color:#111; overflow:hidden; }
     .entry-main { display:grid; grid-template-columns:20px minmax(0,1fr); gap:4px; align-items:start; min-width:0; }
+    .entry-photo { grid-column:2; grid-row:1; width:26px; height:26px; align-self:start; object-fit:cover; object-position:center top; border:1px solid rgba(0,0,0,.22); background:rgba(255,255,255,.3); }
     .entry-info { min-width:0; display:grid; gap:1px; }
     .entry .lane { margin:0; width:20px; height:20px; border:1px solid currentColor; background:rgba(255,255,255,.22); font-weight:800; }
     .entry .racer-name { min-width:0; font-weight:900; line-height:1.08; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .entry-meta { display:flex; gap:3px; justify-content:flex-start; margin-top:0; font-size:8.5px; line-height:1.05; opacity:.88; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .entry-meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-    .entry-actions { display:flex; gap:2px; margin-top:3px; }
+    .entry-actions { grid-column:1/-1; display:flex; gap:2px; margin-top:2px; }
     .entry-actions button { flex:1 1 0; min-width:0; }
     .entry.lane1 { background:#fff; color:#111; }
     .entry.lane2 { background:#202529; color:#fff; }
@@ -233,7 +234,7 @@
   </div>
 
 <script>
-const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "" };
+const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null };
 const $ = id => document.getElementById(id);
 function jstDate(){
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Tokyo", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(new Date());
@@ -250,7 +251,7 @@ $("bankrollModel").onchange = () => {
   loadDayBankroll($("raceDate").value || "");
 };
 $("combo").onchange = () => { state.combo = $("combo").value; loadOdds(); };
-async function getJson(url){ const res = await fetch(url,{cache:"no-store"}); if(!res.ok) throw new Error(await res.text()); return await res.json(); }
+async function getJson(url, options={}){ const res = await fetch(url,{cache:"no-store",...options}); if(!res.ok) throw new Error(await res.text()); return await res.json(); }
 function stat(label,value){ return `<div class="stat"><b>${value ?? "-"}</b><span>${label}</span></div>`; }
 function pct(v){ return v == null ? "-" : `${(Number(v)*100).toFixed(2)}%`; }
 function num(v){ return v == null ? "-" : Number(v).toFixed(3); }
@@ -388,10 +389,12 @@ function drawBankrollCombinedChart(id, rows, schedule, generatedAt){
   ctx.clearRect(0,0,w,h); ctx.fillStyle="#fff"; ctx.fillRect(0,0,w,h);
   const points=rows.map((r,i)=>({
     i,
+    raceId:String(r.race_id || ""),
     time:new Date(r.race_time_at).getTime(),
     profit:Number(r.profit_yen),
     stake:Number(r.stake_yen || 0),
     payout:Number(r.return_yen || 0),
+    hit:Boolean(r.hit),
     label:hm(r.race_time_at)
   })).filter(p=>Number.isFinite(p.profit) && Number.isFinite(p.time));
   const scheduled=(schedule || []).map(r=>({
@@ -418,17 +421,31 @@ function drawBankrollCombinedChart(id, rows, schedule, generatedAt){
   const ganttBottom=ganttTop+ganttHeight;
   const trendTop=ganttBottom+24, trendBottom=h-pad.b, ph=Math.max(36,trendBottom-trendTop);
   const xAtTime=time=>pad.l+(time-minTime)*pw/Math.max(1,maxTime-minTime);
-  ctx.fillStyle="#f7f9fa";ctx.fillRect(pad.l,ganttTop,pw,ganttHeight);
+  const halfHourMs=30*60*1000;
+  const firstHalfHour=Math.floor(minTime/halfHourMs)*halfHourMs;
+  for(let time=firstHalfHour,band=0;time<maxTime;time+=halfHourMs,band++){
+    const x1=xAtTime(Math.max(minTime,time));
+    const x2=xAtTime(Math.min(maxTime,time+halfHourMs));
+    ctx.fillStyle=band%2===0 ? "#f4f7f8" : "#fff";
+    ctx.fillRect(x1,ganttTop,Math.max(0,x2-x1),trendBottom-ganttTop);
+    if(time>minTime){
+      ctx.strokeStyle="#e2e8ea";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xAtTime(time),ganttTop);ctx.lineTo(xAtTime(time),trendBottom);ctx.stroke();
+    }
+  }
+  const pointByRace=new Map(points.map(point=>[point.raceId,point]));
   const rowHeight=ganttHeight/Math.max(1,venues.length);
   venues.forEach((venue,index)=>{
     const y=ganttTop+rowHeight*(index+0.5);
     ctx.strokeStyle="#e5eaec";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.l,y+rowHeight/2);ctx.lineTo(w-pad.r,y+rowHeight/2);ctx.stroke();
-    ctx.fillStyle="#48575d";ctx.textAlign="right";ctx.fillText(venue.label,pad.l-7,y);
+    ctx.font="13px ui-monospace,monospace";ctx.fillStyle="#48575d";ctx.textAlign="left";ctx.fillText(venue.label,6,y);
     venue.races.forEach(r=>{
       const x=xAtTime(r.time), end=xAtTime(Math.min(maxTime,r.time+7*60*1000));
-      ctx.fillStyle="#6b9fa3";ctx.fillRect(x,y-Math.max(2,rowHeight*.28),Math.max(3,end-x),Math.max(4,rowHeight*.56));
+      const outcome=pointByRace.get(String(r.race_id || ""));
+      ctx.fillStyle=outcome?.hit ? "#247a4b" : outcome?.stake>0 ? "#c17a16" : "#6b9fa3";
+      ctx.fillRect(x,y-Math.max(2,rowHeight*.28),Math.max(3,end-x),Math.max(4,rowHeight*.56));
     });
   });
+  ctx.font="16px ui-monospace,monospace";
   ctx.fillStyle="#637279";ctx.textAlign="left";ctx.fillText("開催場 / 出走時刻",pad.l,ganttTop-10);
   if(!points.length){
     ctx.fillStyle="#637279";ctx.fillText("確定レース待ち",pad.l,trendTop+ph/2);
@@ -459,8 +476,12 @@ function drawBankrollCombinedChart(id, rows, schedule, generatedAt){
   ctx.fillStyle="#172126";ctx.fillText("購入",w-252,10);
   ctx.fillStyle="rgba(36,122,75,.72)";ctx.fillRect(w-170,5,12,10);
   ctx.fillStyle="#172126";ctx.fillText("払戻",w-152,10);
-  ctx.fillStyle="#637279";ctx.textAlign="center";
-  [minTime,(minTime+maxTime)/2,maxTime].forEach(time=>ctx.fillText(hm(new Date(time).toISOString()),xAtTime(time),h-10));
+  ctx.fillStyle="#637279";ctx.textAlign="center";ctx.font="13px ui-monospace,monospace";
+  const firstTick=Math.ceil(minTime/halfHourMs)*halfHourMs;
+  for(let time=firstTick;time<=maxTime;time+=halfHourMs){
+    ctx.fillText(hm(new Date(time).toISOString()),xAtTime(time),h-10);
+  }
+  ctx.font="16px ui-monospace,monospace";
   if(sameDay && nowMs>=minTime && nowMs<=maxTime){
     const nowX=xAtTime(nowMs);
     ctx.strokeStyle="#c83232";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(nowX,ganttTop);ctx.lineTo(nowX,trendBottom);ctx.stroke();
@@ -579,6 +600,10 @@ function racerDisplayName(e){
   if(raw && raw !== no && !/^\d+$/.test(raw)) return raw;
   return "選手名未取得";
 }
+function racerPhotoUrl(e){
+  const no = String(e.racer_no || "").trim();
+  return /^\d{4}$/.test(no) ? `https://www.boatrace.jp/racerphoto/${no}.jpg` : "";
+}
 function renderEntryCard(e){
   const lane = Number(e.lane || 0);
   const name = racerDisplayName(e);
@@ -587,8 +612,10 @@ function renderEntryCard(e){
   const branchOrigin = [e.branch, e.origin].filter(Boolean).join("/") || "-";
   const machine = `M${e.motor_no || "-"} B${e.boat_no || "-"}`;
   const meta = [no, cls, branchOrigin, machine];
+  const photo = racerPhotoUrl(e);
   return `<div class="entry lane${lane}" title="${escapeHtml(`${lane}号艇 ${name} ${meta.join(" ")}`)}">
     <div class="entry-main"><span class="lane">${lane || "-"}</span><div class="entry-info"><span class="racer-name">${escapeHtml(name)}</span><div class="entry-meta">${meta.map(v => `<span>${escapeHtml(v)}</span>`).join("")}</div></div></div>
+    ${photo ? `<img class="entry-photo" src="${photo}" alt="" loading="lazy" decoding="async" onerror="this.hidden=true">` : ""}
     <div class="entry-actions">
       <button type="button" data-archive-kind="racer" data-racer-no="${escapeHtml(e.racer_no || "")}">選手</button>
       <button type="button" data-archive-kind="lane" data-lane="${lane || ""}">枠</button>
@@ -774,8 +801,20 @@ async function loadArchiveView(view, params={}, opts={}){
   const endpoint = view === "overview" ? "/api/archive/overview" : view === "today" ? "/api/archive/today" : view === "stats" ? "/api/archive/stats" : "/api/archive/history";
   $("archiveTitle").textContent = archiveTitle(view, merged);
   if(!opts.silent) $("archiveMeta").textContent = "読み込み中";
-  const data = await getJson(`${endpoint}?${queryString(merged)}`);
-  renderArchive(view, merged, data);
+  if(state.archiveController) state.archiveController.abort();
+  const controller = new AbortController();
+  state.archiveController = controller;
+  try {
+    const data = await getJson(`${endpoint}?${queryString(merged)}`, {signal:controller.signal});
+    if(state.archiveController !== controller) return;
+    renderArchive(view, merged, data);
+  } catch(err) {
+    if(err.name === "AbortError") return;
+    console.error(err);
+    $("archiveMeta").textContent = `履歴取得エラー: ${err.message || err}`;
+  } finally {
+    if(state.archiveController === controller) state.archiveController = null;
+  }
 }
 function archiveTitle(view, params){
   if(view === "overview") return "過去データ総合";
