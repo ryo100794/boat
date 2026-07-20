@@ -21,6 +21,7 @@ RACE_CAP_FRACTION = 0.10
 TICKET_CAP_FRACTION = 0.03
 STAKE_UNIT_YEN = 100
 MAX_LANE_MARKER_ODDS = 8
+PAYOUT_PRIOR_WEIGHT = 30.0
 COMBINATIONS = tuple("-".join(map(str, item)) for item in TRIFECTA_COMBINATIONS)
 MODEL_FILES = (
     ("no_odds_v8", "no_odds_v8 主系", "win_model_no_odds_v8.joblib"),
@@ -68,6 +69,7 @@ def day_bankroll_simulation(
         "stake_unit_yen": STAKE_UNIT_YEN,
         "profit_reinvestment": True,
         "ticket_units": "0以上",
+        "missing_odds": "当日以前の組合せ別公式払戻平均（全体平均へ縮約）",
     }
     if not selected:
         return {
@@ -86,6 +88,7 @@ def day_bankroll_simulation(
     selected_model = next(row for row in models if row["id"] == selected)
     results = _results_by_race(conn, race_date)
     payouts = _payouts_by_race(conn, race_date)
+    historical_odds = _historical_payout_odds(conn, race_date)
     bankroll = starting_bankroll_yen
     peak = bankroll
     max_drawdown = 0
@@ -97,6 +100,7 @@ def day_bankroll_simulation(
     evaluated_races = 0
     prediction_races = 0
     valid_odds_races = 0
+    historical_odds_races = 0
     fallback_predictions = 0
     rejected_snapshots = 0
     series: list[dict[str, Any]] = []
@@ -117,22 +121,26 @@ def day_bankroll_simulation(
             cutoff=decision_at,
         )
         rejected_snapshots += rejected
+        predictions = _score_model(
+            conn,
+            race_id=str(race["race_id"]),
+            model_path=Path(selected_model["path"]),
+        )
+        if predictions:
+            prediction_races += 1
         if snapshot:
             valid_odds_races += 1
-            predictions = _score_model(
-                conn,
-                race_id=str(race["race_id"]),
-                model_path=Path(selected_model["path"]),
-            )
-            if predictions:
-                prediction_races += 1
+            allocation_odds = snapshot["odds"]
+            odds_basis = "締切5分前公式オッズ"
         else:
-            predictions = {}
+            historical_odds_races += 1
+            allocation_odds = historical_odds
+            odds_basis = "過去公式払戻推定"
 
         allocation = _allocate_race(
             bankroll,
             predictions,
-            (snapshot or {}).get("odds") or {},
+            allocation_odds,
             actual_combination=actual["combination"],
             payout_yen=int(payout["payout_yen"]),
         )
@@ -163,6 +171,7 @@ def day_bankroll_simulation(
                 "hit": allocation["hit_tickets"] > 0,
                 "actual": actual["combination"],
                 "odds_captured_at": (snapshot or {}).get("captured_at"),
+                "odds_basis": odds_basis,
                 "prediction_basis": "選択モデル直接再推論",
             }
         )
@@ -177,6 +186,7 @@ def day_bankroll_simulation(
         "evaluated_races": evaluated_races,
         "prediction_races": prediction_races,
         "valid_odds_races": valid_odds_races,
+        "historical_odds_races": historical_odds_races,
         "selected_races": selected_races,
         "tickets": tickets,
         "hit_tickets": hits,
@@ -192,7 +202,8 @@ def day_bankroll_simulation(
         )
     if valid_odds_races < evaluated_races:
         warnings.append(
-            f"締切5分前の正常な120組オッズがない{evaluated_races - valid_odds_races}Rは購入0口。"
+            f"締切5分前の正常な120組オッズがない"
+            f"{evaluated_races - valid_odds_races}Rは過去公式払戻倍率で資金配分。"
         )
     return {
         "available": True,
@@ -220,6 +231,7 @@ def _empty_stats(starting_bankroll_yen: int) -> dict[str, Any]:
         "evaluated_races": 0,
         "prediction_races": 0,
         "valid_odds_races": 0,
+        "historical_odds_races": 0,
         "selected_races": 0,
         "tickets": 0,
         "hit_tickets": 0,
@@ -300,6 +312,39 @@ def _payouts_by_race(conn, race_date: str) -> dict[str, dict[str, Any]]:
             "payout_yen": int(row["payout_yen"]),
         }
         for row in rows
+    }
+
+
+def _historical_payout_odds(conn, race_date: str) -> dict[str, float]:
+    rows = conn.execute(
+        """
+        SELECT p.combination, COUNT(*) AS samples, AVG(p.payout_yen) AS mean_payout
+        FROM payouts p
+        JOIN races r ON r.race_id = p.race_id
+        WHERE r.race_date < ? AND p.bet_type = '3連単'
+          AND p.payout_yen IS NOT NULL AND p.payout_yen > 0
+        GROUP BY p.combination
+        """,
+        (race_date,),
+    ).fetchall()
+    total_samples = sum(int(row["samples"]) for row in rows)
+    if total_samples <= 0:
+        return {}
+    global_mean = (
+        sum(float(row["mean_payout"]) * int(row["samples"]) for row in rows)
+        / total_samples
+    )
+    result = {}
+    for row in rows:
+        samples = int(row["samples"])
+        mean_payout = float(row["mean_payout"])
+        shrunk_payout = (
+            samples * mean_payout + PAYOUT_PRIOR_WEIGHT * global_mean
+        ) / (samples + PAYOUT_PRIOR_WEIGHT)
+        result[str(row["combination"])] = shrunk_payout / 100.0
+    return {
+        combination: result.get(combination, global_mean / 100.0)
+        for combination in COMBINATIONS
     }
 
 

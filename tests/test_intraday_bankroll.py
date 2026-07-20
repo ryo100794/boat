@@ -160,3 +160,37 @@ def test_excludes_race_until_result_and_official_payout_are_both_confirmed(
     assert [row["race_id"] for row in result["series"]] == [
         "2026-07-20-01-01"
     ]
+
+
+def test_uses_historical_payout_odds_when_deadline_odds_are_missing(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "boat.sqlite"
+    init_db(db_path)
+    model = "data/models/win_model_no_odds_v8.joblib"
+    with connection(db_path) as conn:
+        _seed_race(conn, "2026-07-20-01-01", "2026-07-20T12:00:00", model)
+        conn.execute("DELETE FROM odds_snapshots")
+    _stub_model(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "_historical_payout_odds",
+        lambda _conn, _race_date: {
+            combination: 10.0 for combination in COMBINATIONS
+        },
+    )
+
+    with connection(db_path) as conn:
+        result = day_bankroll_simulation(
+            conn,
+            race_date="2026-07-20",
+            model_id="no_odds_v8",
+            now=datetime(2026, 7, 20, 4, 0, tzinfo=timezone.utc),
+        )
+
+    assert result["stats"]["evaluated_races"] == 1
+    assert result["stats"]["prediction_races"] == 1
+    assert result["stats"]["valid_odds_races"] == 0
+    assert result["stats"]["historical_odds_races"] == 1
+    assert result["stats"]["stake_yen"] == 200
+    assert result["series"][0]["odds_basis"] == "過去公式払戻推定"
