@@ -376,7 +376,7 @@ function renderDayBankroll(data){
     ["最大DD",yen(s.max_drawdown_yen),""],
   ].map(([label,value,tone]) => `<div class="bankroll-kpi ${tone}"><b>${value}</b><span>${label}</span></div>`).join("");
   const warning = (data.warnings || []).join(" / ");
-  $("bankrollMeta").textContent = `${data.selected_model_label || "-"} / ${s.valid_odds_races || 0}R正常odds / 更新 ${String(data.generated_at || "").replace("T"," ").slice(0,19)}${warning ? ` / ${warning}` : ""}`;
+  $("bankrollMeta").textContent = `${data.selected_model_label || "-"} / ${s.valid_odds_races || 0}R正常odds / ${s.historical_odds_races || 0}R履歴推定 / 更新 ${String(data.generated_at || "").replace("T"," ").slice(0,19)}${warning ? ` / ${warning}` : ""}`;
   drawBankrollChart("bankrollProfitChart", data.series || [], "profit_yen", "#247a4b", v => yen(v));
   drawBankrollChart("bankrollRoiChart", data.series || [], "cumulative_roi", "#8f2d56", v => `${v.toFixed(1)}%`, 100);
 }
@@ -385,7 +385,7 @@ function drawBankrollChart(id, rows, key, color, label, multiplier=1){
   ctx.clearRect(0,0,w,h); ctx.fillStyle="#fff"; ctx.fillRect(0,0,w,h);
   const points=rows.map((r,i)=>({i,value:r[key] == null ? null : Number(r[key])*multiplier,label:hm(r.race_time_at)})).filter(p=>Number.isFinite(p.value));
   ctx.font="16px ui-monospace,monospace"; ctx.textBaseline="middle";
-  if(!points.length){ ctx.fillStyle="#637279"; ctx.fillText("正常な締切前oddsの確定レース待ち",52,h/2); return; }
+  if(!points.length){ ctx.fillStyle="#637279"; ctx.fillText("確定レース待ち",52,h/2); return; }
   let min=Math.min(...points.map(p=>p.value)), max=Math.max(...points.map(p=>p.value));
   if(key==="profit_yen"){ min=Math.min(0,min); max=Math.max(0,max); }
   if(max===min){ max=min+1; }
