@@ -46,6 +46,17 @@ BEFORE_NUMERIC = (
 )
 BEFORE_CATEGORICAL = ("weather", "wind_direction", "propeller", "parts_exchange")
 
+# Official branch used to identify racers local to each venue.
+VENUE_HOME_BRANCH = {
+    "01": "群馬", "02": "埼玉", "03": "東京", "04": "東京",
+    "05": "東京", "06": "静岡", "07": "愛知", "08": "愛知",
+    "09": "三重", "10": "福井", "11": "滋賀", "12": "大阪",
+    "13": "兵庫", "14": "徳島", "15": "香川", "16": "岡山",
+    "17": "広島", "18": "山口", "19": "山口", "20": "福岡",
+    "21": "福岡", "22": "福岡", "23": "佐賀", "24": "長崎",
+}
+RESEARCH_FEATURE_PREFIX = "research_"
+
 
 def load_training_examples(
     conn: sqlite3.Connection,
@@ -216,7 +227,172 @@ def race_relative_features(
             item[f"{field}_scaled"] = sign * (value - worst) / spread if is_present else 0.0
         _composites(item, lane, values_by_lane[lane], ranks)
         result[lane] = item
+    _add_research_correlates(result, rows, before_rows, values_by_lane)
     return result
+
+
+def is_home_branch(jcd: Any, branch: Any) -> bool:
+    venue_branch = VENUE_HOME_BRANCH.get(str(jcd or "").zfill(2))
+    return bool(venue_branch and str(branch or "").strip() == venue_branch)
+
+
+def _add_research_correlates(
+    result: dict[int, dict[str, Any]],
+    rows: list[sqlite3.Row],
+    before_rows: dict[int, sqlite3.Row | dict[str, Any]],
+    values_by_lane: dict[int, dict[str, float]],
+) -> None:
+    racer_fields = (
+        "class_rank", "national_win_rate", "national_2_rate",
+        "local_win_rate", "local_2_rate",
+    )
+    equipment_fields = ("motor_2_rate", "boat_2_rate")
+    racer_strength = {
+        lane: _mean_present_scaled(result[lane], racer_fields) for lane in result
+    }
+    equipment_strength = {
+        lane: _mean_present_scaled(result[lane], equipment_fields) for lane in result
+    }
+    strength_values = list(racer_strength.values())
+    best_strength = max(strength_values, default=0.0)
+    strength_spread = best_strength - min(strength_values, default=0.0)
+    lane1_strength = racer_strength.get(1, 0.0)
+    outer_strength = max(
+        (value for lane, value in racer_strength.items() if lane >= 5),
+        default=0.0,
+    )
+    strength_ranks = _ranks(racer_strength, high_is_good=True)
+    before_by_lane = {
+        lane: before_features(before_rows.get(lane, {})) for lane in result
+    }
+    courses = {
+        lane: int(item["course"])
+        for lane, item in before_by_lane.items()
+        if 1 <= item["course"] <= 6
+    }
+    has_full_course = len(courses) == len(result) == 6
+    waku_nari = has_full_course and all(courses.get(lane) == lane for lane in result)
+    rows_by_lane = {int(row["lane"]): row for row in rows}
+
+    for lane, item in result.items():
+        row = rows_by_lane[lane]
+        values = values_by_lane[lane]
+        jcd = str(_row_value(row, "jcd") or "").zfill(2)
+        branch = str(_row_value(row, "branch") or "").strip()
+        home = is_home_branch(jcd, branch)
+        local_win_delta = _valid_delta(
+            values.get("local_win_rate", -1.0),
+            values.get("national_win_rate", -1.0),
+        )
+        local_2_delta = _valid_delta(
+            values.get("local_2_rate", -1.0),
+            values.get("national_2_rate", -1.0),
+        )
+        item.update({
+            "research_home_branch": int(home),
+            "research_home_lane": f"{int(home)}:{lane}",
+            "research_branch_venue": f"{branch}:{jcd}" if branch else "",
+            "research_has_local_rates": int(
+                values.get("local_win_rate", -1.0) >= 0
+                and values.get("local_2_rate", -1.0) >= 0
+            ),
+            "research_local_vs_national_win": local_win_delta,
+            "research_local_vs_national_2": local_2_delta,
+            "research_home_local_win_delta": float(home) * local_win_delta,
+            "research_home_local_2_delta": float(home) * local_2_delta,
+            "research_racer_strength": racer_strength[lane],
+            "research_racer_strength_rank": strength_ranks[lane],
+            "research_racer_strength_vs_lane1": racer_strength[lane] - lane1_strength,
+            "research_racer_strength_gap_best": racer_strength[lane] - best_strength,
+            "research_field_racer_strength_spread": strength_spread,
+            "research_lane1_racer_strength": lane1_strength,
+            "research_outer_threat_vs_lane1": outer_strength - lane1_strength,
+            "research_equipment_strength": equipment_strength[lane],
+            "research_equipment_balanced_field": (
+                equipment_strength[lane] * max(0.0, 1.0 - strength_spread)
+            ),
+        })
+
+        before = before_by_lane[lane]
+        course = courses.get(lane, 0)
+        exhibition_rank = int(item.get("exhibition_time_rank", 0) or 0)
+        exhibition_scaled = float(item.get("exhibition_time_scaled", 0.0) or 0.0)
+        weather = str(before.get("weather") or "")
+        wind_direction = str(before.get("wind_direction") or "")
+        wind_bucket = _numeric_bucket(
+            before.get("wind_speed_m", -1.0), (2.0, 5.0, 8.0)
+        )
+        wave_bucket = _numeric_bucket(
+            before.get("wave_cm", -1.0), (3.0, 6.0, 10.0)
+        )
+        item.update({
+            "research_has_live_context": int(bool(before.get("has_beforeinfo"))),
+            "research_has_full_course": int(has_full_course),
+            "research_waku_nari": int(waku_nari) if has_full_course else 0,
+            "research_course_cat": str(course) if course else "",
+            "research_lane_course": f"{lane}:{course}" if course else "",
+            "research_course_changed": int(course != lane) if course else 0,
+            "research_course_delta": course - lane if course else 0,
+            "research_exhibition_top1": int(exhibition_rank == 1),
+            "research_exhibition_top2": int(0 < exhibition_rank <= 2),
+            "research_exhibition_rank_venue": (
+                f"{exhibition_rank}:{jcd}" if exhibition_rank else ""
+            ),
+            "research_exhibition_rank_weather": (
+                f"{exhibition_rank}:{weather}"
+                if exhibition_rank and weather else ""
+            ),
+            "research_exhibition_rank_distance": (
+                f"{exhibition_rank}:{int(_row_value(row, 'distance_m') or 0)}"
+                if exhibition_rank else ""
+            ),
+            "research_exhibition_racer_strength": (
+                exhibition_scaled * racer_strength[lane]
+            ),
+            "research_exhibition_rain": exhibition_scaled * int("雨" in weather),
+            "research_venue_weather": f"{jcd}:{weather}" if weather else "",
+            "research_lane_wind_direction": (
+                f"{lane}:{wind_direction}" if wind_direction else ""
+            ),
+            "research_lane_wind_bucket": (
+                f"{lane}:{wind_bucket}" if wind_bucket else ""
+            ),
+            "research_lane_wave_bucket": (
+                f"{lane}:{wave_bucket}" if wave_bucket else ""
+            ),
+        })
+
+
+def _row_value(row: sqlite3.Row | dict[str, Any], key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _mean_present_scaled(item: dict[str, Any], fields: tuple[str, ...]) -> float:
+    values = [
+        float(item[f"{field}_scaled"])
+        for field in fields
+        if item.get(f"has_{field}")
+    ]
+    return sum(values) / len(values) if values else 0.0
+
+
+def _valid_delta(left: float, right: float) -> float:
+    return left - right if left >= 0 and right >= 0 else 0.0
+
+
+def _numeric_bucket(value: Any, boundaries: tuple[float, ...]) -> str:
+    number = _num(value)
+    if number < 0:
+        return ""
+    for boundary in boundaries:
+        if number < boundary:
+            return f"lt{boundary:g}"
+    return f"ge{boundaries[-1]:g}"
 
 
 def _group_by_race(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:

@@ -24,7 +24,7 @@ from .bankroll_backtest import (
 )
 from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
-from .base_features import _group_by_race, race_relative_features
+from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
 from .contextual_features import RollingState, _race_sort_key
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
@@ -32,13 +32,25 @@ from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
 
 
-FEATURE_SET = "pastlog_v7_stream_hash_cached_series_sgd"
-FEATURE_GROUPS = ("base_pastlog", "series_cached", "series_relative", "rolling_history")
+FEATURE_SET = "pastlog_v9_research_correlates_stream_hash_sgd"
+FEATURE_GROUPS = (
+    "base_pastlog",
+    "research_correlates",
+    "series_cached",
+    "series_relative",
+    "rolling_history",
+)
 HASH_FEATURES = 1 << 20
 
 ROI_DIAGNOSTIC_FEATURES = (
     "racer_class",
     "origin",
+    "research_home_branch",
+    "research_local_vs_national_win",
+    "research_racer_strength",
+    "research_racer_strength_rank",
+    "research_outer_threat_vs_lane1",
+    "research_equipment_strength",
     "race_month",
     "race_weekday",
     "race_rno_bucket",
@@ -344,7 +356,7 @@ def bankroll_streaming(
             "allocation": "each day, rank positive-EV tickets by estimated EV; buy within daily budget and split stake in 100-yen units",
             "feature_set": FEATURE_SET,
             "drop_feature_groups": list(drop_feature_groups),
-            "model": "win_model_pastlog_v7_stream_hash",
+            "model": "win_model_pastlog_v9_research",
         },
         "folds": fold_rows,
         "examples": 0,
@@ -353,7 +365,7 @@ def bankroll_streaming(
         "candidate_tickets": len(candidates),
         "feature_set": FEATURE_SET,
         "drop_feature_groups": list(drop_feature_groups),
-        "model": "win_model_pastlog_v7_stream_hash",
+        "model": "win_model_pastlog_v9_research",
         **allocated,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -575,6 +587,12 @@ def build_race_features(
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))
+        if "research_correlates" in dropped:
+            item = {
+                key: value
+                for key, value in item.items()
+                if not key.startswith(RESEARCH_FEATURE_PREFIX)
+            }
         out.append(
             {
                 "features": item,
@@ -710,14 +728,14 @@ def main(argv: list[str] | None = None) -> int:
     train = sub.add_parser("train")
     add_common(train)
     add_drop_feature_groups(train)
-    train.add_argument("--model", default="data/models/win_model_pastlog_v7_stream_hash.joblib")
+    train.add_argument("--model", default="data/models/win_model_pastlog_v9_research.joblib")
     train.add_argument("--batch-size", type=int, default=24000)
     train.add_argument("--epochs", type=int, default=1)
     train.set_defaults(func=_cmd_train)
     backtest = sub.add_parser("backtest")
     add_common(backtest)
     add_drop_feature_groups(backtest)
-    backtest.add_argument("--output", default="data/models/backtest_pastlog_v7_stream_hash.json")
+    backtest.add_argument("--output", default="data/models/backtest_pastlog_v9_research.json")
     backtest.add_argument("--folds", type=int, default=5)
     backtest.add_argument("--min-train-races", type=int, default=500)
     backtest.add_argument("--batch-size", type=int, default=24000)
@@ -726,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     bankroll = sub.add_parser("bankroll")
     add_common(bankroll)
     add_drop_feature_groups(bankroll)
-    bankroll.add_argument("--output", default="data/models/bankroll_backtest_pastlog_v7_stream_hash_10000.json")
+    bankroll.add_argument("--output", default="data/models/bankroll_backtest_pastlog_v9_research_10000.json")
     bankroll.add_argument("--daily-budget-yen", type=int, default=10000)
     bankroll.add_argument("--unit-yen", type=int, default=100)
     bankroll.add_argument("--folds", type=int, default=5)
@@ -739,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
     bankroll.set_defaults(func=_cmd_bankroll)
     ablation = sub.add_parser("ablation")
     add_common(ablation)
-    ablation.add_argument("--output", default="data/models/ablation_pastlog_v7_stream_hash.json")
+    ablation.add_argument("--output", default="data/models/ablation_pastlog_v9_research.json")
     ablation.add_argument("--folds", type=int, default=5)
     ablation.add_argument("--min-train-races", type=int, default=500)
     ablation.add_argument("--batch-size", type=int, default=24000)

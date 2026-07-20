@@ -7,7 +7,13 @@ from datetime import date
 from typing import Any
 
 from .features import _num, entry_features
-from .base_features import _group_by_race, _latest_beforeinfo, before_features, race_relative_features
+from .base_features import (
+    _group_by_race,
+    _latest_beforeinfo,
+    before_features,
+    is_home_branch,
+    race_relative_features,
+)
 
 
 def load_training_examples(
@@ -252,6 +258,10 @@ class RollingState:
         )
         item["hist_racer_venue_win_delta"] = (
             item["hist_racer_venue_win_rate_s"] - item["hist_racer_win_rate_s"]
+        )
+        item["research_hist_home_racer_venue_delta"] = (
+            float(is_home_branch(jcd, row["branch"]))
+            * item["hist_racer_venue_win_delta"]
         )
         item["hist_motor_venue_lane_win_delta"] = (
             item["hist_motor_win_rate_s"] - item["hist_venue_lane_win_rate_s"]
