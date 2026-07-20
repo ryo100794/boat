@@ -125,12 +125,12 @@ def test_completed_model_evaluations_show_final_outcomes() -> None:
         )
     }
 
-    assert improvements["M4-1"]["progress"] == 100
-    assert improvements["M4-1"]["status"] == "評価完了/昇格見送り"
-    assert improvements["M4-2"]["progress"] == 100
-    assert improvements["M4-2"]["status"] == "評価完了/安定根拠なし"
-    assert improvements["M4-3"]["progress"] == 100
-    assert improvements["M4-3"]["status"] == "評価完了/昇格見送り"
+    assert improvements["M4-1"]["progress"] == 70
+    assert improvements["M4-1"]["status"] == "予測評価済み/統一資金運用待ち"
+    assert improvements["M4-2"]["progress"] == 60
+    assert improvements["M4-2"]["status"] == "要再検証/欠損表現修正待ち"
+    assert improvements["M4-3"]["progress"] == 85
+    assert improvements["M4-3"]["status"] == "要改善/昇格見送り"
     assert "ROI 0.7997" in improvements["M4-3"]["next"]
     assert improvements["M6-1"]["status"] == "蓄積待ち"
     assert improvements["M6-1"]["progress"] == 35
@@ -147,8 +147,8 @@ def test_milestones_separate_completed_evaluation_from_failed_gate() -> None:
         )
     }
 
-    assert milestones["M4"]["status"] == "評価完了/主系維持"
-    assert milestones["M4"]["progress"] == 100
+    assert milestones["M4"]["status"] == "統一再評価中"
+    assert milestones["M4"]["progress"] == 88
     assert milestones["M6"]["status"] == "未完了/収益ゲート未達"
     assert milestones["M6"]["progress"] < 100
 
@@ -187,9 +187,9 @@ def test_standardized_comparison_and_temporal_progress_are_visible() -> None:
         )
     }
 
-    assert improvements["M4-4"]["status"] == "完了"
-    assert improvements["M4-4"]["progress"] == 100
-    assert "0.8808" in improvements["M4-4"]["next"]
+    assert improvements["M4-4"]["status"] == "評価中"
+    assert improvements["M4-4"]["progress"] == 0
+    assert "0/6件" in improvements["M4-4"]["next"]
     assert improvements["M6-9"]["status"] == "実行中"
     assert improvements["M6-9"]["progress"] == 80
 
@@ -202,8 +202,8 @@ def test_standardized_comparison_and_temporal_progress_are_visible() -> None:
         )
     }
     assert "標準365日" in milestones["M4"]["next"]
-    assert milestones["M6"]["progress"] == 86
-    assert "0.8808" in milestones["M6"]["next"]
+    assert milestones["M6"]["progress"] == 75
+    assert "同一holdout比較" in milestones["M6"]["next"]
 
 
 def test_versioned_inventory_scans_nested_packages(tmp_path) -> None:

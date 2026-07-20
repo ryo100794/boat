@@ -1,7 +1,6 @@
 # Source architecture
 
-`src/boatrace_ai` keeps stable application entry points at the package root and
-groups implementation modules by responsibility.
+`src/boatrace_ai` groups implementation and executable modules by responsibility.
 
 ## Packages
 
@@ -24,9 +23,8 @@ python -m boatrace_ai.runtime.model_cycle
 python -m boatrace_ai.listwise.feature_search
 ```
 
-`boatrace_ai.web_dashboard`, `boatrace_ai.realtime_collector`,
-`boatrace_ai.realtime_predictor`, and `boatrace_ai.model_cycle` are thin CLI
-compatibility entry points. New code must import the canonical package modules.
+The package-root compatibility entry points were removed after all local launchers
+were migrated. Use the canonical package modules above or the `boat-ai` command.
 
 ## Maintenance rules
 

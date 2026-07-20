@@ -9,7 +9,7 @@ from typing import Any
 
 from .constants import VENUE_BY_CODE
 from .db import connection, init_db, race_id
-from .ingestion.archive_extended import normalize, parse_program_entry
+from .ingestion.archive import normalize, parse_program_entry
 
 
 def repair_series_from_txt(

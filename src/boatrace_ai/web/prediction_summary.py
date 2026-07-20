@@ -18,23 +18,43 @@ def attach_latest_prediction_summaries(
     race_ids = list(by_race)
     for offset in range(0, len(race_ids), 800):
         chunk = race_ids[offset : offset + 800]
-        placeholders = ",".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"""
-            WITH latest AS (
-              SELECT race_id, MAX(generated_at) AS generated_at
-              FROM predictions
-              WHERE race_id IN ({placeholders})
-              GROUP BY race_id
-            )
-            SELECT p.race_id, p.combination, p.probability, p.odds,
-                   p.expected_value, p.generated_at
-            FROM predictions p
-            JOIN latest l
-              ON l.race_id = p.race_id AND l.generated_at = p.generated_at
-            """,
-            chunk,
-        ).fetchall()
+        if getattr(conn, "dialect", None) == "postgresql":
+            values = ",".join("(?)" for _ in chunk)
+            statement = f"""
+                WITH target(race_id) AS (VALUES {values}),
+                latest AS (
+                  SELECT t.race_id, found.generated_at
+                  FROM target t
+                  CROSS JOIN LATERAL (
+                    SELECT generated_at
+                    FROM predictions
+                    WHERE race_id = t.race_id
+                    ORDER BY generated_at DESC
+                    LIMIT 1
+                  ) found
+                )
+                SELECT p.race_id, p.combination, p.probability, p.odds,
+                       p.expected_value, p.generated_at
+                FROM predictions p
+                JOIN latest l
+                  ON l.race_id = p.race_id AND l.generated_at = p.generated_at
+            """
+        else:
+            placeholders = ",".join("?" for _ in chunk)
+            statement = f"""
+                WITH latest AS (
+                  SELECT race_id, MAX(generated_at) AS generated_at
+                  FROM predictions
+                  WHERE race_id IN ({placeholders})
+                  GROUP BY race_id
+                )
+                SELECT p.race_id, p.combination, p.probability, p.odds,
+                       p.expected_value, p.generated_at
+                FROM predictions p
+                JOIN latest l
+                  ON l.race_id = p.race_id AND l.generated_at = p.generated_at
+            """
+        rows = conn.execute(statement, chunk).fetchall()
         for row in rows:
             predictions.setdefault(str(row["race_id"]), []).append(row)
 

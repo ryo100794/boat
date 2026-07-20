@@ -13,6 +13,31 @@ from boatrace_ai.web.dashboard import (
 
 
 class WebReportGateTest(unittest.TestCase):
+    def test_daily_rows_do_not_depend_on_job_kind_name(self) -> None:
+        remote = {
+            "jobs": [
+                {
+                    "name": "calibrated_mlp",
+                    "kind": "standardized_365d_v2_model",
+                    "result": {
+                        "metrics": {"roi": 0.91},
+                        "daily": [
+                            {
+                                "race_date": "2026-07-18",
+                                "tickets": 3,
+                                "stake_yen": 300,
+                                "return_yen": 200,
+                                "profit_yen": -100,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        daily = _remote_bankroll_daily(remote)
+        self.assertEqual(daily["calibrated_mlp"][0]["date"], "2026-07-18")
+
     def test_completed_remote_bankroll_exposes_roi_attribution_gate(self) -> None:
         remote = {
             "generated_at": "2026-07-18T00:00:00+00:00",

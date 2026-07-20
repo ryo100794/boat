@@ -91,6 +91,7 @@ def convert_sql(statement: str) -> str:
 
 
 class Connection:
+    dialect = "postgresql"
     def __init__(self, raw: psycopg.Connection) -> None:
         self._raw = raw
         self._last_insert_id: int | None = None

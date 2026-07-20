@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections import defaultdict
 from typing import Any
@@ -53,6 +54,7 @@ def load_training_examples(
     from_date: str | None = None,
     include_odds: bool = False,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
+    through_date = through_date or os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     filters = ["rr.rank IS NOT NULL"]
     params: list[Any] = []
     if through_date:
@@ -196,16 +198,22 @@ def race_relative_features(
         }
         for field in RELATIVE_FIELDS:
             value = values_by_lane[lane].get(field, -1.0)
+            is_present = value >= 0
             field_stats = stats[field]
             sign = 1.0 if field not in LOW_IS_GOOD else -1.0
             best = field_stats["max"] if field not in LOW_IS_GOOD else field_stats["min"]
             worst = field_stats["min"] if field not in LOW_IS_GOOD else field_stats["max"]
             spread = max(1e-6, abs(field_stats["max"] - field_stats["min"]))
+            item[f"has_{field}"] = int(is_present)
             item[f"{field}_rank"] = ranks[field][lane]
-            item[f"{field}_vs_mean"] = value - field_stats["mean"]
-            item[f"{field}_z"] = (value - field_stats["mean"]) / max(1e-6, field_stats["std"])
-            item[f"{field}_best_gap"] = sign * (value - best)
-            item[f"{field}_scaled"] = sign * (value - worst) / spread
+            item[f"{field}_vs_mean"] = value - field_stats["mean"] if is_present else 0.0
+            item[f"{field}_z"] = (
+                (value - field_stats["mean"]) / max(1e-6, field_stats["std"])
+                if is_present
+                else 0.0
+            )
+            item[f"{field}_best_gap"] = sign * (value - best) if is_present else 0.0
+            item[f"{field}_scaled"] = sign * (value - worst) / spread if is_present else 0.0
         _composites(item, lane, values_by_lane[lane], ranks)
         result[lane] = item
     return result
@@ -284,11 +292,17 @@ def _stats(values: list[float]) -> dict[str, float]:
 
 
 def _ranks(values: dict[int, float], *, high_is_good: bool) -> dict[int, int]:
-    ordered = sorted(
-        values.items(),
-        key=lambda item: (item[1] < 0, -item[1] if high_is_good else item[1], item[0]),
-    )
-    return {lane: index + 1 for index, (lane, _) in enumerate(ordered)}
+    valid = [(lane, value) for lane, value in values.items() if value >= 0]
+    ordered = sorted(valid, key=lambda item: -item[1] if high_is_good else item[1])
+    result = {lane: 0 for lane in values}
+    previous: float | None = None
+    rank = 0
+    for index, (lane, value) in enumerate(ordered, start=1):
+        if previous is None or value != previous:
+            rank = index
+            previous = value
+        result[lane] = rank
+    return result
 
 
 def _composites(

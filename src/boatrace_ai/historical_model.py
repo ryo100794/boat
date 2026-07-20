@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
+from scipy import sparse
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -14,10 +17,26 @@ from sklearn.preprocessing import MaxAbsScaler
 from . import model_core as base
 from .db import connection, init_db
 from .base_features import load_training_examples
-from .model_extended import SparseIndex32
 
 
 FEATURE_SET = "no_odds_v8_relative_weather_sparse32_scaled_logreg_C0.20_unweighted"
+
+
+class SparseIndex32(BaseEstimator, TransformerMixin):
+    """Normalize scipy sparse index arrays for sklearn builds requiring int32."""
+
+    def fit(self, X: Any, y: Any = None) -> "SparseIndex32":
+        return self
+
+    def transform(self, X: Any) -> Any:
+        if not sparse.issparse(X):
+            return X
+        matrix = X.tocsr(copy=False)
+        if matrix.indices.dtype != np.int32:
+            matrix.indices = matrix.indices.astype(np.int32, copy=False)
+        if matrix.indptr.dtype != np.int32:
+            matrix.indptr = matrix.indptr.astype(np.int32, copy=False)
+        return matrix
 
 
 def make_pipeline() -> Pipeline:

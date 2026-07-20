@@ -59,7 +59,14 @@ def main() -> int:
         cmdline = cmdline_path.read_bytes().replace(b"\0", b" ").decode(errors="replace")
     except FileNotFoundError:
         raise SystemExit(f"old process does not exist: {args.old_pid}")
-    if "boatrace_ai.web_dashboard" not in cmdline or str(args.port) not in cmdline:
+    dashboard_modules = (
+        "boatrace_ai.web.dashboard",
+        "boatrace_ai.web_dashboard",
+    )
+    if (
+        not any(module in cmdline for module in dashboard_modules)
+        or str(args.port) not in cmdline
+    ):
         raise SystemExit(f"refusing to stop unexpected process: {cmdline}")
 
     os.kill(args.old_pid, signal.SIGTERM)
@@ -77,7 +84,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "boatrace_ai.web_dashboard",
+            "boatrace_ai.web.dashboard",
             "--db",
             args.db,
             "--host",

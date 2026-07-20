@@ -85,9 +85,9 @@ def backfill_historical(
 
 
 def parse_archive(conn, *, path: Path, kind: str, race_date: date) -> dict[str, int]:
-    from .archive import parse_official_archive_v6
+    from .archive import parse_official_archive
 
-    return parse_official_archive_v6(
+    return parse_official_archive(
         conn,
         path=path,
         kind=kind,

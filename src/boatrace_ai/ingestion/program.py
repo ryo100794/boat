@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import connection, init_db
-from .archive import parse_official_archive_v6
+from .archive import parse_official_archive
 from ..http import fetch_bytes, save_payload
 from ..official import historical_download_url
 from ..storage import raw_file_cache_valid, record_raw_file
@@ -64,7 +64,7 @@ def load_daily_program(conn, *, race_date: date, raw_dir: Path) -> dict[str, Any
         if status_code != 200 or not payload:
             return {"program_status": f"http_{status_code}", "program_url": url, "program_races": 0, "program_entries": 0}
 
-    parsed = parse_official_archive_v6(conn, path=local_path, kind="program", race_date=race_date)
+    parsed = parse_official_archive(conn, path=local_path, kind="program", race_date=race_date)
     conn.commit()
     return {
         "program_status": "parsed",

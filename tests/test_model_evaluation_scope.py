@@ -20,6 +20,16 @@ def test_standardized_result_is_labeled_separately() -> None:
     )
 
 
+def test_standardized_v2_nested_result_has_its_own_scope() -> None:
+    assert (
+        _evaluation_scope(
+            Path("data/models/standardized_365d_v2/no_odds_v8.json"),
+            [],
+        )
+        == "standard_365d_v2"
+    )
+
+
 def test_legacy_daily_range_is_explicit() -> None:
     assert _evaluation_scope(
         Path("listwise_newton_cg_v1.json"),

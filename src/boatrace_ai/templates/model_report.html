@@ -62,9 +62,11 @@ function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").repla
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
 function render(data){
   const bank=data.bankroll||[], tests=data.backtests||[], folds=data.fold_metrics||[], daily=data.bankroll_daily||{}, features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
-  const standardBank=bank.filter(x=>x.evaluation_scope==="standard_365d"), standardTests=tests.filter(x=>x.evaluation_scope==="standard_365d");
-  const comparisonBank=standardBank.length?standardBank:bank, comparisonTests=standardTests.length?standardTests:tests;
-  const standardFolds=folds.filter(x=>x.evaluation_scope==="standard_365d"), comparisonFolds=standardFolds.length?standardFolds:folds;
+  const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
+  const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
+  const comparisonBank=v2Bank.length?v2Bank:(v1Bank.length?v1Bank:bank), comparisonTests=v2Tests.length?v2Tests:(v1Tests.length?v1Tests:tests);
+  const v2Folds=folds.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Folds=folds.filter(x=>x.evaluation_scope==="standard_365d");
+  const comparisonFolds=v2Folds.length?v2Folds:(v1Folds.length?v1Folds:folds);
   const bestRoi=[...comparisonBank].sort((a,b)=>(b.roi??-9)-(a.roi??-9))[0]; const adaptive=bank.find(x=>String(x.file||"").includes("adaptive")) || bank[bank.length-1];
   const baseline=comparisonTests[comparisonTests.length-1]; const running=jobs.filter(x=>x.running).length;
   $("kpis").innerHTML=[["基準1着",baseline?pct(baseline.winner_top1_accuracy):"-"],["基準3T5",baseline?pct(baseline.trifecta_top5_hit_rate):"-"],["最高ROI", bestRoi?`${ratio(bestRoi.roi)} ${shortName(bestRoi.name)}`:"-"],["最新適応ROI", adaptive?ratio(adaptive.roi):"-"],["評価実行中",running],["相関診断", features.length]].map(([l,v])=>`<div class="kpi"><b title="${esc(v)}">${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
@@ -118,7 +120,7 @@ function renderEvaluationJobs(jobs,generatedAt){
   $("remoteMeta").textContent=`更新 ${String(generatedAt||"").replace("T"," ").slice(0,19)} / 実行中 ${jobs.filter(x=>x.running).length}`;
   $("evaluationRows").innerHTML=jobs.map(x=>{ const status=String(x.status||"-"); const cls=status==="完了"?"done":status==="失敗"?"failed":x.running?"running":""; const fold=x.expected_folds?`${x.completed_folds||0}/${x.expected_folds}`:(x.completed_folds||"-"); const metric=x.real_odds_races!=null?`${fmt(x.evaluated_races)}/${fmt(x.real_odds_races)}`:fmt(x.evaluated_races); return `<tr><td class="name-cell" title="${esc(x.name)}">${esc(x.name||"-")}</td><td>${esc(x.milestone||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td class="mono">${fold}</td><td class="mono">${esc(x.elapsed||"-")}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${metric}</td></tr>`; }).join("") || `<tr><td colspan="8" class="muted">評価ジョブ情報なし</td></tr>`;
 }
-function scopeText(value){ const text=String(value||"legacy:unknown"); if(text==="standard_365d") return "365d standard"; const parts=text.split(":"); return parts[0]==="legacy"&&parts.length===4 ? parts[1]+".."+parts[2]+" ("+parts[3]+"d)" : "legacy period unknown"; }
+function scopeText(value){ const text=String(value||"legacy:unknown"); if(text==="standard_365d_v2") return "365d v2 unified"; if(text==="standard_365d") return "365d v1 legacy"; const parts=text.split(":"); return parts[0]==="legacy"&&parts.length===4 ? parts[1]+".."+parts[2]+" ("+parts[3]+"d)" : "legacy period unknown"; }
 function summaryRow(x,type){ const cls=Number(x.profit_yen||0)>=0?"pos":"neg"; const name=esc(x.name||x.file||"-"); const scope=esc(scopeText(x.evaluation_scope)); return "<tr><td class=\"name-cell\" title=\""+name+" / "+scope+"\">"+name+"<br><span class=\"muted\">"+scope+"</span></td><td>"+type+"</td><td>"+fmt(x.evaluated_races)+"</td><td>"+ratio(x.entry_log_loss)+"</td><td>"+pct(x.winner_top1_accuracy)+"</td><td>"+pct(x.trifecta_top5_hit_rate)+"</td><td>"+ratio(x.roi)+"</td><td class=\""+(x.profit_yen==null?"":cls)+"\">"+(x.profit_yen==null?"-":yen(x.profit_yen))+"</td><td>"+(x.stake_yen==null?"-":yen(x.stake_yen))+"</td></tr>"; }
 function featureName(row){ return row && row.feature ? row.feature : "-"; }
 function renderFeatureDiagnostics(features){

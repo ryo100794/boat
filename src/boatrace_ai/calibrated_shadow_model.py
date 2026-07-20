@@ -16,6 +16,8 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
+from .adaptive_allocation import zero_totals
+from .bankroll_backtest import _load_trifecta_payouts
 from .db import connection, init_db
 from .hashed_feature_dataset import (
     HashedRaceDataset,
@@ -304,7 +306,12 @@ def backtest_model(
     epochs: int = 2,
     alpha: float = 0.0001,
     feature_cache: Path | None = None,
+    daily_budget_yen: int = 10_000,
+    ev_threshold: float = 1.20,
 ) -> dict[str, Any]:
+    # Imported lazily because listwise.model reuses the matrix batching helper here.
+    from .listwise.validation import default_policy, evaluate_bankroll_fold
+
     model_kind = normalize_model_kind(model_kind)
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     race_keys = load_complete_race_ids(conn)
@@ -371,8 +378,13 @@ def backtest_model(
                 probs.append(probability)
                 race_predictions[row["race_id"]].append(
                     {
+                        "race_id": row["race_id"],
+                        "race_date": row["race_date"],
+                        "jcd": row["jcd"],
+                        "rno": row["rno"],
                         "lane": row["lane"],
                         "rank": row["rank"],
+                        "label": label,
                         "probability": probability,
                     }
                 )
@@ -392,6 +404,63 @@ def backtest_model(
             flush=True,
         )
 
+    policy = default_policy(
+        daily_budget_yen=daily_budget_yen,
+        ev_threshold=ev_threshold,
+    )
+    policy.update(
+        {
+            "model": f"calibrated_{model_kind}_shadow",
+            "feature_set": FEATURE_SET,
+        }
+    )
+    totals = zero_totals()
+    daily_rows: list[dict[str, Any]] = []
+    bankroll, profit_state = evaluate_bankroll_fold(
+        rows_by_race=race_predictions,
+        train_races=set(races[:min_train_races]),
+        test_dates={
+            race_date
+            for _race_id, race_date, _jcd, _rno in race_keys[min_train_races:]
+        },
+        payouts=_load_trifecta_payouts(conn),
+        policy=policy,
+        totals=totals,
+        daily_rows=daily_rows,
+        profit_state=(0, 0, 0),
+    )
+    tickets = int(totals["tickets"])
+    selected_races = int(totals["races_bet"])
+    stake_yen = int(bankroll["stake_yen"])
+    bankroll_summary = {
+        **bankroll,
+        "evaluated_races": int(totals["evaluated_races"]),
+        "race_days": len(daily_rows),
+        "selected_races": selected_races,
+        "tickets": tickets,
+        "hit_tickets": int(totals["hit_tickets"]),
+        "ticket_hit_rate": (
+            float(totals["hit_tickets"]) / tickets if tickets else 0.0
+        ),
+        "race_hit_rate": (
+            float(totals["hit_races"]) / selected_races
+            if selected_races
+            else 0.0
+        ),
+        "winning_days": int(totals["winning_days"]),
+        "losing_days": int(totals["losing_days"]),
+        "budget_utilization": (
+            stake_yen / (daily_budget_yen * len(daily_rows))
+            if daily_rows
+            else 0.0
+        ),
+        "max_drawdown_yen": int(profit_state[2]),
+    }
+    bankroll_flat = {
+        key: value
+        for key, value in bankroll_summary.items()
+        if key != "evaluated_races"
+    }
     result = {
         "generated_at": now_iso(),
         "model": f"calibrated_{model_kind}_shadow",
@@ -417,6 +486,11 @@ def backtest_model(
         "entry_log_loss": safe_log_loss(all_labels, all_probs),
         "entry_brier": float(brier_score_loss(all_labels, all_probs)),
         **_race_level_metrics(race_predictions),
+        "policy": policy,
+        "bankroll": bankroll_summary,
+        "bankroll_evaluated_races": bankroll_summary["evaluated_races"],
+        "daily": daily_rows,
+        **bankroll_flat,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -481,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
     backtest.add_argument("--output", required=True)
     backtest.add_argument("--folds", type=int, default=5)
     backtest.add_argument("--min-train-races", type=int, default=500)
+    backtest.add_argument("--daily-budget-yen", type=int, default=10_000)
+    backtest.add_argument("--ev-threshold", type=float, default=1.20)
     backtest.add_argument(
         "--feature-cache",
         default="data/models/calibrated_shadow_features_16384",
@@ -517,6 +593,8 @@ def run_backtest(args: argparse.Namespace) -> int:
             epochs=args.epochs,
             alpha=args.alpha,
             feature_cache=Path(args.feature_cache) if args.feature_cache else None,
+            daily_budget_yen=args.daily_budget_yen,
+            ev_threshold=args.ev_threshold,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0

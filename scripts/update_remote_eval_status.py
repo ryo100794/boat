@@ -12,7 +12,7 @@ from typing import Any
 DEFAULT_HOST = "root@213.173.105.92"
 DEFAULT_PORT = "28659"
 DEFAULT_IDENTITY = str(Path.home() / ".ssh" / "id_ed25519")
-DEFAULT_WORKDIR = "/workspace/boat-milestone-e07badb"
+DEFAULT_WORKDIR = "/workspace/boat"
 DEFAULT_OUTPUT = Path("data/remote_eval_status.json")
 
 JOBS: list[dict[str, Any]] = [
@@ -64,6 +64,7 @@ METRIC_KEYS = (
     "examples", "races", "positive_labels", "global_win_rate", "race_days",
     "candidate_tickets", "winning_days", "losing_days", "budget_utilization",
     "promotion_eligible", "holdout_races", "profitable_folds",
+    "bankroll_evaluated_races",
 )
 DAILY_KEYS = (
     "race_date", "evaluated_races", "tickets", "races_bet", "stake_yen",
@@ -128,6 +129,7 @@ def result_summary(path):
     row["feature_set"] = data.get("feature_set")
     row["comparison_role"] = data.get("comparison_role")
     row["include_odds"] = data.get("include_odds")
+    row["protocol_id"] = data.get("protocol_id")
     holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
     if isinstance(holdout, dict):
         for key in METRIC_KEYS:

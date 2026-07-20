@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -628,16 +629,21 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
 
 
 def load_complete_race_ids(conn) -> list[tuple[str, str, str, int]]:
+    max_race_date = os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
+    date_filter = "AND r.race_date <= ?" if max_race_date else ""
+    params = (max_race_date,) if max_race_date else ()
     rows = conn.execute(
-        """
+        f"""
         SELECT r.race_id, r.race_date, r.jcd, r.rno
         FROM races r
         JOIN race_results rr ON rr.race_id = r.race_id AND rr.rank IS NOT NULL
         WHERE (SELECT COUNT(*) FROM entries e WHERE e.race_id = r.race_id) = 6
           AND (SELECT COUNT(*) FROM race_results x WHERE x.race_id = r.race_id AND x.rank IS NOT NULL) = 6
+          {date_filter}
         GROUP BY r.race_id
         ORDER BY r.race_date, r.jcd, r.rno
-        """
+        """,
+        params,
     ).fetchall()
     return [(row["race_id"], row["race_date"], row["jcd"], int(row["rno"])) for row in rows]
 

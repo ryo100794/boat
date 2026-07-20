@@ -521,12 +521,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backtest", default="data/models/backtest_no_odds_v8.json")
     args = parser.parse_args(argv)
 
-    init_db(args.db)
-    _ensure_dashboard_indexes(Path(args.db))
-    handler = make_handler(Path(args.db), Path(args.backtest) if args.backtest else None)
     print(f"Serving BOAT RACE AI Dashboard on http://{args.host}:{args.port}", flush=True)
-    ThreadingHTTPServer((args.host, args.port), handler).serve_forever()
+    serve(
+        db_path=Path(args.db),
+        host=args.host,
+        port=args.port,
+        backtest_path=Path(args.backtest) if args.backtest else None,
+    )
     return 0
+
+
+def serve(
+    *,
+    db_path: Path,
+    host: str,
+    port: int,
+    backtest_path: Path | None = None,
+) -> None:
+    init_db(db_path)
+    _ensure_dashboard_indexes(db_path)
+    handler = make_handler(db_path, backtest_path)
+    ThreadingHTTPServer((host, port), handler).serve_forever()
 
 
 def _teleboat_setup_allowed(handler: BaseHTTPRequestHandler) -> bool:
@@ -749,14 +764,27 @@ def summary_cached(db_path: Path) -> dict[str, Any]:
     cached = _SUMMARY_CACHE.get(db_path)
     if cached and now - cached[0] < 300.0:
         return cached[1]
+    race_date = default_race_date(db_path)
     with connect(db_path) as conn:
         payload = {
             "races": None,
             "entries": None,
             "results": None,
-            "odds_snapshots": _scalar(conn, "SELECT COUNT(*) FROM odds_snapshots"),
-            "predictions": _scalar(conn, "SELECT COUNT(DISTINCT race_id) FROM predictions"),
-            "latest_prediction": _scalar(conn, "SELECT MAX(generated_at) FROM predictions"),
+            "odds_snapshots": _scalar(conn, "SELECT MAX(snapshot_id) FROM odds_snapshots"),
+            "predictions": _scalar(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM races r
+                WHERE r.race_date = ?
+                  AND EXISTS (SELECT 1 FROM predictions p WHERE p.race_id = r.race_id)
+                """,
+                (race_date,),
+            ),
+            "latest_prediction": _scalar(
+                conn,
+                "SELECT generated_at FROM predictions ORDER BY prediction_id DESC LIMIT 1",
+            ),
             "summary_scope": "lightweight",
         }
     _SUMMARY_CACHE[db_path] = (now, payload)
@@ -1152,6 +1180,8 @@ def _report_label(path: Path, data: dict[str, Any]) -> str:
 
 
 def _evaluation_scope(path: Path, daily: list[dict[str, Any]]) -> str:
+    if "standardized_365d_v2" in str(path):
+        return "standard_365d_v2"
     if path.stem.startswith("standardized_365d_"):
         return "standard_365d"
     dates = sorted({str(row.get("race_date")) for row in daily if row.get("race_date")})
@@ -1227,8 +1257,6 @@ def _compact_ticket_roi_attribution(value: Any) -> dict[str, Any] | None:
 def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
-        if "bankroll" not in str(job.get("kind") or ""):
-            continue
         result = job.get("result") or {}
         metrics = result.get("metrics") or {}
         if metrics.get("roi") is None:
@@ -1247,7 +1275,8 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "model": result.get("model") or job.get("name"),
                 "daily_budget_yen": None,
                 "stake_model": None,
-                "evaluated_races": metrics.get("evaluated_races"),
+                "evaluated_races": metrics.get("bankroll_evaluated_races")
+                or metrics.get("evaluated_races"),
                 "race_days": metrics.get("race_days"),
                 "selected_races": metrics.get("selected_races"),
                 "tickets": metrics.get("tickets"),
@@ -1326,9 +1355,10 @@ def _remote_bankroll_daily(
         else []
     ) or []
     for job in jobs:
-        if "bankroll" not in str(job.get("kind") or ""):
-            continue
         result = job.get("result") or {}
+        metrics = result.get("metrics") or {}
+        if metrics.get("roi") is None:
+            continue
         daily_rows = _daily_report_rows(result.get("daily") or [])
         if daily_rows:
             label = str(job.get("name") or result.get("file") or "remote_bankroll")
@@ -1597,7 +1627,7 @@ def boatcast_live_player_url(jcd: str) -> str | None:
     return (
         "https://front.player.boatrace-cdn.jp/player/live"
         f"?service=boatcast&stadium={stadium}&sourceType=mix&dvr=1"
-        "&audioMode=0&autoplay=1&bitrate=low"
+        "&audioMode=0&autoplay=1&volume=0&bitrate=low"
     )
 
 def _live_window_rows(
@@ -2838,11 +2868,15 @@ def _read_remote_eval_status(path: Path) -> dict[str, Any]:
 
 def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     all_bankrolls = _bankroll_gate_records(model_dir) + _remote_bankroll_gate_records(remote_evaluations)
-    standardized = [
+    standardized_v2 = [
+        row for row in all_bankrolls
+        if row.get("evaluation_scope") == "standard_365d_v2"
+    ]
+    standardized_v1 = [
         row for row in all_bankrolls
         if row.get("evaluation_scope") == "standard_365d"
     ]
-    bankrolls = standardized or all_bankrolls
+    bankrolls = standardized_v2 or standardized_v1 or all_bankrolls
     best = max(bankrolls, key=lambda row: row.get("roi") or -1.0, default=None)
     latest = max(bankrolls, key=lambda row: row.get("modified_at") or "", default=None)
     remote_jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
@@ -2915,8 +2949,6 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
 def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
-        if "bankroll" not in str((job or {}).get("kind") or ""):
-            continue
         result = (job or {}).get("result") or {}
         metrics = result.get("metrics") or {}
         attribution = result.get("ticket_roi_attribution") or {}
@@ -2930,7 +2962,8 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
                 "stake_yen": metrics.get("stake_yen"),
-                "evaluated_races": metrics.get("evaluated_races"),
+                "evaluated_races": metrics.get("bankroll_evaluated_races")
+                or metrics.get("evaluated_races"),
                 "max_drawdown_yen": metrics.get("max_drawdown_yen"),
                 "evaluation_scope": _evaluation_scope(
                     Path(str(result.get("file") or job.get("output") or "legacy")),
@@ -2986,6 +3019,15 @@ def _gate_bankroll_text(row: dict[str, Any] | None) -> str:
     return " / ".join(parts)
 
 
+_STANDARDIZED_V2_JOB_NAMES = {
+    "standardized_365d_v2_no_odds_v8",
+    "standardized_365d_v2_pastlog_v7",
+    "standardized_365d_v2_calibrated_linear",
+    "standardized_365d_v2_calibrated_mlp",
+    "standardized_365d_v2_listwise_feature_teacher",
+    "standardized_365d_v2_listwise_newton",
+}
+
 def _roadmap_improvements(
     progress: dict[str, Any] | None = None,
     processes: list[dict[str, Any]] | None = None,
@@ -2997,18 +3039,19 @@ def _roadmap_improvements(
     standardized_jobs = [
         row
         for row in remote_jobs
-        if str(row.get("kind") or "").startswith("standardized_365d_")
-        and row.get("kind") != "standardized_365d_queue"
+        if str(row.get("kind") or "") == "standardized_365d_v2_model"
     ]
-    standardized_complete = sum(
-        row.get("status") == "完了" for row in standardized_jobs
-    )
-    standardized_expected = 8
+    standardized_complete = len({
+        str(row.get("name"))
+        for row in standardized_jobs
+        if row.get("status") == "完了"
+        and str(row.get("name")) in _STANDARDIZED_V2_JOB_NAMES
+    })
+    standardized_expected = len(_STANDARDIZED_V2_JOB_NAMES)
     standardized_bankrolls = [
         row
         for row in standardized_jobs
-        if "bankroll" in str(row.get("kind") or "")
-        and (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
+        if (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
     ]
     best_standardized = max(
         standardized_bankrolls,
@@ -3024,7 +3067,7 @@ def _roadmap_improvements(
         (
             row
             for row in standardized_jobs
-            if row.get("name") == "standardized_365d_no_odds_v8_backtest"
+            if row.get("name") == "standardized_365d_v2_no_odds_v8"
         ),
         None,
     )
@@ -3154,26 +3197,34 @@ def _roadmap_improvements(
             "next": "日次番組で6艇が揃ったレースのHTML再巡回を抑止し、未取得レースは締切順で補完する。collectorのodds_failed/prediction_failedを継続監視する。",
         },
         {
+            "id": "M2-3",
+            "milestone": "M2",
+            "status": "修正済み/監視中",
+            "progress": 90,
+            "item": "公式結果URL障害と結果待ち滞留",
+            "next": "廃止された /race/result を公開 /race/raceresult へ修正。本日滞留7Rを回収済み。公開結果反映後15分超の結果待ちが再発しないことを当日監視する。",
+        },
+        {
             "id": "M4-1",
             "milestone": "M4/M5",
-            "status": "評価完了/昇格見送り" if calibrated_complete else "実装済み/評価待ち",
-            "progress": 100 if calibrated_complete else 45,
+            "status": "予測評価済み/統一資金運用待ち" if calibrated_complete else "実装済み/評価待ち",
+            "progress": 70 if calibrated_complete else 45,
             "item": "較正linear/MLP shadow導入",
             "next": calibrated_next,
         },
         {
             "id": "M4-2",
             "milestone": "M4/M6",
-            "status": "評価完了/安定根拠なし",
-            "progress": 100,
+            "status": "要再検証/欠損表現修正待ち",
+            "progress": 60,
             "item": "相関監査とROI接続",
-            "next": "ablationとROI帰属評価は完了。4特徴量群はいずれも除外でLogLossが悪化し、ROI帰属は時間fold安定シグナル0件。特徴削除・直接採用は行わず、この評価サイクルを終了する。",
+            "next": "欠損値-1の同値順位が艇番順へ化ける擬似相関を確認。欠損順位を0、相対値を中立化し、presence特徴を分離して相関・ablation・ROI帰属を時系列foldで再実行する。",
         },
         {
             "id": "M4-3",
             "milestone": "M4/M6",
             "status": (
-                ("評価完了/昇格候補" if listwise_promoted else "評価完了/昇格見送り")
+                ("評価完了/昇格候補" if listwise_promoted else "要改善/昇格見送り")
                 if listwise_newton_status == "完了"
                 else "Newton-CG実行中"
                 if listwise_newton_status == "実行中"
@@ -3181,7 +3232,7 @@ def _roadmap_improvements(
                 if listwise_search_status == "実行中"
                 else "探索待ち"
             ),
-            "progress": 100 if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
+            "progress": (100 if listwise_promoted else 85) if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
             "item": "race-softmax/Plackett-Luce再設計とNewton-CG収束",
             "next": listwise_next,
         },
@@ -3199,7 +3250,7 @@ def _roadmap_improvements(
             ),
             "item": "全モデル標準365日同一holdout比較",
             "next": (
-                f"2025-07-19..2026-07-18の48,294Rで8成果物を完走。"
+                f"統一v2の6モデルを同一365日・同一対象R・同一資金運用条件で完走。"
                 f"no_odds_v8は1着 {float(standard_no_odds_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(standard_no_odds_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
                 f"資金運用最高は{str((best_standardized or {}).get('name') or '-')}のROI "
@@ -3361,18 +3412,17 @@ def _roadmap_milestones(
     standardized_jobs = [
         row
         for row in jobs
-        if str(row.get("kind") or "").startswith("standardized_365d_")
-        and row.get("kind") != "standardized_365d_queue"
+        if str(row.get("kind") or "") == "standardized_365d_v2_model"
     ]
-    standardized_complete = (
-        len(standardized_jobs) >= 8
-        and all(row.get("status") == "完了" for row in standardized_jobs)
-    )
+    standardized_complete = {
+        str(row.get("name"))
+        for row in standardized_jobs
+        if row.get("status") == "完了"
+    } >= _STANDARDIZED_V2_JOB_NAMES
     standard_bankrolls = [
         row
         for row in standardized_jobs
-        if "bankroll" in str(row.get("kind") or "")
-        and (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
+        if (((row.get("result") or {}).get("metrics") or {}).get("roi") is not None)
     ]
     best_standard = max(
         standard_bankrolls,
@@ -3428,6 +3478,8 @@ def _roadmap_milestones(
         if ablation_status == "完了"
         else 85
     )
+    if not standardized_complete and listwise_newton_status == "完了":
+        m4_progress = min(m4_progress, 88)
     m6_progress = (
         90
         if standardized_complete and temporal_status == "完了"
@@ -3490,22 +3542,24 @@ def _roadmap_milestones(
             "id": "M4",
             "title": "過去ログ中心モデル",
             "status": (
-                "評価完了/昇格候補"
-                if listwise_newton_status == "完了" and listwise_promoted
+                "listwise再設計を評価中"
+                if listwise_newton_status != "完了"
+                else "統一再評価中"
+                if not standardized_complete
+                else "評価完了/昇格候補"
+                if listwise_promoted
                 else "評価完了/主系維持"
-                if listwise_newton_status == "完了"
-                else "listwise再設計を評価中"
             ),
             "progress": m4_progress,
             "next": (
                 "標準365日・48,294Rで全モデル比較完了。予測主系と候補の指標を同一期間で比較し、主系を維持する。"
                 if standardized_complete
-                else f"未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
+                else f"統一標準365日v2未完了。未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"
                 f"ROI {float(listwise_metrics.get('roi') or 0):.4f}。"
                 + ("次段評価へ進める。" if listwise_promoted else "ROI/収束ゲート未達のため現行主系を維持する。")
                 if listwise_newton_status == "完了" and listwise_metrics
-                else "ROI 1.0と予測性能基準を満たす場合だけ昇格する。特徴量・教師選択、未使用holdout、Newton-CG、資金運用を順に回収する。"
+                else "統一標準365日v2未完了。ROI 1.0と予測性能基準を満たす場合だけ昇格する。特徴量・教師選択、未使用holdout、Newton-CG、資金運用を順に回収する。"
             ),
         },
         {
@@ -3535,9 +3589,9 @@ def _roadmap_milestones(
         {
             "id": "M7",
             "title": "v系ファイル整理",
-            "status": "完了",
-            "progress": 100,
-            "next": "安定版入口と旧joblib互換を維持し、新規番号付きモジュールを追加しない",
+            "status": "進行中",
+            "progress": 75,
+            "next": "集約差分の全テストと常駐入口の切替を完了し、旧joblib互換を検証する",
         },
         {
             "id": "M8",
@@ -3562,8 +3616,10 @@ def _roadmap_milestones(
 def _process_snapshots() -> list[dict[str, Any]]:
     patterns = [
         ("web_dashboard", "Webサーバ"),
+        ("-m boatrace_ai.web.dashboard", "Webサーバ"),
         ("realtime_predictor", "予測ループ"),
         ("realtime_collector", "リアルタイム収集"),
+        ("-m boatrace_ai.runtime.collector", "リアルタイム収集"),
         ("model_cycle", "リアルタイムshadow"),
         ("predict_loop", "予測ループ"),
         ("backfill", "過去バックフィル"),

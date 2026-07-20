@@ -1,6 +1,12 @@
 .venv/
 .tools/
 .secrets/
+data/
+archive/
+logs/
+run/
+*.env.local
+rclone.conf
 data/teleboat_probe_status.json
 data/.teleboat_probe_status.json.*.tmp
 __pycache__/

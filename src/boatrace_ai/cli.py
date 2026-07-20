@@ -271,7 +271,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     init_db(args.db)
-    from .server import serve
+    from .web.dashboard import serve
 
     print(f"Serving BOAT RACE AI Monitor on http://{args.host}:{args.port}", flush=True)
     serve(
