@@ -345,7 +345,7 @@ def _latest_valid_odds_snapshot(
         FROM odds_snapshots os
         WHERE os.race_id = ? AND os.bet_type = 'trifecta'
           AND os.captured_at <= ?
-          AND os.raw_json LIKE '%"parser_version": "odds3t_dom_v2"%'
+          AND os.parser_version = 'odds3t_dom_v2'
         ORDER BY os.captured_at DESC, os.snapshot_id DESC
         LIMIT 8
         """,

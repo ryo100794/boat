@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
   bet_type TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   source_update_time TEXT,
+  parser_version TEXT,
   raw_json TEXT,
   source_url TEXT,
   FOREIGN KEY (race_id) REFERENCES races(race_id) ON DELETE CASCADE
@@ -365,14 +366,16 @@ def insert_odds_snapshot(
     conn.execute(
         """
         INSERT INTO odds_snapshots (
-          race_id, bet_type, captured_at, source_update_time, raw_json, source_url
+          race_id, bet_type, captured_at, source_update_time, parser_version,
+          raw_json, source_url
         )
-        VALUES (?, 'trifecta', ?, ?, ?, ?)
+        VALUES (?, 'trifecta', ?, ?, ?, ?, ?)
         """,
         (
             race_id_value,
             captured_at,
             source_update_time,
+            raw.get("parser_version"),
             json.dumps(raw, ensure_ascii=False, sort_keys=True),
             source_url,
         ),
