@@ -245,3 +245,8 @@ def test_no_odds_v8_streaming_fit_preserves_sparse_pipeline(
         "sparse_index_32_b",
         "classifier",
     ]
+    assert (
+        bundle["pipeline"].named_steps["sparse_index_32_a"]
+        .__class__.__module__
+        == "boatrace_ai.model_core"
+    )

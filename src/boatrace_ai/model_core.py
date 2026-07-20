@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import joblib
-from .legacy_model_aliases import load_model_bundle
+import numpy as np
+from scipy import sparse
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import brier_score_loss, log_loss
@@ -16,12 +18,30 @@ from sklearn.pipeline import Pipeline
 
 from .db import connection, init_db, insert_prediction_rows
 from .features import latest_trifecta_odds
+from .legacy_model_aliases import load_model_bundle
 from .base_features import load_training_examples, prediction_features
 from .modeling import _normalize_lane_probs, _race_level_metrics, trifecta_predictions
 from .standard_evaluation import race_set_sha256
 
 
 FEATURE_SET = "no_odds_v4_relative_racer_motor_boat_weather_sgd"
+
+
+class SparseIndex32(BaseEstimator, TransformerMixin):
+    """Normalize scipy sparse index arrays for sklearn estimators."""
+
+    def fit(self, X: Any, y: Any = None) -> "SparseIndex32":
+        return self
+
+    def transform(self, X: Any) -> Any:
+        if not sparse.issparse(X):
+            return X
+        matrix = X.tocsr(copy=False)
+        if matrix.indices.dtype != np.int32:
+            matrix.indices = matrix.indices.astype(np.int32, copy=False)
+        if matrix.indptr.dtype != np.int32:
+            matrix.indptr = matrix.indptr.astype(np.int32, copy=False)
+        return matrix
 
 
 def make_pipeline() -> Pipeline:
