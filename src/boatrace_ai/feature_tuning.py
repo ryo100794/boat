@@ -571,7 +571,11 @@ def build_race_features(
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     dropped = set(drop_feature_groups)
     relatives = (
-        race_relative_features(race_rows, {lane: {} for lane in range(1, 7)})
+        race_relative_features(
+            race_rows,
+            {lane: {} for lane in range(1, 7)},
+            include_research="research_correlates" not in dropped,
+        )
         if "base_pastlog" not in dropped
         else {}
     )

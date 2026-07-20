@@ -188,6 +188,8 @@ def before_features(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 def race_relative_features(
     rows: list[sqlite3.Row],
     before_rows: dict[int, sqlite3.Row | dict[str, Any]],
+    *,
+    include_research: bool = True,
 ) -> dict[int, dict[str, Any]]:
     values_by_lane = {int(row["lane"]): _relative_values(row, before_rows.get(int(row["lane"]), {})) for row in rows}
     stats = {field: _stats([values.get(field, -1.0) for values in values_by_lane.values()]) for field in RELATIVE_FIELDS}
@@ -227,7 +229,8 @@ def race_relative_features(
             item[f"{field}_scaled"] = sign * (value - worst) / spread if is_present else 0.0
         _composites(item, lane, values_by_lane[lane], ranks)
         result[lane] = item
-    _add_research_correlates(result, rows, before_rows, values_by_lane)
+    if include_research:
+        _add_research_correlates(result, rows, before_rows, values_by_lane)
     return result
 
 
