@@ -4,6 +4,7 @@ from boatrace_ai.web.dashboard import _roadmap_improvements, _roadmap_milestones
 MODEL_IDS = (
     "no_odds_v8",
     "pastlog_v7",
+    "pastlog_v9_research",
     "calibrated_linear",
     "calibrated_mlp",
     "listwise_feature_teacher",
@@ -68,5 +69,5 @@ def test_missing_v2_model_keeps_unified_evaluation_open() -> None:
     }
 
     assert improvements["M4-4"]["status"] == "評価中"
-    assert improvements["M4-4"]["progress"] == 83
+    assert improvements["M4-4"]["progress"] == 85
     assert milestones["M4"]["status"] == "統一再評価中"

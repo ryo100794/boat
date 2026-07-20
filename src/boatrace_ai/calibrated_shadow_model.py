@@ -581,6 +581,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int, default=12_000)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--alpha", type=float, default=0.0001)
+    parser.add_argument("--drop-feature-groups", default="")
 
 
 def run_backtest(args: argparse.Namespace) -> int:
@@ -590,6 +591,7 @@ def run_backtest(args: argparse.Namespace) -> int:
             conn,
             output_path=Path(args.output),
             model_kind=args.model_kind,
+            drop_feature_groups=args.drop_feature_groups,
             folds=args.folds,
             min_train_races=args.min_train_races,
             n_features=args.n_features,

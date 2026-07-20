@@ -65,11 +65,27 @@ run_job standardized_365d_v2_no_odds_v8_bankroll \
 run_job standardized_365d_v2_pastlog_v7_prediction \
   .venv/bin/python -m boatrace_ai.feature_tuning backtest \
   --db "$db" --output "$raw_dir/pastlog_v7_prediction.json" \
+  --drop-feature-groups research_correlates \
   --folds 1 --min-train-races "$min_train"
 
 run_job standardized_365d_v2_pastlog_v7_bankroll \
   .venv/bin/python -m boatrace_ai.bankroll_optimizer \
   --db "$db" --output "$raw_dir/pastlog_v7_bankroll.json" \
+  --drop-feature-groups research_correlates \
+  --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000 \
+  --ev-threshold 1.20 --fractional-kelly 0.25 \
+  --max-daily-exposure-fraction 0.60 --min-daily-exposure-fraction 0.40 \
+  --race-cap-fraction 0.10 --ticket-cap-fraction 0.03 \
+  --max-daily-tickets 30 --allocation-mode normalized_kelly
+
+run_job standardized_365d_v2_pastlog_v9_research_prediction \
+  .venv/bin/python -m boatrace_ai.feature_tuning backtest \
+  --db "$db" --output "$raw_dir/pastlog_v9_research_prediction.json" \
+  --folds 1 --min-train-races "$min_train"
+
+run_job standardized_365d_v2_pastlog_v9_research_bankroll \
+  .venv/bin/python -m boatrace_ai.bankroll_optimizer \
+  --db "$db" --output "$raw_dir/pastlog_v9_research_bankroll.json" \
   --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000 \
   --ev-threshold 1.20 --fractional-kelly 0.25 \
   --max-daily-exposure-fraction 0.60 --min-daily-exposure-fraction 0.40 \
@@ -82,6 +98,7 @@ for kind in linear mlp; do
     --db "$db" --model-kind "$kind" \
     --output "$raw_dir/calibrated_${kind}.json" \
     --folds 1 --min-train-races "$min_train" \
+    --drop-feature-groups research_correlates \
     --daily-budget-yen 10000 --ev-threshold 1.20
 done
 

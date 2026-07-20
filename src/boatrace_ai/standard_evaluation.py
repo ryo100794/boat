@@ -74,6 +74,11 @@ MODEL_SOURCES = (
         role="incumbent",
     ),
     ModelSource("pastlog_v7", "pastlog_v7_prediction.json", "pastlog_v7_bankroll.json"),
+    ModelSource(
+        "pastlog_v9_research",
+        "pastlog_v9_research_prediction.json",
+        "pastlog_v9_research_bankroll.json",
+    ),
     ModelSource("calibrated_linear", "calibrated_linear.json", "calibrated_linear.json"),
     ModelSource("calibrated_mlp", "calibrated_mlp.json", "calibrated_mlp.json"),
     ModelSource(

@@ -3341,6 +3341,7 @@ def _gate_bankroll_text(row: dict[str, Any] | None) -> str:
 _STANDARDIZED_V2_JOB_NAMES = {
     "standardized_365d_v2_no_odds_v8",
     "standardized_365d_v2_pastlog_v7",
+    "standardized_365d_v2_pastlog_v9_research",
     "standardized_365d_v2_calibrated_linear",
     "standardized_365d_v2_calibrated_mlp",
     "standardized_365d_v2_listwise_feature_teacher",
