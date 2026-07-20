@@ -41,6 +41,7 @@ FEATURE_GROUPS = (
     "rolling_history",
 )
 HASH_FEATURES = 1 << 20
+RACE_DATE_CHUNK_SIZE = 31
 
 ROI_DIAGNOSTIC_FEATURES = (
     "racer_class",
@@ -612,26 +613,52 @@ def build_race_features(
 
 def iter_complete_races(conn) -> Iterable[list[Any]]:
     ensure_series_cache_table(conn)
-    rows = conn.execute(
+    max_race_date = os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
+    date_filter = "WHERE race_date <= ?" if max_race_date else ""
+    params = (max_race_date,) if max_race_date else ()
+    date_rows = conn.execute(
         f"""
-        SELECT
-          r.race_id, r.race_date, r.jcd, r.rno, r.race_type, r.distance_m,
-          e.lane, e.racer_no, e.racer_name, e.racer_class, e.branch, e.origin,
-          e.age, e.weight_kg, e.f_count, e.l_count, e.avg_st,
-          e.national_win_rate, e.national_2_rate, e.national_3_rate,
-          e.local_win_rate, e.local_2_rate, e.local_3_rate,
-          e.motor_no, e.motor_2_rate, e.motor_3_rate,
-          e.boat_no, e.boat_2_rate, e.boat_3_rate,
-          {SERIES_SELECT},
-          rr.rank, rr.course AS result_course, rr.start_timing AS result_start_timing
-        FROM races r INDEXED BY idx_races_training_order
-        JOIN entries e ON e.race_id = r.race_id
-        JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
-        LEFT JOIN entry_series_features sf ON sf.race_id = e.race_id AND sf.lane = e.lane
-        WHERE rr.rank IS NOT NULL
-        ORDER BY r.race_date, r.jcd, r.rno, e.lane
-        """
-    )
+        SELECT DISTINCT race_date
+        FROM races
+        {date_filter}
+        ORDER BY race_date
+        """,
+        params,
+    ).fetchall()
+    race_dates = [str(row["race_date"]) for row in date_rows]
+
+    for offset in range(0, len(race_dates), RACE_DATE_CHUNK_SIZE):
+        date_chunk = race_dates[offset : offset + RACE_DATE_CHUNK_SIZE]
+        rows = conn.execute(
+            f"""
+            SELECT
+              r.race_id, r.race_date, r.jcd, r.rno, r.race_type, r.distance_m,
+              e.lane, e.racer_no, e.racer_name, e.racer_class, e.branch, e.origin,
+              e.age, e.weight_kg, e.f_count, e.l_count, e.avg_st,
+              e.national_win_rate, e.national_2_rate, e.national_3_rate,
+              e.local_win_rate, e.local_2_rate, e.local_3_rate,
+              e.motor_no, e.motor_2_rate, e.motor_3_rate,
+              e.boat_no, e.boat_2_rate, e.boat_3_rate,
+              {SERIES_SELECT},
+              rr.rank, rr.course AS result_course,
+              rr.start_timing AS result_start_timing
+            FROM races r INDEXED BY idx_races_training_order
+            JOIN entries e ON e.race_id = r.race_id
+            JOIN race_results rr
+              ON rr.race_id = e.race_id AND rr.lane = e.lane
+            LEFT JOIN entry_series_features sf
+              ON sf.race_id = e.race_id AND sf.lane = e.lane
+            WHERE rr.rank IS NOT NULL
+              AND r.race_date >= ?
+              AND r.race_date <= ?
+            ORDER BY r.race_date, r.jcd, r.rno, e.lane
+            """,
+            (date_chunk[0], date_chunk[-1]),
+        )
+        yield from _group_complete_rows(rows)
+
+
+def _group_complete_rows(rows: Iterable[Any]) -> Iterable[list[Any]]:
     current_id: str | None = None
     current_rows: list[Any] = []
     for row in rows:
