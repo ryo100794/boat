@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import gc
 import json
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+import joblib
 
 from .bankroll_policy import (
     filter_candidates,
@@ -26,7 +28,8 @@ from .adaptive_allocation import (
 )
 from .base_features import load_training_examples
 from .db import connection, init_db
-from .historical_model import FEATURE_SET, make_pipeline
+from .historical_model import FEATURE_SET, iter_scored_entries, make_pipeline
+from .feature_tuning import load_complete_race_ids
 from .model_core import positive_probs
 from .standard_evaluation import race_set_sha256
 from .roi_attribution import (
@@ -62,6 +65,7 @@ def operational_adaptive_bankroll(
     resume: bool = False,
     adaptive_no_bet: bool = False,
     calibration_fraction: float = 0.25,
+    model_input_path: Path | None = None,
 ) -> dict[str, Any]:
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
@@ -79,12 +83,25 @@ def operational_adaptive_bankroll(
     if adaptive_no_bet and not 0.0 < calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must be between zero and one")
 
-    features, labels, meta = load_training_examples(
-        conn,
-        include_odds=False,
-        include_research=False,
-    )
-    race_keys = race_keys_from_meta(meta)
+    pretrained_bundle: dict[str, Any] | None = None
+    features: list[dict[str, Any]] = []
+    labels: list[int] = []
+    meta: list[dict[str, Any]] = []
+    indices_by_race: dict[str, list[int]] = defaultdict(list)
+    if model_input_path is not None:
+        if folds != 1:
+            raise ValueError("model_input_path requires folds=1")
+        pretrained_bundle = joblib.load(model_input_path)
+        race_keys = load_complete_race_ids(conn)
+    else:
+        features, labels, meta = load_training_examples(
+            conn,
+            include_odds=False,
+            include_research=False,
+        )
+        race_keys = race_keys_from_meta(meta)
+        for index, row in enumerate(meta):
+            indices_by_race[str(row["race_id"])].append(index)
     if len(race_keys) < min_train_races + folds:
         raise ValueError(f"not enough parsed races: {len(race_keys)}")
 
@@ -93,9 +110,6 @@ def operational_adaptive_bankroll(
         folds=folds,
         min_train_races=min_train_races,
     )
-    indices_by_race: dict[str, list[int]] = defaultdict(list)
-    for index, row in enumerate(meta):
-        indices_by_race[str(row["race_id"])].append(index)
 
     payouts = _load_trifecta_payouts(conn)
     all_races = {race_id for race_id, *_ in race_keys}
@@ -158,40 +172,66 @@ def operational_adaptive_bankroll(
     ):
         if fold_index < start_fold:
             continue
-        train_indices = _indices_for_races(indices_by_race, train_races)
-        test_indices = _indices_for_races(indices_by_race, test_races)
-        if not train_indices or not test_indices:
-            continue
+        if pretrained_bundle is not None:
+            _validate_pretrained_bundle(
+                pretrained_bundle,
+                train_races=train_races,
+            )
+        else:
+            train_indices = _indices_for_races(indices_by_race, train_races)
+            test_indices = _indices_for_races(indices_by_race, test_races)
+            if not train_indices or not test_indices:
+                continue
 
         payout_model = _build_payout_model(
             payouts,
             train_races=train_races,
             prior_weight=payout_prior_weight,
         )
-        pipeline = make_pipeline()
-        pipeline.fit(
-            [features[index] for index in train_indices],
-            [labels[index] for index in train_indices],
-        )
-        probabilities = positive_probs(
-            pipeline,
-            [features[index] for index in test_indices],
-        )
-
+        pipeline = None
         rows_by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for probability, index in zip(probabilities, test_indices):
-            row = meta[index]
-            rows_by_race[str(row["race_id"])].append(
-                {
-                    "race_id": str(row["race_id"]),
-                    "race_date": str(row["race_date"]),
-                    "jcd": str(row["jcd"]),
-                    "rno": int(row["rno"]),
-                    "lane": int(row["lane"]),
-                    "rank": int(row["rank"]),
-                    "probability": float(probability),
-                }
+        if pretrained_bundle is not None:
+            pipeline = pretrained_bundle["pipeline"]
+            scored_rows = iter_scored_entries(
+                conn,
+                pipeline=pipeline,
+                include_races=test_races,
             )
+            for probability, row in scored_rows:
+                rows_by_race[str(row["race_id"])].append(
+                    {
+                        "race_id": str(row["race_id"]),
+                        "race_date": str(row["race_date"]),
+                        "jcd": str(row["jcd"]),
+                        "rno": int(row["rno"]),
+                        "lane": int(row["lane"]),
+                        "rank": int(row["rank"]),
+                        "probability": float(probability),
+                    }
+                )
+        else:
+            pipeline = make_pipeline()
+            pipeline.fit(
+                [features[index] for index in train_indices],
+                [labels[index] for index in train_indices],
+            )
+            probabilities = positive_probs(
+                pipeline,
+                [features[index] for index in test_indices],
+            )
+            for probability, index in zip(probabilities, test_indices):
+                row = meta[index]
+                rows_by_race[str(row["race_id"])].append(
+                    {
+                        "race_id": str(row["race_id"]),
+                        "race_date": str(row["race_date"]),
+                        "jcd": str(row["jcd"]),
+                        "rno": int(row["rno"]),
+                        "lane": int(row["lane"]),
+                        "rank": int(row["rank"]),
+                        "probability": float(probability),
+                    }
+                )
 
         candidates_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
         evaluated_by_day: dict[str, set[str]] = defaultdict(set)
@@ -314,7 +354,7 @@ def operational_adaptive_bankroll(
             },
         )
         print(json.dumps(fold_row, ensure_ascii=False), flush=True)
-        del pipeline, probabilities, rows_by_race, candidates_by_day, payout_model
+        del pipeline, rows_by_race, candidates_by_day, payout_model
         _release_fold_memory()
 
     result = _summarize_operational(
@@ -331,7 +371,7 @@ def operational_adaptive_bankroll(
     )
     result.update(
         {
-            "examples": len(features),
+            "examples": len(race_keys) * 6,
             "model": MODEL_NAME,
             "feature_set": FEATURE_SET,
             "comparison_role": "operational_model_same_policy_backtest",
@@ -340,6 +380,26 @@ def operational_adaptive_bankroll(
     _write_json_atomic(output_path, result)
     checkpoint_file.unlink(missing_ok=True)
     return result
+
+
+def _validate_pretrained_bundle(
+    bundle: dict[str, Any],
+    *,
+    train_races: set[str],
+) -> None:
+    metadata = bundle.get("metadata") or {}
+    if metadata.get("feature_set") != FEATURE_SET:
+        raise ValueError("pretrained model feature set mismatch")
+    trained_races = int(
+        metadata.get("train_races") or metadata.get("races") or 0
+    )
+    if trained_races != len(train_races):
+        raise ValueError("pretrained model training race count mismatch")
+    expected_hash = race_set_sha256(train_races)
+    if metadata.get("train_race_set_sha256") != expected_hash:
+        raise ValueError("pretrained model training race set mismatch")
+    if "pipeline" not in bundle:
+        raise ValueError("pretrained model pipeline missing")
 
 
 def _release_fold_memory() -> None:
@@ -535,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-train-races", type=int, default=500)
+    parser.add_argument("--model-input", type=Path)
     parser.add_argument("--ev-threshold", type=float, default=1.20)
     parser.add_argument("--payout-prior-weight", type=float, default=30.0)
     parser.add_argument("--fractional-kelly", type=float, default=0.25)
@@ -579,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             adaptive_no_bet=args.adaptive_no_bet,
             calibration_fraction=args.calibration_fraction,
+            model_input_path=args.model_input,
         )
     compact = {key: value for key, value in result.items() if key != "daily"}
     compact["daily_rows"] = len(result.get("daily") or [])

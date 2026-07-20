@@ -184,3 +184,95 @@ def test_operational_backtest_runs_end_to_end_on_time_folds(
     assert adaptive["folds"][0]["evaluation_days"] == 1
     assert adaptive["folds"][0]["calibration_policy_results"]
     assert "selected_candidate_policy" in adaptive["folds"][0]
+
+
+def test_operational_backtest_reuses_validated_pretrained_model(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from boatrace_ai import operational_bankroll as module
+    from boatrace_ai.standard_evaluation import race_set_sha256
+
+    race_keys = [
+        (f"r{day}", f"2026-01-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    train_races = {"r1", "r2"}
+    test_races = {"r3", "r4"}
+    bundle = {
+        "pipeline": object(),
+        "metadata": {
+            "feature_set": FEATURE_SET,
+            "train_races": len(train_races),
+            "train_race_set_sha256": race_set_sha256(train_races),
+        },
+    }
+    payouts = {
+        race_id: {
+            "race_id": race_id,
+            "race_date": race_date,
+            "jcd": "01",
+            "rno": 1,
+            "combination": "1-2-3",
+            "payout_yen": 10_000,
+            "popularity": 1,
+        }
+        for race_id, race_date, _jcd, _rno in race_keys
+    }
+    payout_model = {
+        f"{first}-{second}-{third}": {
+            "estimated_odds": 100.0,
+            "estimated_payout_yen": 10_000.0,
+            "history_count": 10.0,
+        }
+        for first in range(1, 7)
+        for second in range(1, 7)
+        for third in range(1, 7)
+        if len({first, second, third}) == 3
+    }
+
+    def score_entries(conn, *, pipeline, include_races):
+        assert pipeline is bundle["pipeline"]
+        assert include_races == test_races
+        for race_id, race_date, jcd, rno in race_keys:
+            if race_id not in include_races:
+                continue
+            for lane in range(1, 7):
+                yield (0.70 if lane == 1 else 0.06), {
+                    "race_id": race_id,
+                    "race_date": race_date,
+                    "jcd": jcd,
+                    "rno": rno,
+                    "lane": lane,
+                    "rank": lane,
+                }
+
+    monkeypatch.setattr(module.joblib, "load", lambda path: bundle)
+    monkeypatch.setattr(module, "load_complete_race_ids", lambda conn: race_keys)
+    monkeypatch.setattr(
+        module,
+        "load_training_examples",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pretrained evaluation must not load all features")
+        ),
+    )
+    monkeypatch.setattr(module, "iter_scored_entries", score_entries)
+    monkeypatch.setattr(module, "_load_trifecta_payouts", lambda conn: payouts)
+    monkeypatch.setattr(
+        module,
+        "_build_payout_model",
+        lambda payouts, train_races, prior_weight: payout_model,
+    )
+
+    result = operational_adaptive_bankroll(
+        object(),
+        output_path=tmp_path / "pretrained.json",
+        model_input_path=tmp_path / "model.joblib",
+        folds=1,
+        min_train_races=2,
+        ev_threshold=1.0,
+    )
+
+    assert result["evaluated_races"] == 2
+    assert result["evaluation_race_set_sha256"] == race_set_sha256(test_races)
+    assert len(result["daily"]) == 2

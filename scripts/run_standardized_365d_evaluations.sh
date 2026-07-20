@@ -72,11 +72,13 @@ if source_needs_run no_odds_v8; then
 run_job standardized_365d_v2_no_odds_v8_prediction \
   .venv/bin/python -m boatrace_ai.historical_model backtest \
   --db "$db" --output "$raw_dir/no_odds_v8_prediction.json" \
+  --model-output "$eval_dir/no_odds_v8.joblib" \
   --folds 1 --min-train-races "$min_train"
 
 run_job standardized_365d_v2_no_odds_v8_bankroll \
   .venv/bin/python -m boatrace_ai.operational_bankroll \
   --db "$db" --output "$raw_dir/no_odds_v8_bankroll.json" \
+  --model-input "$eval_dir/no_odds_v8.joblib" \
   --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000
 
 fi

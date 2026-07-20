@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections import defaultdict
-from typing import Any
+from typing import Any, Iterable
 
 from .constants import CLASS_RANK
 from .features import _num, entry_features, odds_lane_features
@@ -56,6 +56,7 @@ VENUE_HOME_BRANCH = {
     "21": "福岡", "22": "福岡", "23": "佐賀", "24": "長崎",
 }
 RESEARCH_FEATURE_PREFIX = "research_"
+RACE_DATE_CHUNK_SIZE = 31
 
 
 def load_training_examples(
@@ -66,63 +67,101 @@ def load_training_examples(
     include_odds: bool = False,
     include_research: bool = True,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
-    through_date = through_date or os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
-    filters = ["rr.rank IS NOT NULL"]
-    params: list[Any] = []
-    if through_date:
-        filters.append("r.race_date <= ?")
-        params.append(through_date)
-    if from_date:
-        filters.append("r.race_date >= ?")
-        params.append(from_date)
-    rows = conn.execute(
-        f"""
-        SELECT
-          r.race_id, r.race_date, r.jcd, r.rno, r.race_type, r.distance_m,
-          e.lane, e.racer_no, e.racer_name, e.racer_class, e.branch, e.origin,
-          e.age, e.weight_kg, e.f_count, e.l_count, e.avg_st,
-          e.national_win_rate, e.national_2_rate, e.national_3_rate,
-          e.local_win_rate, e.local_2_rate, e.local_3_rate,
-          e.motor_no, e.motor_2_rate, e.motor_3_rate,
-          e.boat_no, e.boat_2_rate, e.boat_3_rate,
-          rr.rank
-        FROM entries e
-        JOIN races r ON r.race_id = e.race_id
-        JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
-        WHERE {" AND ".join(filters)}
-        ORDER BY r.race_date, r.jcd, r.rno, e.lane
-        """,
-        params,
-    ).fetchall()
-    grouped = _group_by_race(rows)
-    beforeinfo = _latest_beforeinfo(conn)
-    odds_by_race = {}
-    if include_odds:
-        for race_id_value in sorted(grouped):
-            odds_by_race[race_id_value] = odds_lane_features(conn, race_id_value)
-
     features: list[dict[str, Any]] = []
     labels: list[int] = []
     meta: list[dict[str, Any]] = []
-    for race_id_value in sorted(grouped):
-        race_rows = sorted(grouped[race_id_value], key=lambda row: int(row["lane"]))
-        if len(race_rows) != 6:
-            continue
-        before_rows = {lane: beforeinfo.get((race_id_value, lane), {}) for lane in range(1, 7)}
-        relatives = race_relative_features(
-            race_rows,
-            before_rows,
-            include_research=include_research,
+    for item, label, row_meta in iter_training_examples(
+        conn,
+        through_date=through_date,
+        from_date=from_date,
+        include_odds=include_odds,
+        include_research=include_research,
+    ):
+        features.append(item)
+        labels.append(label)
+        meta.append(row_meta)
+    return features, labels, meta
+
+
+def iter_training_examples(
+    conn: sqlite3.Connection,
+    *,
+    through_date: str | None = None,
+    from_date: str | None = None,
+    include_odds: bool = False,
+    include_research: bool = True,
+    include_races: set[str] | None = None,
+) -> Iterable[tuple[dict[str, Any], int, dict[str, Any]]]:
+    through_date = through_date or os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
+    filters: list[str] = []
+    params: list[Any] = []
+    if through_date:
+        filters.append("race_date <= ?")
+        params.append(through_date)
+    if from_date:
+        filters.append("race_date >= ?")
+        params.append(from_date)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    date_rows = conn.execute(
+        f"""
+        SELECT DISTINCT race_date
+        FROM races
+        {where}
+        ORDER BY race_date
+        """,
+        params,
+    ).fetchall()
+    race_dates = [str(row["race_date"]) for row in date_rows]
+
+    for offset in range(0, len(race_dates), RACE_DATE_CHUNK_SIZE):
+        date_chunk = race_dates[offset : offset + RACE_DATE_CHUNK_SIZE]
+        rows = conn.execute(
+            """
+            SELECT
+              r.race_id, r.race_date, r.jcd, r.rno, r.race_type, r.distance_m,
+              e.lane, e.racer_no, e.racer_name, e.racer_class, e.branch, e.origin,
+              e.age, e.weight_kg, e.f_count, e.l_count, e.avg_st,
+              e.national_win_rate, e.national_2_rate, e.national_3_rate,
+              e.local_win_rate, e.local_2_rate, e.local_3_rate,
+              e.motor_no, e.motor_2_rate, e.motor_3_rate,
+              e.boat_no, e.boat_2_rate, e.boat_3_rate,
+              rr.rank
+            FROM entries e
+            JOIN races r ON r.race_id = e.race_id
+            JOIN race_results rr
+              ON rr.race_id = e.race_id AND rr.lane = e.lane
+            WHERE rr.rank IS NOT NULL
+              AND r.race_date >= ?
+              AND r.race_date <= ?
+            ORDER BY r.race_date, r.jcd, r.rno, e.lane
+            """,
+            (date_chunk[0], date_chunk[-1]),
         )
-        for row in race_rows:
-            lane = int(row["lane"])
-            item = entry_features(row, odds_features=odds_by_race.get(race_id_value, {}).get(lane, {}))
-            item.update(before_features(before_rows.get(lane, {})))
-            item.update(relatives[lane])
-            features.append(item)
-            labels.append(1 if row["rank"] == 1 else 0)
-            meta.append(
-                {
+        beforeinfo = _latest_beforeinfo_between(
+            conn,
+            from_date=date_chunk[0],
+            through_date=date_chunk[-1],
+        )
+        for race_rows in _iter_complete_race_rows(rows):
+            race_id_value = str(race_rows[0]["race_id"])
+            if include_races is not None and race_id_value not in include_races:
+                continue
+            before_rows = {
+                lane: beforeinfo.get((race_id_value, lane), {})
+                for lane in range(1, 7)
+            }
+            odds = odds_lane_features(conn, race_id_value) if include_odds else {}
+            relatives = race_relative_features(
+                race_rows,
+                before_rows,
+                include_research=include_research,
+            )
+            for row in race_rows:
+                lane = int(row["lane"])
+                item = entry_features(row, odds_features=odds.get(lane, {}))
+                item.update(before_features(before_rows.get(lane, {})))
+                item.update(relatives[lane])
+                yield item, 1 if int(row["rank"]) == 1 else 0, {
                     "race_id": row["race_id"],
                     "race_date": row["race_date"],
                     "jcd": row["jcd"],
@@ -130,8 +169,48 @@ def load_training_examples(
                     "lane": row["lane"],
                     "rank": row["rank"],
                 }
-            )
-    return features, labels, meta
+
+
+def _iter_complete_race_rows(rows: Iterable[Any]) -> Iterable[list[Any]]:
+    current_id: str | None = None
+    current_rows: list[Any] = []
+    for row in rows:
+        race_id_value = str(row["race_id"])
+        if current_id is None:
+            current_id = race_id_value
+        if race_id_value != current_id:
+            if len(current_rows) == 6:
+                yield current_rows
+            current_id = race_id_value
+            current_rows = []
+        current_rows.append(row)
+    if len(current_rows) == 6:
+        yield current_rows
+
+
+def _latest_beforeinfo_between(
+    conn: sqlite3.Connection,
+    *,
+    from_date: str,
+    through_date: str,
+) -> dict[tuple[str, int], sqlite3.Row]:
+    rows = conn.execute(
+        """
+        SELECT b.*
+        FROM beforeinfo b
+        JOIN (
+          SELECT b2.race_id, b2.lane, MAX(b2.captured_at) AS captured_at
+          FROM beforeinfo b2
+          JOIN races r2 ON r2.race_id = b2.race_id
+          WHERE r2.race_date >= ? AND r2.race_date <= ?
+          GROUP BY b2.race_id, b2.lane
+        ) latest ON latest.race_id = b.race_id
+          AND latest.lane = b.lane
+          AND latest.captured_at = b.captured_at
+        """,
+        (from_date, through_date),
+    ).fetchall()
+    return {(str(row["race_id"]), int(row["lane"])): row for row in rows}
 
 
 def load_race_entries(conn: sqlite3.Connection, *, race_id: str) -> list[sqlite3.Row]:

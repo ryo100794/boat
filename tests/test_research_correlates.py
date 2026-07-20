@@ -168,15 +168,11 @@ def test_pretrained_bankroll_model_validates_training_universe() -> None:
         )
 
 
-def test_no_odds_v8_keeps_research_features_out_of_legacy_paths(
+def test_no_odds_v8_keeps_research_features_out_of_prediction_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     calls: list[tuple[str, bool]] = []
-
-    def fake_backtest(conn, **kwargs):
-        calls.append(("backtest", kwargs["include_research"]))
-        return {"ok": True}
 
     def fake_predict(conn, **kwargs):
         calls.append(("predict", kwargs["include_research"]))
@@ -186,11 +182,9 @@ def test_no_odds_v8_keeps_research_features_out_of_legacy_paths(
         calls.append(("predict_open", kwargs["include_research"]))
         return {"predicted": 0, "failed": 0}
 
-    monkeypatch.setattr(historical_model.base, "backtest_model", fake_backtest)
     monkeypatch.setattr(historical_model.base, "predict_race", fake_predict)
     monkeypatch.setattr(historical_model.base, "predict_open_races", fake_predict_open)
 
-    historical_model.backtest_model(object(), output_path=tmp_path / "result.json")
     historical_model.predict_race(
         object(),
         model_path=tmp_path / "model.joblib",
@@ -203,7 +197,51 @@ def test_no_odds_v8_keeps_research_features_out_of_legacy_paths(
     )
 
     assert calls == [
-        ("backtest", False),
         ("predict", False),
         ("predict_open", False),
+    ]
+
+
+def test_no_odds_v8_streaming_fit_preserves_sparse_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        (
+            {"lane": str(lane), "lane_num": lane, "strength": 7 - lane},
+            1 if lane == 1 else 0,
+            {
+                "race_id": race_id,
+                "race_date": "2026-01-01",
+                "jcd": "01",
+                "rno": race_number,
+                "lane": lane,
+                "rank": lane,
+            },
+        )
+        for race_number, race_id in enumerate(("r1", "r2"), start=1)
+        for lane in range(1, 7)
+    ]
+
+    def fake_iter(conn, *, include_odds, include_research, include_races):
+        assert include_odds is False
+        assert include_research is False
+        yield from (row for row in rows if row[2]["race_id"] in include_races)
+
+    monkeypatch.setattr(historical_model, "iter_training_examples", fake_iter)
+    bundle = historical_model.fit_streaming_pipeline(
+        object(),
+        train_races={"r1", "r2"},
+        batch_size=3,
+    )
+
+    metadata = bundle["metadata"]
+    assert metadata["examples"] == 12
+    assert metadata["races"] == 2
+    assert metadata["train_race_set_sha256"] == race_set_sha256({"r1", "r2"})
+    assert list(bundle["pipeline"].named_steps) == [
+        "vectorizer",
+        "sparse_index_32_a",
+        "scaler",
+        "sparse_index_32_b",
+        "classifier",
     ]
