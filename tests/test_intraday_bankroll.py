@@ -99,6 +99,15 @@ def test_simulates_selected_model_from_first_race_with_reinvestment(
     assert result["stats"]["return_yen"] == 4000
     assert result["stats"]["current_bankroll_yen"] == 13_800
     assert result["series"][0]["profit_yen"] == 3800
+    assert result["schedule"] == [
+        {
+            "race_id": "2026-07-20-01-01",
+            "venue": "桐生",
+            "jcd": "01",
+            "rno": 1,
+            "race_time_at": "2026-07-20T12:00:00+09:00",
+        }
+    ]
 
 
 def test_rejects_lane_header_values_mixed_into_odds(tmp_path, monkeypatch) -> None:

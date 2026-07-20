@@ -85,6 +85,7 @@ def day_bankroll_simulation(
         }
 
     races = _race_rows(conn, race_date)
+    schedule = _race_schedule(races)
     selected_model = next(row for row in models if row["id"] == selected)
     results = _results_by_race(conn, race_date)
     payouts = _payouts_by_race(conn, race_date)
@@ -216,6 +217,7 @@ def day_bankroll_simulation(
         "policy": policy,
         "stats": stats,
         "series": series,
+        "schedule": schedule,
         "warnings": warnings,
     }
 
@@ -273,6 +275,24 @@ def _race_rows(conn, race_date: str) -> list[dict[str, Any]]:
         (race_date,),
     ).fetchall()
     return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def _race_schedule(races: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    schedule = []
+    for race in races:
+        start_at = _parse_time(race.get("deadline_at"), default_tz=JST)
+        if start_at is None:
+            continue
+        schedule.append(
+            {
+                "race_id": race["race_id"],
+                "venue": race.get("venue_name"),
+                "jcd": race.get("jcd"),
+                "rno": race.get("rno"),
+                "race_time_at": start_at.isoformat(timespec="seconds"),
+            }
+        )
+    return schedule
 
 
 def _results_by_race(conn, race_date: str) -> dict[str, dict[str, Any]]:
