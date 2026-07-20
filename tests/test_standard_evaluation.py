@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
+import json
 import sqlite3
 
 from boatrace_ai.standard_evaluation import (
@@ -11,6 +12,7 @@ from boatrace_ai.standard_evaluation import (
     consolidate_model,
     protocol_sha256,
     race_set_sha256,
+    validate_model_source,
 )
 
 
@@ -156,3 +158,29 @@ def test_protocol_excludes_partial_current_jst_day() -> None:
         conn.execute("INSERT INTO payouts VALUES (?, '3連単', 1000)", (race_id,))
 
     result = build_protocol(conn, days=1, as_of_date=date(2026, 7, 20))
+
+    assert result["holdout_start"] == "2026-07-19"
+    assert result["holdout_end"] == "2026-07-19"
+    assert result["prediction_races"] == 1
+    assert result["full_day_boundary"] is True
+
+
+def test_validate_model_source_reads_and_checks_the_pair(tmp_path) -> None:
+    source = ModelSource("candidate", "prediction.json", "bankroll.json")
+    (tmp_path / source.prediction_file).write_text(
+        json.dumps(prediction()),
+        encoding="utf-8",
+    )
+    (tmp_path / source.bankroll_file).write_text(
+        json.dumps(bankroll()),
+        encoding="utf-8",
+    )
+
+    result = validate_model_source(
+        protocol=protocol(),
+        source=source,
+        raw_dir=tmp_path,
+    )
+
+    assert result["model_id"] == "candidate"
+    assert result["validation"]["passed"] is True

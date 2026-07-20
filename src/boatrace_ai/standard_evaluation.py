@@ -344,6 +344,24 @@ def consolidate_model(
     }
 
 
+def validate_model_source(
+    *,
+    protocol: dict[str, Any],
+    source: ModelSource,
+    raw_dir: Path,
+) -> dict[str, Any]:
+    result = consolidate_model(
+        protocol=protocol,
+        source=source,
+        prediction=_read_json(raw_dir / source.prediction_file),
+        bankroll=_read_json(raw_dir / source.bankroll_file),
+    )
+    return {
+        "model_id": source.model_id,
+        "validation": result["validation"],
+    }
+
+
 def evaluate_promotions(
     results: list[dict[str, Any]],
     *,
@@ -620,7 +638,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--protocol-file", type=Path)
     parser.add_argument("--as-of-date", type=date.fromisoformat)
     parser.add_argument("--days", type=int, default=365)
-    parser.add_argument("--prepare-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prepare-only", action="store_true")
+    mode.add_argument(
+        "--validate-source",
+        choices=[source.model_id for source in MODEL_SOURCES],
+    )
     args = parser.parse_args(argv)
     init_db(args.db)
     with connection(args.db) as conn:
@@ -635,6 +658,15 @@ def main(argv: list[str] | None = None) -> int:
         verify_protocol_against_database(conn, protocol)
         if args.prepare_only:
             result = protocol
+        elif args.validate_source:
+            source = next(
+                item for item in MODEL_SOURCES if item.model_id == args.validate_source
+            )
+            result = validate_model_source(
+                protocol=protocol,
+                source=source,
+                raw_dir=args.raw_dir,
+            )
         else:
             result = consolidate(
                 conn,
@@ -643,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
                 protocol=protocol,
             )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    if args.validate_source and not result["validation"]["passed"]:
+        return 1
     return 0
 
 

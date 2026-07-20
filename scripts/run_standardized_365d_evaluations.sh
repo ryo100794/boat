@@ -12,6 +12,7 @@ log_dir="${BOATRACE_LOG_DIR:-logs}/standardized_365d_v2"
 protocol="$eval_dir/protocol.json"
 as_of_date="${BOATRACE_EVAL_AS_OF_DATE:-}"
 wait_pid="${1:-}"
+resume_completed="${BOATRACE_EVAL_RESUME_COMPLETED:-1}"
 mkdir -p "$raw_dir" "$log_dir"
 
 if [[ -n "$wait_pid" ]]; then
@@ -52,6 +53,21 @@ run_job() {
   printf 'DONE  %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$log_dir/standardized_365d_queue.log"
 }
 
+source_needs_run() {
+  local model_id="$1"
+  if [[ "$resume_completed" == "1" ]] && \
+    .venv/bin/python -m boatrace_ai.standard_evaluation \
+      --db "$db" --raw-dir "$raw_dir" --protocol-file "$protocol" \
+      --validate-source "$model_id" >/dev/null 2>&1; then
+    printf 'SKIP  %s %s (validated)\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$model_id" \
+      | tee -a "$log_dir/standardized_365d_queue.log"
+    return 1
+  fi
+  return 0
+}
+
+if source_needs_run no_odds_v8; then
 run_job standardized_365d_v2_no_odds_v8_prediction \
   .venv/bin/python -m boatrace_ai.historical_model backtest \
   --db "$db" --output "$raw_dir/no_odds_v8_prediction.json" \
@@ -62,6 +78,9 @@ run_job standardized_365d_v2_no_odds_v8_bankroll \
   --db "$db" --output "$raw_dir/no_odds_v8_bankroll.json" \
   --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000
 
+fi
+
+if source_needs_run pastlog_v7; then
 run_job standardized_365d_v2_pastlog_v7_prediction \
   .venv/bin/python -m boatrace_ai.feature_tuning backtest \
   --db "$db" --output "$raw_dir/pastlog_v7_prediction.json" \
@@ -80,6 +99,9 @@ run_job standardized_365d_v2_pastlog_v7_bankroll \
   --race-cap-fraction 0.10 --ticket-cap-fraction 0.03 \
   --max-daily-tickets 30 --allocation-mode normalized_kelly
 
+fi
+
+if source_needs_run pastlog_v9_research; then
 run_job standardized_365d_v2_pastlog_v9_research_prediction \
   .venv/bin/python -m boatrace_ai.feature_tuning backtest \
   --db "$db" --output "$raw_dir/pastlog_v9_research_prediction.json" \
@@ -96,7 +118,10 @@ run_job standardized_365d_v2_pastlog_v9_research_bankroll \
   --race-cap-fraction 0.10 --ticket-cap-fraction 0.03 \
   --max-daily-tickets 30 --allocation-mode normalized_kelly
 
+fi
+
 for kind in linear mlp; do
+  if source_needs_run "calibrated_${kind}"; then
   run_job "standardized_365d_v2_calibrated_${kind}" \
     .venv/bin/python -m boatrace_ai.calibrated_shadow_model backtest \
     --db "$db" --model-kind "$kind" \
@@ -104,8 +129,10 @@ for kind in linear mlp; do
     --folds 1 --min-train-races "$min_train" \
     --drop-feature-groups research_correlates \
     --daily-budget-yen 10000 --ev-threshold 1.20
+  fi
 done
 
+if source_needs_run listwise_feature_teacher; then
 run_job standardized_365d_v2_listwise_feature_teacher \
   .venv/bin/python -m boatrace_ai.listwise.feature_search \
   --db "$db" \
@@ -114,6 +141,9 @@ run_job standardized_365d_v2_listwise_feature_teacher \
   --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
+fi
+
+if source_needs_run listwise_newton; then
 run_job standardized_365d_v2_listwise_newton \
   .venv/bin/python -m boatrace_ai.listwise.newton_refine \
   --db "$db" \
@@ -122,6 +152,8 @@ run_job standardized_365d_v2_listwise_newton \
   --model-output "$eval_dir/listwise_newton.joblib" \
   --cache-dir "$eval_dir/listwise_search_cache" \
   --daily-budget-yen 10000 --ev-threshold 1.20
+
+fi
 
 run_job standardized_365d_v2_consolidate \
   .venv/bin/python -m boatrace_ai.standard_evaluation \
