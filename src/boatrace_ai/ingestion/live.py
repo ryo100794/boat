@@ -139,7 +139,7 @@ def collect_odds(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) ->
 
 def collect_result(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) -> int:
     rid = race_id(race_date.isoformat(), jcd, rno)
-    url = race_page_url("result", race_date, jcd, rno)
+    url = race_page_url("raceresult", race_date, jcd, rno)
     html = _fetch_page(conn, page_type="result", race_date=race_date, jcd=jcd, rno=rno, url=url, raw_dir=raw_dir)
     if not html:
         return 0
