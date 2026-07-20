@@ -111,13 +111,6 @@ def day_bankroll_simulation(
             continue
         evaluated_races += 1
         decision_at = start_at - timedelta(minutes=DECISION_MINUTES_BEFORE_START)
-        predictions = _score_model(
-            conn,
-            race_id=str(race["race_id"]),
-            model_path=Path(selected_model["path"]),
-        )
-        if predictions:
-            prediction_races += 1
         snapshot, rejected = _latest_valid_odds_snapshot(
             conn,
             race_id=str(race["race_id"]),
@@ -126,6 +119,15 @@ def day_bankroll_simulation(
         rejected_snapshots += rejected
         if snapshot:
             valid_odds_races += 1
+            predictions = _score_model(
+                conn,
+                race_id=str(race["race_id"]),
+                model_path=Path(selected_model["path"]),
+            )
+            if predictions:
+                prediction_races += 1
+        else:
+            predictions = {}
 
         allocation = _allocate_race(
             bankroll,
