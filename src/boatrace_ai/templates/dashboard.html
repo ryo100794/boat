@@ -23,10 +23,10 @@
     .bankroll-kpi { min-width:0; padding:2px 4px; background:#fff; }
     .bankroll-kpi b { display:block; font-size:11px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .bankroll-kpi span { display:block; color:var(--muted); font-size:7.5px; line-height:1; }
-    .bankroll-charts { display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:2px; }
-    .bankroll-chart { position:relative; min-width:0; height:72px; background:#fff; border:1px solid var(--line); }
+    .bankroll-charts { display:grid; grid-template-columns:1fr; gap:3px; margin-top:2px; }
+    .bankroll-chart { position:relative; min-width:0; height:88px; background:#fff; border:1px solid var(--line); }
     .bankroll-chart b { position:absolute; left:4px; top:2px; z-index:1; font-size:8px; }
-    .bankroll-chart canvas { width:100%; height:70px; border:0; }
+    .bankroll-chart canvas { width:100%; height:86px; border:0; }
     .bankroll-profit { color:var(--ok); } .bankroll-loss { color:var(--bad); }
     .venue-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:3px; margin-top:0; }
     .venue { background:#fff; border:1px solid var(--line); border-radius:4px; padding:2px 3px; cursor:pointer; min-height:31px; }
@@ -185,8 +185,7 @@
     <div class="bankroll-head"><strong>当日資金運用 10,000円</strong><select id="bankrollModel" title="評価モデル"></select><span id="bankrollMeta" class="muted">集計中</span></div>
     <div id="bankrollStats" class="bankroll-stats"></div>
     <div class="bankroll-charts">
-      <div class="bankroll-chart"><b>累積損益 / 資金トレンド</b><canvas id="bankrollProfitChart" width="900" height="140"></canvas></div>
-      <div class="bankroll-chart"><b>累積ROI</b><canvas id="bankrollRoiChart" width="900" height="140"></canvas></div>
+      <div class="bankroll-chart"><b>資金トレンド / レース別購入・払戻</b><canvas id="bankrollProfitChart" width="1200" height="170"></canvas></div>
     </div>
   </div>
   <main>
@@ -377,29 +376,48 @@ function renderDayBankroll(data){
   ].map(([label,value,tone]) => `<div class="bankroll-kpi ${tone}"><b>${value}</b><span>${label}</span></div>`).join("");
   const warning = (data.warnings || []).join(" / ");
   $("bankrollMeta").textContent = `${data.selected_model_label || "-"} / ${s.valid_odds_races || 0}R正常odds / ${s.historical_odds_races || 0}R履歴推定 / 更新 ${String(data.generated_at || "").replace("T"," ").slice(0,19)}${warning ? ` / ${warning}` : ""}`;
-  drawBankrollChart("bankrollProfitChart", data.series || [], "profit_yen", "#247a4b", v => yen(v));
-  drawBankrollChart("bankrollRoiChart", data.series || [], "cumulative_roi", "#8f2d56", v => `${v.toFixed(1)}%`, 100);
+  drawBankrollCombinedChart("bankrollProfitChart", data.series || []);
 }
-function drawBankrollChart(id, rows, key, color, label, multiplier=1){
+function drawBankrollCombinedChart(id, rows){
   const canvas=$(id), ctx=canvas.getContext("2d"), w=canvas.width, h=canvas.height;
   ctx.clearRect(0,0,w,h); ctx.fillStyle="#fff"; ctx.fillRect(0,0,w,h);
-  const points=rows.map((r,i)=>({i,value:r[key] == null ? null : Number(r[key])*multiplier,label:hm(r.race_time_at)})).filter(p=>Number.isFinite(p.value));
+  const points=rows.map((r,i)=>({
+    i,
+    profit:Number(r.profit_yen),
+    stake:Number(r.stake_yen || 0),
+    payout:Number(r.return_yen || 0),
+    label:hm(r.race_time_at)
+  })).filter(p=>Number.isFinite(p.profit));
   ctx.font="16px ui-monospace,monospace"; ctx.textBaseline="middle";
   if(!points.length){ ctx.fillStyle="#637279"; ctx.fillText("確定レース待ち",52,h/2); return; }
-  let min=Math.min(...points.map(p=>p.value)), max=Math.max(...points.map(p=>p.value));
-  if(key==="profit_yen"){ min=Math.min(0,min); max=Math.max(0,max); }
+  let min=Math.min(0,...points.map(p=>p.profit)), max=Math.max(0,...points.map(p=>p.profit));
   if(max===min){ max=min+1; }
-  const pad={l:86,r:12,t:22,b:24}, pw=w-pad.l-pad.r, ph=h-pad.t-pad.b;
+  const flowMax=Math.max(100,...points.flatMap(p=>[p.stake,p.payout]));
+  const pad={l:90,r:90,t:28,b:24}, pw=w-pad.l-pad.r, ph=h-pad.t-pad.b;
   ctx.strokeStyle="#d8e0e3"; ctx.fillStyle="#637279"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=pad.t+ph*i/4, value=max-(max-min)*i/4;
     ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
-    ctx.textAlign="right";ctx.fillText(label(value),pad.l-7,y);
+    ctx.textAlign="right";ctx.fillText(yen(value),pad.l-7,y);
+    ctx.textAlign="left";ctx.fillText(yen(flowMax*(4-i)/4),w-pad.r+7,y);
   }
-  const xAt=i=>pad.l+(points.length===1?0:pw*i/(points.length-1));
+  const xAt=i=>pad.l+(points.length===1?pw/2:pw*i/(points.length-1));
   const yAt=v=>pad.t+(max-v)*ph/(max-min);
-  ctx.strokeStyle=color;ctx.lineWidth=3;ctx.beginPath();
-  points.forEach((p,i)=>{ const x=xAt(i),y=yAt(p.value); if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y); });ctx.stroke();
+  const flowY=v=>pad.t+ph-(Math.max(0,v)/flowMax)*ph;
+  const barWidth=Math.max(1,Math.min(4,pw/Math.max(1,points.length)*0.42));
+  points.forEach((p,i)=>{
+    const x=xAt(i), stakeY=flowY(p.stake), payoutY=flowY(p.payout);
+    if(p.stake>0){ ctx.fillStyle="rgba(167,99,0,.58)";ctx.fillRect(x-barWidth-0.5,stakeY,barWidth,pad.t+ph-stakeY); }
+    if(p.payout>0){ ctx.fillStyle="rgba(36,122,75,.58)";ctx.fillRect(x+0.5,payoutY,barWidth,pad.t+ph-payoutY); }
+  });
+  ctx.strokeStyle="#263f63";ctx.lineWidth=3;ctx.beginPath();
+  points.forEach((p,i)=>{ const x=xAt(i),y=yAt(p.profit); if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y); });ctx.stroke();
+  ctx.fillStyle="#263f63";ctx.fillRect(w-420,8,22,4);
+  ctx.fillStyle="#172126";ctx.textAlign="left";ctx.fillText("累積損益",w-392,10);
+  ctx.fillStyle="rgba(167,99,0,.72)";ctx.fillRect(w-270,5,12,10);
+  ctx.fillStyle="#172126";ctx.fillText("購入",w-252,10);
+  ctx.fillStyle="rgba(36,122,75,.72)";ctx.fillRect(w-170,5,12,10);
+  ctx.fillStyle="#172126";ctx.fillText("払戻",w-152,10);
   ctx.fillStyle="#637279";ctx.textAlign="center";
   [0,Math.floor((points.length-1)/2),points.length-1].forEach(i=>ctx.fillText(points[i].label,xAt(i),h-10));
 }
