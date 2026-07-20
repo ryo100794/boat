@@ -24,6 +24,9 @@ class CompatRow(Sequence[Any]):
     def __len__(self) -> int:
         return len(self._values)
 
+    def keys(self):
+        return self._positions.keys()
+
 
 class CompatCursor:
     def __init__(self, cursor, *, scalar: Any = None, has_scalar: bool = False) -> None:

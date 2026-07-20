@@ -6,6 +6,7 @@ def test_compat_row_supports_index_and_column_name() -> None:
     assert row[0] == "01"
     assert row["rno"] == 4
     assert tuple(row) == ("01", 4)
+    assert list(row.keys()) == ["jcd", "rno"]
 
 
 def test_qmark_and_named_parameters_are_converted() -> None:
