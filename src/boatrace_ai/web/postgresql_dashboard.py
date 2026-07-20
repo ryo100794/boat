@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     # calls are routed to PostgreSQL while that path remains rooted in data-dir.
     dashboard.connect = lambda _path: postgresql.connection(args.postgres_dsn)
     dashboard.init_db = lambda _path: None
+    dashboard._ensure_dashboard_indexes = lambda _path: None
     artifact_anchor = args.data_dir / "boatrace.sqlite"
     print(
         f"Serving BOAT RACE AI Dashboard on http://{args.host}:{args.port} "
