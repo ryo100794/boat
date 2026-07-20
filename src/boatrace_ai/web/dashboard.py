@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
 from ..official import race_page_url, ymd
+from .intraday_bankroll import day_bankroll_simulation
 from .prediction_summary import attach_latest_prediction_summaries
 
 
@@ -227,6 +228,11 @@ def default_race_date(db_path: Path) -> str:
 def odds(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_id = required(query, "race_id")
     combo = query.get("combination", ["1-2-3"])[0]
+    cache_key = (db_path, race_id, combo)
+    now_mono = time.monotonic()
+    cached = _ODDS_API_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     with connect(db_path) as conn:
         trend = conn.execute(
             """
@@ -238,7 +244,9 @@ def odds(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             """,
             (race_id, combo),
         ).fetchall()
-    return {"race_id": race_id, "combination": combo, "trend": [dict_row(row) for row in trend]}
+    payload = {"race_id": race_id, "combination": combo, "trend": [dict_row(row) for row in trend]}
+    _ODDS_API_CACHE[cache_key] = (now_mono, payload)
+    return payload
 
 
 def predictions_model_rank(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -511,6 +519,35 @@ _BACKTEST_CACHE: dict[Path, tuple[float, int, dict[str, Any]]] = {}
 _MODEL_REPORT_CACHE: dict[Path, tuple[float, dict[str, Any]]] = {}
 _ROADMAP_CACHE: dict[Path, tuple[float, dict[str, Any]]] = {}
 _DEFAULT_DATE_CACHE: dict[Path, tuple[float, str]] = {}
+_DAY_BANKROLL_CACHE: dict[
+    tuple[Path, str, str], tuple[float, dict[str, Any]]
+] = {}
+_VENUE_API_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
+_DAY_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
+_GUIDE_API_CACHE: dict[tuple[Path, str, int, int, int], tuple[float, dict[str, Any]]] = {}
+_PREDICTION_API_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
+_ODDS_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def day_bankroll_cached(
+    db_path: Path,
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    race_date = query_race_date(db_path, query)
+    model_path = (query.get("model") or [""])[0]
+    key = (db_path, race_date, model_path)
+    now = time.monotonic()
+    cached = _DAY_BANKROLL_CACHE.get(key)
+    if cached and now - cached[0] < 30.0:
+        return cached[1]
+    with connect(db_path) as conn:
+        payload = day_bankroll_simulation(
+            conn,
+            race_date=race_date,
+            model_path=model_path or None,
+        )
+    _DAY_BANKROLL_CACHE[key] = (now, payload)
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -632,6 +669,8 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_json(self, venue_cards_fast(db_path, query))
                 elif parsed.path == "/api/day":
                     send_json(self, day_overview_fast(db_path, query))
+                elif parsed.path == "/api/day-bankroll":
+                    send_json(self, day_bankroll_cached(db_path, query))
                 elif parsed.path == "/api/guide":
                     send_json(self, purchase_guide_fast(db_path, query))
                 elif parsed.path == "/api/live-wipe":
@@ -1472,6 +1511,11 @@ def _venue_display_row(
 
 def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
+    cache_key = (db_path, race_date)
+    now_mono = time.monotonic()
+    cached = _VENUE_API_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     now = now_jst()
     with connect(db_path) as conn:
         rows = _day_metric_rows(conn, race_date)
@@ -1543,19 +1587,28 @@ def venue_cards_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, An
                 "minutes_to_next_deadline": minutes_between(now, next_deadline),
             }
         )
-    return {"date": race_date, "now_jst": iso(now), "venues": cards}
+    payload = {"date": race_date, "now_jst": iso(now), "venues": cards}
+    _VENUE_API_CACHE[cache_key] = (now_mono, payload)
+    return payload
 
 
 def day_overview_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
     jcd = query.get("jcd", [None])[0]
+    cache_key = (db_path, race_date, str(jcd or ""))
+    now_mono = time.monotonic()
+    cached = _DAY_API_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     lite = (query.get("lite", ["0"])[0] or "0").lower() in {"1", "true", "yes"}
     now = now_jst()
     with connect(db_path) as conn:
         rows = _day_metric_rows(conn, race_date, jcd=jcd, include_predictions=False)
         races = [_race_payload_from_row(row, now=now, before_minutes=5) for row in rows if _is_active_row(row)]
         attach_latest_prediction_summaries(conn, races)
-    return {"date": race_date, "now_jst": iso(now), "races": races}
+    payload = {"date": race_date, "now_jst": iso(now), "races": races}
+    _DAY_API_CACHE[cache_key] = (now_mono, payload)
+    return payload
 
 
 def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -1564,6 +1617,11 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
     limit = int(query.get("limit", ["16"])[0])
     finished_limit = int(query.get("finished_limit", ["4"])[0])
     min_final = min(finished_limit, max(0, int(query.get("min_final", ["2"])[0])))
+    cache_key = (db_path, race_date, before_minutes, limit, finished_limit)
+    now_mono = time.monotonic()
+    cached = _GUIDE_API_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     now = now_jst()
 
     with connect(db_path) as conn:
@@ -1607,7 +1665,7 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
             if len(closed) >= finished_limit:
                 break
 
-    return {
+    payload = {
         "date": race_date,
         "now_jst": iso(now),
         "before_minutes": before_minutes,
@@ -1617,6 +1675,8 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
         "prediction_rank_basis": "model_probability",
         "time_basis": "stored_deadline_at_is_race_start",
     }
+    _GUIDE_API_CACHE[cache_key] = (now_mono, payload)
+    return payload
 
 
 def boatcast_live_player_url(jcd: str) -> str | None:
@@ -1745,6 +1805,12 @@ def progress_active_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str
 
 
 def predictions_with_names(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
+    race_id = required(query, "race_id")
+    cache_key = (db_path, race_id)
+    now_mono = time.monotonic()
+    cached = _PREDICTION_API_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     payload = predictions_model_rank(db_path, query)
     race = payload.get("race")
     if race:
@@ -1763,6 +1829,7 @@ def predictions_with_names(db_path: Path, query: dict[str, list[str]]) -> dict[s
             _fill_missing_racer_names(conn, payload.get("entries") or [])
     payload["time_basis"] = "stored_deadline_at_is_race_start"
     payload["prediction_rank_basis"] = "model_probability"
+    _PREDICTION_API_CACHE[cache_key] = (now_mono, payload)
     return payload
 
 
@@ -2218,7 +2285,7 @@ def _race_archive(conn: sqlite3.Connection, race_id: str) -> dict[str, Any]:
           b.air_temp_c, b.water_temp_c, b.wave_cm
         FROM entries e
         LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
-        LEFT JOIN latest_before lb
+        LEFT JOIN latest_before lb ON TRUE
         LEFT JOIN beforeinfo b ON b.race_id = e.race_id AND b.lane = e.lane AND b.captured_at = lb.captured_at
         WHERE e.race_id = ?
         ORDER BY e.lane

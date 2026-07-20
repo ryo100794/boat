@@ -364,6 +364,65 @@ def _parse_row_layout_lines(lines: list[str]) -> dict[str, float | None]:
     return odds
 
 
+def _parse_odds3t_dom_table(soup: Any) -> dict[str, float | None]:
+    """Parse the official six-column odds table without flattening lane headers."""
+    for table in soup.find_all("table"):
+        odds_cells = table.select("td.oddsPoint")
+        if len(odds_cells) != 120:
+            continue
+        headers = []
+        for cell in table.select("thead th"):
+            lane = to_int(normalize_text(cell.get_text(" ", strip=True)))
+            classes = set(cell.get("class") or [])
+            if lane in LANES and f"is-boatColor{lane}" in classes:
+                headers.append(lane)
+        first_lanes = headers[:6]
+        if first_lanes != list(LANES):
+            continue
+
+        parsed: dict[str, float | None] = {}
+        current_second: dict[int, int] = {}
+        for row in table.select("tbody tr"):
+            segment: list[Any] = []
+            group_index = 0
+            for cell in row.find_all("td", recursive=False):
+                if "oddsPoint" not in set(cell.get("class") or []):
+                    segment.append(cell)
+                    continue
+                if group_index >= len(first_lanes):
+                    return {}
+                values = [
+                    to_int(normalize_text(item.get_text(" ", strip=True)))
+                    for item in segment
+                ]
+                first = first_lanes[group_index]
+                if len(values) == 2:
+                    second, third = values
+                    if second in LANES:
+                        current_second[group_index] = second
+                elif len(values) == 1:
+                    second = current_second.get(group_index)
+                    third = values[0]
+                else:
+                    return {}
+                if (
+                    second not in LANES
+                    or third not in LANES
+                    or len({first, second, third}) != 3
+                ):
+                    return {}
+                parsed[f"{first}-{second}-{third}"] = parse_odds_token(
+                    cell.get_text(" ", strip=True)
+                )
+                group_index += 1
+                segment = []
+            if group_index not in {0, 6}:
+                return {}
+        if len(parsed) == 120:
+            return parsed
+    return {}
+
+
 def parse_odds3t_html(html: str) -> dict[str, Any]:
     lines = text_lines_from_html(html)
     text = "\n".join(lines)
@@ -373,12 +432,17 @@ def parse_odds3t_html(html: str) -> dict[str, Any]:
         source_update_time = match.group(1)
 
     odds: dict[str, float | None] = {}
+    parser_version = "odds3t_legacy"
     soup = _soup(html)
     if soup is not None:
-        for table in soup.find_all("table"):
-            tokens = _numeric_tokens(table.get_text(" ", strip=True))
-            parsed = _parse_single_first_place_table(tokens)
-            odds.update(parsed)
+        odds.update(_parse_odds3t_dom_table(soup))
+        if len(odds) == 120:
+            parser_version = "odds3t_dom_v2"
+        if len(odds) < 100:
+            for table in soup.find_all("table"):
+                tokens = _numeric_tokens(table.get_text(" ", strip=True))
+                parsed = _parse_single_first_place_table(tokens)
+                odds.update(parsed)
         if len(odds) < 100:
             row_lines = [
                 " ".join(cell.get_text(" ", strip=True) for cell in row.find_all(["td", "th"]))
@@ -397,6 +461,7 @@ def parse_odds3t_html(html: str) -> dict[str, Any]:
         "source_update_time": source_update_time,
         "odds": odds,
         "parsed_count": len(odds),
+        "parser_version": parser_version,
     }
 
 
