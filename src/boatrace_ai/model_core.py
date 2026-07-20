@@ -75,8 +75,13 @@ def backtest_model(
     output_path: Path,
     folds: int = 5,
     min_train_races: int = 500,
+    include_research: bool = True,
 ) -> dict[str, Any]:
-    X, y, meta = load_training_examples(conn, include_odds=False)
+    X, y, meta = load_training_examples(
+        conn,
+        include_odds=False,
+        include_research=include_research,
+    )
     races = sorted({row["race_id"] for row in meta})
     if len(X) < 100:
         raise ValueError(f"not enough parsed examples: {len(X)}")
@@ -146,10 +151,16 @@ def predict_race(
     race_id_value: str,
     top_n: int = 30,
     store: bool = True,
+    include_research: bool = True,
 ) -> list[dict[str, Any]]:
     bundle = load_model_bundle(model_path)
     pipeline = bundle["pipeline"]
-    X = prediction_features(conn, race_id=race_id_value, include_odds=False)
+    X = prediction_features(
+        conn,
+        race_id=race_id_value,
+        include_odds=False,
+        include_research=include_research,
+    )
     if len(X) != 6:
         raise ValueError(f"race needs six entries before prediction: {race_id_value}")
     raw = positive_probs(pipeline, X)
@@ -167,6 +178,7 @@ def predict_open_races(
     race_date: date,
     jcd: str | None = None,
     rno: int | None = None,
+    include_research: bool = True,
 ) -> dict[str, int]:
     params: list[Any] = [race_date.isoformat()]
     filters = ["r.race_date = ?"]
@@ -191,7 +203,12 @@ def predict_open_races(
     failed = 0
     for row in race_rows:
         try:
-            predict_race(conn, model_path=model_path, race_id_value=row["race_id"])
+            predict_race(
+                conn,
+                model_path=model_path,
+                race_id_value=row["race_id"],
+                include_research=include_research,
+            )
             ok += 1
         except Exception:
             failed += 1

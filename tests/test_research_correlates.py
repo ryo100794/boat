@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from boatrace_ai import historical_model
 from boatrace_ai.bankroll_optimizer import _validated_pretrained_bundle
 from boatrace_ai.base_features import is_home_branch, race_relative_features
 from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
@@ -165,3 +166,44 @@ def test_pretrained_bankroll_model_validates_training_universe() -> None:
             train_races={"r1", "r3"},
             drop_feature_groups=("research_correlates",),
         )
+
+
+def test_no_odds_v8_keeps_research_features_out_of_legacy_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_backtest(conn, **kwargs):
+        calls.append(("backtest", kwargs["include_research"]))
+        return {"ok": True}
+
+    def fake_predict(conn, **kwargs):
+        calls.append(("predict", kwargs["include_research"]))
+        return []
+
+    def fake_predict_open(conn, **kwargs):
+        calls.append(("predict_open", kwargs["include_research"]))
+        return {"predicted": 0, "failed": 0}
+
+    monkeypatch.setattr(historical_model.base, "backtest_model", fake_backtest)
+    monkeypatch.setattr(historical_model.base, "predict_race", fake_predict)
+    monkeypatch.setattr(historical_model.base, "predict_open_races", fake_predict_open)
+
+    historical_model.backtest_model(object(), output_path=tmp_path / "result.json")
+    historical_model.predict_race(
+        object(),
+        model_path=tmp_path / "model.joblib",
+        race_id_value="r1",
+    )
+    historical_model.predict_open_races(
+        object(),
+        model_path=tmp_path / "model.joblib",
+        race_date=None,
+    )
+
+    assert calls == [
+        ("backtest", False),
+        ("predict", False),
+        ("predict_open", False),
+    ]

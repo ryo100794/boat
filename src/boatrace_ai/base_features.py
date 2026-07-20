@@ -64,6 +64,7 @@ def load_training_examples(
     through_date: str | None = None,
     from_date: str | None = None,
     include_odds: bool = False,
+    include_research: bool = True,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
     through_date = through_date or os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     filters = ["rr.rank IS NOT NULL"]
@@ -108,7 +109,11 @@ def load_training_examples(
         if len(race_rows) != 6:
             continue
         before_rows = {lane: beforeinfo.get((race_id_value, lane), {}) for lane in range(1, 7)}
-        relatives = race_relative_features(race_rows, before_rows)
+        relatives = race_relative_features(
+            race_rows,
+            before_rows,
+            include_research=include_research,
+        )
         for row in race_rows:
             lane = int(row["lane"])
             item = entry_features(row, odds_features=odds_by_race.get(race_id_value, {}).get(lane, {}))
@@ -149,11 +154,21 @@ def load_race_entries(conn: sqlite3.Connection, *, race_id: str) -> list[sqlite3
     ).fetchall()
 
 
-def prediction_features(conn: sqlite3.Connection, *, race_id: str, include_odds: bool = False) -> list[dict[str, Any]]:
+def prediction_features(
+    conn: sqlite3.Connection,
+    *,
+    race_id: str,
+    include_odds: bool = False,
+    include_research: bool = True,
+) -> list[dict[str, Any]]:
     rows = load_race_entries(conn, race_id=race_id)
     before_rows = _latest_beforeinfo(conn, race_id=race_id)
     by_lane = {lane: before_rows.get((race_id, lane), {}) for lane in range(1, 7)}
-    relatives = race_relative_features(rows, by_lane)
+    relatives = race_relative_features(
+        rows,
+        by_lane,
+        include_research=include_research,
+    )
     odds = odds_lane_features(conn, race_id) if include_odds else {}
     result = []
     for row in rows:

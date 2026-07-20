@@ -79,7 +79,11 @@ def operational_adaptive_bankroll(
     if adaptive_no_bet and not 0.0 < calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must be between zero and one")
 
-    features, labels, meta = load_training_examples(conn, include_odds=False)
+    features, labels, meta = load_training_examples(
+        conn,
+        include_odds=False,
+        include_research=False,
+    )
     race_keys = race_keys_from_meta(meta)
     if len(race_keys) < min_train_races + folds:
         raise ValueError(f"not enough parsed races: {len(race_keys)}")

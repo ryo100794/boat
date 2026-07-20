@@ -112,11 +112,12 @@ def test_operational_backtest_runs_end_to_end_on_time_folds(
         for third in range(1, 7)
         if len({first, second, third}) == 3
     }
-    monkeypatch.setattr(
-        module,
-        "load_training_examples",
-        lambda conn, include_odds: (features, labels, meta),
-    )
+    def load_no_odds_examples(conn, *, include_odds, include_research):
+        assert include_odds is False
+        assert include_research is False
+        return features, labels, meta
+
+    monkeypatch.setattr(module, "load_training_examples", load_no_odds_examples)
     monkeypatch.setattr(module, "_load_trifecta_payouts", lambda conn: payouts)
     monkeypatch.setattr(
         module,

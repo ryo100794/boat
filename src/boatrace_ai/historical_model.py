@@ -65,7 +65,11 @@ base.make_pipeline = make_pipeline
 
 
 def train_model(conn, *, model_path: Path, min_examples: int = 100) -> dict[str, Any]:
-    X, y, meta = load_training_examples(conn, include_odds=False)
+    X, y, meta = load_training_examples(
+        conn,
+        include_odds=False,
+        include_research=False,
+    )
     if len(X) < min_examples:
         raise ValueError(f"training examples are too few: {len(X)} < {min_examples}")
     if len(set(y)) < 2:
@@ -88,9 +92,30 @@ def train_model(conn, *, model_path: Path, min_examples: int = 100) -> dict[str,
     return metadata
 
 
-backtest_model = base.backtest_model
-predict_race = base.predict_race
-predict_open_races = base.predict_open_races
+def backtest_model(
+    conn,
+    *,
+    output_path: Path,
+    folds: int = 5,
+    min_train_races: int = 500,
+) -> dict[str, Any]:
+    return base.backtest_model(
+        conn,
+        output_path=output_path,
+        folds=folds,
+        min_train_races=min_train_races,
+        include_research=False,
+    )
+
+
+def predict_race(conn, **kwargs):
+    return base.predict_race(conn, include_research=False, **kwargs)
+
+
+def predict_open_races(conn, **kwargs):
+    return base.predict_open_races(conn, include_research=False, **kwargs)
+
+
 positive_probs = base.positive_probs
 
 
