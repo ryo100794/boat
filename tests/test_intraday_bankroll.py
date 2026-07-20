@@ -8,13 +8,15 @@ from boatrace_ai.web.intraday_bankroll import COMBINATIONS, day_bankroll_simulat
 
 
 def _seed_race(conn, race_id: str, start_at: str, model: str) -> None:
+    parts = race_id.split("-")
+    jcd, rno = parts[-2], int(parts[-1])
     conn.execute(
         """
         INSERT INTO races(
           race_id, race_date, jcd, venue_name, rno, deadline_at, status
-        ) VALUES (?, '2026-07-20', '01', '桐生', 1, ?, 'final')
+        ) VALUES (?, '2026-07-20', ?, '桐生', ?, ?, 'final')
         """,
-        (race_id, start_at),
+        (race_id, jcd, rno, start_at),
     )
     conn.executemany(
         "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
@@ -129,3 +131,32 @@ def test_rejects_lane_header_values_mixed_into_odds(tmp_path, monkeypatch) -> No
 
     assert result["stats"]["rejected_odds_snapshots"] >= 1
     assert result["stats"]["valid_odds_races"] == 1
+
+
+def test_excludes_race_until_result_and_official_payout_are_both_confirmed(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "boat.sqlite"
+    init_db(db_path)
+    model = "data/models/win_model_no_odds_v8.joblib"
+    with connection(db_path) as conn:
+        _seed_race(conn, "2026-07-20-01-01", "2026-07-20T12:00:00", model)
+        _seed_race(conn, "2026-07-20-02-01", "2026-07-20T12:20:00", model)
+        conn.execute(
+            "DELETE FROM payouts WHERE race_id = ?",
+            ("2026-07-20-02-01",),
+        )
+    _stub_model(monkeypatch)
+
+    with connection(db_path) as conn:
+        result = day_bankroll_simulation(
+            conn,
+            race_date="2026-07-20",
+            model_id="no_odds_v8",
+            now=datetime(2026, 7, 20, 5, 0, tzinfo=timezone.utc),
+        )
+
+    assert result["stats"]["evaluated_races"] == 1
+    assert [row["race_id"] for row in result["series"]] == [
+        "2026-07-20-01-01"
+    ]
