@@ -34,6 +34,11 @@ def install_legacy_model_aliases() -> None:
                 legacy_name,
                 getattr(importlib.import_module(source_module), source_name),
             )
+    runtime_main = sys.modules.get("__main__")
+    runtime_path = Path(str(getattr(runtime_main, "__file__", ""))).name
+    if runtime_main is not None and runtime_path == "postgresql_dashboard.py":
+        source = importlib.import_module("boatrace_ai.historical_model")
+        setattr(runtime_main, "SparseIndex32", source.SparseIndex32)
 
 
 def load_model_bundle(path: str | Path) -> Any:
