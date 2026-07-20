@@ -29,6 +29,7 @@ from .contextual_features import RollingState, _race_sort_key
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
 from .modeling import _race_level_metrics
+from .standard_evaluation import race_set_sha256
 
 
 FEATURE_SET = "pastlog_v7_stream_hash_cached_series_sgd"
@@ -238,6 +239,7 @@ def backtest_streaming(
         "include_odds": False,
         "feature_set": FEATURE_SET,
         "drop_feature_groups": list(drop_feature_groups),
+        "evaluation_race_set_sha256": race_set_sha256(race_predictions),
         "entry_log_loss": safe_log_loss(all_labels, all_probs),
         "entry_brier": float(brier_score_loss(all_labels, all_probs)),
         **_race_level_metrics(race_predictions),

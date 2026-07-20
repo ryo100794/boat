@@ -29,6 +29,7 @@ from .model import (
     train_listwise_model,
 )
 from .validation import default_policy, evaluate_bankroll_fold
+from ..standard_evaluation import race_set_sha256
 
 
 def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -> int:
@@ -196,6 +197,8 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         profit_state=(0, 0, 0),
     )
     holdout_pass = bankroll["roi"] > 1.0 and holdout_metrics["winner_top1_accuracy"] >= args.min_top1
+    evaluation_hash = race_set_sha256(holdout_rows)
+    bankroll["evaluation_race_set_sha256"] = evaluation_hash
     result = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model": "pastlog_listwise_feature_teacher_search_v1",
@@ -204,6 +207,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "train_races": train_end,
         "selection_races": selection_end - train_end,
         "holdout_races": len(race_keys) - selection_end,
+        "evaluation_race_set_sha256": evaluation_hash,
         "n_features": args.n_features,
         "feature_variants": [name for name, _drops in feature_variants()],
         "teacher_targets": list(targets),
@@ -225,7 +229,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         },
         "selected_cache_source": cache_source,
         "final_training_history": final_history,
-        "holdout": {**holdout_metrics, "bankroll": bankroll},
+        "holdout": {**holdout_metrics, "evaluation_race_set_sha256": evaluation_hash, "bankroll": bankroll},
         "policy": policy,
         "roi": bankroll["roi"],
         "profit_yen": bankroll["profit_yen"],

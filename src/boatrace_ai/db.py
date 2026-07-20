@@ -209,6 +209,11 @@ def race_id(race_date: str, jcd: str, rno: int) -> str:
     return f"{race_date}-{jcd.zfill(2)}-{int(rno):02d}"
 
 
+def is_postgresql_target(path: str | Path) -> bool:
+    value = str(path).strip().lower()
+    return value.startswith(("postgresql://", "postgres://", "host="))
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +227,13 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 @contextmanager
-def connection(path: str | Path) -> Iterator[sqlite3.Connection]:
+def connection(path: str | Path) -> Iterator[Any]:
+    if is_postgresql_target(path):
+        from .postgresql import connection as postgresql_connection
+
+        with postgresql_connection(str(path)) as conn:
+            yield conn
+        return
     conn = connect(path)
     try:
         yield conn
@@ -232,6 +243,8 @@ def connection(path: str | Path) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(path: str | Path, *, attempts: int = 6, retry_seconds: float = 5.0) -> None:
+    if is_postgresql_target(path):
+        return
     for attempt in range(attempts):
         try:
             with connection(path) as conn:

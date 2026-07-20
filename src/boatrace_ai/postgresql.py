@@ -64,6 +64,7 @@ class CompatCursor:
 
 def convert_sql(statement: str) -> str:
     converted = statement.strip()
+    converted = re.sub(r"\s+INDEXED\s+BY\s+[A-Za-z_][A-Za-z0-9_]*", "", converted, flags=re.IGNORECASE)
     converted = converted.replace('races.status = "final"', "races.status = 'final'")
     converted = converted.replace('rp.page_type = "racelist"', "rp.page_type = 'racelist'")
     converted = converted.replace("INSERT OR REPLACE INTO odds_trifecta", "INSERT INTO odds_trifecta")

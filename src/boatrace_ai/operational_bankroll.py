@@ -28,6 +28,7 @@ from .base_features import load_training_examples
 from .db import connection, init_db
 from .historical_model import FEATURE_SET, make_pipeline
 from .model_core import positive_probs
+from .standard_evaluation import race_set_sha256
 from .roi_attribution import (
     merge_roi_attribution,
     new_roi_attribution,
@@ -389,6 +390,7 @@ def _summarize_operational(
         "folds": folds,
         "races": all_race_count,
         "evaluated_races": len(evaluated_races),
+        "evaluation_race_set_sha256": race_set_sha256(evaluated_races),
         "real_odds_races": len(real_odds_races),
         "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": int(totals["candidate_tickets"]),

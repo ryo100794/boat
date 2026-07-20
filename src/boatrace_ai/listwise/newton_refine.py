@@ -18,6 +18,7 @@ from .feature_search import load_variant_dataset
 from .newton import refine_newton_cg
 from .model import evaluate_range, fit_scaler, train_listwise_model
 from .validation import default_policy, evaluate_bankroll_fold
+from ..standard_evaluation import race_set_sha256
 
 
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
@@ -95,6 +96,9 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         daily_rows=daily_rows,
         profit_state=(0, 0, 0),
     )
+    evaluation_hash = race_set_sha256(holdout_rows)
+    bankroll["evaluation_race_set_sha256"] = evaluation_hash
+    after_metrics["evaluation_race_set_sha256"] = evaluation_hash
     result: dict[str, Any] = {
         "model": "pastlog_listwise_newton_cg_v1",
         "comparison_role": "selected_feature_teacher_newton_refinement_holdout",
@@ -103,6 +107,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "cache_source": cache_source,
         "train_races": selection_end,
         "holdout_races": len(race_keys) - selection_end,
+        "evaluation_race_set_sha256": evaluation_hash,
         "adam_history": adam_history,
         "newton_convergence": convergence,
         "holdout_before_newton": before_metrics,

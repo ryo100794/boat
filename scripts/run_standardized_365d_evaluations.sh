@@ -9,6 +9,8 @@ model_dir="${BOATRACE_MODEL_DIR:-data/models}"
 eval_dir="$model_dir/standardized_365d_v2"
 raw_dir="$eval_dir/raw"
 log_dir="${BOATRACE_LOG_DIR:-logs}/standardized_365d_v2"
+protocol="$eval_dir/protocol.json"
+as_of_date="${BOATRACE_EVAL_AS_OF_DATE:-}"
 wait_pid="${1:-}"
 mkdir -p "$raw_dir" "$log_dir"
 
@@ -18,56 +20,29 @@ if [[ -n "$wait_pid" ]]; then
   done
 fi
 
+prepare=(
+  .venv/bin/python -m boatrace_ai.standard_evaluation
+  --db "$db" --protocol-file "$protocol" --prepare-only
+)
+if [[ -n "$as_of_date" ]]; then
+  prepare+=(--as-of-date "$as_of_date")
+fi
+"${prepare[@]}" >"$log_dir/protocol.json.log" 2>&1
+
 read -r holdout_start holdout_end total_races min_train selection_fraction train_fraction < <(
   .venv/bin/python -c '
+import json
 import sys
 
-from boatrace_ai.db import connection
-from boatrace_ai.standard_evaluation import build_protocol
-
-with connection(sys.argv[1]) as conn:
-    protocol = build_protocol(conn)
-total = protocol["training_races"] + protocol["prediction_races"]
-before = protocol["training_races"]
+protocol = json.load(open(sys.argv[1], encoding="utf-8"))
+total = int(protocol["training_races"]) + int(protocol["prediction_races"])
+before = int(protocol["training_races"])
 selection_fraction = (before - 1) / total
 train_fraction = (before * 0.8) / total
 print(protocol["holdout_start"], protocol["holdout_end"], total, before, selection_fraction, train_fraction)
-' "$db"
+' "$protocol"
 )
 export BOATRACE_EVAL_MAX_RACE_DATE="$holdout_end"
-
-manifest="$eval_dir/protocol_draft.json"
-.venv/bin/python -c '
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-path.write_text(json.dumps({
-    "protocol_id": "standard_365d_v2",
-    "protocol": "fixed final 365 calendar days, full-day boundary and one bankroll policy",
-    "holdout_start": sys.argv[2],
-    "holdout_end": sys.argv[3],
-    "total_complete_races": int(sys.argv[4]),
-    "training_races": int(sys.argv[5]),
-    "holdout_races": int(sys.argv[4]) - int(sys.argv[5]),
-    "daily_budget_yen": 10000,
-    "selection_rule": "all model/feature/teacher/parameter selection precedes holdout",
-    "bankroll_policy": {
-        "daily_budget_yen": 10000,
-        "unit_yen": 100,
-        "ev_threshold": 1.20,
-        "payout_prior_weight": 30.0,
-        "fractional_kelly": 0.25,
-        "max_daily_exposure_fraction": 0.60,
-        "min_daily_exposure_fraction": 0.40,
-        "race_cap_fraction": 0.10,
-        "ticket_cap_fraction": 0.03,
-        "max_daily_tickets": 30,
-        "allocation_mode": "normalized_kelly"
-    },
-}, ensure_ascii=False, indent=2), encoding="utf-8")
-' "$manifest" "$holdout_start" "$holdout_end" "$total_races" "$min_train"
 
 run_job() {
   local name="$1"
@@ -129,6 +104,10 @@ run_job standardized_365d_v2_listwise_newton \
 
 run_job standardized_365d_v2_consolidate \
   .venv/bin/python -m boatrace_ai.standard_evaluation \
-  --db "$db" --raw-dir "$raw_dir" --output-dir "$eval_dir"
+  --db "$db" --raw-dir "$raw_dir" --output-dir "$eval_dir" \
+  --protocol-file "$protocol"
+
+run_job standardized_365d_v2_audit \
+  .venv/bin/python scripts/audit_standardized_evaluation.py "$eval_dir"
 
 printf 'COMPLETE %s standardized_365d_v2\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$log_dir/standardized_365d_queue.log"

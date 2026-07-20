@@ -19,6 +19,7 @@ from sklearn.preprocessing import StandardScaler
 from .adaptive_allocation import zero_totals
 from .bankroll_backtest import _load_trifecta_payouts
 from .db import connection, init_db
+from .standard_evaluation import race_set_sha256
 from .hashed_feature_dataset import (
     HashedRaceDataset,
     load_or_build_hashed_dataset,
@@ -456,6 +457,8 @@ def backtest_model(
         ),
         "max_drawdown_yen": int(profit_state[2]),
     }
+    evaluation_hash = race_set_sha256(race_predictions)
+    bankroll_summary["evaluation_race_set_sha256"] = evaluation_hash
     bankroll_flat = {
         key: value
         for key, value in bankroll_summary.items()
@@ -483,6 +486,7 @@ def backtest_model(
         "examples": len(all_labels),
         "races": len(races),
         "evaluated_races": len(race_predictions),
+        "evaluation_race_set_sha256": evaluation_hash,
         "entry_log_loss": safe_log_loss(all_labels, all_probs),
         "entry_brier": float(brier_score_loss(all_labels, all_probs)),
         **_race_level_metrics(race_predictions),

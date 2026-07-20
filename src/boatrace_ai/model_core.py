@@ -18,6 +18,7 @@ from .db import connection, init_db, insert_prediction_rows
 from .features import latest_trifecta_odds
 from .base_features import load_training_examples, prediction_features
 from .modeling import _normalize_lane_probs, _race_level_metrics, trifecta_predictions
+from .standard_evaluation import race_set_sha256
 
 
 FEATURE_SET = "no_odds_v4_relative_racer_motor_boat_weather_sgd"
@@ -128,6 +129,7 @@ def backtest_model(
         "races": len(races),
         "include_odds": False,
         "feature_set": FEATURE_SET,
+        "evaluation_race_set_sha256": race_set_sha256(race_predictions),
         "entry_log_loss": _safe_log_loss(all_labels, all_probs),
         "entry_brier": brier_score_loss(all_labels, all_probs),
         **_race_level_metrics(race_predictions),

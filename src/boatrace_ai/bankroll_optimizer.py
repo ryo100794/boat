@@ -27,6 +27,7 @@ from .feature_tuning import (
     load_complete_race_ids,
     train_bundle,
 )
+from .standard_evaluation import race_set_sha256
 from .roi_attribution import (
     merge_roi_attribution,
     new_roi_attribution,
@@ -290,6 +291,7 @@ def _summarize(
         "examples": 0,
         "races": all_race_count,
         "evaluated_races": len(evaluated_races),
+        "evaluation_race_set_sha256": race_set_sha256(evaluated_races),
         "real_odds_races": len(real_odds_races),
         "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": int(totals["candidate_tickets"]),
