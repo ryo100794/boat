@@ -65,12 +65,14 @@ run_job standardized_365d_v2_no_odds_v8_bankroll \
 run_job standardized_365d_v2_pastlog_v7_prediction \
   .venv/bin/python -m boatrace_ai.feature_tuning backtest \
   --db "$db" --output "$raw_dir/pastlog_v7_prediction.json" \
+  --model-output "$eval_dir/pastlog_v7.joblib" \
   --drop-feature-groups research_correlates \
   --folds 1 --min-train-races "$min_train"
 
 run_job standardized_365d_v2_pastlog_v7_bankroll \
   .venv/bin/python -m boatrace_ai.bankroll_optimizer \
   --db "$db" --output "$raw_dir/pastlog_v7_bankroll.json" \
+  --model-input "$eval_dir/pastlog_v7.joblib" \
   --drop-feature-groups research_correlates \
   --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000 \
   --ev-threshold 1.20 --fractional-kelly 0.25 \
@@ -81,11 +83,13 @@ run_job standardized_365d_v2_pastlog_v7_bankroll \
 run_job standardized_365d_v2_pastlog_v9_research_prediction \
   .venv/bin/python -m boatrace_ai.feature_tuning backtest \
   --db "$db" --output "$raw_dir/pastlog_v9_research_prediction.json" \
+  --model-output "$eval_dir/pastlog_v9_research.joblib" \
   --folds 1 --min-train-races "$min_train"
 
 run_job standardized_365d_v2_pastlog_v9_research_bankroll \
   .venv/bin/python -m boatrace_ai.bankroll_optimizer \
   --db "$db" --output "$raw_dir/pastlog_v9_research_bankroll.json" \
+  --model-input "$eval_dir/pastlog_v9_research.joblib" \
   --folds 1 --min-train-races "$min_train" --daily-budget-yen 10000 \
   --ev-threshold 1.20 --fractional-kelly 0.25 \
   --max-daily-exposure-fraction 0.60 --min-daily-exposure-fraction 0.40 \

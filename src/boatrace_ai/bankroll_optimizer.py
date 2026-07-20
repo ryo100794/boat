@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import joblib
+
 from .adaptive_allocation import (
     allocate_adaptive_day as _allocate_adaptive_day,
     append_day_result as _append_day_result,
@@ -45,6 +47,7 @@ def adaptive_bankroll_streaming(
     *,
     output_path: Path,
     drop_feature_groups: tuple[str, ...] | str | None = None,
+    model_input_path: Path | None = None,
     daily_budget_yen: int = 10_000,
     folds: int = 5,
     min_train_races: int = 500,
@@ -64,6 +67,9 @@ def adaptive_bankroll_streaming(
     epochs: int = 1,
 ) -> dict[str, Any]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
+    if model_input_path is not None and folds != 1:
+        raise ValueError("model_input_path requires folds=1")
+    pretrained_bundle = joblib.load(model_input_path) if model_input_path else None
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
         fractional_kelly=fractional_kelly,
@@ -105,13 +111,20 @@ def adaptive_bankroll_streaming(
             train_races=train_races,
             prior_weight=payout_prior_weight,
         )
-        bundle = train_bundle(
-            conn,
-            include_races=train_races,
-            drop_feature_groups=drop_feature_groups,
-            batch_size=batch_size,
-            epochs=epochs,
-        )
+        if pretrained_bundle is not None:
+            bundle = _validated_pretrained_bundle(
+                pretrained_bundle,
+                train_races=train_races,
+                drop_feature_groups=drop_feature_groups,
+            )
+        else:
+            bundle = train_bundle(
+                conn,
+                include_races=train_races,
+                drop_feature_groups=drop_feature_groups,
+                batch_size=batch_size,
+                epochs=epochs,
+            )
         fold_candidate_count = 0
         fold_selected_count = 0
         fold_evaluated = 0
@@ -345,6 +358,26 @@ def _summarize(
     }
 
 
+def _validated_pretrained_bundle(
+    bundle: dict[str, Any],
+    *,
+    train_races: set[str],
+    drop_feature_groups: tuple[str, ...],
+) -> dict[str, Any]:
+    metadata = bundle.get("metadata") or {}
+    expected_hash = race_set_sha256(train_races)
+    if int(metadata.get("train_races") or -1) != len(train_races):
+        raise ValueError("pretrained model training race count mismatch")
+    if str(metadata.get("train_race_set_sha256") or "") != expected_hash:
+        raise ValueError("pretrained model training race set mismatch")
+    bundle_drops = normalize_drop_feature_groups(
+        metadata.get("drop_feature_groups", bundle.get("drop_feature_groups", ()))
+    )
+    if bundle_drops != drop_feature_groups:
+        raise ValueError("pretrained model feature groups mismatch")
+    return bundle
+
+
 def _compact_roi_attribution(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "method": value.get("method"),
@@ -366,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         default="data/models/bankroll_backtest_pastlog_v9_research_adaptive_10000.json",
     )
     parser.add_argument("--drop-feature-groups", default="")
+    parser.add_argument("--model-input", type=Path)
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-train-races", type=int, default=500)
@@ -390,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             conn,
             output_path=Path(args.output),
             drop_feature_groups=args.drop_feature_groups,
+            model_input_path=args.model_input,
             daily_budget_yen=args.daily_budget_yen,
             folds=args.folds,
             min_train_races=args.min_train_races,

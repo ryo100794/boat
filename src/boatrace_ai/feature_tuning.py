@@ -185,8 +185,11 @@ def backtest_streaming(
     batch_size: int = 24000,
     epochs: int = 1,
     log_folds: bool = True,
+    model_output_path: Path | None = None,
 ) -> dict[str, Any]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
+    if model_output_path is not None and folds != 1:
+        raise ValueError("model_output_path requires folds=1")
     race_keys = load_complete_race_ids(conn)
     races = [race_id for race_id, *_ in race_keys]
     if len(races) < min_train_races + folds:
@@ -212,6 +215,22 @@ def backtest_streaming(
             batch_size=batch_size,
             epochs=epochs,
         )
+        if model_output_path is not None:
+            model_output_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(
+                {
+                    **bundle,
+                    "metadata": {
+                        "trained_at": _now(),
+                        "feature_set": FEATURE_SET,
+                        "drop_feature_groups": list(drop_feature_groups),
+                        "train_races": len(train_races),
+                        "train_race_set_sha256": race_set_sha256(train_races),
+                        "folds": folds,
+                    },
+                },
+                model_output_path,
+            )
         labels: list[int] = []
         probs: list[float] = []
         for rows in iter_scored_races(
@@ -771,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
     backtest.add_argument("--min-train-races", type=int, default=500)
     backtest.add_argument("--batch-size", type=int, default=24000)
     backtest.add_argument("--epochs", type=int, default=1)
+    backtest.add_argument("--model-output", type=Path)
     backtest.set_defaults(func=_cmd_backtest)
     bankroll = sub.add_parser("bankroll")
     add_common(bankroll)
@@ -837,6 +857,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             min_train_races=args.min_train_races,
             batch_size=args.batch_size,
             epochs=args.epochs,
+            model_output_path=args.model_output,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
