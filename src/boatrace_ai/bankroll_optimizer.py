@@ -25,6 +25,7 @@ from .feature_tuning import (
     FEATURE_SET,
     iter_scored_races,
     load_complete_race_ids,
+    normalize_drop_feature_groups,
     train_bundle,
 )
 from .standard_evaluation import race_set_sha256
@@ -43,6 +44,7 @@ def adaptive_bankroll_streaming(
     conn,
     *,
     output_path: Path,
+    drop_feature_groups: tuple[str, ...] | str | None = None,
     daily_budget_yen: int = 10_000,
     folds: int = 5,
     min_train_races: int = 500,
@@ -61,6 +63,7 @@ def adaptive_bankroll_streaming(
     batch_size: int = 24_000,
     epochs: int = 1,
 ) -> dict[str, Any]:
+    drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
         fractional_kelly=fractional_kelly,
@@ -102,7 +105,13 @@ def adaptive_bankroll_streaming(
             train_races=train_races,
             prior_weight=payout_prior_weight,
         )
-        bundle = train_bundle(conn, include_races=train_races, batch_size=batch_size, epochs=epochs)
+        bundle = train_bundle(
+            conn,
+            include_races=train_races,
+            drop_feature_groups=drop_feature_groups,
+            batch_size=batch_size,
+            epochs=epochs,
+        )
         fold_candidate_count = 0
         fold_selected_count = 0
         fold_evaluated = 0
@@ -113,7 +122,12 @@ def adaptive_bankroll_streaming(
         day_candidates: list[dict[str, Any]] = []
         day_evaluated: set[str] = set()
 
-        for rows in iter_scored_races(conn, bundle=bundle, include_races=test_races):
+        for rows in iter_scored_races(
+            conn,
+            bundle=bundle,
+            include_races=test_races,
+            drop_feature_groups=drop_feature_groups,
+        ):
             race_id_value = str(rows[0]["race_id"])
             race_date_value = str(rows[0]["race_date"])
             if current_date is None:
@@ -250,7 +264,12 @@ def adaptive_bankroll_streaming(
             "payout_prior_weight": payout_prior_weight,
             "allocation": "stake is proportional to positive Kelly edge; normalized-kelly can scale ranked positive edges up to min_daily_exposure_fraction before daily/race/ticket caps; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
             "feature_set": FEATURE_SET,
-            "model": "win_model_pastlog_v7_stream_hash",
+            "drop_feature_groups": list(drop_feature_groups),
+            "model": (
+                "win_model_pastlog_v7_stream_hash"
+                if "research_correlates" in drop_feature_groups
+                else "win_model_pastlog_v9_research"
+            ),
         },
         folds=fold_rows,
     )
@@ -322,7 +341,7 @@ def _summarize(
         "worst_days": sorted(daily_rows, key=lambda row: row["profit_yen"])[:10],
         "ticket_roi_attribution": ticket_roi_attribution,
         "feature_set": FEATURE_SET,
-        "model": "win_model_pastlog_v7_stream_hash",
+        "model": str(policy.get("model") or "win_model_pastlog_v9_research"),
     }
 
 
@@ -340,9 +359,13 @@ def _now() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Adaptive bankroll backtest for past-log v7 streaming model.")
+    parser = argparse.ArgumentParser(description="Adaptive bankroll backtest for the streaming past-log model.")
     parser.add_argument("--db", default="data/boatrace.sqlite")
-    parser.add_argument("--output", default="data/models/bankroll_backtest_pastlog_v7_adaptive_10000.json")
+    parser.add_argument(
+        "--output",
+        default="data/models/bankroll_backtest_pastlog_v9_research_adaptive_10000.json",
+    )
+    parser.add_argument("--drop-feature-groups", default="")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-train-races", type=int, default=500)
@@ -366,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         result = adaptive_bankroll_streaming(
             conn,
             output_path=Path(args.output),
+            drop_feature_groups=args.drop_feature_groups,
             daily_budget_yen=args.daily_budget_yen,
             folds=args.folds,
             min_train_races=args.min_train_races,

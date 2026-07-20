@@ -112,6 +112,9 @@ class Connection:
         cursor.executemany(convert_sql(statement), params_seq)
         return CompatCursor(cursor)
 
+    def executescript(self, statement: str) -> None:
+        self._raw.execute(statement, prepare=False)
+
     def commit(self) -> None:
         self._raw.commit()
 
