@@ -13,6 +13,7 @@ protocol="$eval_dir/protocol.json"
 as_of_date="${BOATRACE_EVAL_AS_OF_DATE:-}"
 wait_pid="${1:-}"
 resume_completed="${BOATRACE_EVAL_RESUME_COMPLETED:-1}"
+eval_nice="${BOATRACE_EVAL_NICE:-10}"
 mkdir -p "$raw_dir" "$log_dir"
 
 if [[ -n "$wait_pid" ]]; then
@@ -49,7 +50,7 @@ run_job() {
   local name="$1"
   shift
   printf 'START %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$log_dir/standardized_365d_queue.log"
-  "$@" >"$log_dir/${name}.log" 2>&1
+  nice -n "$eval_nice" "$@" >"$log_dir/${name}.log" 2>&1
   printf 'DONE  %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$log_dir/standardized_365d_queue.log"
 }
 
