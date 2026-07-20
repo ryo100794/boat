@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from boatrace_ai.db import connection, init_db, insert_odds_snapshot
+from boatrace_ai.web import intraday_bankroll as module
 from boatrace_ai.web.intraday_bankroll import COMBINATIONS, day_bankroll_simulation
 
 
@@ -48,22 +49,47 @@ def _seed_race(conn, race_id: str, start_at: str, model: str) -> None:
     )
 
 
-def test_simulates_selected_model_from_first_race_with_reinvestment(tmp_path) -> None:
+def _stub_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        module,
+        "_available_models",
+        lambda _model_dir: [
+            {
+                "id": "no_odds_v8",
+                "label": "no_odds_v8 主系",
+                "path": "/models/win_model_no_odds_v8.joblib",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "_score_model",
+        lambda _conn, *, race_id, model_path: {
+            combination: 0.20 if combination == "1-2-3" else 0.001
+            for combination in COMBINATIONS
+        },
+    )
+
+
+def test_simulates_selected_model_from_first_race_with_reinvestment(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "boat.sqlite"
     init_db(db_path)
     model = "data/models/win_model_no_odds_v8.joblib"
     with connection(db_path) as conn:
         _seed_race(conn, "2026-07-20-01-01", "2026-07-20T12:00:00", model)
+    _stub_model(monkeypatch)
 
     with connection(db_path) as conn:
         result = day_bankroll_simulation(
             conn,
             race_date="2026-07-20",
-            model_path=model,
+            model_id="no_odds_v8",
             now=datetime(2026, 7, 20, 4, 0, tzinfo=timezone.utc),
         )
 
-    assert result["selected_model"] == model
+    assert result["selected_model"] == "no_odds_v8"
     assert result["stats"]["evaluated_races"] == 1
     assert result["stats"]["valid_odds_races"] == 1
     assert result["stats"]["tickets"] == 1
@@ -73,7 +99,7 @@ def test_simulates_selected_model_from_first_race_with_reinvestment(tmp_path) ->
     assert result["series"][0]["profit_yen"] == 3800
 
 
-def test_rejects_lane_header_values_mixed_into_odds(tmp_path) -> None:
+def test_rejects_lane_header_values_mixed_into_odds(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "boat.sqlite"
     init_db(db_path)
     model = "data/models/win_model_no_odds_v8.joblib"
@@ -91,12 +117,13 @@ def test_rejects_lane_header_values_mixed_into_odds(tmp_path) -> None:
             "broken",
             {"parser_version": "odds3t_dom_v2"},
         )
+    _stub_model(monkeypatch)
 
     with connection(db_path) as conn:
         result = day_bankroll_simulation(
             conn,
             race_date="2026-07-20",
-            model_path=model,
+            model_id="no_odds_v8",
             now=datetime(2026, 7, 20, 4, 0, tzinfo=timezone.utc),
         )
 

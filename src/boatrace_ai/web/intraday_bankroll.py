@@ -5,7 +5,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..base_features import prediction_features
 from ..fast_math import TRIFECTA_COMBINATIONS
+from ..historical_model import positive_probs
+from ..legacy_model_aliases import load_model_bundle
+from ..modeling import _normalize_lane_probs, trifecta_predictions
 
 
 JST = timezone(timedelta(hours=9))
@@ -18,6 +22,12 @@ TICKET_CAP_FRACTION = 0.03
 STAKE_UNIT_YEN = 100
 MAX_LANE_MARKER_ODDS = 8
 COMBINATIONS = tuple("-".join(map(str, item)) for item in TRIFECTA_COMBINATIONS)
+MODEL_FILES = (
+    ("no_odds_v8", "no_odds_v8 主系", "win_model_no_odds_v8.joblib"),
+    ("no_odds_v7", "no_odds_v7", "win_model_no_odds_v7.joblib"),
+    ("no_odds_v6", "no_odds_v6", "win_model_no_odds_v6.joblib"),
+)
+_MODEL_BUNDLE_CACHE: dict[Path, tuple[int, Any]] = {}
 
 
 def model_label(model_path: str) -> str:
@@ -36,13 +46,14 @@ def day_bankroll_simulation(
     conn,
     *,
     race_date: str,
-    model_path: str | None = None,
+    model_id: str | None = None,
+    model_dir: Path = Path("data/models"),
     now: datetime | None = None,
     starting_bankroll_yen: int = STARTING_BANKROLL_YEN,
 ) -> dict[str, Any]:
     now_jst = (now or datetime.now(timezone.utc)).astimezone(JST)
-    models = _available_models(conn, race_date)
-    selected = model_path if any(row["id"] == model_path for row in models) else None
+    models = _available_models(model_dir)
+    selected = model_id if any(row["id"] == model_id for row in models) else None
     if selected is None and models:
         selected = models[0]["id"]
 
@@ -72,6 +83,7 @@ def day_bankroll_simulation(
         }
 
     races = _race_rows(conn, race_date)
+    selected_model = next(row for row in models if row["id"] == selected)
     results = _results_by_race(conn, race_date)
     payouts = _payouts_by_race(conn, race_date)
     bankroll = starting_bankroll_yen
@@ -99,16 +111,13 @@ def day_bankroll_simulation(
             continue
         evaluated_races += 1
         decision_at = start_at - timedelta(minutes=DECISION_MINUTES_BEFORE_START)
-        predictions, fallback = _prediction_rows(
+        predictions = _score_model(
             conn,
             race_id=str(race["race_id"]),
-            model_path=selected,
-            cutoff=decision_at,
+            model_path=Path(selected_model["path"]),
         )
         if predictions:
             prediction_races += 1
-        if fallback:
-            fallback_predictions += 1
         snapshot, rejected = _latest_valid_odds_snapshot(
             conn,
             race_id=str(race["race_id"]),
@@ -152,7 +161,7 @@ def day_bankroll_simulation(
                 "hit": allocation["hit_tickets"] > 0,
                 "actual": actual["combination"],
                 "odds_captured_at": (snapshot or {}).get("captured_at"),
-                "prediction_basis": "post-race static fallback" if fallback else "締切5分前以前",
+                "prediction_basis": "選択モデル直接再推論",
             }
         )
 
@@ -175,10 +184,6 @@ def day_bankroll_simulation(
         "rejected_odds_snapshots": rejected_snapshots,
     }
     warnings = []
-    if fallback_predictions:
-        warnings.append(
-            f"{fallback_predictions}Rは締切前予測未保存のため、結果を使わない静的モデル再生成値を使用。"
-        )
     if rejected_snapshots:
         warnings.append(
             f"艇番見出し混入など品質不合格のオッズ{rejected_snapshots}件を除外。"
@@ -194,7 +199,7 @@ def day_bankroll_simulation(
         "through_race_time_at": series[-1]["race_time_at"] if series else None,
         "models": models,
         "selected_model": selected,
-        "selected_model_label": model_label(selected),
+        "selected_model_label": selected_model["label"],
         "policy": policy,
         "stats": stats,
         "series": series,
@@ -223,35 +228,24 @@ def _empty_stats(starting_bankroll_yen: int) -> dict[str, Any]:
     }
 
 
-def _available_models(conn, race_date: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        WITH recent_predictions AS MATERIALIZED (
-          SELECT prediction_id, race_id, model_path, generated_at
-          FROM predictions
-          WHERE model_path IS NOT NULL
-          ORDER BY prediction_id DESC
-          LIMIT 200000
+def _available_models(model_dir: Path) -> list[dict[str, Any]]:
+    rows = []
+    for model_id, label, file_name in MODEL_FILES:
+        path = model_dir / file_name
+        if not path.is_file():
+            continue
+        rows.append(
+            {
+                "id": model_id,
+                "label": label,
+                "path": str(path),
+                "model_file": file_name,
+                "modified_at": datetime.fromtimestamp(
+                    path.stat().st_mtime, timezone.utc
+                ).isoformat(timespec="seconds"),
+            }
         )
-        SELECT p.model_path, COUNT(DISTINCT p.race_id) AS races,
-               MAX(p.generated_at) AS latest_generated_at
-        FROM recent_predictions p
-        JOIN races r ON r.race_id = p.race_id
-        WHERE r.race_date = ?
-        GROUP BY p.model_path
-        ORDER BY MAX(p.generated_at) DESC, p.model_path
-        """,
-        (race_date,),
-    ).fetchall()
-    return [
-        {
-            "id": str(row["model_path"]),
-            "label": model_label(str(row["model_path"])),
-            "prediction_races": int(row["races"] or 0),
-            "latest_generated_at": row["latest_generated_at"],
-        }
-        for row in rows
-    ]
+    return rows
 
 
 def _race_rows(conn, race_date: str) -> list[dict[str, Any]]:
@@ -307,52 +301,35 @@ def _payouts_by_race(conn, race_date: str) -> dict[str, dict[str, Any]]:
     }
 
 
-def _prediction_rows(
+def _score_model(
     conn,
     *,
     race_id: str,
-    model_path: str,
-    cutoff: datetime,
-) -> tuple[dict[str, float], bool]:
-    cutoff_utc = cutoff.astimezone(timezone.utc).isoformat(timespec="seconds")
-    latest = conn.execute(
-        """
-        SELECT generated_at
-        FROM predictions
-        WHERE race_id = ? AND model_path = ? AND generated_at <= ?
-        ORDER BY generated_at DESC
-        LIMIT 1
-        """,
-        (race_id, model_path, cutoff_utc),
-    ).fetchone()
-    fallback = False
-    if latest is None:
-        latest = conn.execute(
-            """
-            SELECT generated_at
-            FROM predictions
-            WHERE race_id = ? AND model_path = ?
-            ORDER BY generated_at
-            LIMIT 1
-            """,
-            (race_id, model_path),
-        ).fetchone()
-        fallback = latest is not None
-    if latest is None:
-        return {}, False
-    rows = conn.execute(
-        """
-        SELECT combination, probability
-        FROM predictions
-        WHERE race_id = ? AND model_path = ? AND generated_at = ?
-        """,
-        (race_id, model_path, latest["generated_at"]),
-    ).fetchall()
+    model_path: Path,
+) -> dict[str, float]:
+    bundle = _load_cached_model(model_path)
+    features = prediction_features(conn, race_id=race_id, include_odds=False)
+    if len(features) != 6:
+        return {}
+    raw = positive_probs(bundle["pipeline"], features)
+    lane_probabilities = _normalize_lane_probs(
+        {lane: raw[lane - 1] for lane in range(1, 7)}
+    )
     return {
         str(row["combination"]): float(row["probability"])
-        for row in rows
-        if row["probability"] is not None
-    }, fallback
+        for row in trifecta_predictions(lane_probabilities)
+    }
+
+
+def _load_cached_model(model_path: Path) -> Any:
+    resolved = model_path.resolve()
+    modified = resolved.stat().st_mtime_ns
+    cached = _MODEL_BUNDLE_CACHE.get(resolved)
+    if cached and cached[0] == modified:
+        return cached[1]
+    bundle = load_model_bundle(resolved)
+    _MODEL_BUNDLE_CACHE[resolved] = (modified, bundle)
+    return bundle
 
 
 def _latest_valid_odds_snapshot(

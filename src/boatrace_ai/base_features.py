@@ -229,9 +229,11 @@ def _group_by_race(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
 def _latest_beforeinfo(conn: sqlite3.Connection, race_id: str | None = None) -> dict[tuple[str, int], sqlite3.Row]:
     params: list[Any] = []
     filter_sql = ""
+    latest_filter_sql = ""
     if race_id:
+        latest_filter_sql = "WHERE race_id = ?"
         filter_sql = "WHERE b.race_id = ?"
-        params.append(race_id)
+        params.extend((race_id, race_id))
     rows = conn.execute(
         f"""
         SELECT b.*
@@ -239,6 +241,7 @@ def _latest_beforeinfo(conn: sqlite3.Connection, race_id: str | None = None) -> 
         JOIN (
           SELECT race_id, lane, MAX(captured_at) AS captured_at
           FROM beforeinfo
+          {latest_filter_sql}
           GROUP BY race_id, lane
         ) latest ON latest.race_id = b.race_id
           AND latest.lane = b.lane

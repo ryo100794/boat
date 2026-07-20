@@ -534,8 +534,8 @@ def day_bankroll_cached(
     query: dict[str, list[str]],
 ) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
-    model_path = (query.get("model") or [""])[0]
-    key = (db_path, race_date, model_path)
+    model_id = (query.get("model") or [""])[0]
+    key = (db_path, race_date, model_id)
     now = time.monotonic()
     cached = _DAY_BANKROLL_CACHE.get(key)
     if cached and now - cached[0] < 30.0:
@@ -544,7 +544,8 @@ def day_bankroll_cached(
         payload = day_bankroll_simulation(
             conn,
             race_date=race_date,
-            model_path=model_path or None,
+            model_id=model_id or None,
+            model_dir=db_path.parent / "models",
         )
     _DAY_BANKROLL_CACHE[key] = (now, payload)
     return payload

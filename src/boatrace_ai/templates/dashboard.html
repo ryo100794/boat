@@ -356,7 +356,7 @@ function renderDayBankroll(data){
   const models = data.models || [];
   const selected = data.selected_model || "";
   $("bankrollModel").innerHTML = models.length
-    ? models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id===selected ? "selected" : ""}>${escapeHtml(m.label)} (${m.prediction_races}R)</option>`).join("")
+    ? models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id===selected ? "selected" : ""}>${escapeHtml(m.label)} / ${escapeHtml(m.model_file || "")}</option>`).join("")
     : `<option value="">予測モデルなし</option>`;
   if(selected){
     state.bankModel = selected;
