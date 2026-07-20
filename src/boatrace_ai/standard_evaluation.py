@@ -644,7 +644,33 @@ def main(argv: list[str] | None = None) -> int:
         "--validate-source",
         choices=[source.model_id for source in MODEL_SOURCES],
     )
+    parser.add_argument(
+        "--artifacts-only",
+        action="store_true",
+        help="validate artifacts against an already database-verified protocol",
+    )
     args = parser.parse_args(argv)
+    if args.artifacts_only:
+        if not args.validate_source:
+            parser.error("--artifacts-only requires --validate-source")
+        if not args.protocol_file or not args.protocol_file.exists():
+            parser.error("--artifacts-only requires an existing --protocol-file")
+        protocol = load_protocol(args.protocol_file)
+        if (
+            args.as_of_date
+            and str(protocol["as_of_date_jst"]) != args.as_of_date.isoformat()
+        ):
+            raise ValueError("existing protocol as-of date differs from --as-of-date")
+        source = next(
+            item for item in MODEL_SOURCES if item.model_id == args.validate_source
+        )
+        result = validate_model_source(
+            protocol=protocol,
+            source=source,
+            raw_dir=args.raw_dir,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+        return 0 if result["validation"]["passed"] else 1
     init_db(args.db)
     with connection(args.db) as conn:
         if args.protocol_file and args.protocol_file.exists():

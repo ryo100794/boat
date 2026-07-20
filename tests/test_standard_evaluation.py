@@ -6,10 +6,12 @@ import json
 import sqlite3
 
 from boatrace_ai.standard_evaluation import (
+    MODEL_SOURCES,
     POLICY,
     ModelSource,
     build_protocol,
     consolidate_model,
+    main,
     protocol_sha256,
     race_set_sha256,
     validate_model_source,
@@ -184,3 +186,34 @@ def test_validate_model_source_reads_and_checks_the_pair(tmp_path) -> None:
 
     assert result["model_id"] == "candidate"
     assert result["validation"]["passed"] is True
+
+
+def test_artifacts_only_validation_does_not_open_database(tmp_path) -> None:
+    source = MODEL_SOURCES[0]
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(protocol()), encoding="utf-8")
+    (tmp_path / source.prediction_file).write_text(
+        json.dumps(prediction()),
+        encoding="utf-8",
+    )
+    (tmp_path / source.bankroll_file).write_text(
+        json.dumps(bankroll()),
+        encoding="utf-8",
+    )
+
+    result = main(
+        [
+            "--db",
+            str(tmp_path / "must-not-be-created.sqlite"),
+            "--raw-dir",
+            str(tmp_path),
+            "--protocol-file",
+            str(protocol_path),
+            "--validate-source",
+            source.model_id,
+            "--artifacts-only",
+        ]
+    )
+
+    assert result == 0
+    assert not (tmp_path / "must-not-be-created.sqlite").exists()

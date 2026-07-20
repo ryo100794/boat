@@ -59,7 +59,7 @@ source_needs_run() {
   if [[ "$resume_completed" == "1" ]] && \
     .venv/bin/python -m boatrace_ai.standard_evaluation \
       --db "$db" --raw-dir "$raw_dir" --protocol-file "$protocol" \
-      --validate-source "$model_id" >/dev/null 2>&1; then
+      --validate-source "$model_id" --artifacts-only >/dev/null 2>&1; then
     printf 'SKIP  %s %s (validated)\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$model_id" \
       | tee -a "$log_dir/standardized_365d_queue.log"
