@@ -14,6 +14,7 @@ from boatrace_ai.hashed_feature_dataset import (
     CACHE_VERSION,
     FEATURE_SCHEMA_VERSION,
     _stack_csr_balanced,
+    _validate_dataset_arrays,
     build_hashed_dataset,
     load_or_build_hashed_dataset,
     load_hashed_dataset,
@@ -90,7 +91,6 @@ def test_hashed_dataset_build_save_and_reload(tmp_path: Path) -> None:
         "alternate_sign": False,
         "dtype": "float64",
     }
-
 
 def test_hashed_dataset_rejects_stale_race_identity(tmp_path: Path) -> None:
     race_keys = [("2026-01-01-01-01", "2026-01-01", "01", 1)]
@@ -231,6 +231,20 @@ def _make_legacy_manifest(prefix: Path) -> tuple[Path, bytes]:
     legacy.update({key: current[key] for key in legacy_keys})
     manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
     return manifest_path, manifest_path.read_bytes()
+
+
+def test_dataset_validation_accepts_official_ties_and_rejects_invalid_ranks() -> None:
+    matrix = sparse.csr_matrix((12, 4), dtype=np.float64)
+    official_tie = np.asarray(
+        [[1, 2, 3, 4, 5, 6], [1, 2, 3, 3, 5, 6]], dtype=np.int8
+    )
+    _validate_dataset_arrays(matrix, official_tie, race_count=2, n_features=4)
+
+    invalid = official_tie.copy()
+    invalid[1] = [1, 1, 2, 4, 5, 6]
+    with pytest.raises(ValueError, match="valid competition ranking"):
+        _validate_dataset_arrays(matrix, invalid, race_count=2, n_features=4)
+
 
 
 def test_hashed_dataset_rejects_middle_race_identity_change(tmp_path: Path) -> None:

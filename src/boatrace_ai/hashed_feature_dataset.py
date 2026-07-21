@@ -520,8 +520,15 @@ def _validate_dataset_arrays(
         or not np.all(np.isfinite(matrix.data))
     ):
         raise ValueError("invalid CSR values")
-    if race_count and not np.all(np.sort(ranks, axis=1) == np.arange(1, 7)):
-        raise ValueError("each race ranks row must be a permutation of 1..6")
+    if race_count:
+        sorted_ranks = np.sort(ranks, axis=1)
+        valid_competition_ranks = (sorted_ranks[:, 0] == 1) & np.all(
+            (sorted_ranks[:, 1:] == sorted_ranks[:, :-1])
+            | (sorted_ranks[:, 1:] == np.arange(2, 7)),
+            axis=1,
+        )
+        if not np.all(valid_competition_ranks):
+            raise ValueError("each race ranks row must use valid competition ranking")
 
 
 def _load_csr_npz_without_pickle(path: Path) -> sparse.csr_matrix:
