@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..db import connection, init_db
+from ..features import pre_t5_odds_count_sql
 from ..modeling import backtest_model, train_model
 
 
@@ -182,10 +183,7 @@ def dataset_counts(
         where_params.append(from_date)
 
     if require_odds:
-        filters.append(
-            "(SELECT COUNT(*) FROM odds_snapshots os "
-            "WHERE os.race_id = r.race_id) >= ?"
-        )
+        filters.append(pre_t5_odds_count_sql(conn))
         where_params.append(max(1, int(min_odds_snapshots)))
 
     row = conn.execute(

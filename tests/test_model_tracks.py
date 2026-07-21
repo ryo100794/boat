@@ -89,3 +89,26 @@ def test_model_selector_catalog_includes_every_report_data_group() -> None:
         "bankroll_daily",
     ):
         assert group in catalog_source
+
+
+def test_model_tracks_exposes_t5_safe_provisional_metrics(tmp_path) -> None:
+    tracks = _model_track_summaries(
+        tmp_path,
+        [
+            {
+                "file": "realtime_odds_shadow_t5_safe_candidate_backtest.json",
+                "evaluated_races": 95,
+                "entry_log_loss": 0.345016,
+                "winner_top1_accuracy": 0.589474,
+                "trifecta_top5_hit_rate": 0.326316,
+            }
+        ],
+        {"jobs": []},
+    )
+
+    shadow = next(row for row in tracks if row["id"] == "realtime_odds_shadow")
+    assert shadow["status"] == "暫定評価済み"
+    assert shadow["model_file"] == "realtime_odds_shadow_t5_safe_candidate.joblib"
+    assert shadow["entry_log_loss"] == 0.345016
+    assert shadow["winner_top1_accuracy"] == 0.589474
+    assert shadow["trifecta_top5_hit_rate"] == 0.326316

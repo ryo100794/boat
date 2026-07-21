@@ -12,8 +12,8 @@ def test_shadow_training_requires_odds_history_and_complete_results(tmp_path) ->
     with connection(db_path) as conn:
         for rno, race_id in enumerate(("ready", "no-odds", "incomplete"), start=1):
             conn.execute(
-                "INSERT INTO races (race_id, race_date, jcd, venue_name, rno) "
-                "VALUES (?, '2026-07-18', '01', '桐生', ?)",
+                "INSERT INTO races (race_id, race_date, jcd, venue_name, rno, deadline_at) "
+                "VALUES (?, '2026-07-18', '01', '桐生', ?, '2026-07-18T10:20:00+09:00')",
                 (race_id, rno),
             )
             for lane in range(1, 7):
@@ -27,11 +27,11 @@ def test_shadow_training_requires_odds_history_and_complete_results(tmp_path) ->
                         (race_id, lane, lane),
                     )
             if race_id != "no-odds":
-                for snapshot in range(10):
+                for snapshot, minute in enumerate((*range(10), 16, 21)):
                     cursor = conn.execute(
                         "INSERT INTO odds_snapshots "
                         "(race_id, bet_type, captured_at) VALUES (?, '3t', ?)",
-                        (race_id, f"2026-07-18T10:{snapshot:02}:00+09:00"),
+                        (race_id, f"2026-07-18T10:{minute:02}:00+09:00"),
                     )
                     conn.execute(
                         "INSERT INTO odds_trifecta "
@@ -62,6 +62,9 @@ def test_shadow_pipeline_accepts_scipy_int64_sparse_indices() -> None:
     assert converted.indices.dtype == np.int32
     assert converted.indptr.dtype == np.int32
     pipeline = _make_pipeline()
+    assert pipeline.named_steps["scaler"].with_mean is False
+    assert pipeline.named_steps["classifier"].class_weight is None
+    assert pipeline.named_steps["classifier"].C == 0.2
     pipeline.fit(
         [{"lane": 1}, {"lane": 2}, {"lane": 1}, {"lane": 2}],
         [1, 0, 1, 0],

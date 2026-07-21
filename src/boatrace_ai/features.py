@@ -9,6 +9,22 @@ from typing import Any
 from .constants import CLASS_RANK, LANES
 
 
+def pre_t5_odds_count_sql(conn, *, race_alias: str = "r") -> str:
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        cutoff = (
+            f"CAST({race_alias}.deadline_at AS timestamptz) - INTERVAL '5 minutes'"
+        )
+        captured = "CAST(os.captured_at AS timestamptz)"
+    else:
+        cutoff = f"datetime({race_alias}.deadline_at, '-5 minutes')"
+        captured = "datetime(os.captured_at)"
+    return (
+        "(SELECT COUNT(*) FROM odds_snapshots os "
+        f"WHERE os.race_id = {race_alias}.race_id "
+        f"AND {captured} <= {cutoff}) >= ?"
+    )
+
+
 NUMERIC_ENTRY_FIELDS = (
     "age",
     "weight_kg",
@@ -48,9 +64,7 @@ def load_training_examples(
         filters.append("r.race_date >= ?")
         params.append(from_date)
     if min_odds_snapshots > 0:
-        filters.append(
-            "(SELECT COUNT(*) FROM odds_snapshots os WHERE os.race_id = r.race_id) >= ?"
-        )
+        filters.append(pre_t5_odds_count_sql(conn))
         params.append(int(min_odds_snapshots))
     if complete_results_only:
         filters.append(
@@ -164,6 +178,16 @@ def _num(value: Any) -> float:
 
 
 def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict[str, float]]:
+    race = conn.execute(
+        "SELECT deadline_at FROM races WHERE race_id = ?",
+        (race_id,),
+    ).fetchone()
+    if not race or not race["deadline_at"]:
+        return {}
+    deadline_at = _parse_race_time(str(race["deadline_at"]))
+    if deadline_at is None:
+        return {}
+    cutoff_at = deadline_at - timedelta(minutes=5)
     rows = conn.execute(
         """
         SELECT os.snapshot_id, os.captured_at, ot.combination, ot.odds
@@ -174,6 +198,17 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
         """,
         (race_id,),
     ).fetchall()
+    rows = [
+        row
+        for row in rows
+        if (
+            (captured := _parse_snapshot_time(
+                str(row["captured_at"]), default_tz=cutoff_at.tzinfo
+            ))
+            is not None
+            and captured <= cutoff_at
+        )
+    ]
     if not rows:
         return {}
 
@@ -196,12 +231,18 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
         first_lane = first.get(lane, {})
         features[lane] = {
             "snapshot_count": snapshot_count,
-            "first_mean": latest_lane.get("mean", -1.0),
-            "first_min": latest_lane.get("min", -1.0),
-            "first_implied_sum": latest_lane.get("implied_sum", -1.0),
-            "first_implied_delta": latest_lane.get("implied_sum", 0.0)
+            "first_mean": first_lane.get("mean", -1.0),
+            "first_min": first_lane.get("min", -1.0),
+            "first_implied_sum": first_lane.get("implied_sum", -1.0),
+            "latest_mean": latest_lane.get("mean", -1.0),
+            "latest_min": latest_lane.get("min", -1.0),
+            "latest_implied_sum": latest_lane.get("implied_sum", -1.0),
+            "mean_delta": latest_lane.get("mean", 0.0)
+            - first_lane.get("mean", 0.0),
+            "min_delta": latest_lane.get("min", 0.0)
+            - first_lane.get("min", 0.0),
+            "implied_delta": latest_lane.get("implied_sum", 0.0)
             - first_lane.get("implied_sum", 0.0),
-            "first_min_delta": latest_lane.get("min", 0.0) - first_lane.get("min", 0.0),
         }
     return features
 

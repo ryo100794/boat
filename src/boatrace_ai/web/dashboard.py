@@ -1356,10 +1356,21 @@ def _model_track_summaries(
         (row for row in backtests if row.get("file") == "backtest_no_odds_v8.json"),
         None,
     )
-    shadow = next(
+    formal_shadow = next(
         (row for row in backtests if row.get("file") == "realtime_odds_shadow_backtest.json"),
         None,
     )
+    provisional_shadow = next(
+        (
+            row
+            for row in backtests
+            if row.get("file")
+            == "realtime_odds_shadow_t5_safe_candidate_backtest.json"
+        ),
+        None,
+    )
+    shadow = formal_shadow or provisional_shadow
+    shadow_is_provisional = formal_shadow is None and provisional_shadow is not None
     state_path = model_dir / "realtime_odds_shadow_state.json"
     try:
         shadow_state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1369,7 +1380,9 @@ def _model_track_summaries(
     required = int(shadow_state.get("required_races") or REALTIME_SHADOW_TARGET_RACES)
     shadow_status = (
         "評価済み"
-        if shadow
+        if formal_shadow
+        else "暫定評価済み"
+        if shadow_is_provisional
         else "学習・評価中"
         if shadow_state.get("ready")
         else "学習待ち/蓄積中"
@@ -1400,9 +1413,13 @@ def _model_track_summaries(
             "role": "比較評価のみ",
             "status": shadow_status,
             "include_odds": True,
-            "model_file": "realtime_odds_shadow.joblib",
-            "teacher": "締切前odds 10時点以上を持つ確定6艇レース / 1着=1・2着以下=0",
-            "training": "過去ログ特徴+odds系列 / LogisticRegression / 5fold時系列 / 1,000R到達後に学習",
+            "model_file": (
+                "realtime_odds_shadow_t5_safe_candidate.joblib"
+                if shadow_is_provisional
+                else "realtime_odds_shadow.joblib"
+            ),
+            "teacher": "T-5以前の公式odds 10時点以上を持つ確定6艇レース / 1着=1・2着以下=0",
+            "training": "過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習",
             "eligible_races": eligible,
             "target_races": required,
             "backtest_available": bool(shadow),

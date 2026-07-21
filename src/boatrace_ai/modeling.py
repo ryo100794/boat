@@ -13,7 +13,7 @@ from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from .legacy_model_aliases import load_model_bundle
 from .db import insert_prediction_rows, race_id
@@ -58,6 +58,14 @@ def train_model(
         "races": len({row["race_id"] for row in meta}),
         "through_date": through_date,
         "from_date": from_date,
+        "feature_cutoff": "deadline_minus_5_minutes",
+        "training_config": {
+            "scaler": "StandardScaler(with_mean=False)",
+            "classifier": "LogisticRegression",
+            "C": 0.2,
+            "class_weight": None,
+            "solver": "liblinear",
+        },
         "include_odds": include_odds,
         "target": "lane_win_probability",
     }
@@ -145,6 +153,14 @@ def backtest_model(
         "races": len(races),
         "include_odds": include_odds,
         "from_date": from_date,
+        "feature_cutoff": "deadline_minus_5_minutes",
+        "training_config": {
+            "scaler": "StandardScaler(with_mean=False)",
+            "classifier": "LogisticRegression",
+            "C": 0.2,
+            "class_weight": None,
+            "solver": "liblinear",
+        },
         "entry_log_loss": _safe_log_loss(all_entry_labels, all_entry_probs),
         "entry_brier": brier_score_loss(all_entry_labels, all_entry_probs),
         **race_metrics,
@@ -305,11 +321,12 @@ def _make_pipeline() -> Pipeline:
                 "sparse_index_compat",
                 FunctionTransformer(_ensure_int32_sparse_indices, accept_sparse=True),
             ),
+            ("scaler", StandardScaler(with_mean=False)),
             (
                 "classifier",
                 LogisticRegression(
                     max_iter=600,
-                    class_weight="balanced",
+                    C=0.2,
                     solver="liblinear",
                 ),
             ),

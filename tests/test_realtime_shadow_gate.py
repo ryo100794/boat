@@ -8,10 +8,10 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE races (race_id TEXT PRIMARY KEY, race_date TEXT);
+        CREATE TABLE races (race_id TEXT PRIMARY KEY, race_date TEXT, deadline_at TEXT);
         CREATE TABLE entries (race_id TEXT, lane INTEGER);
         CREATE TABLE race_results (race_id TEXT, lane INTEGER, rank INTEGER);
-        CREATE TABLE odds_snapshots (snapshot_id INTEGER PRIMARY KEY, race_id TEXT);
+        CREATE TABLE odds_snapshots (snapshot_id INTEGER PRIMARY KEY, race_id TEXT, captured_at TEXT);
         """
     )
     for race_id, race_date, snapshots in (
@@ -20,16 +20,18 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
         ("short", "2026-07-18", 9),
         ("incomplete", "2026-07-18", 10),
     ):
-        conn.execute("INSERT INTO races VALUES (?, ?)", (race_id, race_date))
+        conn.execute(
+            "INSERT INTO races VALUES (?, ?, ?)",
+            (race_id, race_date, f"{race_date}T10:20:00+09:00"),
+        )
         lanes = (1, 2, 3) if race_id == "incomplete" else (1, 2, 3, 4, 5, 6)
         for lane in lanes:
             conn.execute("INSERT INTO entries VALUES (?, ?)", (race_id, lane))
             conn.execute("INSERT INTO race_results VALUES (?, ?, ?)", (race_id, lane, lane))
         conn.executemany(
-            "INSERT INTO odds_snapshots (race_id) VALUES (?)",
-            [(race_id,)] * snapshots,
+            "INSERT INTO odds_snapshots (race_id, captured_at) VALUES (?, ?)",
+            [(race_id, f"{race_date}T10:{minute:02d}:00+09:00") for minute in range(snapshots)],
         )
-
     counts = dataset_counts(
         conn,
         from_date="2026-07-18",
