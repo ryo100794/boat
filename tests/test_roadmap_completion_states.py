@@ -125,12 +125,12 @@ def test_completed_model_evaluations_show_final_outcomes() -> None:
         )
     }
 
-    assert improvements["M4-1"]["progress"] == 70
-    assert improvements["M4-1"]["status"] == "予測評価済み/統一資金運用待ち"
+    assert improvements["M4-1"]["progress"] == 100
+    assert improvements["M4-1"]["status"] == "評価完了/昇格見送り"
     assert improvements["M4-2"]["progress"] == 60
     assert improvements["M4-2"]["status"] == "要再検証/欠損表現修正待ち"
-    assert improvements["M4-3"]["progress"] == 85
-    assert improvements["M4-3"]["status"] == "要改善/昇格見送り"
+    assert improvements["M4-3"]["progress"] == 100
+    assert improvements["M4-3"]["status"] == "評価完了/昇格見送り"
     assert "ROI 0.7997" in improvements["M4-3"]["next"]
     assert improvements["M6-1"]["status"] == "蓄積待ち"
     assert improvements["M6-1"]["progress"] == 35
@@ -215,3 +215,41 @@ def test_versioned_inventory_scans_nested_packages(tmp_path) -> None:
 
     assert inventory["count"] == 1
     assert inventory["sample"] == [str(Path("runtime") / "worker_v2.py")]
+
+
+def test_local_artifacts_override_stale_remote_state(tmp_path) -> None:
+    from boatrace_ai.web.dashboard import _hydrate_local_evaluation_jobs
+
+    status_path = tmp_path / "data" / "remote_eval_status.json"
+    artifact = tmp_path / "data" / "models" / "completed.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        '{"roi": 0.84, "profit_yen": -1600, "evaluated_races": 105}',
+        encoding="utf-8",
+    )
+    hydrated = _hydrate_local_evaluation_jobs(
+        {
+            "status": "取得失敗",
+            "error": "old worker unavailable",
+            "jobs": [
+                {
+                    "kind": "bankroll_temporal_no_bet",
+                    "output": "data/models/completed.json",
+                }
+            ],
+        },
+        status_path,
+    )
+
+    assert hydrated["status"] == "ローカル成果物で更新"
+    assert "error" not in hydrated
+    assert hydrated["jobs"][0]["status"] == "完了"
+    assert hydrated["jobs"][0]["result"]["metrics"]["roi"] == 0.84
+
+
+def test_collector_deployment_enables_predictions() -> None:
+    script = Path("scripts/deployment/run-boatrace-collector-foreground.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--predict" in script

@@ -1307,6 +1307,7 @@ def _merge_standardized_v2_status(
                                 "bankroll_evaluated_races",
                                 "entry_log_loss",
                                 "entry_brier",
+                                "ranking_log_loss",
                                 "winner_top1_accuracy",
                                 "trifecta_top5_hit_rate",
                                 "roi",
@@ -3274,6 +3275,10 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         progress = progress_active_fast(db_path, {"date": [race_date]})
     except Exception as exc:
         progress = {"error": str(exc)}
+    progress = dict(progress)
+    progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
+        db_path.parent / "models"
+    )
 
     summary: dict[str, Any]
     try:
@@ -3411,7 +3416,148 @@ def _read_remote_eval_status(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"status": "形式不正", "jobs": []}
     payload.setdefault("jobs", [])
-    return payload
+    return _hydrate_local_evaluation_jobs(payload, path)
+
+
+_LOCAL_EVALUATION_METRICS = (
+    "roi",
+    "profit_yen",
+    "stake_yen",
+    "return_yen",
+    "evaluated_races",
+    "selected_races",
+    "tickets",
+    "hit_tickets",
+    "ticket_hit_rate",
+    "race_hit_rate",
+    "max_drawdown_yen",
+    "skipped_no_real_odds",
+    "real_odds_races",
+    "entry_log_loss",
+    "entry_brier",
+    "winner_top1_accuracy",
+    "trifecta_top5_hit_rate",
+    "ranking_log_loss",
+    "promotion_eligible",
+    "holdout_races",
+    "bankroll_evaluated_races",
+)
+
+
+def _hydrate_local_evaluation_jobs(
+    payload: dict[str, Any], status_path: Path
+) -> dict[str, Any]:
+    """Prefer migrated local artifacts over stale state from an old worker."""
+    project_root = status_path.parent.parent
+    jobs: list[dict[str, Any]] = []
+    local_results = 0
+    for source in payload.get("jobs") or []:
+        job = dict(source)
+        output = str(job.get("output") or "")
+        output_path = project_root / output if output else None
+        result = _local_evaluation_result(output_path) if output_path else None
+        if job.get("superseded_by"):
+            job["status"] = "差替済み"
+            job["running"] = False
+        elif result and not result.get("error"):
+            job["status"] = "完了"
+            job["running"] = False
+            job["result"] = result
+            local_results += 1
+        elif not job.get("status"):
+            job["status"] = "未生成"
+            job["running"] = False
+        jobs.append(job)
+    hydrated = dict(payload)
+    hydrated["jobs"] = jobs
+    if local_results:
+        if payload.get("error"):
+            hydrated["source_error"] = payload.get("error")
+            hydrated.pop("error", None)
+        hydrated["status"] = "ローカル成果物で更新"
+        hydrated["local_results"] = local_results
+    return hydrated
+
+
+def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    result: dict[str, Any] = {
+        "file": str(path),
+        "size_bytes": path.stat().st_size,
+        "modified_at": datetime.fromtimestamp(
+            path.stat().st_mtime, timezone.utc
+        ).isoformat(),
+    }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        result["error"] = str(exc)
+        return result
+    if not isinstance(data, dict):
+        result["error"] = "result is not an object"
+        return result
+    metrics = {
+        key: data.get(key) for key in _LOCAL_EVALUATION_METRICS if key in data
+    }
+    holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
+    if isinstance(holdout, dict):
+        metrics.update(
+            {
+                key: holdout.get(key)
+                for key in _LOCAL_EVALUATION_METRICS
+                if key in holdout
+            }
+        )
+        bankroll = holdout.get("bankroll") or data.get("bankroll") or {}
+        if isinstance(bankroll, dict):
+            metrics.update(
+                {
+                    key: bankroll.get(key)
+                    for key in _LOCAL_EVALUATION_METRICS
+                    if key in bankroll
+                }
+            )
+    result["metrics"] = metrics
+    result["model"] = data.get("model")
+    result["feature_set"] = data.get("feature_set")
+    result["daily"] = data.get("daily") or []
+    if isinstance(data.get("folds"), list):
+        result["folds"] = len(data["folds"])
+    if "ticket_roi_attribution" in data:
+        result["ticket_roi_attribution"] = data.get("ticket_roi_attribution") or {}
+    return result
+
+
+def _shadow_roadmap_status(model_dir: Path) -> dict[str, Any]:
+    paths = {
+        "state": model_dir / "realtime_odds_shadow_t5_safe_candidate_state.json",
+        "backtest": model_dir
+        / "realtime_odds_shadow_t5_safe_candidate_backtest.json",
+        "bankroll": model_dir
+        / "bankroll_realtime_odds_shadow_t5_safe_candidate_ev120_p010_odds60_10000.json",
+    }
+    values: dict[str, dict[str, Any]] = {}
+    for key, path in paths.items():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            data = {}
+        values[key] = data if isinstance(data, dict) else {}
+    backtest = values["backtest"]
+    bankroll = values["bankroll"]
+    return {
+        "available": bool(backtest),
+        "generated_at": backtest.get("generated_at"),
+        "evaluated_races": backtest.get("evaluated_races"),
+        "entry_log_loss": backtest.get("entry_log_loss"),
+        "winner_top1_accuracy": backtest.get("winner_top1_accuracy"),
+        "trifecta_top5_hit_rate": backtest.get("trifecta_top5_hit_rate"),
+        "bankroll_evaluated_races": bankroll.get("evaluated_races"),
+        "roi": bankroll.get("roi"),
+        "profit_yen": bankroll.get("profit_yen"),
+        "state": values["state"],
+    }
 
 
 def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3584,6 +3730,10 @@ def _roadmap_improvements(
     teleboat: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     realtime = (progress or {}).get("realtime") or {}
+    shadow_evaluation = (progress or {}).get("realtime_shadow_evaluation") or {}
+    target_races = int(
+        realtime.get("target_eligible_races") or REALTIME_SHADOW_TARGET_RACES
+    )
     remote_jobs = ((remote_evaluations or {}).get("jobs") or [])
     standardized_jobs = [
         row
@@ -3597,6 +3747,9 @@ def _roadmap_improvements(
         and str(row.get("name")) in _STANDARDIZED_V2_JOB_NAMES
     })
     standardized_expected = len(_STANDARDIZED_V2_JOB_NAMES)
+    standardized_by_name = {
+        str(row.get("name") or ""): row for row in standardized_jobs
+    }
     standardized_bankrolls = [
         row
         for row in standardized_jobs
@@ -3641,18 +3794,30 @@ def _roadmap_improvements(
         str(row.get("kind") or "") == "リアルタイムshadow"
         for row in (processes or [])
     )
+    predictor_running = any(
+        str(row.get("kind") or "") == "予測ループ"
+        for row in (processes or [])
+    )
     calibrated_jobs = [
         row
-        for row in ((remote_evaluations or {}).get("jobs") or [])
+        for row in remote_jobs
         if row.get("kind") in {"calibrated_linear", "calibrated_mlp"}
     ]
-    calibrated_complete = bool(calibrated_jobs) and all(
-        row.get("status") == "完了" for row in calibrated_jobs
-    )
     calibrated_metrics = {
         str(row.get("kind")): ((row.get("result") or {}).get("metrics") or {})
         for row in calibrated_jobs
+        if row.get("status") == "完了"
     }
+    for model_id in ("calibrated_linear", "calibrated_mlp"):
+        standard = standardized_by_name.get(f"standardized_365d_v2_{model_id}") or {}
+        if model_id not in calibrated_metrics and standard.get("status") == "完了":
+            calibrated_metrics[model_id] = (
+                ((standard.get("result") or {}).get("metrics") or {})
+            )
+    calibrated_complete = {
+        "calibrated_linear",
+        "calibrated_mlp",
+    } <= calibrated_metrics.keys()
     linear_metrics = calibrated_metrics.get("calibrated_linear") or {}
     mlp_metrics = calibrated_metrics.get("calibrated_mlp") or {}
     calibrated_next = (
@@ -3667,22 +3832,24 @@ def _roadmap_improvements(
         else "linear/MLPを同一2foldで比較し、主系より較正性能が良い場合だけ資金運用評価へ進める。"
     )
     listwise_search_job = next(
-        (row for row in ((remote_evaluations or {}).get("jobs") or []) if row.get("kind") == "feature_teacher_search"),
+        (row for row in remote_jobs if row.get("kind") == "feature_teacher_search"),
         None,
+    ) or standardized_by_name.get(
+        "standardized_365d_v2_listwise_feature_teacher"
     )
     listwise_newton_job = next(
-        (row for row in ((remote_evaluations or {}).get("jobs") or []) if row.get("kind") == "newton_listwise_bankroll"),
+        (row for row in remote_jobs if row.get("kind") == "newton_listwise_bankroll"),
         None,
-    )
+    ) or standardized_by_name.get("standardized_365d_v2_listwise_newton")
     listwise_search_status = str((listwise_search_job or {}).get("status") or "未登録")
     listwise_newton_status = str((listwise_newton_job or {}).get("status") or "未登録")
     listwise_metrics = ((listwise_newton_job or {}).get("result") or {}).get("metrics") or {}
     listwise_promoted = bool(listwise_metrics.get("promotion_eligible"))
     listwise_next = (
-        "未使用holdout 9,404Rの評価完了。"
+        f"標準365日 {int(listwise_metrics.get('evaluated_races') or listwise_metrics.get('bankroll_evaluated_races') or 0):,}Rの評価完了。"
         f"1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%、"
         f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%、"
-        f"順位LogLoss {float(listwise_metrics.get('ranking_log_loss') or 0):.4f}、"
+        f"LogLoss {float(listwise_metrics.get('entry_log_loss') or listwise_metrics.get('ranking_log_loss') or 0):.4f}、"
         f"資金運用ROI {float(listwise_metrics.get('roi') or 0):.4f}、"
         f"損益 {int(listwise_metrics.get('profit_yen') or 0):,}円。"
         + ("昇格候補として次段評価へ進める。" if listwise_promoted else "ROI/収束ゲート未達のため昇格見送り。")
@@ -3748,16 +3915,28 @@ def _roadmap_improvements(
         {
             "id": "M2-3",
             "milestone": "M2",
-            "status": "修正済み/監視中",
-            "progress": 90,
+            "status": "完了/運用監視",
+            "progress": 100,
             "item": "公式結果URL障害と結果待ち滞留",
-            "next": "廃止された /race/result を公開 /race/raceresult へ修正。本日滞留7Rを回収済み。公開結果反映後15分超の結果待ちが再発しないことを当日監視する。",
+            "next": "公開 /race/raceresult への修正後、7月20日滞留7Rを回収し、7月21日144Rも結果残0で完了。15分超の結果待ちは通常監視へ移管する。",
+        },
+        {
+            "id": "M2-4",
+            "milestone": "M2/M4",
+            "status": "復旧済み/翌開催確認" if predictor_running else "要復旧",
+            "progress": 95 if predictor_running else 20,
+            "item": "PostgreSQL収集常駐の予測オプション脱落",
+            "next": (
+                "7月21日144Rは収集・結果・oddsが揃ったが予測0R。常駐へ--predictを復帰済み。次開催日の締切前予測生成を確認して閉じる。"
+                if predictor_running
+                else "収集常駐を--predict付きで再起動し、プロセス引数と予測生成を確認する。"
+            ),
         },
         {
             "id": "M4-1",
             "milestone": "M4/M5",
-            "status": "予測評価済み/統一資金運用待ち" if calibrated_complete else "実装済み/評価待ち",
-            "progress": 70 if calibrated_complete else 45,
+            "status": "評価完了/昇格見送り" if calibrated_complete else "実装済み/評価待ち",
+            "progress": 100 if calibrated_complete else 45,
             "item": "較正linear/MLP shadow導入",
             "next": calibrated_next,
         },
@@ -3773,7 +3952,7 @@ def _roadmap_improvements(
             "id": "M4-3",
             "milestone": "M4/M6",
             "status": (
-                ("評価完了/昇格候補" if listwise_promoted else "要改善/昇格見送り")
+                ("評価完了/昇格候補" if listwise_promoted else "評価完了/昇格見送り")
                 if listwise_newton_status == "完了"
                 else "Newton-CG実行中"
                 if listwise_newton_status == "実行中"
@@ -3781,7 +3960,7 @@ def _roadmap_improvements(
                 if listwise_search_status == "実行中"
                 else "探索待ち"
             ),
-            "progress": (100 if listwise_promoted else 85) if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
+            "progress": 100 if listwise_newton_status == "完了" else 90 if listwise_search_status == "完了" else 70 if listwise_search_status == "実行中" else 55,
             "item": "race-softmax/Plackett-Luce再設計とNewton-CG収束",
             "next": listwise_next,
         },
@@ -3799,7 +3978,7 @@ def _roadmap_improvements(
             ),
             "item": "全モデル標準365日同一holdout比較",
             "next": (
-                f"統一v2の6モデルを同一365日・同一対象R・同一資金運用条件で完走。"
+                f"統一v2の7モデルを同一365日・同一対象R・同一資金運用条件で完走。"
                 f"no_odds_v8は1着 {float(standard_no_odds_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(standard_no_odds_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
                 f"資金運用最高は{str((best_standardized or {}).get('name') or '-')}のROI "
@@ -3815,15 +3994,35 @@ def _roadmap_improvements(
             "status": "蓄積中" if shadow_running else "要復旧",
             "progress": int(readiness * 100),
             "item": "実オッズ併用shadowの自動学習ゲート",
-            "next": f"締切前oddsを10時点以上持つ確定R {eligible_races:,}/{REALTIME_SHADOW_TARGET_RACES:,}。到達までは過去ログ主系を維持し、到達後に自動学習・時間fold評価する。",
+            "next": f"締切前oddsを10時点以上持つ確定R {eligible_races:,}/{target_races:,}。450R以降は3fold暫定評価を自動更新し、1,000R到達後に正式5fold評価する。",
         },
         {
             "id": "M6-1",
             "milestone": "M6",
-            "status": "蓄積待ち" if readiness < 1.0 else "評価開始待ち",
-            "progress": int(readiness * 100),
+            "status": (
+                "暫定評価済み/正式1,000R待ち"
+                if shadow_evaluation.get("available")
+                else "蓄積待ち"
+                if readiness < 1.0
+                else "評価開始待ち"
+            ),
+            "progress": min(
+                95,
+                max(
+                    int(readiness * 100),
+                    50 if shadow_evaluation.get("available") else 0,
+                ),
+            ),
             "item": "実オッズ履歴不足の扱い",
-            "next": f"実オッズ必須評価は履歴不足で全skipを確認済み。対象 {eligible_races:,}/{REALTIME_SHADOW_TARGET_RACES:,}R。到達までは過去ログ中心評価を主判定にする。",
+            "next": (
+                f"T-5以前だけで暫定評価 {int(shadow_evaluation.get('evaluated_races') or 0):,}R、"
+                f"LogLoss {float(shadow_evaluation.get('entry_log_loss') or 0):.4f}、"
+                f"1着 {float(shadow_evaluation.get('winner_top1_accuracy') or 0) * 100:.2f}%、"
+                f"3T5 {float(shadow_evaluation.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
+                f"正式判定は対象 {eligible_races:,}/{target_races:,}R到達後。"
+                if shadow_evaluation.get("available")
+                else f"対象 {eligible_races:,}/{target_races:,}R。到達までは過去ログ中心評価を主判定にする。"
+            ),
         },
         {
             "id": "M6-2",
@@ -3897,6 +4096,25 @@ def _roadmap_improvements(
                 f"購入券 {int(temporal_metrics.get('tickets') or 0):,}。収益ゲートで採否判定する。"
                 if temporal_status == "完了"
                 else f"チェックポイントからfold {temporal_completed}/{temporal_expected}を再開中。holdoutを見ず学習内calibrationだけでno-bet条件を選ぶ。"
+            ),
+        },
+        {
+            "id": "M6-10",
+            "milestone": "M6",
+            "status": (
+                "暫定評価済み/要改善"
+                if shadow_evaluation.get("roi") is not None
+                else "正式評価待ち"
+            ),
+            "progress": 55 if shadow_evaluation.get("roi") is not None else 25,
+            "item": "実オッズ市場較正とno-bet条件の再設計",
+            "next": (
+                f"T-5実オッズ暫定資金運用 {int(shadow_evaluation.get('bankroll_evaluated_races') or 0):,}R、"
+                f"ROI {float(shadow_evaluation.get('roi') or 0):.4f}、"
+                f"損益 {int(shadow_evaluation.get('profit_yen') or 0):,}円。"
+                "確率過信を抑える時間fold較正とno-bet条件を学習内で選び、1,000R正式評価へ進める。"
+                if shadow_evaluation.get("roi") is not None
+                else "T-5以前の実オッズだけで資金運用を評価し、市場確率較正とno-bet条件を学習内で選ぶ。"
             ),
         },
         {
@@ -4016,6 +4234,8 @@ def _roadmap_milestones(
     sanity_status = str((sanity or {}).get("status") or "")
     m4_progress = (
         100
+        if standardized_complete
+        else 100
         if listwise_newton_status == "完了"
         else 96
         if listwise_newton_status == "実行中"
@@ -4043,6 +4263,11 @@ def _roadmap_milestones(
         else 75
     )
     realtime_readiness = float(realtime.get("readiness") or 0.0)
+    realtime_target = int(
+        realtime.get("target_eligible_races") or REALTIME_SHADOW_TARGET_RACES
+    )
+    source_inventory = _v_file_inventory(PROJECT_ROOT / "src" / "boatrace_ai")
+    source_clean = int(source_inventory.get("count") or 0) == 0
 
     web_running = "Webサーバ" in process_kinds
     collector_running = "リアルタイム収集" in process_kinds
@@ -4091,17 +4316,17 @@ def _roadmap_milestones(
             "id": "M4",
             "title": "過去ログ中心モデル",
             "status": (
-                "listwise再設計を評価中"
+                "評価完了/昇格候補"
+                if standardized_complete and listwise_promoted
+                else "評価完了/主系維持"
+                if standardized_complete
+                else "listwise再設計を評価中"
                 if listwise_newton_status != "完了"
                 else "統一再評価中"
-                if not standardized_complete
-                else "評価完了/昇格候補"
-                if listwise_promoted
-                else "評価完了/主系維持"
             ),
             "progress": m4_progress,
             "next": (
-                "標準365日・48,294Rで全モデル比較完了。予測主系と候補の指標を同一期間で比較し、主系を維持する。"
+                f"標準365日・{int(best_standard_metrics.get('evaluated_races') or best_standard_metrics.get('bankroll_evaluated_races') or 0):,}Rで7モデル比較完了。予測主系と候補を同一期間で比較し、主系を維持する。"
                 if standardized_complete
                 else f"統一標準365日v2未完了。未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"
@@ -4115,8 +4340,8 @@ def _roadmap_milestones(
             "id": "M5",
             "title": "リアルタイム併用モデル",
             "status": "並走/蓄積中" if shadow_running else "要起動",
-            "progress": min(70, 25 + int(realtime_readiness * 50)) if shadow_running else 20,
-            "next": f"実オッズ付き完了R {int(realtime.get("eligible_races") or 0):,}/{REALTIME_SHADOW_TARGET_RACES:,}。到達後に自動学習・時系列評価する",
+            "progress": min(80, 10 + int(realtime_readiness * 70)) if shadow_running else 20,
+            "next": f"実オッズ付き完了R {int(realtime.get('eligible_races') or 0):,}/{realtime_target:,}。450R以降は暫定3foldを更新し、到達後に正式5fold評価する",
         },
         {
             "id": "M6",
@@ -4129,7 +4354,7 @@ def _roadmap_milestones(
                 + (
                     "temporal no-bet 5foldを回収し、収益ゲートで終了判定する。"
                     if temporal_status != "完了"
-                    else "全評価を回収済み。ROI/損益未達のため本番購入はno-betを維持する。"
+                    else "既存評価は回収済み。ROI/損益未達のため本番no-betを維持し、実オッズ1,000R正式評価を次候補とする。"
                 )
                 if standardized_complete
                 else "標準365日同一holdout比較とtemporal no-bet評価を回収する。"
@@ -4138,9 +4363,13 @@ def _roadmap_milestones(
         {
             "id": "M7",
             "title": "v系ファイル整理",
-            "status": "進行中",
-            "progress": 75,
-            "next": "集約差分の全テストと常駐入口の切替を完了し、旧joblib互換を検証する",
+            "status": "完了/運用監視" if source_clean else "要整理",
+            "progress": 100 if source_clean else 75,
+            "next": (
+                "番号付き/vN package Python 0本、安定版入口への切替と旧joblib互換を全テストで維持する"
+                if source_clean
+                else f"番号付き/vN package Python {int(source_inventory.get('count') or 0)}本を安定名へ集約する"
+            ),
         },
         {
             "id": "M8",
@@ -4166,9 +4395,12 @@ def _process_snapshots() -> list[dict[str, Any]]:
     patterns = [
         ("web_dashboard", "Webサーバ"),
         ("-m boatrace_ai.web.dashboard", "Webサーバ"),
+        ("-m boatrace_ai.web.postgresql_dashboard", "Webサーバ"),
         ("realtime_predictor", "予測ループ"),
         ("realtime_collector", "リアルタイム収集"),
         ("-m boatrace_ai.runtime.collector", "リアルタイム収集"),
+        ("-m boatrace_ai.runtime.postgresql_collector", "リアルタイム収集"),
+        ("--predict", "予測ループ"),
         ("model_cycle", "リアルタイムshadow"),
         ("predict_loop", "予測ループ"),
         ("backfill", "過去バックフィル"),

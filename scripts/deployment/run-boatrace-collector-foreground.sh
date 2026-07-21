@@ -36,4 +36,5 @@ exec env \
   --raw-dir "$RAW" \
   --sleep-loop 10 \
   --sleep-page 0.4 \
+  --predict \
   --collect-results

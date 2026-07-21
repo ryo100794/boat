@@ -45,7 +45,7 @@ def v2_jobs(*, missing: str | None = None) -> dict:
     return {"jobs": jobs}
 
 
-def test_all_six_v2_models_complete_unified_evaluation() -> None:
+def test_all_seven_v2_models_complete_unified_evaluation() -> None:
     improvements = {
         row["id"]: row for row in _roadmap_improvements({}, [], v2_jobs())
     }

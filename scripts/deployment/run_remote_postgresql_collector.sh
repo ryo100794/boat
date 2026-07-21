@@ -39,6 +39,7 @@ while [[ "$stopping" == 0 ]]; do
     --raw-dir "$RAW" \
     --sleep-loop 10 \
     --sleep-page 0.4 \
+    --predict \
     --collect-results >>"$LOG" 2>&1 &
   child_pid=$!
   status=0
