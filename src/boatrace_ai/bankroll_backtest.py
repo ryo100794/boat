@@ -36,6 +36,8 @@ def bankroll_backtest(
     from_date: str | None = None,
     min_odds_snapshots: int = 0,
     ev_threshold: float = 1.0,
+    min_ticket_probability: float = 0.0,
+    max_estimated_odds: float | None = None,
     max_tickets_per_race: int = 5,
     payout_prior_weight: float = 30.0,
     require_real_odds: bool = False,
@@ -44,6 +46,10 @@ def bankroll_backtest(
         raise ValueError("daily_budget_yen must be at least one betting unit")
     if daily_budget_yen % unit_yen:
         raise ValueError("daily_budget_yen must be divisible by unit_yen")
+    if not 0.0 <= min_ticket_probability <= 1.0:
+        raise ValueError("min_ticket_probability must be between zero and one")
+    if max_estimated_odds is not None and max_estimated_odds <= 0.0:
+        raise ValueError("max_estimated_odds must be positive")
     if max_tickets_per_race < 1:
         raise ValueError("max_tickets_per_race must be positive")
 
@@ -141,6 +147,8 @@ def bankroll_backtest(
                 actual=payout,
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
+                min_ticket_probability=min_ticket_probability,
+                max_estimated_odds=max_estimated_odds,
                 real_odds_snapshot=real_odds_snapshot,
             )[:max_tickets_per_race]
             fold_candidates += len(race_candidates)
@@ -175,6 +183,8 @@ def bankroll_backtest(
             "include_odds": include_odds,
             "require_real_odds": require_real_odds,
             "ev_threshold": ev_threshold,
+            "min_ticket_probability": min_ticket_probability,
+            "max_estimated_odds": max_estimated_odds,
             "max_tickets_per_race": max_tickets_per_race,
             "payout_estimator": "deadline real odds" if require_real_odds else "train-fold average payout by trifecta combination, blended with train-fold global average",
             "payout_prior_weight": payout_prior_weight,
@@ -196,6 +206,7 @@ def bankroll_backtest(
         "real_odds_races": len(real_odds_races),
         "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": len(candidates),
+        "candidate_hit_tickets": sum(1 for item in candidates if item["hit"]),
         **allocated,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,6 +281,8 @@ def _candidate_tickets(
     payout_model: dict[str, dict[str, float]],
     ev_threshold: float,
     real_odds_snapshot: dict[str, Any] | None = None,
+    min_ticket_probability: float = 0.0,
+    max_estimated_odds: float | None = None,
 ) -> list[dict[str, Any]]:
     lane_probs = _normalize_lane_probs(
         {int(row["lane"]): float(row["probability"]) for row in rows}
@@ -299,6 +312,11 @@ def _candidate_tickets(
             estimated_payout_yen = float(payout_estimate["estimated_payout_yen"])
             payout_history_count = int(payout_estimate["history_count"])
             odds_source = "payout_model"
+        ticket_probability = float(prediction["probability"])
+        if ticket_probability < min_ticket_probability:
+            continue
+        if max_estimated_odds is not None and estimated_odds > max_estimated_odds:
+            continue
         estimated_ev = float(prediction["probability"]) * estimated_odds
         if estimated_ev < ev_threshold:
             continue
@@ -464,6 +482,9 @@ def _allocate_daily_budget(
     hit_tickets = sum(1 for item in selected if item["hit"])
     selected_races = {item["race_id"] for item in selected}
     hit_races = {item["race_id"] for item in selected if item["hit"]}
+    selected_odds = [float(item["estimated_odds"]) for item in selected]
+    selected_probabilities = [float(item["probability"]) for item in selected]
+    selected_evs = [float(item["estimated_ev"]) for item in selected]
     betting_days = [row for row in daily_rows if row["stake_yen"] > 0]
 
     return {
@@ -478,6 +499,18 @@ def _allocate_daily_budget(
         "hit_tickets": hit_tickets,
         "ticket_hit_rate": hit_tickets / len(selected) if selected else 0.0,
         "race_hit_rate": len(hit_races) / len(selected_races) if selected_races else 0.0,
+        "avg_selected_odds": (
+            sum(selected_odds) / len(selected_odds) if selected_odds else None
+        ),
+        "max_selected_odds": max(selected_odds) if selected_odds else None,
+        "avg_selected_probability": (
+            sum(selected_probabilities) / len(selected_probabilities)
+            if selected_probabilities
+            else None
+        ),
+        "avg_selected_ev": (
+            sum(selected_evs) / len(selected_evs) if selected_evs else None
+        ),
         "stake_yen": stake_total,
         "return_yen": return_total,
         "profit_yen": profit_total,
@@ -502,6 +535,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-odds-snapshots", type=int, default=0)
     parser.add_argument("--require-real-odds", action="store_true")
     parser.add_argument("--ev-threshold", type=float, default=1.0)
+    parser.add_argument("--min-ticket-probability", type=float, default=0.0)
+    parser.add_argument("--max-estimated-odds", type=float)
     parser.add_argument("--max-tickets-per-race", type=int, default=5)
     parser.add_argument("--payout-prior-weight", type=float, default=30.0)
     args = parser.parse_args(argv)
@@ -518,6 +553,8 @@ def main(argv: list[str] | None = None) -> int:
             from_date=args.from_date,
             min_odds_snapshots=args.min_odds_snapshots,
             ev_threshold=args.ev_threshold,
+            min_ticket_probability=args.min_ticket_probability,
+            max_estimated_odds=args.max_estimated_odds,
             max_tickets_per_race=args.max_tickets_per_race,
             payout_prior_weight=args.payout_prior_weight,
             require_real_odds=args.require_real_odds,

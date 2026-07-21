@@ -167,6 +167,26 @@ class RoiAttributionTest(unittest.TestCase):
         self.assertEqual(target["feature_context"]["first_racer_class"], "A1")
         self.assertEqual(target["feature_context"]["second_motor_2_rate_rank"], 2)
         self.assertEqual(target["feature_context"]["race_month"], "1")
+        self.assertEqual(
+            _candidate_tickets(
+                rows,
+                actual={"combination": "1-2-3", "payout_yen": 10_000},
+                payout_model=payout_model,
+                ev_threshold=0.0,
+                min_ticket_probability=0.01,
+            ),
+            [],
+        )
+        self.assertEqual(
+            _candidate_tickets(
+                rows,
+                actual={"combination": "1-2-3", "payout_yen": 10_000},
+                payout_model=payout_model,
+                ev_threshold=0.0,
+                max_estimated_odds=60.0,
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":
