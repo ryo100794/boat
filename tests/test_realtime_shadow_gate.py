@@ -1,6 +1,6 @@
 import sqlite3
 
-from boatrace_ai.runtime.model_cycle import dataset_counts
+from boatrace_ai.runtime.model_cycle import dataset_counts, evaluation_due, read_state
 
 
 def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
@@ -38,3 +38,39 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
     )
 
     assert counts == {"examples": 6, "races": 1, "odds_result_races": 1}
+
+
+def test_incremental_evaluation_waits_for_configured_new_races(tmp_path) -> None:
+    model = tmp_path / "shadow.joblib"
+    backtest = tmp_path / "shadow.json"
+    model.touch()
+    backtest.touch()
+
+    assert not evaluation_due(
+        eligible_races=1049,
+        last_evaluated_races=1000,
+        min_new_races=50,
+        artifacts_exist=model.exists() and backtest.exists(),
+    )
+    assert evaluation_due(
+        eligible_races=1050,
+        last_evaluated_races=1000,
+        min_new_races=50,
+        artifacts_exist=True,
+    )
+
+
+def test_incremental_evaluation_rebuilds_missing_artifact() -> None:
+    assert evaluation_due(
+        eligible_races=1001,
+        last_evaluated_races=1000,
+        min_new_races=50,
+        artifacts_exist=False,
+    )
+
+
+def test_read_state_tolerates_invalid_json(tmp_path) -> None:
+    state = tmp_path / "state.json"
+    state.write_text("not-json", encoding="utf-8")
+
+    assert read_state(state) == {}
