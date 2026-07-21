@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from sklearn.metrics import brier_score_loss
 
 from .bankroll_policy import race_confidence
 from .db import connection, init_db
@@ -14,6 +15,8 @@ from .modeling import (
     _make_pipeline,
     _normalize_lane_probs,
     _positive_probs,
+    _race_level_metrics,
+    _safe_log_loss,
     trifecta_predictions,
 )
 
@@ -30,6 +33,8 @@ def bankroll_backtest(
     folds: int = 5,
     min_train_races: int = 500,
     include_odds: bool = False,
+    from_date: str | None = None,
+    min_odds_snapshots: int = 0,
     ev_threshold: float = 1.0,
     max_tickets_per_race: int = 5,
     payout_prior_weight: float = 30.0,
@@ -42,7 +47,13 @@ def bankroll_backtest(
     if max_tickets_per_race < 1:
         raise ValueError("max_tickets_per_race must be positive")
 
-    X, y, meta = load_training_examples(conn, include_odds=include_odds)
+    X, y, meta = load_training_examples(
+        conn,
+        from_date=from_date,
+        include_odds=include_odds,
+        min_odds_snapshots=min_odds_snapshots,
+        complete_results_only=include_odds,
+    )
     if len(X) < 100:
         raise ValueError(f"not enough parsed historical examples: {len(X)}")
     races = sorted({row["race_id"] for row in meta})
@@ -61,6 +72,9 @@ def bankroll_backtest(
     real_odds_races: set[str] = set()
     skipped_no_real_odds = 0
     fold_results: list[dict[str, Any]] = []
+    all_entry_probs: list[float] = []
+    all_entry_labels: list[int] = []
+    race_predictions: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for fold in range(folds):
         test_start = min_train_races + fold * test_window
@@ -80,6 +94,8 @@ def bankroll_backtest(
         pipeline = _make_pipeline()
         pipeline.fit([X[i] for i in train_idx], [y[i] for i in train_idx])
         probs = _positive_probs(pipeline, [X[i] for i in test_idx])
+        all_entry_probs.extend(probs)
+        all_entry_labels.extend(y[i] for i in test_idx)
 
         by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for local_i, global_i in enumerate(test_idx):
@@ -95,6 +111,9 @@ def bankroll_backtest(
                     "probability": probs[local_i],
                 }
             )
+
+        for race_id_value, rows in by_race.items():
+            race_predictions[race_id_value].extend(rows)
 
         fold_candidates = 0
         fold_evaluated = 0
@@ -145,6 +164,8 @@ def bankroll_backtest(
         daily_budget_yen=daily_budget_yen,
         unit_yen=unit_yen,
     )
+    prediction_metrics = _race_level_metrics(race_predictions)
+
     result = {
         "generated_at": _now(),
         "policy": {
@@ -162,6 +183,15 @@ def bankroll_backtest(
         "folds": fold_results,
         "examples": len(X),
         "races": len(races),
+        "from_date": from_date,
+        "min_odds_snapshots": min_odds_snapshots,
+        "entry_log_loss": _safe_log_loss(all_entry_labels, all_entry_probs),
+        "entry_brier": (
+            float(brier_score_loss(all_entry_labels, all_entry_probs))
+            if all_entry_labels
+            else None
+        ),
+        **prediction_metrics,
         "evaluated_races": len(evaluated_races),
         "real_odds_races": len(real_odds_races),
         "skipped_no_real_odds": skipped_no_real_odds,
@@ -468,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-train-races", type=int, default=500)
     parser.add_argument("--include-odds", action="store_true")
+    parser.add_argument("--from-date")
+    parser.add_argument("--min-odds-snapshots", type=int, default=0)
     parser.add_argument("--require-real-odds", action="store_true")
     parser.add_argument("--ev-threshold", type=float, default=1.0)
     parser.add_argument("--max-tickets-per-race", type=int, default=5)
@@ -483,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
             folds=args.folds,
             min_train_races=args.min_train_races,
             include_odds=args.include_odds,
+            from_date=args.from_date,
+            min_odds_snapshots=args.min_odds_snapshots,
             ev_threshold=args.ev_threshold,
             max_tickets_per_race=args.max_tickets_per_race,
             payout_prior_weight=args.payout_prior_weight,
