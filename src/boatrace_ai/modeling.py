@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import joblib
-from .legacy_model_aliases import load_model_bundle
+import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer
 
+from .legacy_model_aliases import load_model_bundle
 from .db import insert_prediction_rows, race_id
 from .fast_math import TRIFECTA_COMBINATIONS, plackett_luce_probabilities
 from .features import (
@@ -300,6 +302,10 @@ def _make_pipeline() -> Pipeline:
         [
             ("vectorizer", DictVectorizer(sparse=True)),
             (
+                "sparse_index_compat",
+                FunctionTransformer(_ensure_int32_sparse_indices, accept_sparse=True),
+            ),
+            (
                 "classifier",
                 LogisticRegression(
                     max_iter=600,
@@ -309,6 +315,15 @@ def _make_pipeline() -> Pipeline:
             ),
         ]
     )
+
+
+def _ensure_int32_sparse_indices(matrix):
+    """Keep SciPy sparse output compatible with sklearn 32-bit solvers."""
+    if hasattr(matrix, "indices") and matrix.indices.dtype != np.int32:
+        matrix = matrix.copy()
+        matrix.indices = matrix.indices.astype(np.int32, copy=False)
+        matrix.indptr = matrix.indptr.astype(np.int32, copy=False)
+    return matrix
 
 
 def _positive_probs(pipeline: Pipeline, X: list[dict[str, Any]]) -> list[float]:

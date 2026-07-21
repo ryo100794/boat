@@ -1,3 +1,7 @@
+import numpy as np
+from scipy.sparse import csr_matrix
+
+from boatrace_ai.modeling import _ensure_int32_sparse_indices, _make_pipeline
 from boatrace_ai.db import connection, init_db
 from boatrace_ai.features import load_training_examples
 
@@ -46,3 +50,19 @@ def test_shadow_training_requires_odds_history_and_complete_results(tmp_path) ->
     assert len(features) == len(labels) == len(meta) == 6
     assert {row["race_id"] for row in meta} == {"ready"}
     assert all(feature["odds_snapshot_count"] == 10.0 for feature in features)
+
+
+def test_shadow_pipeline_accepts_scipy_int64_sparse_indices() -> None:
+    matrix = csr_matrix([[1.0, 0.0], [0.0, 2.0]])
+    matrix.indices = matrix.indices.astype(np.int64)
+    matrix.indptr = matrix.indptr.astype(np.int64)
+
+    converted = _ensure_int32_sparse_indices(matrix)
+
+    assert converted.indices.dtype == np.int32
+    assert converted.indptr.dtype == np.int32
+    pipeline = _make_pipeline()
+    pipeline.fit(
+        [{"lane": 1}, {"lane": 2}, {"lane": 1}, {"lane": 2}],
+        [1, 0, 1, 0],
+    )
