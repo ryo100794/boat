@@ -7,6 +7,7 @@ import pytest
 from boatrace_ai.listwise.market_calibration import (
     blend_probabilities,
     normalized_market_probabilities,
+    policy_calibration_eligible,
     load_scored_cache,
     select_calibrator,
     select_policy,
@@ -141,3 +142,26 @@ def test_scored_cache_requires_exact_contract(tmp_path) -> None:
         path,
         contract={**contract, "through_date": "2026-07-22"},
     ) is None
+
+
+def test_policy_calibration_requires_repeatable_winning_days() -> None:
+    result = {
+        "race_days": 3,
+        "winning_days": 1,
+        "tickets": 30,
+        "stake_yen": 3_000,
+        "return_yen": 5_000,
+        "profit_yen": 2_000,
+        "roi": 5 / 3,
+        "max_drawdown_yen": 1_000,
+    }
+    assert not policy_calibration_eligible(
+        result,
+        minimum_tickets=20,
+        minimum_stake_yen=2_000,
+    )
+    assert policy_calibration_eligible(
+        {**result, "winning_days": 2},
+        minimum_tickets=20,
+        minimum_stake_yen=2_000,
+    )

@@ -298,12 +298,10 @@ def select_policy(
         )
         eligible = bool(
             policy.get("no_bet")
-            or (
-                result["tickets"] >= minimum_tickets
-                and result["stake_yen"] >= minimum_stake
-                and result["profit_yen"] > 0
-                and result["roi"] >= 1.05
-                and result["max_drawdown_yen"] <= result["stake_yen"] * 0.75
+            or policy_calibration_eligible(
+                result,
+                minimum_tickets=minimum_tickets,
+                minimum_stake_yen=minimum_stake,
             )
         )
         rows.append(
@@ -325,6 +323,27 @@ def select_policy(
     return dict(selected["policy"]), rows
 
 
+def policy_calibration_eligible(
+    result: dict[str, Any],
+    *,
+    minimum_tickets: int,
+    minimum_stake_yen: int,
+) -> bool:
+    race_days = int(result["race_days"])
+    minimum_winning_days = min(
+        race_days,
+        max(1, math.ceil(race_days * 0.60)),
+    )
+    return bool(
+        int(result["tickets"]) >= minimum_tickets
+        and int(result["stake_yen"]) >= minimum_stake_yen
+        and int(result["profit_yen"]) > 0
+        and float(result["roi"]) >= 1.05
+        and int(result["winning_days"]) >= minimum_winning_days
+        and int(result["max_drawdown_yen"]) <= int(result["stake_yen"]) * 0.75
+    )
+
+
 def summarize_policy_candidates(rows: list[dict[str, Any]]) -> dict[str, Any]:
     candidates = [row for row in rows if not row["policy"].get("no_bet")]
     funded = [row for row in candidates if int(row["stake_yen"]) > 0]
@@ -342,6 +361,8 @@ def summarize_policy_candidates(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "profit_yen": int(row["profit_yen"]),
             "roi": float(row["roi"]),
             "max_drawdown_yen": int(row["max_drawdown_yen"]),
+            "winning_days": int(row["winning_days"]),
+            "race_days": int(row["race_days"]),
         }
 
     return {
