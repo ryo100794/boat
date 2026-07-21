@@ -3558,6 +3558,9 @@ _LOCAL_EVALUATION_METRICS = (
     "promotion_eligible",
     "holdout_races",
     "bankroll_evaluated_races",
+    "calibrated_trifecta_log_loss",
+    "evaluation_races",
+    "evaluation_days",
 )
 
 

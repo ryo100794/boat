@@ -4,6 +4,7 @@ from boatrace_ai.web.dashboard import (
     HTML,
     MODEL_REPORT_HTML,
     _model_track_summaries,
+    _local_evaluation_result,
 )
 
 
@@ -142,3 +143,24 @@ def test_model_tracks_exposes_market_calibrated_shadow(tmp_path) -> None:
     assert market["trifecta_log_loss"] == 4.1323
     assert market["trifecta_top5_hit_rate"] == 0.2581
     assert market["promotion_eligible"] is False
+
+
+def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> None:
+    path = tmp_path / "market.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "market",
+                "evaluated_races": 279,
+                "calibrated_trifecta_log_loss": 4.1323,
+                "trifecta_top5_hit_rate": 0.2581,
+                "evaluation_days": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _local_evaluation_result(path)
+    assert result is not None
+    assert result["metrics"]["calibrated_trifecta_log_loss"] == 4.1323
+    assert result["metrics"]["evaluated_races"] == 279
+    assert result["metrics"]["evaluation_days"] == 2
