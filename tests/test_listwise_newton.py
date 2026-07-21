@@ -5,6 +5,7 @@ from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
 from boatrace_ai.listwise.newton import (
+    hessian_diagonal,
     hessian_vector_product,
     objective_gradient,
     pl_hessian_score_product,
@@ -100,3 +101,70 @@ def test_newton_cg_reduces_regularized_objective() -> None:
     assert report["final_objective"] < report["initial_objective"]
     assert report["final_gradient_l2"] < report["history"][0]["gradient_l2"]
     assert not np.allclose(refined.weights, model.weights)
+
+
+def test_hessian_diagonal_matches_explicit_hessian_and_batching() -> None:
+    data = dataset()
+    model, _ = train_listwise_model(
+        data, train_race_end=23, target="top3_pl", alpha=1e-3, epochs=1, batch_races=5
+    )
+    diagonal = hessian_diagonal(
+        data, model, train_race_end=23, weights=model.weights, batch_races=5
+    )
+    explicit = np.asarray([
+        hessian_vector_product(
+            data,
+            model,
+            train_race_end=23,
+            weights=model.weights,
+            vector=np.eye(data.n_features)[index],
+            batch_races=5,
+        )[index]
+        for index in range(data.n_features)
+    ])
+    whole_batch = hessian_diagonal(
+        data, model, train_race_end=23, weights=model.weights, batch_races=23
+    )
+    assert np.allclose(diagonal, explicit, atol=1e-10)
+    assert np.allclose(diagonal, whole_batch, atol=1e-10)
+
+
+def test_common_lane_feature_has_only_regularization_curvature() -> None:
+    original = dataset()
+    matrix = sparse.hstack(
+        (original.matrix, np.ones((original.example_count, 1))), format="csr"
+    )
+    data = HashedRaceDataset(
+        matrix, original.race_keys, original.ranks, 3, ()
+    )
+    model, _ = train_listwise_model(
+        data, train_race_end=23, target="top3_pl", alpha=1e-3, epochs=1, batch_races=5
+    )
+    diagonal = hessian_diagonal(
+        data, model, train_race_end=23, weights=model.weights, batch_races=5
+    )
+    np.testing.assert_allclose(
+        diagonal[-1], model.alpha, atol=1e-10
+    )
+
+
+def test_newton_refinement_can_resume_without_changing_result() -> None:
+    data = dataset()
+    model, _ = train_listwise_model(
+        data, train_race_end=23, target="top3_pl", alpha=1e-3, epochs=1, batch_races=5
+    )
+    uninterrupted, _ = refine_newton_cg(
+        data, model, train_race_end=23, batch_races=5,
+        max_newton_iterations=5, max_cg_iterations=20, gradient_tolerance=1e-12,
+    )
+    partial, _ = refine_newton_cg(
+        data, model, train_race_end=23, batch_races=5,
+        max_newton_iterations=2, max_cg_iterations=20, gradient_tolerance=1e-12,
+    )
+    resumed, report = refine_newton_cg(
+        data, partial, train_race_end=23, batch_races=5,
+        max_newton_iterations=3, max_cg_iterations=20, gradient_tolerance=1e-12,
+    )
+    assert np.allclose(resumed.weights, uninterrupted.weights, atol=1e-10)
+    assert report["jacobi_preconditioner"] is True
+    assert all("cg_relative_residual" in row for row in report["history"])

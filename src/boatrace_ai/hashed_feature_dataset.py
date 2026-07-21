@@ -333,6 +333,126 @@ def load_hashed_dataset(
     )
 
 
+def promote_legacy_hashed_dataset(
+    prefix: Path,
+    *,
+    race_keys: list[tuple[str, str, str, int]],
+    n_features: int,
+    drop_feature_groups: tuple[str, ...],
+    hasher: FeatureHasher | None = None,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> bool:
+    """Explicitly validate and promote one version 1 cache manifest to version 2."""
+    paths = cache_paths(prefix)
+    if not all(path.exists() for path in paths.values()):
+        return False
+
+    try:
+        original_manifest = paths["manifest"].read_bytes()
+        manifest = json.loads(original_manifest.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, dict) or manifest.get("cache_version") != 1:
+        return False
+
+    expected_race_count = len(race_keys)
+    expected_example_count = expected_race_count * 6
+    expected_first = race_keys[0][0] if race_keys else None
+    expected_last = race_keys[-1][0] if race_keys else None
+    expected_hasher = (
+        feature_hasher_settings(hasher)
+        if hasher is not None
+        else default_feature_hasher_settings(n_features)
+    )
+    if expected_hasher["n_features"] != int(n_features):
+        return False
+    expected_legacy = {
+        "cache_version": 1,
+        "race_count": expected_race_count,
+        "example_count": expected_example_count,
+        "first_race_id": expected_first,
+        "last_race_id": expected_last,
+        "n_features": int(n_features),
+        "drop_feature_groups": list(drop_feature_groups),
+        "matrix_shape": [expected_example_count, int(n_features)],
+    }
+    if any(
+        key not in manifest or not _strict_json_equal(manifest[key], value)
+        for key, value in expected_legacy.items()
+    ):
+        return False
+    legacy_nnz = manifest.get("matrix_nnz")
+    if (
+        not isinstance(legacy_nnz, int)
+        or isinstance(legacy_nnz, bool)
+        or legacy_nnz < 0
+    ):
+        return False
+
+    try:
+        matrix = _load_csr_npz_without_pickle(paths["matrix"])
+        ranks = np.load(paths["ranks"], allow_pickle=False)
+        _validate_dataset_arrays(
+            matrix,
+            ranks,
+            race_count=expected_race_count,
+            n_features=n_features,
+        )
+        if int(matrix.nnz) != legacy_nnz:
+            return False
+        matrix_file_sha256 = _file_sha256(paths["matrix"])
+        ranks_file_sha256 = _file_sha256(paths["ranks"])
+    except Exception:
+        return False
+
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    promoted_manifest = {
+        "cache_version": CACHE_VERSION,
+        "feature_schema_version": feature_schema_version,
+        "generated_at": manifest.get("generated_at", now),
+        "promoted_at": now,
+        "race_count": expected_race_count,
+        "race_ids_sha256": race_ids_sha256(race_keys),
+        "example_count": expected_example_count,
+        "first_race_id": expected_first,
+        "last_race_id": expected_last,
+        "n_features": int(n_features),
+        "hasher": expected_hasher,
+        "drop_feature_groups": list(drop_feature_groups),
+        "matrix_shape": list(matrix.shape),
+        "matrix_nnz": int(matrix.nnz),
+        "matrix_dtype": str(matrix.dtype),
+        "matrix_file_sha256": matrix_file_sha256,
+        "ranks_shape": list(ranks.shape),
+        "ranks_dtype": str(ranks.dtype),
+        "ranks_sha256": ranks_sha256(ranks),
+        "ranks_file_sha256": ranks_file_sha256,
+    }
+
+    manifest_temporary: Path | None = None
+    try:
+        manifest_temporary = _temporary_path(prefix, "manifest.json")
+        with manifest_temporary.open("w", encoding="utf-8") as handle:
+            json.dump(promoted_manifest, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            _flush_and_fsync(handle)
+        # Refuse to overwrite a cache changed while the large files were checked.
+        if paths["manifest"].read_bytes() != original_manifest:
+            return False
+        os.replace(manifest_temporary, paths["manifest"])
+        manifest_temporary = None
+        _fsync_directory(prefix.parent)
+    except OSError:
+        return False
+    finally:
+        if manifest_temporary is not None:
+            try:
+                manifest_temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return True
+
+
 def race_ids_sha256(race_keys: Iterable[tuple[str, str, str, int]]) -> str:
     digest = hashlib.sha256()
     for race_id, *_rest in race_keys:
@@ -402,6 +522,40 @@ def _validate_dataset_arrays(
         raise ValueError("invalid CSR values")
     if race_count and not np.all(np.sort(ranks, axis=1) == np.arange(1, 7)):
         raise ValueError("each race ranks row must be a permutation of 1..6")
+
+
+def _load_csr_npz_without_pickle(path: Path) -> sparse.csr_matrix:
+    with np.load(path, allow_pickle=False) as archive:
+        required = {"format", "shape", "data", "indices", "indptr"}
+        if not required.issubset(archive.files):
+            raise ValueError("invalid sparse NPZ members")
+        stored_format = np.asarray(archive["format"])
+        if stored_format.shape != ():
+            raise ValueError("invalid sparse NPZ format")
+        format_value = stored_format.item()
+        if isinstance(format_value, bytes):
+            format_value = format_value.decode("ascii")
+        if format_value != "csr":
+            raise ValueError(f"expected CSR sparse NPZ, got {format_value!r}")
+        shape_values = np.asarray(archive["shape"])
+        if shape_values.shape != (2,):
+            raise ValueError("invalid sparse NPZ shape")
+        shape = tuple(int(value) for value in shape_values)
+        data = np.asarray(archive["data"])
+        indices = np.asarray(archive["indices"])
+        indptr = np.asarray(archive["indptr"])
+    return sparse.csr_matrix((data, indices, indptr), shape=shape, copy=False)
+
+
+def _strict_json_equal(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _strict_json_equal(left, right)
+            for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
 
 
 def _temporary_path(prefix: Path, kind: str) -> Path:

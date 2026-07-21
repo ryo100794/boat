@@ -17,6 +17,7 @@ from boatrace_ai.hashed_feature_dataset import (
     build_hashed_dataset,
     load_or_build_hashed_dataset,
     load_hashed_dataset,
+    promote_legacy_hashed_dataset,
     race_ids_sha256,
     save_hashed_dataset,
 )
@@ -212,6 +213,26 @@ def _load(prefix: Path, race_keys, *, hasher=None):
     )
 
 
+def _make_legacy_manifest(prefix: Path) -> tuple[Path, bytes]:
+    manifest_path = Path(f"{prefix}.manifest.json")
+    current = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_keys = (
+        "generated_at",
+        "race_count",
+        "example_count",
+        "first_race_id",
+        "last_race_id",
+        "n_features",
+        "drop_feature_groups",
+        "matrix_shape",
+        "matrix_nnz",
+    )
+    legacy = {"cache_version": 1}
+    legacy.update({key: current[key] for key in legacy_keys})
+    manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+    return manifest_path, manifest_path.read_bytes()
+
+
 def test_hashed_dataset_rejects_middle_race_identity_change(tmp_path: Path) -> None:
     prefix, race_keys, hasher = _saved_dataset(tmp_path)
     changed = list(race_keys)
@@ -343,4 +364,194 @@ def test_hashed_dataset_partial_replace_is_rejected_by_old_manifest(
         save_hashed_dataset(prefix, changed)
 
     assert _load(prefix, race_keys, hasher=hasher) is None
+    assert not list(tmp_path.glob(".features.*.tmp"))
+
+
+def test_legacy_cache_is_rejected_until_explicitly_promoted(
+    tmp_path: Path,
+) -> None:
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    matrix_path = Path(f"{prefix}.matrix.npz")
+    ranks_path = Path(f"{prefix}.ranks.npy")
+    matrix_before = matrix_path.read_bytes()
+    ranks_before = ranks_path.read_bytes()
+    manifest_path, _legacy_bytes = _make_legacy_manifest(prefix)
+
+    assert _load(prefix, race_keys, hasher=hasher) is None
+    assert promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+
+    promoted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert promoted["cache_version"] == CACHE_VERSION
+    assert promoted["race_ids_sha256"] == race_ids_sha256(race_keys)
+    assert promoted["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+    assert promoted["matrix_file_sha256"] == hashlib.sha256(matrix_before).hexdigest()
+    assert promoted["ranks_file_sha256"] == hashlib.sha256(ranks_before).hexdigest()
+    assert matrix_path.read_bytes() == matrix_before
+    assert ranks_path.read_bytes() == ranks_before
+    assert _load(prefix, race_keys, hasher=hasher) is not None
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+
+
+def test_legacy_promotion_rejects_changed_race_identity_and_preserves_manifest(
+    tmp_path: Path,
+) -> None:
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    manifest_path, legacy_bytes = _make_legacy_manifest(prefix)
+    changed = list(race_keys)
+    changed[0] = ("different-race", race_keys[0][1], "01", 1)
+
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=changed,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+    assert manifest_path.read_bytes() == legacy_bytes
+
+
+@pytest.mark.parametrize(
+    ("manifest_key", "replacement"),
+    (
+        ("race_count", 2),
+        ("example_count", 12),
+        ("first_race_id", "different-race"),
+        ("last_race_id", "different-race"),
+        ("n_features", 32),
+        ("drop_feature_groups", ["research"]),
+        ("matrix_shape", [18, 32]),
+        ("matrix_nnz", -1),
+    ),
+)
+def test_legacy_promotion_rejects_metadata_mismatch_and_preserves_manifest(
+    tmp_path: Path,
+    manifest_key: str,
+    replacement,
+) -> None:
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    manifest_path, _legacy_bytes = _make_legacy_manifest(prefix)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[manifest_key] = replacement
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    mismatched_bytes = manifest_path.read_bytes()
+
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+    assert manifest_path.read_bytes() == mismatched_bytes
+    assert json.loads(mismatched_bytes)["cache_version"] == 1
+
+
+def test_legacy_promotion_rejects_actual_nnz_mismatch(
+    tmp_path: Path,
+) -> None:
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    manifest_path, _legacy_bytes = _make_legacy_manifest(prefix)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["matrix_nnz"] += 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    mismatched_bytes = manifest_path.read_bytes()
+
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+    assert manifest_path.read_bytes() == mismatched_bytes
+
+
+def test_legacy_promotion_rejects_invalid_ranks_and_preserves_manifest(
+    tmp_path: Path,
+) -> None:
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    manifest_path, legacy_bytes = _make_legacy_manifest(prefix)
+    ranks_path = Path(f"{prefix}.ranks.npy")
+    ranks = np.load(ranks_path, allow_pickle=False)
+    ranks[1, 0] = ranks[1, 1]
+    np.save(ranks_path, ranks, allow_pickle=False)
+
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+    assert manifest_path.read_bytes() == legacy_bytes
+
+
+def test_legacy_promotion_atomically_replaces_only_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import boatrace_ai.hashed_feature_dataset as module
+
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    matrix_path = Path(f"{prefix}.matrix.npz")
+    ranks_path = Path(f"{prefix}.ranks.npy")
+    matrix_before = matrix_path.read_bytes()
+    ranks_before = ranks_path.read_bytes()
+    _make_legacy_manifest(prefix)
+    destinations: list[str] = []
+    real_replace = module.os.replace
+
+    def recording_replace(source, destination):
+        destinations.append(Path(destination).name)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", recording_replace)
+    assert promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+
+    assert destinations == ["features.manifest.json"]
+    assert matrix_path.read_bytes() == matrix_before
+    assert ranks_path.read_bytes() == ranks_before
+    assert not list(tmp_path.glob(".features.*.tmp"))
+
+
+def test_legacy_promotion_replace_failure_keeps_v1_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import boatrace_ai.hashed_feature_dataset as module
+
+    prefix, race_keys, hasher = _saved_dataset(tmp_path)
+    manifest_path, legacy_bytes = _make_legacy_manifest(prefix)
+
+    def fail_replace(_source, _destination):
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+    assert not promote_legacy_hashed_dataset(
+        prefix,
+        race_keys=race_keys,
+        n_features=64,
+        drop_feature_groups=(),
+        hasher=hasher,
+    )
+    assert manifest_path.read_bytes() == legacy_bytes
+    assert json.loads(legacy_bytes)["cache_version"] == 1
     assert not list(tmp_path.glob(".features.*.tmp"))

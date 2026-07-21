@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 import pytest
 from scipy import sparse
+from sklearn.preprocessing import StandardScaler
 
 from boatrace_ai.hashed_feature_dataset import (
     CACHE_VERSION,
@@ -24,10 +25,14 @@ from boatrace_ai.listwise.feature_search import (
     selected_cache_candidates,
     variant_cache_prefix,
 )
+from boatrace_ai.listwise.model import ListwiseLinearModel
 from boatrace_ai.listwise.newton_refine import (
+    build_parser,
     dump_joblib_atomic,
+    load_resume_model_artifact,
     validate_search_race_universe,
 )
+from boatrace_ai.standard_evaluation import race_set_sha256
 
 
 def _race_keys():
@@ -142,12 +147,19 @@ def test_checkpoint_requires_exact_signature(tmp_path: Path) -> None:
 
 
 def test_newton_rejects_stale_or_legacy_search_race_universe() -> None:
-    keys = _race_keys()
+    keys = [
+        (f"r{index}", f"2026-01-0{index}", "01", 1)
+        for index in range(1, 5)
+    ]
     valid = {
         "races": len(keys),
         "race_universe_sha256": race_ids_sha256(keys),
         "hashed_cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "train_races": 2,
+        "selection_races": 1,
+        "holdout_races": 1,
+        "evaluation_race_set_sha256": race_set_sha256(["r4"]),
     }
     validate_search_race_universe(valid, keys)
 
@@ -157,6 +169,167 @@ def test_newton_rejects_stale_or_legacy_search_race_universe() -> None:
         validate_search_race_universe({**valid, "race_universe_sha256": None}, keys)
     with pytest.raises(ValueError, match="cache/schema version"):
         validate_search_race_universe({**valid, "hashed_cache_version": 1}, keys)
+    with pytest.raises(ValueError, match="cache/schema version"):
+        validate_search_race_universe(
+            {**valid, "hashed_cache_version": 1}, keys, allow_legacy=True
+        )
+    with pytest.raises(ValueError, match="cache/schema version"):
+        validate_search_race_universe(
+            {**valid, "feature_schema_version": 1}, keys, allow_legacy=True
+        )
+
+    legacy = {
+        key: value
+        for key, value in valid.items()
+        if key not in {
+            "race_universe_sha256",
+            "hashed_cache_version",
+            "feature_schema_version",
+        }
+    }
+    validate_search_race_universe(legacy, keys, allow_legacy=True)
+    with pytest.raises(ValueError, match="race universe hash"):
+        validate_search_race_universe(legacy, keys)
+    with pytest.raises(ValueError, match="evaluation holdout hash"):
+        validate_search_race_universe(
+            {**legacy, "evaluation_race_set_sha256": "0" * 64},
+            keys,
+            allow_legacy=True,
+        )
+
+
+def _resume_artifact_payload(*, include_race_hash: bool = True) -> dict:
+    n_features = 4
+    scaler = StandardScaler(with_mean=False).fit(np.eye(n_features))
+    model = ListwiseLinearModel(
+        weights=np.asarray([0.1, -0.2, 0.3, -0.4]),
+        scaler=scaler,
+        target="top3_pl",
+        alpha=1e-4,
+        learning_rate=0.02,
+        epochs=2,
+    )
+    payload = {
+        "model": model,
+        "feature_variant": "drop_research_correlates",
+        "drop_feature_groups": ("research_correlates",),
+        "n_features": n_features,
+        "trained_races": 3,
+        "trained_through": ("r3", "2026-01-03", "01", 1),
+        "target": "top3_pl",
+        "alpha": 1e-4,
+    }
+    if include_race_hash:
+        payload["race_universe_sha256"] = "a" * 64
+    return payload
+
+
+def _resume_expectations() -> dict:
+    return {
+        "feature_variant": "drop_research_correlates",
+        "drop_feature_groups": ("research_correlates",),
+        "n_features": 4,
+        "trained_races": 3,
+        "trained_through": ("r3", "2026-01-03", "01", 1),
+        "target": "top3_pl",
+        "alpha": 1e-4,
+        "race_universe_sha256": "a" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("feature_variant", "full", "feature_variant mismatch"),
+        ("drop_feature_groups", (), "drop_feature_groups mismatch"),
+        ("n_features", 8, "n_features mismatch"),
+        ("trained_races", 2, "trained_races mismatch"),
+        ("trained_through", ("r2", "2026-01-02", "01", 1), "trained_through mismatch"),
+        ("target", "winner", "target mismatch"),
+        ("alpha", 0.1, "alpha mismatch"),
+        ("race_universe_sha256", "b" * 64, "race_universe_sha256 mismatch"),
+    ),
+)
+def test_resume_artifact_rejects_metadata_mismatch(
+    tmp_path: Path, field: str, value, message: str
+) -> None:
+    path = tmp_path / "resume.joblib"
+    payload = _resume_artifact_payload()
+    payload[field] = value
+    joblib.dump(payload, path)
+
+    with pytest.raises(ValueError, match=message):
+        load_resume_model_artifact(path, **_resume_expectations())
+
+
+@pytest.mark.parametrize("broken_part", ("weights", "scaler"))
+def test_resume_artifact_rejects_model_dimension_mismatch(
+    tmp_path: Path, broken_part: str
+) -> None:
+    path = tmp_path / "resume.joblib"
+    payload = _resume_artifact_payload()
+    if broken_part == "weights":
+        payload["model"].weights = np.zeros(3)
+        message = "weights length"
+    else:
+        payload["model"].scaler = StandardScaler(with_mean=False).fit(np.eye(3))
+        message = "scaler n_features"
+    joblib.dump(payload, path)
+
+    with pytest.raises(ValueError, match=message):
+        load_resume_model_artifact(path, **_resume_expectations())
+
+
+@pytest.mark.parametrize("broken_part", ("nonfinite_weights", "centered_scaler"))
+def test_resume_artifact_rejects_numerically_invalid_model(
+    tmp_path: Path, broken_part: str
+) -> None:
+    path = tmp_path / "resume-invalid.joblib"
+    payload = _resume_artifact_payload()
+    if broken_part == "nonfinite_weights":
+        payload["model"].weights[0] = np.nan
+        message = "non-finite"
+    else:
+        payload["model"].scaler.with_mean = True
+        message = "scaler is invalid"
+    joblib.dump(payload, path)
+
+    with pytest.raises(ValueError, match=message):
+        load_resume_model_artifact(path, **_resume_expectations())
+
+
+
+def test_valid_legacy_resume_artifact_requires_explicit_permission(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.joblib"
+    joblib.dump(_resume_artifact_payload(include_race_hash=False), path)
+
+    with pytest.raises(ValueError, match="allow-legacy-model-artifact"):
+        load_resume_model_artifact(path, **_resume_expectations())
+    model, artifact_sha256 = load_resume_model_artifact(
+        path,
+        **_resume_expectations(),
+        allow_legacy=True,
+    )
+
+    assert len(model.weights) == 4
+    assert len(artifact_sha256) == 64
+
+
+def test_newton_resume_cli_defaults_and_flags() -> None:
+    args = build_parser().parse_args([
+        "--resume-model",
+        "checkpoint.joblib",
+        "--allow-legacy-model-artifact",
+        "--promote-legacy-cache",
+        "--allow-legacy-search-result",
+    ])
+
+    assert args.max_newton_iterations == 10
+    assert args.max_cg_iterations == 50
+    assert args.promote_legacy_cache is True
+    assert args.resume_model == "checkpoint.joblib"
+    assert args.allow_legacy_model_artifact is True
+    assert args.allow_legacy_search_result is True
 
 
 def test_joblib_artifact_is_atomically_replaced(tmp_path: Path, monkeypatch) -> None:

@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
+from scipy import sparse
 from scipy.sparse.linalg import LinearOperator, cg
 
 from ..hashed_feature_dataset import HashedRaceDataset
@@ -68,6 +69,53 @@ def objective_gradient(
     return objective, gradient
 
 
+def hessian_diagonal(
+    dataset: HashedRaceDataset,
+    model: ListwiseLinearModel,
+    *,
+    train_race_end: int,
+    weights: np.ndarray,
+    batch_races: int,
+) -> np.ndarray:
+    train_end = min(dataset.race_count, int(train_race_end))
+    diagonal = np.zeros_like(weights, dtype=np.float64)
+    seen = 0
+    for start in range(0, train_end, max(1, int(batch_races))):
+        stop = min(train_end, start + max(1, int(batch_races)))
+        matrix = model.scaler.transform(
+            dataset.matrix[dataset.row_slice(start, stop)]
+        ).tocsr(copy=False)
+        scores = np.asarray(matrix.dot(weights)).reshape(-1, 6)
+        ranks = dataset.ranks[start:stop]
+        count = stop - start
+        stages = 1 if model.target == "winner" else 3
+        order = np.argsort(ranks, axis=1)
+        remaining = np.ones((count, 6), dtype=bool)
+        squared = matrix.multiply(matrix)
+        aggregate_indices = np.arange(count * 6, dtype=np.int32)
+        aggregate_indptr = np.arange(0, count * 6 + 1, 6, dtype=np.int32)
+        for stage in range(stages):
+            probabilities = stable_softmax(
+                np.where(remaining, scores, -np.inf)
+            ).reshape(-1)
+            expected = sparse.csr_matrix(
+                (probabilities, aggregate_indices, aggregate_indptr),
+                shape=(count, count * 6),
+            ).dot(matrix)
+            diagonal += (
+                np.asarray(squared.T.dot(probabilities)).reshape(-1)
+                - np.asarray(expected.multiply(expected).sum(axis=0)).reshape(-1)
+            ) / stages
+            remaining[np.arange(count), order[:, stage]] = False
+        seen += count
+    diagonal = diagonal / max(1, seen) + model.alpha
+    numerical_floor = max(float(model.alpha), 1e-12 * float(diagonal.max()))
+    diagonal = np.maximum(diagonal, numerical_floor)
+    if not np.isfinite(diagonal).all() or np.any(diagonal <= 0.0):
+        raise ValueError("invalid Hessian diagonal")
+    return diagonal
+
+
 def hessian_vector_product(
     dataset: HashedRaceDataset,
     model: ListwiseLinearModel,
@@ -107,6 +155,7 @@ def refine_newton_cg(
     max_cg_iterations: int = 20,
     gradient_tolerance: float = 1e-4,
     cg_tolerance: float = 1e-3,
+    use_jacobi_preconditioner: bool = True,
 ) -> tuple[ListwiseLinearModel, dict[str, Any]]:
     weights = np.asarray(initial_model.weights, dtype=np.float64).copy()
     history: list[dict[str, Any]] = []
@@ -142,13 +191,43 @@ def refine_newton_cg(
             ),
             dtype=np.float64,
         )
+        preconditioner = None
+        diagonal_min = None
+        diagonal_max = None
+        if use_jacobi_preconditioner:
+            diagonal = hessian_diagonal(
+                dataset,
+                initial_model,
+                train_race_end=train_race_end,
+                weights=weights,
+                batch_races=batch_races,
+            )
+            inverse_diagonal = 1.0 / diagonal
+            diagonal_min = float(diagonal.min())
+            diagonal_max = float(diagonal.max())
+            preconditioner = LinearOperator(
+                shape=(len(weights), len(weights)),
+                matvec=lambda vector: inverse_diagonal * np.asarray(vector),
+                dtype=np.float64,
+            )
+        cg_absolute_tolerance = 0.1 * float(gradient_tolerance)
+        cg_iterations = [0]
+
+        def count_cg_iteration(_value: np.ndarray) -> None:
+            cg_iterations[0] += 1
+
         direction, cg_info = cg(
             operator,
             -gradient,
             maxiter=max(1, int(max_cg_iterations)),
             rtol=float(cg_tolerance),
-            atol=0.0,
+            atol=cg_absolute_tolerance,
+            M=preconditioner,
+            callback=count_cg_iteration,
         )
+        residual = operator.matvec(direction) + gradient
+        residual_norm = float(np.linalg.norm(residual))
+        relative_residual = residual_norm / max(gradient_norm, np.finfo(float).tiny)
         directional_derivative = float(gradient.dot(direction))
         if not np.isfinite(direction).all() or directional_derivative >= 0.0:
             direction = -gradient
@@ -175,6 +254,11 @@ def refine_newton_cg(
         row.update({
             "step": step,
             "cg_info": int(cg_info),
+            "cg_iterations": cg_iterations[0],
+            "cg_residual_l2": residual_norm,
+            "cg_relative_residual": relative_residual,
+            "hessian_diagonal_min": diagonal_min,
+            "hessian_diagonal_max": diagonal_max,
             "accepted_objective": accepted_objective,
             "converged": False,
         })
@@ -198,6 +282,8 @@ def refine_newton_cg(
         "max_cg_iterations": int(max_cg_iterations),
         "gradient_tolerance": float(gradient_tolerance),
         "cg_tolerance": float(cg_tolerance),
+        "cg_absolute_tolerance": 0.1 * float(gradient_tolerance),
+        "jacobi_preconditioner": bool(use_jacobi_preconditioner),
         "initial_objective": history[0]["objective"] if history else final_objective,
         "final_objective": final_objective,
         "final_gradient_l2": final_gradient_norm,
