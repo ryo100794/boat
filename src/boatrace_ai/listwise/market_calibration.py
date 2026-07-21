@@ -287,7 +287,7 @@ def select_policy(
     policies: Iterable[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rows = []
-    minimum_tickets = max(10, len(races) // 10)
+    minimum_tickets = max(10, math.ceil(len(races) * 0.05))
     minimum_stake = minimum_tickets * STAKE_YEN
     for policy in policies or default_policy_grid():
         result = simulate_policy(
