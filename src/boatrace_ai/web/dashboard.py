@@ -1378,6 +1378,13 @@ def _model_track_summaries(
         shadow_state = {}
     eligible = int(shadow_state.get("eligible_races") or 0)
     required = int(shadow_state.get("required_races") or REALTIME_SHADOW_TARGET_RACES)
+    shadow_training = (
+        f"過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression "
+        f"C=0.20・class_weightなし / 3fold暫定・評価{int(shadow.get('evaluated_races') or 0)}R"
+        if shadow_is_provisional and shadow
+        else "過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression "
+        "C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習"
+    )
     shadow_status = (
         "評価済み"
         if formal_shadow
@@ -1419,10 +1426,11 @@ def _model_track_summaries(
                 else "realtime_odds_shadow.joblib"
             ),
             "teacher": "T-5以前の公式odds 10時点以上を持つ確定6艇レース / 1着=1・2着以下=0",
-            "training": "過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習",
+            "training": shadow_training,
             "eligible_races": eligible,
             "target_races": required,
             "backtest_available": bool(shadow),
+            "evaluated_races": shadow.get("evaluated_races") if shadow else None,
             "entry_log_loss": shadow.get("entry_log_loss") if shadow else None,
             "winner_top1_accuracy": shadow.get("winner_top1_accuracy") if shadow else None,
             "trifecta_top5_hit_rate": shadow.get("trifecta_top5_hit_rate") if shadow else None,

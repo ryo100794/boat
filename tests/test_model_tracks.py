@@ -112,3 +112,5 @@ def test_model_tracks_exposes_t5_safe_provisional_metrics(tmp_path) -> None:
     assert shadow["entry_log_loss"] == 0.345016
     assert shadow["winner_top1_accuracy"] == 0.589474
     assert shadow["trifecta_top5_hit_rate"] == 0.326316
+    assert "3fold暫定・評価95R" in shadow["training"]
+    assert shadow["evaluated_races"] == 95
