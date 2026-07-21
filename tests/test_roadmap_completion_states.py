@@ -253,3 +253,4 @@ def test_collector_deployment_enables_predictions() -> None:
     )
 
     assert "--predict" in script
+    assert "LD_LIBRARY_PATH=/workspace/postgresql/runtime/lib" in script

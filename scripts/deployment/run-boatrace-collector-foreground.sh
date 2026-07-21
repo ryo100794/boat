@@ -10,6 +10,7 @@ RAW="${BOATRACE_RAW_DIR:-$APP_ROOT/data/raw}"
 LOCK="${BOATRACE_COLLECTOR_LOCK:-$APP_ROOT/run/postgresql-collector.lock}"
 DSN="${BOATRACE_POSTGRES_DSN:-host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app}"
 PG_BIN=/workspace/postgresql/runtime/bin
+export LD_LIBRARY_PATH=/workspace/postgresql/runtime/lib
 
 install -d -m 0750 "$RAW" "$(dirname "$LOCK")"
 exec 9>"$LOCK"
