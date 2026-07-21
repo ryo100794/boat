@@ -11,6 +11,7 @@ from boatrace_ai.listwise.market_calibration import (
     load_scored_cache,
     select_calibrator,
     select_policy,
+    snapshot_age_seconds,
     write_scored_cache,
     walk_forward_evaluate,
 )
@@ -165,3 +166,12 @@ def test_policy_calibration_requires_repeatable_winning_days() -> None:
         minimum_tickets=20,
         minimum_stake_yen=2_000,
     )
+
+
+def test_snapshot_age_is_measured_against_t5_boundary() -> None:
+    snapshot = {
+        "captured_at": "2026-07-21T11:54:20+09:00",
+        "odds_deadline_at": "2026-07-21T11:55:00+09:00",
+    }
+    assert snapshot_age_seconds(snapshot) == 40.0
+    assert snapshot_age_seconds({"captured_at": "bad"}) is None

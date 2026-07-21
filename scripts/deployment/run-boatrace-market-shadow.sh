@@ -37,5 +37,6 @@ exec env \
   --from-date 2026-07-18 \
   --daily-budget-yen 10000 \
   --min-calibration-days 2 \
+  --max-snapshot-age-seconds 60 \
   --interval 3600 \
   --timeout 3600

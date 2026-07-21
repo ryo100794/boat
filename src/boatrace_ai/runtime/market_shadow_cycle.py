@@ -66,6 +66,8 @@ def build_command(args: argparse.Namespace, *, through_date: str) -> list[str]:
         str(args.daily_budget_yen),
         "--min-calibration-days",
         str(args.min_calibration_days),
+        "--max-snapshot-age-seconds",
+        str(args.max_snapshot_age_seconds),
     ]
 
 
@@ -133,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-date", default="2026-07-18")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--min-calibration-days", type=int, default=2)
+    parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=3600.0)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--once", action="store_true")

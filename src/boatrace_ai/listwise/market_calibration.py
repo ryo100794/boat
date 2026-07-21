@@ -567,6 +567,7 @@ def score_real_odds_races(
     artifact: dict[str, Any],
     from_date: str,
     through_date: str | None = None,
+    max_snapshot_age_seconds: float = 60.0,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     _validate_artifact_before_period(artifact, from_date=from_date)
     model = artifact.get("model")
@@ -582,7 +583,7 @@ def score_real_odds_races(
     }
     payouts = _load_trifecta_payouts(conn)
     races = []
-    skipped_no_odds = skipped_no_payout = 0
+    skipped_no_odds = skipped_stale_odds = skipped_no_payout = 0
     for feature_rows in iter_race_feature_rows(conn, include_races=target_ids):
         meta_rows = [item["meta"] for item in feature_rows]
         race_id = str(meta_rows[0]["race_id"])
@@ -597,6 +598,14 @@ def score_real_odds_races(
         )
         if snapshot is None or len(snapshot.get("odds") or {}) != 120:
             skipped_no_odds += 1
+            continue
+        snapshot_age = snapshot_age_seconds(snapshot)
+        if (
+            snapshot_age is None
+            or snapshot_age < 0.0
+            or snapshot_age > max_snapshot_age_seconds
+        ):
+            skipped_stale_odds += 1
             continue
         matrix = _ensure_sparse_index32(
             hasher.transform([to_hashable(item["features"]) for item in feature_rows])
@@ -634,8 +643,22 @@ def score_real_odds_races(
         "target_complete_races": len(target_ids),
         "eligible_real_odds_races": len(races),
         "skipped_no_real_odds": skipped_no_odds,
+        "skipped_stale_real_odds": skipped_stale_odds,
         "skipped_no_payout": skipped_no_payout,
     }
+
+
+def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:
+    try:
+        captured = datetime.fromisoformat(str(snapshot["captured_at"]))
+        deadline = datetime.fromisoformat(str(snapshot["odds_deadline_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=deadline.tzinfo or timezone.utc)
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=captured.tzinfo or timezone.utc)
+    return (deadline - captured.astimezone(deadline.tzinfo)).total_seconds()
 
 
 def _validate_artifact_before_period(artifact: dict[str, Any], *, from_date: str) -> None:
@@ -677,13 +700,15 @@ def scored_cache_contract(
     artifact: dict[str, Any],
     from_date: str,
     through_date: str | None,
+    max_snapshot_age_seconds: float,
 ) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "model_sha256": file_sha256(model_path),
         "trained_through": tuple(artifact.get("trained_through") or ()),
         "from_date": from_date,
         "through_date": through_date,
+        "max_snapshot_age_seconds": max_snapshot_age_seconds,
     }
 
 
@@ -742,6 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--min-calibration-days", type=int, default=2)
     parser.add_argument("--scored-cache")
+    parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
     return parser
 
 
@@ -761,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact=artifact,
         from_date=args.from_date,
         through_date=args.through_date,
+        max_snapshot_age_seconds=args.max_snapshot_age_seconds,
     )
     cached = load_scored_cache(cache_path, contract=contract)
     if cached is None:
@@ -770,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
                 artifact=artifact,
                 from_date=args.from_date,
                 through_date=args.through_date,
+                max_snapshot_age_seconds=args.max_snapshot_age_seconds,
             )
         write_scored_cache(
             cache_path,
