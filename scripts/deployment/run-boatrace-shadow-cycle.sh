@@ -9,6 +9,7 @@ PYTHON="${BOATRACE_PYTHON:-$APP_ROOT/.venv/bin/python}"
 LOCK="${BOATRACE_SHADOW_LOCK:-$APP_ROOT/run/realtime-odds-shadow.lock}"
 DSN="${BOATRACE_POSTGRES_DSN:-host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app}"
 PG_BIN=/workspace/postgresql/runtime/bin
+export LD_LIBRARY_PATH="$PG_BIN/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 install -d -m 0750 "$(dirname "$LOCK")" "$APP_ROOT/data/models"
 exec 9>"$LOCK"
