@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -301,6 +302,39 @@ def select_policy(
     return dict(selected["policy"]), rows
 
 
+def summarize_policy_candidates(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    candidates = [row for row in rows if not row["policy"].get("no_bet")]
+    funded = [row for row in candidates if int(row["stake_yen"]) > 0]
+
+    def compact(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "policy": row["policy"],
+            "eligible": bool(row["eligible"]),
+            "tickets": int(row["tickets"]),
+            "hit_tickets": int(row["hit_tickets"]),
+            "stake_yen": int(row["stake_yen"]),
+            "return_yen": int(row["return_yen"]),
+            "profit_yen": int(row["profit_yen"]),
+            "roi": float(row["roi"]),
+            "max_drawdown_yen": int(row["max_drawdown_yen"]),
+        }
+
+    return {
+        "candidate_count": len(candidates),
+        "funded_candidate_count": len(funded),
+        "profitable_candidate_count": sum(int(row["profit_yen"] > 0) for row in funded),
+        "eligible_candidate_count": sum(bool(row["eligible"]) for row in candidates),
+        "best_profit": compact(
+            max(funded, key=lambda row: (row["profit_yen"], row["roi"]), default=None)
+        ),
+        "best_roi": compact(
+            max(funded, key=lambda row: (row["roi"], row["profit_yen"]), default=None)
+        ),
+    }
+
+
 def probability_metrics(
     races: list[dict[str, Any]],
     *,
@@ -380,6 +414,14 @@ def walk_forward_evaluate(
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
                 "policy_candidates": len(policy_grid),
+                "calibrator_top5": sorted(
+                    calibrator_grid,
+                    key=lambda row: (
+                        row["trifecta_log_loss"],
+                        -row["trifecta_top5_hit_rate"],
+                    ),
+                )[:5],
+                "policy_diagnostics": summarize_policy_candidates(policy_grid),
                 "probability_metrics": metrics,
                 "bankroll": {key: value for key, value in bankroll.items() if key != "daily"},
             }
@@ -570,6 +612,70 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def scored_cache_contract(
+    *,
+    model_path: Path,
+    artifact: dict[str, Any],
+    from_date: str,
+    through_date: str | None,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "model_sha256": file_sha256(model_path),
+        "trained_through": tuple(artifact.get("trained_through") or ()),
+        "from_date": from_date,
+        "through_date": through_date,
+    }
+
+
+def load_scored_cache(
+    path: Path,
+    *,
+    contract: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, int]] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = joblib.load(path)
+    except (OSError, ValueError, EOFError):
+        return None
+    if not isinstance(payload, dict) or payload.get("contract") != contract:
+        return None
+    races = payload.get("races")
+    dataset = payload.get("dataset")
+    if not isinstance(races, list) or not isinstance(dataset, dict):
+        return None
+    return races, {str(key): int(value) for key, value in dataset.items()}
+
+
+def write_scored_cache(
+    path: Path,
+    *,
+    contract: dict[str, Any],
+    races: list[dict[str, Any]],
+    dataset: dict[str, int],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        joblib.dump(
+            {"contract": contract, "races": races, "dataset": dataset},
+            temporary,
+            compress=3,
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Leakage-safe market calibration and bankroll shadow evaluation."
@@ -584,20 +690,46 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--through-date")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--min-calibration-days", type=int, default=2)
+    parser.add_argument("--scored-cache")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     init_db(args.db)
-    artifact = joblib.load(args.model)
-    with connection(args.db) as conn:
-        races, dataset = score_real_odds_races(
-            conn,
-            artifact=artifact,
-            from_date=args.from_date,
-            through_date=args.through_date,
+    model_path = Path(args.model)
+    output_path = Path(args.output)
+    cache_path = (
+        Path(args.scored_cache)
+        if args.scored_cache
+        else output_path.with_suffix(".races.joblib")
+    )
+    artifact = joblib.load(model_path)
+    contract = scored_cache_contract(
+        model_path=model_path,
+        artifact=artifact,
+        from_date=args.from_date,
+        through_date=args.through_date,
+    )
+    cached = load_scored_cache(cache_path, contract=contract)
+    if cached is None:
+        with connection(args.db) as conn:
+            races, dataset = score_real_odds_races(
+                conn,
+                artifact=artifact,
+                from_date=args.from_date,
+                through_date=args.through_date,
+            )
+        write_scored_cache(
+            cache_path,
+            contract=contract,
+            races=races,
+            dataset=dataset,
         )
+        cache_source = "built"
+    else:
+        races, dataset = cached
+        cache_source = "disk"
     result = walk_forward_evaluate(
         races,
         daily_budget_yen=args.daily_budget_yen,
@@ -611,9 +743,11 @@ def main(argv: list[str] | None = None) -> int:
             "from_date": args.from_date,
             "through_date": args.through_date,
             "dataset": dataset,
+            "scored_cache": str(cache_path),
+            "scored_cache_source": cache_source,
         }
     )
-    write_json_atomic(Path(args.output), result)
+    write_json_atomic(output_path, result)
     compact = {key: value for key, value in result.items() if key not in {"folds", "daily"}}
     print(json.dumps(compact, ensure_ascii=False, indent=2), flush=True)
     return 0

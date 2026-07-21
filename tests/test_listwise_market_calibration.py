@@ -7,8 +7,10 @@ import pytest
 from boatrace_ai.listwise.market_calibration import (
     blend_probabilities,
     normalized_market_probabilities,
+    load_scored_cache,
     select_calibrator,
     select_policy,
+    write_scored_cache,
     walk_forward_evaluate,
 )
 
@@ -115,3 +117,27 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     ]
     assert result["promotion_gate"]["sample_size_pass"] is False
     assert result["promotion_eligible"] is False
+
+
+def test_scored_cache_requires_exact_contract(tmp_path) -> None:
+    path = tmp_path / "scores.joblib"
+    contract = {
+        "version": 1,
+        "model_sha256": "a" * 64,
+        "trained_through": ("race", "2026-05-09", "24", 12),
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-21",
+    }
+    races = [_race("2026-07-18", 1)]
+    dataset = {"target_complete_races": 1, "eligible_real_odds_races": 1}
+    write_scored_cache(
+        path,
+        contract=contract,
+        races=races,
+        dataset=dataset,
+    )
+    assert load_scored_cache(path, contract=contract) == (races, dataset)
+    assert load_scored_cache(
+        path,
+        contract={**contract, "through_date": "2026-07-22"},
+    ) is None
