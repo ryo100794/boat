@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from boatrace_ai.db import connection, init_db, insert_odds_snapshot
 from boatrace_ai.web import intraday_bankroll as module
+from boatrace_ai.web.dashboard import _ODDS_API_CACHE, odds
 from boatrace_ai.web.intraday_bankroll import COMBINATIONS, day_bankroll_simulation
 
 
@@ -203,3 +204,42 @@ def test_uses_historical_payout_odds_when_deadline_odds_are_missing(
     assert result["stats"]["historical_odds_races"] == 1
     assert result["stats"]["stake_yen"] == 200
     assert result["series"][0]["odds_basis"] == "過去公式払戻推定"
+
+
+def test_odds_api_returns_top_five_prediction_series(tmp_path) -> None:
+    database = tmp_path / "odds-series.sqlite"
+    race_id = "2026-07-20-01-01"
+    init_db(database)
+    with connection(database) as conn:
+        _seed_race(
+            conn,
+            race_id,
+            "2026-07-20T03:00:00+00:00",
+            "/models/win_model_no_odds_v8.joblib",
+        )
+        insert_odds_snapshot(
+            conn,
+            race_id,
+            "2026-07-20T02:50:00+00:00",
+            "11:50",
+            {
+                combination: 10.0 + index
+                for index, combination in enumerate(COMBINATIONS)
+            },
+            "test",
+            {"parser_version": "odds3t_dom_v2"},
+        )
+
+    _ODDS_API_CACHE.clear()
+    payload = odds(
+        database,
+        {"race_id": [race_id], "combination": ["6-5-4"]},
+    )
+
+    assert len(payload["series"]) == 5
+    assert payload["series"][0]["combination"] == "1-2-3"
+    assert all(len(item["trend"]) == 2 for item in payload["series"])
+    assert "6-5-4" not in {
+        item["combination"] for item in payload["series"]
+    }
+    assert len(payload["trend"]) == 2

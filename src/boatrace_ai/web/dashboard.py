@@ -253,17 +253,82 @@ def odds(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     if cached and now_mono - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
     with connect(db_path) as conn:
-        trend = conn.execute(
-            """
-            SELECT os.captured_at, os.source_update_time, ot.odds
+        latest = conn.execute(
+            "SELECT MAX(generated_at) FROM predictions WHERE race_id = ?",
+            (race_id,),
+        ).fetchone()
+        top_predictions = []
+        if latest and latest[0]:
+            top_predictions = [
+                dict_row(row)
+                for row in conn.execute(
+                    """
+                    SELECT combination, probability
+                    FROM predictions
+                    WHERE race_id = ? AND generated_at = ?
+                    ORDER BY probability DESC,
+                             COALESCE(expected_value, 0) DESC,
+                             combination
+                    LIMIT 5
+                    """,
+                    (race_id, latest[0]),
+                ).fetchall()
+            ]
+        combinations = [
+            str(row["combination"])
+            for row in top_predictions
+            if row.get("combination")
+        ]
+        if not combinations:
+            combinations = [combo]
+            top_predictions = [{"combination": combo, "probability": None}]
+        query_combinations = list(combinations)
+        if combo not in query_combinations:
+            query_combinations.append(combo)
+        placeholders = ",".join("?" for _ in query_combinations)
+        trend_rows = conn.execute(
+            f"""
+            SELECT
+              ot.combination,
+              os.captured_at,
+              os.source_update_time,
+              ot.odds
             FROM odds_snapshots os
             JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
-            WHERE os.race_id = ? AND ot.combination = ?
-            ORDER BY os.captured_at
+            WHERE os.race_id = ?
+              AND ot.combination IN ({placeholders})
+            ORDER BY os.captured_at, ot.combination
             """,
-            (race_id, combo),
+            (race_id, *query_combinations),
         ).fetchall()
-    payload = {"race_id": race_id, "combination": combo, "trend": [dict_row(row) for row in trend]}
+
+    trends = {combination: [] for combination in query_combinations}
+    for row in trend_rows:
+        item = dict_row(row)
+        combination = str(item.pop("combination"))
+        trends.setdefault(combination, []).append(item)
+    series = [
+        {
+            "combination": combination,
+            "probability": next(
+                (
+                    row.get("probability")
+                    for row in top_predictions
+                    if row.get("combination") == combination
+                ),
+                None,
+            ),
+            "trend": trends.get(combination, []),
+        }
+        for combination in combinations
+    ]
+    selected_trend = trends.get(combo, [])
+    payload = {
+        "race_id": race_id,
+        "combination": combo,
+        "trend": selected_trend,
+        "series": series,
+    }
     _ODDS_API_CACHE[cache_key] = (now_mono, payload)
     return payload
 

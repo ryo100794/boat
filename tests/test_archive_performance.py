@@ -77,6 +77,10 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert "class=\"entry-photo\"" in html
     assert "loading=\"lazy\"" in html
     assert "state.archiveController.abort()" in html
+    assert "予測上位5組 オッズ推移" in html
+    assert "drawTrend(data.series || [], state.combo)" in html
+    assert 'ctx.fillText("オッズ",0,0)' in html
+    assert 'ctx.fillText("取得時刻 (JST)"' in html
 
 
 def test_archive_stats_sql_is_portable_across_sqlite_and_postgresql(tmp_path) -> None:

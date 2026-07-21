@@ -54,7 +54,7 @@
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); }
     .entries { display:grid; grid-template-columns:repeat(6,minmax(60px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); margin:4px 0 6px; }
     .entry { background:#fff; min-height:50px; padding:4px; } .lane { display:inline-grid; place-items:center; width:18px; height:18px; border:1px solid var(--line); font-weight:700; margin-bottom:2px; }
-    canvas { width:100%; height:105px; border:1px solid var(--line); background:#fff; } .empty { color:var(--muted); padding:10px 0; }
+    canvas { width:100%; height:105px; border:1px solid var(--line); background:#fff; } #oddsChart { height:180px; } .empty { color:var(--muted); padding:10px 0; }
     .lane-bg1 { background:#fff !important; color:#111 !important; }
     .lane-bg2 { background:#202529 !important; color:#fff !important; }
     .lane-bg3 { background:#c83232 !important; color:#fff !important; }
@@ -197,7 +197,7 @@
         <div class="timeline-scroll"><table><thead><tr><th>区分</th><th>場/R</th><th>締切/出</th><th>判定/結果</th><th>主系予測</th><th>確率</th><th>オッズ</th><th>EV/払戻</th></tr></thead><tbody id="actionRows"></tbody></table></div>
       </div>
       <div class="grid2">
-        <div class="panel"><h2><span id="raceTitle">レース詳細</span><span id="accuracy" class="muted"></span></h2><div id="entries" class="entries"></div><div id="predictions" class="pred-matrix-grid"></div><h2 style="margin-top:6px;"><span>オッズ推移</span><select id="combo"></select></h2><canvas id="oddsChart" width="720" height="200"></canvas><div id="backtest" class="empty"></div></div>
+        <div class="panel"><h2><span id="raceTitle">レース詳細</span><span id="accuracy" class="muted"></span></h2><div id="entries" class="entries"></div><div id="predictions" class="pred-matrix-grid"></div><h2 style="margin-top:6px;"><span>予測上位5組 オッズ推移</span><select id="combo" title="強調する組番"></select></h2><canvas id="oddsChart" width="720" height="240"></canvas><div id="backtest" class="empty"></div></div>
 
         <div class="panel archive-panel">
           <div class="archive-head">
@@ -696,8 +696,100 @@ async function selectRace(raceId){
   await loadOdds();
 }
 
-async function loadOdds(){ if(!state.raceId) return; const data = await getJson(`/api/odds?race_id=${encodeURIComponent(state.raceId)}&combination=${encodeURIComponent(state.combo || "1-2-3")}`); drawTrend(data.trend || []); }
-function drawTrend(rows){ const c=$("oddsChart"),ctx=c.getContext("2d"); ctx.clearRect(0,0,c.width,c.height); ctx.strokeStyle="#d8e0e3"; ctx.beginPath(); ctx.moveTo(34,16); ctx.lineTo(34,178); ctx.lineTo(700,178); ctx.stroke(); const vals=rows.map(r=>Number(r.odds)).filter(Number.isFinite); if(vals.length<2){ ctx.fillStyle="#637279"; ctx.fillText("オッズ推移の点が不足しています。",46,98); return; } const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(.01,max-min); ctx.strokeStyle="#8f2d56"; ctx.lineWidth=2; ctx.beginPath(); vals.forEach((v,i)=>{ const x=42+(640*i/Math.max(1,vals.length-1)); const y=170-((v-min)/span)*140; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke(); ctx.fillStyle="#172126"; ctx.fillText(`min ${num(min)} / max ${num(max)}`,46,26); }
+async function loadOdds(){
+  if(!state.raceId) return;
+  const data = await getJson(`/api/odds?race_id=${encodeURIComponent(state.raceId)}&combination=${encodeURIComponent(state.combo || "1-2-3")}`);
+  drawTrend(data.series || [], state.combo);
+}
+function niceTickStep(span, target=5){
+  const rough=Math.max(span/target, 0.001);
+  const power=Math.pow(10, Math.floor(Math.log10(rough)));
+  const normalized=rough/power;
+  const factor=normalized<=1 ? 1 : normalized<=2 ? 2 : normalized<=5 ? 5 : 10;
+  return factor*power;
+}
+function drawTrend(series, selectedCombo){
+  const c=$("oddsChart"), ctx=c.getContext("2d"), w=c.width, h=c.height;
+  const plot={l:54,r:12,t:42,b:36};
+  const colors=["#9b2c4d","#1769aa","#00897b","#d97706","#6b46a1"];
+  ctx.clearRect(0,0,w,h);
+  ctx.font="10px ui-monospace,monospace";
+  const normalized=(Array.isArray(series) ? series : []).map((item,index)=>({
+    ...item,
+    color:colors[index%colors.length],
+    points:(item.trend || []).map(row=>({
+      time:new Date(row.captured_at).getTime(),
+      odds:Number(row.odds),
+    })).filter(point=>Number.isFinite(point.time)&&Number.isFinite(point.odds)&&point.odds>0),
+  }));
+  const points=normalized.flatMap(item=>item.points);
+  ctx.fillStyle="#637279";
+  if(!points.length){
+    ctx.fillText("予測上位組のオッズ推移はまだありません。",plot.l+8,Math.round(h/2));
+    return;
+  }
+  let minTime=Math.min(...points.map(point=>point.time));
+  let maxTime=Math.max(...points.map(point=>point.time));
+  if(maxTime===minTime){ minTime-=30000; maxTime+=30000; }
+  const rawMin=Math.min(...points.map(point=>point.odds));
+  const rawMax=Math.max(...points.map(point=>point.odds));
+  const rawSpan=Math.max(rawMax-rawMin, Math.max(1,rawMax*.05));
+  const step=niceTickStep(rawSpan,5);
+  const yMin=Math.max(0,Math.floor((rawMin-step*.35)/step)*step);
+  const yMax=Math.max(yMin+step,Math.ceil((rawMax+step*.35)/step)*step);
+  const pw=w-plot.l-plot.r, ph=h-plot.t-plot.b;
+  const x=time=>plot.l+(time-minTime)/(maxTime-minTime)*pw;
+  const y=odds=>plot.t+(yMax-odds)/(yMax-yMin)*ph;
+
+  ctx.strokeStyle="#dce3e6";
+  ctx.fillStyle="#4e5d63";
+  ctx.textAlign="right";
+  ctx.textBaseline="middle";
+  for(let value=yMin;value<=yMax+step*.01;value+=step){
+    const py=y(value);
+    ctx.beginPath();ctx.moveTo(plot.l,py);ctx.lineTo(w-plot.r,py);ctx.stroke();
+    ctx.fillText(tightNum(value),plot.l-5,py);
+  }
+  ctx.textAlign="center";
+  ctx.textBaseline="top";
+  const xTicks=5;
+  for(let i=0;i<xTicks;i++){
+    const time=minTime+(maxTime-minTime)*i/(xTicks-1);
+    const px=x(time);
+    ctx.strokeStyle="#edf1f2";
+    ctx.beginPath();ctx.moveTo(px,plot.t);ctx.lineTo(px,h-plot.b);ctx.stroke();
+    ctx.fillStyle="#4e5d63";
+    ctx.fillText(new Date(time).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Tokyo"}),px,h-plot.b+5);
+  }
+  ctx.strokeStyle="#7d8b90";
+  ctx.beginPath();ctx.moveTo(plot.l,plot.t);ctx.lineTo(plot.l,h-plot.b);ctx.lineTo(w-plot.r,h-plot.b);ctx.stroke();
+  ctx.save();
+  ctx.translate(12,plot.t+ph/2);ctx.rotate(-Math.PI/2);
+  ctx.fillStyle="#34434a";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("オッズ",0,0);
+  ctx.restore();
+  ctx.fillStyle="#34434a";ctx.textAlign="center";ctx.textBaseline="bottom";
+  ctx.fillText("取得時刻 (JST)",plot.l+pw/2,h-1);
+
+  normalized.forEach((item,index)=>{
+    const legendX=plot.l+index*(pw/5);
+    ctx.strokeStyle=item.color;ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(legendX,13);ctx.lineTo(legendX+14,13);ctx.stroke();
+    ctx.fillStyle="#25343a";ctx.textAlign="left";ctx.textBaseline="middle";
+    const probability=item.probability==null ? "" : ` ${tightPct(item.probability)}`;
+    ctx.fillText(`${item.combination || "-"}${probability}`,legendX+18,13);
+    if(item.points.length<2) return;
+    ctx.strokeStyle=item.color;
+    ctx.lineWidth=item.combination===selectedCombo ? 2.8 : 1.6;
+    ctx.beginPath();
+    item.points.forEach((point,pointIndex)=>{
+      const px=x(point.time),py=y(point.odds);
+      if(pointIndex===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    });
+    ctx.stroke();
+    const last=item.points[item.points.length-1];
+    ctx.fillStyle=item.color;ctx.beginPath();ctx.arc(x(last.time),y(last.odds),2.4,0,Math.PI*2);ctx.fill();
+  });
+}
 function stopLiveWipe(box){
   const grid = $("liveWipeGrid");
   if(grid){
