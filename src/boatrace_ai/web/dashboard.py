@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import time
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -187,8 +188,18 @@ def send_secure_html(
         return
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def send_json(handler: BaseHTTPRequestHandler, value: Any, status: int = 200) -> None:
-    payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps(
+        value, ensure_ascii=False, default=_json_default
+    ).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")
@@ -2864,7 +2875,7 @@ def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str) -> dict
           WHERE race_date >= ? AND jcd = ?
         )
         SELECT
-          jcd,
+          MAX(jcd) AS jcd,
           MAX(venue_name) AS venue_name,
           COUNT(*) AS races,
           SUM(CASE WHEN (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = recent.race_id AND rr.rank IS NOT NULL) >= 3 THEN 1 ELSE 0 END) AS result_races,
@@ -3145,7 +3156,9 @@ def _scope_sql(scope: str) -> tuple[str, str, str, str]:
         )
     if scope == "rno":
         return (
-            "r.rno AS key, printf('%02dR', r.rno) AS label",
+            "r.rno AS key, "
+            "(CASE WHEN r.rno < 10 THEN '0' ELSE '' END || "
+            "CAST(r.rno AS TEXT) || 'R') AS label",
             "r.rno",
             "1 = 1",
             "win_rate DESC, starts DESC, r.rno",
@@ -3160,20 +3173,22 @@ def _scope_sql(scope: str) -> tuple[str, str, str, str]:
         )
     if scope == "motor":
         return (
-            "printf('%s-M%s', r.jcd, e.motor_no) AS key, printf('%s M%s', MAX(r.venue_name), e.motor_no) AS label",
+            "(r.jcd || '-M' || CAST(e.motor_no AS TEXT)) AS key, "
+            "(MAX(r.venue_name) || ' M' || CAST(e.motor_no AS TEXT)) AS label",
             "r.jcd, e.motor_no",
             "e.motor_no IS NOT NULL",
             "starts DESC, win_rate DESC, label",
         )
     if scope == "boat":
         return (
-            "printf('%s-B%s', r.jcd, e.boat_no) AS key, printf('%s B%s', MAX(r.venue_name), e.boat_no) AS label",
+            "(r.jcd || '-B' || CAST(e.boat_no AS TEXT)) AS key, "
+            "(MAX(r.venue_name) || ' B' || CAST(e.boat_no AS TEXT)) AS label",
             "r.jcd, e.boat_no",
             "e.boat_no IS NOT NULL",
             "starts DESC, win_rate DESC, label",
         )
     return (
-        "rr.lane AS key, printf('%d号艇', rr.lane) AS label",
+        "rr.lane AS key, (CAST(rr.lane AS TEXT) || '号艇') AS label",
         "rr.lane",
         "1 = 1",
         "rr.lane",
@@ -3587,7 +3602,9 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
     latest_roi = _float_or_none(latest.get("roi") if latest else None)
     latest_profit = _float_or_none(latest.get("profit_yen") if latest else None)
     latest_drawdown = latest.get("max_drawdown_yen") if latest else None
-    attribution_rows = [row for row in bankrolls if row.get("roi_attribution_gate")]
+    attribution_rows = [
+        row for row in all_bankrolls if row.get("roi_attribution_gate")
+    ]
     attribution_best = max(attribution_rows, key=lambda row: int(row.get("stable_signals") or 0), default=None)
     attribution_candidate = bool(
         attribution_best
@@ -3647,7 +3664,7 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
         metrics = result.get("metrics") or {}
         attribution = result.get("ticket_roi_attribution") or {}
         stability = attribution.get("fold_stability") or {}
-        if metrics.get("roi") is None:
+        if metrics.get("roi") is None and not stability:
             continue
         rows.append(
             {
@@ -3846,7 +3863,7 @@ def _roadmap_improvements(
     listwise_metrics = ((listwise_newton_job or {}).get("result") or {}).get("metrics") or {}
     listwise_promoted = bool(listwise_metrics.get("promotion_eligible"))
     listwise_next = (
-        f"標準365日 {int(listwise_metrics.get('evaluated_races') or listwise_metrics.get('bankroll_evaluated_races') or 0):,}Rの評価完了。"
+        f"評価対象 {int(listwise_metrics.get('evaluated_races') or listwise_metrics.get('bankroll_evaluated_races') or 0):,}Rの検証完了。"
         f"1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%、"
         f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%、"
         f"LogLoss {float(listwise_metrics.get('entry_log_loss') or listwise_metrics.get('ranking_log_loss') or 0):.4f}、"

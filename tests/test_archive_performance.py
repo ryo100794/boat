@@ -77,3 +77,32 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert "class=\"entry-photo\"" in html
     assert "loading=\"lazy\"" in html
     assert "state.archiveController.abort()" in html
+
+
+def test_archive_stats_sql_is_portable_across_sqlite_and_postgresql(tmp_path) -> None:
+    db_path = tmp_path / "stats.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        _seed(conn, "2026-07-20-23-01", "2026-07-20", "23", 1)
+        _seed(conn, "2026-07-20-24-01", "2026-07-20", "24", 2)
+        for scope in ("lane", "venue", "rno", "class", "motor", "boat"):
+            rows = dashboard._stat_rows_fast(
+                conn, scope, "2026-07-01", limit=20, min_starts=1
+            )
+            assert rows, scope
+            select_sql = dashboard._scope_sql(scope)[0]
+            assert "printf(" not in select_sql
+            assert "%" not in select_sql
+
+
+def test_archive_json_default_serializes_postgresql_values() -> None:
+    import json
+    from datetime import date
+    from decimal import Decimal
+
+    payload = json.dumps(
+        {"ratio": Decimal("0.125"), "day": date(2026, 7, 21)},
+        default=dashboard._json_default,
+    )
+
+    assert json.loads(payload) == {"ratio": 0.125, "day": "2026-07-21"}
