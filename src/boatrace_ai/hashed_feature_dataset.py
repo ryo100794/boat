@@ -45,6 +45,7 @@ def load_or_build_hashed_dataset(
     ensure_sparse_index32: Callable[[Any], sparse.csr_matrix],
     drop_feature_groups: tuple[str, ...],
     batch_size: int,
+    write_cache: bool = True,
 ) -> tuple[HashedRaceDataset, str]:
     if cache_prefix is not None:
         loaded = load_hashed_dataset(
@@ -65,7 +66,7 @@ def load_or_build_hashed_dataset(
         drop_feature_groups=drop_feature_groups,
         batch_size=batch_size,
     )
-    if cache_prefix is not None:
+    if cache_prefix is not None and write_cache:
         save_hashed_dataset(cache_prefix, dataset)
     return dataset, "built"
 

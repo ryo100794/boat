@@ -10,6 +10,7 @@ from boatrace_ai.hashed_feature_dataset import (
     CACHE_VERSION,
     _stack_csr_balanced,
     build_hashed_dataset,
+    load_or_build_hashed_dataset,
     load_hashed_dataset,
     save_hashed_dataset,
 )
@@ -121,3 +122,26 @@ def test_balanced_csr_stack_preserves_row_order_and_values() -> None:
     assert (result != expected).nnz == 0
     assert result.indices.dtype.name == "int32"
     assert result.indptr.dtype.name == "int32"
+
+
+def test_hashed_dataset_can_build_without_writing_cache(tmp_path: Path) -> None:
+    race_keys = [
+        ("2026-01-01-01-01", "2026-01-01", "01", 1),
+        ("2026-01-02-01-01", "2026-01-02", "01", 1),
+    ]
+    dataset, source = load_or_build_hashed_dataset(
+        cache_prefix=tmp_path / "features",
+        race_keys=race_keys,
+        race_rows=_race_rows,
+        hasher=FeatureHasher(
+            n_features=256, input_type="dict", alternate_sign=False
+        ),
+        to_hashable=lambda row: row,
+        ensure_sparse_index32=_ensure_index32,
+        drop_feature_groups=(),
+        batch_size=7,
+        write_cache=False,
+    )
+    assert source == "built"
+    assert dataset.race_count == 2
+    assert not list(tmp_path.iterdir())

@@ -14,7 +14,8 @@ as_of_date="${BOATRACE_EVAL_AS_OF_DATE:-}"
 wait_pid="${1:-}"
 resume_completed="${BOATRACE_EVAL_RESUME_COMPLETED:-1}"
 eval_nice="${BOATRACE_EVAL_NICE:-10}"
-mkdir -p "$raw_dir" "$log_dir"
+transient_cache_dir="${BOATRACE_EVAL_TRANSIENT_CACHE_DIR:-/tmp/boatrace-standardized-365d-v2}"
+mkdir -p "$raw_dir" "$log_dir" "$transient_cache_dir"
 
 if [[ -n "$wait_pid" ]]; then
   while kill -0 "$wait_pid" 2>/dev/null; do
@@ -141,6 +142,7 @@ run_job standardized_365d_v2_listwise_feature_teacher \
   --db "$db" \
   --output "$raw_dir/listwise_feature_teacher.json" \
   --cache-dir "$eval_dir/listwise_search_cache" \
+  --cache-write-mode never --selected-cache-dir "$transient_cache_dir" \
   --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
@@ -153,7 +155,7 @@ run_job standardized_365d_v2_listwise_newton \
   --search-result "$raw_dir/listwise_feature_teacher.json" \
   --output "$raw_dir/listwise_newton.json" \
   --model-output "$eval_dir/listwise_newton.joblib" \
-  --cache-dir "$eval_dir/listwise_search_cache" \
+  --cache-dir "$transient_cache_dir" --cache-write-mode never \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
 fi

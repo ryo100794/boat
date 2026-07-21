@@ -37,6 +37,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         dropped=dropped,
         n_features=int(search_result["n_features"]),
         batch_races=args.batch_races,
+        write_cache=args.cache_write_mode == "always",
     )
     scaler = fit_scaler(dataset, race_end=selection_end, batch_rows=args.batch_races * 6)
     initial, adam_history = train_listwise_model(
@@ -174,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/models/listwise_newton_cg_v1.joblib",
     )
     parser.add_argument("--cache-dir", default="data/models/listwise_search_cache")
+    parser.add_argument(
+        "--cache-write-mode",
+        choices=("always", "never"),
+        default="always",
+    )
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--adam-epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.02)

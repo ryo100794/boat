@@ -21,7 +21,11 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
-from ..hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
+from ..hashed_feature_dataset import (
+    HashedRaceDataset,
+    load_or_build_hashed_dataset,
+    save_hashed_dataset,
+)
 from .model import (
     TARGETS,
     evaluate_range,
@@ -55,6 +59,7 @@ def load_variant_dataset(
     dropped: tuple[str, ...],
     n_features: int,
     batch_races: int,
+    write_cache: bool = True,
 ) -> tuple[HashedRaceDataset, str]:
     hasher = FeatureHasher(
         n_features=n_features,
@@ -75,6 +80,7 @@ def load_variant_dataset(
         ensure_sparse_index32=_ensure_sparse_index32,
         drop_feature_groups=normalized,
         batch_size=batch_races * 6,
+        write_cache=write_cache,
     )
 
 
@@ -103,6 +109,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             dropped=dropped,
             n_features=args.n_features,
             batch_races=args.batch_races,
+            write_cache=args.cache_write_mode == "always",
         )
         scaler = fit_scaler(dataset, race_end=train_end, batch_rows=args.batch_races * 6)
         for target in targets:
@@ -157,7 +164,15 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         dropped=selected_drops,
         n_features=args.n_features,
         batch_races=args.batch_races,
+        write_cache=args.cache_write_mode == "always",
     )
+    if args.selected_cache_dir:
+        selected_prefix = (
+            Path(args.selected_cache_dir)
+            / f"listwise_search_{args.n_features}_{selected['feature_variant']}"
+        )
+        save_hashed_dataset(selected_prefix, dataset)
+        cache_source = "selected_cache"
     scaler = fit_scaler(dataset, race_end=selection_end, batch_rows=args.batch_races * 6)
     final_model, final_history = train_listwise_model(
         dataset,
@@ -228,6 +243,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             )
         },
         "selected_cache_source": cache_source,
+        "selected_cache_dir": args.selected_cache_dir or None,
         "final_training_history": final_history,
         "holdout": {**holdout_metrics, "evaluation_race_set_sha256": evaluation_hash, "bankroll": bankroll},
         "policy": policy,
@@ -259,6 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--output", default="data/models/listwise_feature_teacher_search_v1.json")
     parser.add_argument("--cache-dir", default="data/models/listwise_search_cache")
+    parser.add_argument(
+        "--cache-write-mode",
+        choices=("always", "never"),
+        default="always",
+    )
+    parser.add_argument("--selected-cache-dir")
     parser.add_argument("--n-features", type=int, default=1 << 12)
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--epochs", type=int, default=2)
