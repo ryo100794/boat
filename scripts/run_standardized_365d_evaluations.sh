@@ -14,8 +14,61 @@ as_of_date="${BOATRACE_EVAL_AS_OF_DATE:-}"
 wait_pid="${1:-}"
 resume_completed="${BOATRACE_EVAL_RESUME_COMPLETED:-1}"
 eval_nice="${BOATRACE_EVAL_NICE:-10}"
+eval_vm_limit_kb="${BOATRACE_EVAL_VM_LIMIT_KB:-20971520}"
+eval_oom_score_adj="${BOATRACE_EVAL_OOM_SCORE_ADJ:-500}"
 transient_cache_dir="${BOATRACE_EVAL_TRANSIENT_CACHE_DIR:-/tmp/boatrace-standardized-365d-v2}"
 mkdir -p "$raw_dir" "$log_dir" "$transient_cache_dir"
+queue_log="$log_dir/standardized_365d_queue.log"
+lock_file="$eval_dir/.standardized_365d_queue.lock"
+current_job="queue_setup"
+failure_logged=0
+
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  printf 'FAILED %s queue_lock already running lock=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$lock_file" | tee -a "$queue_log"
+  exit 75
+fi
+
+cleanup_temporary_files() {
+  local files=()
+  local candidate
+  shopt -s nullglob
+  for candidate in \
+    "$transient_cache_dir"/listwise_search_* \
+    "$transient_cache_dir"/.listwise_search_*.tmp \
+    "$eval_dir"/.listwise_newton.joblib.*.tmp \
+    "$raw_dir"/.listwise_feature_teacher.json.*.tmp \
+    "$raw_dir"/.listwise_newton.json.*.tmp; do
+    if [[ -f "$candidate" || -L "$candidate" ]]; then
+      files+=("$candidate")
+    fi
+  done
+  shopt -u nullglob
+  if ((${#files[@]})); then
+    rm -f -- "${files[@]}"
+  fi
+}
+
+on_exit() {
+  local status=$?
+  trap - EXIT
+  cleanup_temporary_files
+  if ((status != 0)) && ((failure_logged == 0)); then
+    printf 'FAILED %s %s exit=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current_job" "$status" \
+      | tee -a "$queue_log"
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+cleanup_temporary_files
+printf 'RESOURCE %s vm_limit_kb=%s oom_score_adj=%s nice=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$eval_vm_limit_kb" \
+  "$eval_oom_score_adj" "$eval_nice" | tee -a "$queue_log"
 
 if [[ -n "$wait_pid" ]]; then
   while kill -0 "$wait_pid" 2>/dev/null; do
@@ -49,10 +102,31 @@ export BOATRACE_EVAL_MAX_RACE_DATE="$holdout_end"
 
 run_job() {
   local name="$1"
+  local status
   shift
-  printf 'START %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$log_dir/standardized_365d_queue.log"
-  nice -n "$eval_nice" "$@" >"$log_dir/${name}.log" 2>&1
-  printf 'DONE  %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$log_dir/standardized_365d_queue.log"
+  current_job="$name"
+  printf 'START %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$queue_log"
+  set +e
+  (
+    if [[ "$eval_vm_limit_kb" != "0" ]]; then
+      ulimit -v "$eval_vm_limit_kb"
+    fi
+    if [[ -w /proc/self/oom_score_adj ]]; then
+      printf '%s\n' "$eval_oom_score_adj" >/proc/self/oom_score_adj 2>/dev/null || true
+    fi
+    exec nice -n "$eval_nice" "$@"
+  ) >"$log_dir/${name}.log" 2>&1
+  status=$?
+  set -e
+  if ((status != 0)); then
+    failure_logged=1
+    printf 'FAILED %s %s exit=%s log=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$status" \
+      "$log_dir/${name}.log" | tee -a "$queue_log"
+    return "$status"
+  fi
+  printf 'DONE  %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" | tee -a "$queue_log"
+  current_job="queue"
 }
 
 source_needs_run() {
@@ -63,7 +137,7 @@ source_needs_run() {
       --validate-source "$model_id" --artifacts-only >/dev/null 2>&1; then
     printf 'SKIP  %s %s (validated)\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$model_id" \
-      | tee -a "$log_dir/standardized_365d_queue.log"
+      | tee -a "$queue_log"
     return 1
   fi
   return 0
@@ -166,6 +240,7 @@ run_job standardized_365d_v2_consolidate \
   --protocol-file "$protocol"
 
 run_job standardized_365d_v2_audit \
-  .venv/bin/python scripts/audit_standardized_evaluation.py "$eval_dir"
+  .venv/bin/python scripts/audit_standardized_evaluation.py "$eval_dir" --db "$db"
 
-printf 'COMPLETE %s standardized_365d_v2\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$log_dir/standardized_365d_queue.log"
+cleanup_temporary_files
+printf 'COMPLETE %s standardized_365d_v2\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$queue_log"

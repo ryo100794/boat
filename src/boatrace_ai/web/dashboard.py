@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import html
 import importlib.util
 import ipaddress
@@ -23,6 +24,7 @@ from ..standard_evaluation import (
     MODEL_SOURCES,
     POLICY as STANDARD_POLICY,
     PROTOCOL_ID as STANDARD_PROTOCOL_ID,
+    evaluate_promotions as evaluate_standard_promotions,
     protocol_sha256 as standard_protocol_sha256,
 )
 from .intraday_bankroll import day_bankroll_simulation
@@ -895,6 +897,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     feature_diagnostics: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     standardized = _load_standardized_v2_bundle(model_dir)
+    standardized_labels: set[str] = set()
 
     for path in sorted(model_dir.glob("*.json")):
         try:
@@ -924,6 +927,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     if standardized["ready"]:
         for model_id, path, data in standardized["models"]:
             label = f"standardized_365d_v2_{model_id}"
+            standardized_labels.add(label)
             backtests.append(_backtest_summary(path, label, data))
             bankroll.append(_bankroll_summary(path, label, data))
             daily_rows = _daily_report_rows(data.get("daily") or [])
@@ -936,9 +940,23 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         standardized,
     )
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
-    backtests.extend(_remote_backtest_report_summaries(remote_evaluations))
-    bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
-    bankroll_daily.update(_remote_bankroll_daily(remote_evaluations))
+    backtests.extend(
+        row
+        for row in _remote_backtest_report_summaries(remote_evaluations)
+        if row.get("name") not in standardized_labels
+    )
+    bankroll.extend(
+        row
+        for row in _remote_bankroll_report_summaries(remote_evaluations)
+        if row.get("name") not in standardized_labels
+    )
+    bankroll_daily.update(
+        {
+            label: rows
+            for label, rows in _remote_bankroll_daily(remote_evaluations).items()
+            if label not in standardized_labels
+        }
+    )
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
@@ -983,35 +1001,101 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         result["errors"].append(f"manifest unreadable: {exc}")
         return result
+    if not isinstance(manifest, dict):
+        result["errors"].append("manifest is not an object")
+        return result
     try:
         protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        protocol = manifest
+        result["errors"].append("protocol missing")
+        return result
     except (OSError, json.JSONDecodeError) as exc:
         result["errors"].append(f"protocol unreadable: {exc}")
+        return result
+    if not isinstance(protocol, dict):
+        result["errors"].append("protocol is not an object")
         return result
     result["manifest"] = manifest
     result["protocol"] = protocol
     manifest_hash = str(manifest.get("protocol_sha256") or "")
     protocol_hash = str(protocol.get("protocol_sha256") or "")
+    race_set_hash = str(protocol.get("race_set_sha256") or "")
+    prediction_races = protocol.get("prediction_races")
+    bankroll_races = protocol.get("bankroll_evaluable_races")
+
+    expected_axis: list[str] = []
+    try:
+        holdout_start = date.fromisoformat(str(protocol["holdout_start"]))
+        holdout_end = date.fromisoformat(str(protocol["holdout_end"]))
+        as_of_date = date.fromisoformat(str(protocol["as_of_date_jst"]))
+        expected_axis = [
+            (holdout_start + timedelta(days=offset)).isoformat()
+            for offset in range((holdout_end - holdout_start).days + 1)
+        ]
+    except (KeyError, TypeError, ValueError):
+        holdout_end = None
+        as_of_date = None
+
+    manifest_rows = manifest.get("models")
+    if not isinstance(manifest_rows, list):
+        manifest_rows = []
+    manifest_rows = [row for row in manifest_rows if isinstance(row, dict)]
+    manifest_model_ids = [str(row.get("model_id") or "") for row in manifest_rows]
+    expected_roles = {source.model_id: source.role for source in MODEL_SOURCES}
     checks = (
-        (manifest.get("protocol_id") == STANDARD_PROTOCOL_ID, "protocol id mismatch"),
-        (manifest.get("policy") == STANDARD_POLICY, "policy mismatch"),
+        (protocol.get("protocol_id") == STANDARD_PROTOCOL_ID, "protocol id mismatch"),
+        (protocol.get("policy") == STANDARD_POLICY, "protocol policy mismatch"),
+        (
+            bool(protocol_hash)
+            and protocol_hash == standard_protocol_sha256(protocol),
+            "protocol fingerprint mismatch",
+        ),
         (
             bool(manifest_hash)
             and manifest_hash == standard_protocol_sha256(manifest),
             "manifest protocol fingerprint mismatch",
         ),
         (manifest_hash == protocol_hash, "current protocol is not consolidated"),
+        (
+            all(manifest.get(key) == value for key, value in protocol.items()),
+            "manifest protocol fields mismatch",
+        ),
+        (protocol.get("calendar_days") == 365, "calendar days mismatch"),
+        (protocol.get("holdout_date_count") == 365, "holdout date count mismatch"),
+        (len(expected_axis) == 365, "holdout date axis mismatch"),
+        (
+            holdout_end is not None
+            and as_of_date is not None
+            and holdout_end == as_of_date - timedelta(days=1),
+            "as-of/full-day boundary mismatch",
+        ),
+        (protocol.get("full_day_boundary") is True, "holdout is not full-day bounded"),
+        (
+            type(prediction_races) is int and prediction_races > 0,
+            "prediction race count invalid",
+        ),
+        (
+            type(bankroll_races) is int
+            and type(prediction_races) is int
+            and 0 < bankroll_races <= prediction_races,
+            "bankroll race count invalid",
+        ),
+        (
+            bool(re.fullmatch(r"[0-9a-f]{64}", race_set_hash)),
+            "race-set fingerprint invalid",
+        ),
         (bool(manifest.get("comparison_ready")), "comparison not ready"),
         (
             manifest.get("comparison_model_ids") == expected_ids,
             "comparison model registry mismatch",
         ),
+        (manifest_model_ids == expected_ids, "manifest model list mismatch"),
+        (manifest.get("model_count") == len(expected_ids), "model count mismatch"),
         (
-            int(manifest.get("valid_model_count") or 0) == len(expected_ids),
+            manifest.get("valid_model_count") == len(expected_ids),
             "valid model count mismatch",
         ),
+        (bool(manifest.get("registry_coverage_passed")), "registry coverage failed"),
         (not manifest.get("failed_models"), "manifest contains failed models"),
         (
             bool((manifest.get("promotion_decision") or {}).get("status")),
@@ -1019,11 +1103,7 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
         ),
     )
     result["errors"].extend(message for passed, message in checks if not passed)
-    manifest_models = {
-        str(row.get("model_id")): row
-        for row in manifest.get("models") or []
-        if isinstance(row, dict)
-    }
+    manifest_models = {str(row.get("model_id")): row for row in manifest_rows}
     for model_id in expected_ids:
         summary = manifest_models.get(model_id) or {}
         path = root / f"{model_id}.json"
@@ -1035,13 +1115,93 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError) as exc:
             result["errors"].append(f"{model_id}: result unreadable: {exc}")
             continue
-        validation = data.get("validation") or {}
+        if not isinstance(data, dict):
+            result["errors"].append(f"{model_id}: result is not an object")
+            continue
+        validation = data.get("validation")
+        if not isinstance(validation, dict):
+            validation = {}
+        daily = data.get("daily")
+        daily_valid = (
+            isinstance(daily, list)
+            and all(isinstance(row, dict) for row in daily)
+        )
+        daily_rows = daily if daily_valid else []
+        daily_dates = [str(row.get("race_date") or "") for row in daily_rows]
+        daily_counts = [row.get("evaluated_races") for row in daily_rows]
+        daily_count_valid = all(type(value) is int and value >= 0 for value in daily_counts)
+        daily_evaluated = sum(daily_counts) if daily_count_valid else None
         model_checks = (
             (data.get("model_id") == model_id, "model id mismatch"),
-            (data.get("protocol_sha256") == manifest_hash, "protocol mismatch"),
+            (data.get("role") == expected_roles[model_id], "model role mismatch"),
+            (data.get("protocol_id") == STANDARD_PROTOCOL_ID, "protocol id mismatch"),
+            (data.get("protocol_sha256") == protocol_hash, "protocol mismatch"),
+            (data.get("protocol") == protocol, "embedded protocol mismatch"),
+            (data.get("evaluation_scope") == STANDARD_PROTOCOL_ID, "evaluation scope mismatch"),
             (data.get("policy") == STANDARD_POLICY, "policy mismatch"),
+            (data.get("include_odds") is False, "odds policy mismatch"),
+            (data.get("evaluated_races") == prediction_races, "prediction race count mismatch"),
+            (
+                data.get("bankroll_evaluated_races") == bankroll_races,
+                "bankroll race count mismatch",
+            ),
+            (
+                data.get("evaluation_race_set_sha256") == race_set_hash,
+                "race-set fingerprint mismatch",
+            ),
             (bool(validation.get("passed")), "validation failed"),
-            (bool((summary.get("validation") or {}).get("passed")), "manifest validation failed"),
+            (not validation.get("policy_mismatches"), "validation policy mismatch"),
+            (
+                validation.get("prediction_race_count") == prediction_races
+                and validation.get("expected_prediction_races") == prediction_races,
+                "validation prediction race count mismatch",
+            ),
+            (
+                validation.get("bankroll_race_count") == bankroll_races
+                and validation.get("expected_bankroll_races") == bankroll_races,
+                "validation bankroll race count mismatch",
+            ),
+            (
+                all(
+                    validation.get(key) == race_set_hash
+                    for key in (
+                        "prediction_race_set_sha256",
+                        "bankroll_race_set_sha256",
+                        "expected_race_set_sha256",
+                    )
+                ),
+                "validation race-set fingerprint mismatch",
+            ),
+            (daily_valid, "daily rows invalid"),
+            (daily_dates == expected_axis, "daily date axis mismatch"),
+            (
+                validation.get("daily_date_count") == 365
+                and validation.get("expected_daily_date_count") == 365
+                and validation.get("daily_start") == protocol.get("holdout_start")
+                and validation.get("daily_end") == protocol.get("holdout_end"),
+                "validation daily date axis mismatch",
+            ),
+            (daily_count_valid, "daily evaluated race counts invalid"),
+            (
+                daily_evaluated == bankroll_races,
+                "daily evaluated race aggregate mismatch",
+            ),
+            (data.get("race_days") == 365, "race day count mismatch"),
+            (summary.get("role") == expected_roles[model_id], "manifest model role mismatch"),
+            (summary.get("validation") == validation, "manifest validation mismatch"),
+            (
+                all(
+                    summary.get(key) == data.get(key)
+                    for key in (
+                        "entry_log_loss",
+                        "winner_top1_accuracy",
+                        "trifecta_top5_hit_rate",
+                        "roi",
+                        "profit_yen",
+                    )
+                ),
+                "manifest model metrics mismatch",
+            ),
         )
         result["errors"].extend(
             f"{model_id}: {message}"
@@ -1049,6 +1209,40 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
             if not passed
         )
         result["models"].append((model_id, path, data))
+
+    loaded_ids = [model_id for model_id, _path, _data in result["models"]]
+    if loaded_ids == expected_ids:
+        promotion_inputs = [
+            deepcopy(data) for _model_id, _path, data in result["models"]
+        ]
+        try:
+            recalculated = evaluate_standard_promotions(
+                promotion_inputs,
+                comparison_ready=True,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            result["errors"].append(
+                f"promotion decision cannot be recalculated: {exc}"
+            )
+        else:
+            if manifest.get("promotion_decision") != recalculated:
+                result["errors"].append("promotion decision mismatch")
+            recalculated_by_id = {
+                str(data.get("model_id")): data for data in promotion_inputs
+            }
+            for model_id, _path, data in result["models"]:
+                expected_promotion = (
+                    recalculated_by_id.get(model_id) or {}
+                ).get("promotion")
+                if data.get("promotion") != expected_promotion:
+                    result["errors"].append(
+                        f"{model_id}: promotion mismatch"
+                    )
+                summary = manifest_models.get(model_id) or {}
+                if summary.get("promotion") != expected_promotion:
+                    result["errors"].append(
+                        f"{model_id}: manifest promotion mismatch"
+                    )
     result["ready"] = (
         not result["errors"] and len(result["models"]) == len(expected_ids)
     )

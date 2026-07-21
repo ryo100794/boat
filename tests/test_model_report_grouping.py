@@ -17,6 +17,50 @@ def test_model_selector_groups_all_sources() -> None:
     assert "seenLabels" in MODEL_REPORT_HTML
 
 
+def test_model_selector_normalizes_unified_keys_and_uses_file_identity() -> None:
+    key_source = MODEL_REPORT_HTML.split("function modelKey(value){", 1)[1].split(
+        "function modelValues", 1
+    )[0]
+    catalog_source = MODEL_REPORT_HTML.split("function modelCatalog(data){", 1)[1].split(
+        "function configureModelSelect", 1
+    )[0]
+
+    assert "standardized_365d_v2" in key_source
+    assert 'group==="bankroll"?(x.file||x.name||x.model)' in catalog_source
+
+
+def test_daily_series_matches_normalized_key_and_uses_evaluated_races() -> None:
+    source = MODEL_REPORT_HTML.split("function renderDaily(data,key){", 1)[1].split(
+        "function groupFoldSeries", 1
+    )[0]
+
+    assert "filter(value=>modelKey(value)===key)" in source
+    assert 'includes("standardized_365d_v2")' in source
+    assert "fmt(r.evaluated_races)" in source
+    assert "fmt(r.races)" not in source
+
+
+def test_unified_summary_and_promotion_display_are_explicit() -> None:
+    render_source = MODEL_REPORT_HTML.split("function render(data){", 1)[1].split(
+        "function renderStandardProtocol", 1
+    )[0]
+    protocol_source = MODEL_REPORT_HTML.split("function renderStandardProtocol(row){", 1)[
+        1
+    ].split("function modelKey", 1)[0]
+
+    assert "const unifiedReady=Boolean" in render_source
+    assert "summaryBank=unifiedReady?v2Bank:bank" in render_source
+    assert "summaryTests=unifiedReady?v2Tests:tests" in render_source
+    assert "summaryTests.map" in render_source
+    assert "summaryBank.map" in render_source
+    assert 'status==="retain_incumbent"' in protocol_source
+    assert "判定状態不明" in protocol_source
+    for text in ("policy odds", "Kelly", "露出", "上限", "単位・最低", "不合格:"):
+        assert text in protocol_source
+    for reason in ("ROI<1", "損益<=0", "LogLoss悪化", "1着悪化", "3T5悪化"):
+        assert reason in protocol_source
+
+
 def test_model_tracks_include_listwise_search_and_newton(tmp_path) -> None:
     remote = {
         "jobs": [

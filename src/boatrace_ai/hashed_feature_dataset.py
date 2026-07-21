@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +15,10 @@ from scipy import sparse
 from sklearn.feature_extraction import FeatureHasher
 
 
-CACHE_VERSION = 1
+# Version 1 files are left in place and rejected per prefix; callers lazily rebuild
+# them as version 2 instead of globally invalidating caches used by running jobs.
+CACHE_VERSION = 2
+FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v1"
 
 
 @dataclass(frozen=True)
@@ -22,6 +28,8 @@ class HashedRaceDataset:
     ranks: np.ndarray
     n_features: int
     drop_feature_groups: tuple[str, ...]
+    hasher_settings: dict[str, Any] | None = None
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION
 
     @property
     def race_count(self) -> int:
@@ -53,6 +61,7 @@ def load_or_build_hashed_dataset(
             race_keys=race_keys,
             n_features=int(hasher.n_features),
             drop_feature_groups=drop_feature_groups,
+            hasher=hasher,
         )
         if loaded is not None:
             return loaded, "disk"
@@ -130,6 +139,7 @@ def build_hashed_dataset(
         ranks=rank_matrix,
         n_features=int(hasher.n_features),
         drop_feature_groups=drop_feature_groups,
+        hasher_settings=feature_hasher_settings(hasher),
     )
 
 
@@ -172,26 +182,68 @@ def _stack_csr_balanced(
 def save_hashed_dataset(prefix: Path, dataset: HashedRaceDataset) -> None:
     paths = cache_paths(prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    sparse.save_npz(paths["matrix"], dataset.matrix, compressed=False)
-    np.save(paths["ranks"], dataset.ranks, allow_pickle=False)
-    first = dataset.race_keys[0][0] if dataset.race_keys else None
-    last = dataset.race_keys[-1][0] if dataset.race_keys else None
-    manifest = {
-        "cache_version": CACHE_VERSION,
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "race_count": dataset.race_count,
-        "example_count": dataset.example_count,
-        "first_race_id": first,
-        "last_race_id": last,
-        "n_features": dataset.n_features,
-        "drop_feature_groups": list(dataset.drop_feature_groups),
-        "matrix_shape": list(dataset.matrix.shape),
-        "matrix_nnz": int(dataset.matrix.nnz),
-    }
-    paths["manifest"].write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    matrix = dataset.matrix.tocsr(copy=False)
+    ranks = np.asarray(dataset.ranks)
+    _validate_dataset_arrays(
+        matrix,
+        ranks,
+        race_count=dataset.race_count,
+        n_features=dataset.n_features,
     )
+    temporary_paths: list[Path] = []
+    matrix_temporary = _temporary_path(prefix, "matrix.npz")
+    ranks_temporary = _temporary_path(prefix, "ranks.npy")
+    manifest_temporary = _temporary_path(prefix, "manifest.json")
+    temporary_paths.extend((matrix_temporary, ranks_temporary, manifest_temporary))
+    try:
+        with matrix_temporary.open("wb") as handle:
+            sparse.save_npz(handle, matrix, compressed=False)
+            _flush_and_fsync(handle)
+        with ranks_temporary.open("wb") as handle:
+            np.save(handle, ranks, allow_pickle=False)
+            _flush_and_fsync(handle)
+
+        first = dataset.race_keys[0][0] if dataset.race_keys else None
+        last = dataset.race_keys[-1][0] if dataset.race_keys else None
+        manifest = {
+            "cache_version": CACHE_VERSION,
+            "feature_schema_version": dataset.feature_schema_version,
+            "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "race_count": dataset.race_count,
+            "race_ids_sha256": race_ids_sha256(dataset.race_keys),
+            "example_count": dataset.example_count,
+            "first_race_id": first,
+            "last_race_id": last,
+            "n_features": dataset.n_features,
+            "hasher": dataset.hasher_settings
+            or default_feature_hasher_settings(dataset.n_features),
+            "drop_feature_groups": list(dataset.drop_feature_groups),
+            "matrix_shape": list(matrix.shape),
+            "matrix_nnz": int(matrix.nnz),
+            "matrix_dtype": str(matrix.dtype),
+            "matrix_file_sha256": _file_sha256(matrix_temporary),
+            "ranks_shape": list(ranks.shape),
+            "ranks_dtype": str(ranks.dtype),
+            "ranks_sha256": ranks_sha256(ranks),
+            "ranks_file_sha256": _file_sha256(ranks_temporary),
+        }
+        with manifest_temporary.open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            _flush_and_fsync(handle)
+
+        os.replace(matrix_temporary, paths["matrix"])
+        os.replace(ranks_temporary, paths["ranks"])
+        _fsync_directory(prefix.parent)
+        # The manifest is the commit marker and must become visible last.
+        os.replace(manifest_temporary, paths["manifest"])
+        _fsync_directory(prefix.parent)
+    finally:
+        for temporary_path in temporary_paths:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def load_hashed_dataset(
@@ -200,6 +252,8 @@ def load_hashed_dataset(
     race_keys: list[tuple[str, str, str, int]],
     n_features: int,
     drop_feature_groups: tuple[str, ...],
+    hasher: FeatureHasher | None = None,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> HashedRaceDataset | None:
     paths = cache_paths(prefix)
     if not all(path.exists() for path in paths.values()):
@@ -212,23 +266,61 @@ def load_hashed_dataset(
     expected_last = race_keys[-1][0] if race_keys else None
     expected = {
         "cache_version": CACHE_VERSION,
+        "feature_schema_version": feature_schema_version,
         "race_count": len(race_keys),
+        "race_ids_sha256": race_ids_sha256(race_keys),
         "example_count": len(race_keys) * 6,
         "first_race_id": expected_first,
         "last_race_id": expected_last,
         "n_features": int(n_features),
+        "hasher": feature_hasher_settings(hasher)
+        if hasher is not None
+        else default_feature_hasher_settings(n_features),
         "drop_feature_groups": list(drop_feature_groups),
+        "matrix_shape": [len(race_keys) * 6, int(n_features)],
+        "ranks_shape": [len(race_keys), 6],
+        "ranks_dtype": "int8",
     }
     if any(manifest.get(key) != value for key, value in expected.items()):
         return None
+    if not isinstance(manifest.get("matrix_nnz"), int) or manifest["matrix_nnz"] < 0:
+        return None
+    required_hashes = (
+        "matrix_file_sha256",
+        "ranks_file_sha256",
+        "ranks_sha256",
+    )
+    if any(not _is_sha256(manifest.get(key)) for key in required_hashes):
+        return None
     try:
+        if _file_sha256(paths["matrix"]) != manifest["matrix_file_sha256"]:
+            return None
+        if _file_sha256(paths["ranks"]) != manifest["ranks_file_sha256"]:
+            return None
         matrix = sparse.load_npz(paths["matrix"]).tocsr(copy=False)
         ranks = np.load(paths["ranks"], allow_pickle=False)
-    except (OSError, ValueError):
+    except Exception:
         return None
-    if matrix.shape != (len(race_keys) * 6, int(n_features)):
+    if list(matrix.shape) != manifest["matrix_shape"]:
         return None
-    if ranks.shape != (len(race_keys), 6):
+    if int(matrix.nnz) != manifest["matrix_nnz"]:
+        return None
+    if str(matrix.dtype) != manifest.get("matrix_dtype"):
+        return None
+    if list(ranks.shape) != manifest["ranks_shape"]:
+        return None
+    if str(ranks.dtype) != manifest["ranks_dtype"]:
+        return None
+    if ranks_sha256(ranks) != manifest["ranks_sha256"]:
+        return None
+    try:
+        _validate_dataset_arrays(
+            matrix,
+            ranks,
+            race_count=len(race_keys),
+            n_features=n_features,
+        )
+    except ValueError:
         return None
     return HashedRaceDataset(
         matrix=matrix,
@@ -236,6 +328,118 @@ def load_hashed_dataset(
         ranks=np.asarray(ranks, dtype=np.int8),
         n_features=int(n_features),
         drop_feature_groups=drop_feature_groups,
+        hasher_settings=expected["hasher"],
+        feature_schema_version=feature_schema_version,
+    )
+
+
+def race_ids_sha256(race_keys: Iterable[tuple[str, str, str, int]]) -> str:
+    digest = hashlib.sha256()
+    for race_id, *_rest in race_keys:
+        encoded = str(race_id).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def ranks_sha256(ranks: np.ndarray) -> str:
+    array = np.ascontiguousarray(ranks)
+    digest = hashlib.sha256()
+    digest.update(str(array.dtype).encode("ascii"))
+    digest.update(json.dumps(list(array.shape), separators=(",", ":")).encode("ascii"))
+    digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def feature_hasher_settings(hasher: FeatureHasher) -> dict[str, Any]:
+    return {
+        "class": "sklearn.feature_extraction.FeatureHasher",
+        "n_features": int(hasher.n_features),
+        "input_type": str(hasher.input_type),
+        "alternate_sign": bool(hasher.alternate_sign),
+        "dtype": str(np.dtype(hasher.dtype)),
+    }
+
+
+def default_feature_hasher_settings(n_features: int) -> dict[str, Any]:
+    return feature_hasher_settings(
+        FeatureHasher(
+            n_features=int(n_features),
+            input_type="dict",
+            alternate_sign=False,
+        )
+    )
+
+
+def _validate_dataset_arrays(
+    matrix: sparse.csr_matrix,
+    ranks: np.ndarray,
+    *,
+    race_count: int,
+    n_features: int,
+) -> None:
+    expected_matrix_shape = (int(race_count) * 6, int(n_features))
+    expected_ranks_shape = (int(race_count), 6)
+    if matrix.shape != expected_matrix_shape or ranks.shape != expected_ranks_shape:
+        raise ValueError(
+            f"invalid hashed dataset shape: matrix={matrix.shape} ranks={ranks.shape}"
+        )
+    if ranks.dtype != np.dtype(np.int8):
+        raise ValueError(f"invalid ranks dtype: {ranks.dtype}")
+    if matrix.indptr.shape != (matrix.shape[0] + 1,):
+        raise ValueError("invalid CSR indptr shape")
+    if matrix.data.size != matrix.nnz or matrix.indices.size != matrix.nnz:
+        raise ValueError("invalid CSR nnz arrays")
+    if matrix.indptr[0] != 0 or matrix.indptr[-1] != matrix.nnz:
+        raise ValueError("invalid CSR indptr bounds")
+    if np.any(matrix.indptr[1:] < matrix.indptr[:-1]):
+        raise ValueError("invalid CSR indptr ordering")
+    if matrix.nnz and (
+        np.any(matrix.indices < 0)
+        or np.any(matrix.indices >= matrix.shape[1])
+        or not np.all(np.isfinite(matrix.data))
+    ):
+        raise ValueError("invalid CSR values")
+    if race_count and not np.all(np.sort(ranks, axis=1) == np.arange(1, 7)):
+        raise ValueError("each race ranks row must be a permutation of 1..6")
+
+
+def _temporary_path(prefix: Path, kind: str) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{prefix.name}.",
+        suffix=f".{kind}.tmp",
+        dir=prefix.parent,
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _flush_and_fsync(handle: Any) -> None:
+    handle.flush()
+    os.fsync(handle.fileno())
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
     )
 
 

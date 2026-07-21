@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 
 import joblib
-import time
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,63 @@ from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
-from .feature_search import load_variant_dataset
+from ..hashed_feature_dataset import (
+    CACHE_VERSION,
+    FEATURE_SCHEMA_VERSION,
+    race_ids_sha256,
+)
+from .feature_search import (
+    _write_json_atomic,
+    load_variant_dataset_with_cache,
+    variant_cache_prefix,
+)
 from .newton import refine_newton_cg
 from .model import evaluate_range, fit_scaler, train_listwise_model
 from .validation import default_policy, evaluate_bankroll_fold
 from ..standard_evaluation import race_set_sha256
+
+
+def validate_search_race_universe(
+    search_result: dict[str, Any],
+    race_keys: list[tuple[str, str, str, int]],
+) -> None:
+    expected_count = len(race_keys)
+    expected_sha256 = race_ids_sha256(race_keys)
+    if search_result.get("races") != expected_count:
+        raise ValueError(
+            "search result race count does not match the current race universe: "
+            f"search={search_result.get('races')!r} current={expected_count}"
+        )
+    if search_result.get("race_universe_sha256") != expected_sha256:
+        raise ValueError(
+            "search result race universe hash does not match the current race universe; "
+            "legacy results without race_universe_sha256 must be regenerated"
+        )
+    if (
+        search_result.get("hashed_cache_version") != CACHE_VERSION
+        or search_result.get("feature_schema_version") != FEATURE_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "search result cache/schema version is incompatible; regenerate the search result"
+        )
+
+
+def dump_joblib_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            joblib.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
@@ -26,10 +79,23 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     search_result = json.loads(Path(args.search_result).read_text(encoding="utf-8"))
     selected = search_result["selected"]
     race_keys = load_complete_race_ids(conn)
+    validate_search_race_universe(search_result, race_keys)
     train_end = int(search_result["train_races"])
     selection_end = train_end + int(search_result["selection_races"])
+    if not 0 < train_end < selection_end < len(race_keys):
+        raise ValueError(
+            "search result train/selection boundaries are invalid for the current race universe"
+        )
     dropped = tuple(str(value) for value in selected.get("drop_feature_groups") or ())
-    dataset, cache_source = load_variant_dataset(
+    primary_prefix = variant_cache_prefix(
+        Path(args.cache_dir),
+        n_features=int(search_result["n_features"]),
+        name=str(selected["feature_variant"]),
+    ).resolve()
+    recorded_prefix_value = search_result.get("selected_cache_prefix")
+    recorded_prefix = Path(recorded_prefix_value) if recorded_prefix_value else None
+    fallback_prefixes = (recorded_prefix,) if recorded_prefix is not None else ()
+    dataset, cache_source, cache_prefix = load_variant_dataset_with_cache(
         conn,
         race_keys=race_keys,
         cache_dir=Path(args.cache_dir),
@@ -38,7 +104,21 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         n_features=int(search_result["n_features"]),
         batch_races=args.batch_races,
         write_cache=args.cache_write_mode == "always",
+        fallback_cache_prefixes=fallback_prefixes,
     )
+    if cache_source == "disk" and cache_prefix != primary_prefix:
+        print(json.dumps({
+            "cache_resume": "persistent_fallback",
+            "cache_prefix": str(cache_prefix),
+        }), flush=True)
+    elif cache_source == "built":
+        print(json.dumps({
+            "cache_resume": "cache_missing_building_explicitly",
+            "requested_cache_prefix": str(primary_prefix),
+            "recorded_cache_prefix": str(recorded_prefix)
+            if recorded_prefix is not None
+            else None,
+        }), flush=True)
     scaler = fit_scaler(dataset, race_end=selection_end, batch_rows=args.batch_races * 6)
     initial, adam_history = train_listwise_model(
         dataset,
@@ -106,6 +186,8 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "source_search_result": args.search_result,
         "selected": selected,
         "cache_source": cache_source,
+        "cache_prefix": str(cache_prefix) if cache_prefix is not None else None,
+        "race_universe_sha256": race_ids_sha256(race_keys),
         "train_races": selection_end,
         "holdout_races": len(race_keys) - selection_end,
         "evaluation_race_set_sha256": evaluation_hash,
@@ -139,8 +221,8 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         gate["ranking_loss_not_worse"],
     ))
     artifact_path = Path(args.model_output)
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
+    dump_joblib_atomic(
+        artifact_path,
         {
             "model": refined,
             "hasher": FeatureHasher(
@@ -153,15 +235,12 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "n_features": int(search_result["n_features"]),
             "trained_races": selection_end,
             "trained_through": race_keys[selection_end - 1],
+            "race_universe_sha256": race_ids_sha256(race_keys),
         },
-        artifact_path,
     )
     result["model_artifact"] = str(artifact_path)
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp")
-    temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(output)
+    _write_json_atomic(output, result)
     return result
 
 

@@ -63,11 +63,13 @@ function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").repla
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
 function render(data){
   const bank=data.bankroll||[], tests=data.backtests||[], folds=data.fold_metrics||[], daily=data.bankroll_daily||{}, features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
+  const unifiedReady=Boolean(data.standardized_evaluation&&data.standardized_evaluation.ready);
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
   const comparisonBank=v2Bank.length?v2Bank:(v1Bank.length?v1Bank:bank), comparisonTests=v2Tests.length?v2Tests:(v1Tests.length?v1Tests:tests);
   const v2Folds=folds.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Folds=folds.filter(x=>x.evaluation_scope==="standard_365d");
   const comparisonFolds=v2Folds.length?v2Folds:(v1Folds.length?v1Folds:folds);
+  const summaryBank=unifiedReady?v2Bank:bank, summaryTests=unifiedReady?v2Tests:tests;
   const bestRoi=[...comparisonBank].sort((a,b)=>(b.roi??-9)-(a.roi??-9))[0]; const adaptive=bank.find(x=>String(x.file||"").includes("adaptive")) || bank[bank.length-1];
   const baseline=comparisonTests[comparisonTests.length-1]; const running=jobs.filter(x=>x.running).length;
   $("kpis").innerHTML=[["基準1着",baseline?pct(baseline.winner_top1_accuracy):"-"],["基準3T5",baseline?pct(baseline.trifecta_top5_hit_rate):"-"],["最高ROI", bestRoi?`${ratio(bestRoi.roi)} ${shortName(bestRoi.name)}`:"-"],["最新適応ROI", adaptive?ratio(adaptive.roi):"-"],["評価実行中",running],["相関診断", features.length]].map(([l,v])=>`<div class="kpi"><b title="${esc(v)}">${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
@@ -79,18 +81,34 @@ function render(data){
   drawGroupedBars($("hitChart"), comparisonTests.map(x=>({label:shortName(x.name), a:x.winner_top1_accuracy, b:x.trifecta_top5_hit_rate})), {a:"1着", b:"3T5", percent:true});
   drawLines($("lossChart"), groupFoldSeries(comparisonFolds, "entry_log_loss"), {baseline:null});
   drawBars($("roiChart"), comparisonBank.map(x=>({label:shortName(x.name), value:x.roi})), {baseline:1});
-  $("summaryRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("");
+  $("summaryRows").innerHTML=[...summaryTests.map(x=>summaryRow(x,"BT")),...summaryBank.map(x=>summaryRow(x,"資金"))].join("");
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>`;
   renderSelectedModel(data);
 }
 function renderStandardProtocol(row){
   const policy=row.policy||{}, decision=row.promotion_decision||{};
-  const ready=Boolean(row.ready), selected=decision.selected_model_id||"-";
-  const state=ready?(decision.status==="promote"?"昇格":"主系維持"):"統一再評価中";
-  $("standardProtocol").innerHTML=`<h2><span>統一365日評価・昇格判定</span><span class="tag ${ready?"done":"running"}">${esc(state)}</span></h2><div class="mono">${esc(row.holdout_start||"-")}..${esc(row.holdout_end||"-")} / ${fmt(row.prediction_races)}R / 日額 ${yen(policy.daily_budget_yen)} / EV ${ratio(policy.ev_threshold)} / 選択 ${esc(selected)} / protocol ${esc(String(row.protocol_sha256||"-").slice(0,12))}</div>${ready?"":`<div class="muted">${esc((row.errors||[]).join(" / ")||"現行プロトコルを評価中")}</div>`}`;
+  const ready=Boolean(row.ready), selected=decision.selected_model_id||"-", state=promotionState(ready,decision.status||row.status);
+  const candidates=ready?promotionCandidatesText(decision):"";
+  $("standardProtocol").innerHTML=`<h2><span>統一365日評価・昇格判定</span><span class="tag ${state.cls}">${esc(state.label)}</span></h2><div class="mono">${esc(row.holdout_start||"-")}..${esc(row.holdout_end||"-")} / ${fmt(row.prediction_races)}R / 日額 ${yen(policy.daily_budget_yen)} / EV ${ratio(policy.ev_threshold)} / 選択 ${esc(selected)} / protocol ${esc(String(row.protocol_sha256||"-").slice(0,12))}</div><div class="mono">${policyText(policy)}</div>${candidates?`<div class="mono">${candidates}</div>`:""}${ready?"":`<div class="muted">${esc((row.errors||[]).join(" / ")||"現行プロトコルを評価中")}</div>`}`;
+}
+function promotionState(ready,status){
+  if(!ready) return {label:"統一再評価中",cls:"running"};
+  if(status==="promote") return {label:"昇格",cls:"done"};
+  if(status==="retain_incumbent") return {label:"主系維持",cls:"done"};
+  return {label:"判定状態不明: "+String(status||"-"),cls:"failed"};
+}
+function policyText(policy){
+  const odds=policy.include_odds===false?"無":policy.include_odds===true?"有":"-";
+  const allocation=policy.allocation_mode==="normalized_kelly"?"正規化":String(policy.allocation_mode||"-");
+  const pp=v=>v==null?"-":`${(Number(v)*100).toFixed(0)}%`;
+  return `policy odds ${odds} / Kelly ${esc(allocation)} ${pp(policy.fractional_kelly)} / 露出 ${pp(policy.min_daily_exposure_fraction)}-${pp(policy.max_daily_exposure_fraction)}/日・${pp(policy.race_cap_fraction)}/R・${pp(policy.ticket_cap_fraction)}/点 / 上限 ${fmt(policy.max_daily_tickets)}点/日 / ${yen(policy.stake_granularity_yen)}単位・最低${yen(policy.min_stake_yen)}`;
+}
+const PROMOTION_CHECK_LABELS={comparison_ready:"統一比較未完了",validation_passed:"検証不合格",roi_at_least_one:"ROI<1",profit_positive:"損益<=0",entry_log_loss_not_worse:"LogLoss悪化",winner_top1_not_worse:"1着悪化",trifecta_top5_not_worse:"3T5悪化"};
+function promotionCandidatesText(decision){
+  return (decision.candidates||[]).map(candidate=>{ const failed=Array.isArray(candidate.failed_checks)?candidate.failed_checks:Object.entries(candidate.checks||{}).filter(([,passed])=>!passed).map(([key])=>key); const result=candidate.eligible?"合格":"不合格: "+(failed.map(key=>PROMOTION_CHECK_LABELS[key]||key).join(", ")||"理由未記録"); return `候補 ${esc(candidate.model_id||"-")} ${esc(result)} / ROI ${ratio(candidate.roi)} / 損益 ${yen(candidate.profit_yen)}`; }).join(" ｜ ");
 }
 function modelKey(value){
-  return String(value||"").toLowerCase().replace(/\.(json|joblib)$/,"").replace(/^(?:(?:win_model_|bankroll_backtest_|backtest_))+/,"").replace(/(?:(?:_backtest|_10000))+$/,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  return String(value||"").toLowerCase().replace(/\.(json|joblib)$/,"").replace(/^(?:(?:win_model_|bankroll_backtest_|backtest_|standardized_365d_v2[_-]*))+/,"").replace(/(?:(?:_backtest|_10000))+$/,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
 }
 function modelValues(row){ return [row&&row.name,row&&row.file,row&&row.model,row&&row.model_file,row&&row.id,row&&row.label,row&&row.variant].filter(Boolean); }
 function modelMatches(row,key){ return modelValues(row).some(value=>modelKey(value)===key); }
@@ -98,7 +116,7 @@ function modelCatalog(data){
   const byKey=new Map(), seenLabels=new Set();
   const add=(value,label,group)=>{ const key=modelKey(value), text=String(label||value); if(key&&!byKey.has(key)&&!seenLabels.has(text)){ byKey.set(key,{key:key,label:text,group:group}); seenLabels.add(text); } };
   (data.model_tracks||[]).forEach(x=>add(x.model_file||x.id,(x.label||x.id)+" / "+(x.model_file||x.id),"モデル系統"));
-  const identity=(group,x)=>group==="backtests"?(x.file||x.name):group==="bankroll"?(x.model||x.file||x.name):group==="fold_metrics"?(x.model||x.name):group==="sweeps"?(x.variant||x.name||x.file):(x.model||x.model_file||x.name||x.file||x.id||x.label);
+  const identity=(group,x)=>group==="backtests"?(x.file||x.name):group==="bankroll"?(x.file||x.name||x.model):group==="fold_metrics"?(x.model||x.name):group==="sweeps"?(x.variant||x.name||x.file):(x.model||x.model_file||x.name||x.file||x.id||x.label);
   const labels={backtests:"予測評価",bankroll:"資金運用",fold_metrics:"fold評価",evaluation_jobs:"実行ジョブ",feature_diagnostics:"特徴量診断",sweeps:"候補スイープ"};
   ["backtests","bankroll","fold_metrics","evaluation_jobs","feature_diagnostics","sweeps"].forEach(group=>(data[group]||[]).forEach(x=>{ const value=identity(group,x); add(value,x.label||x.name||x.variant||value,labels[group]); }));
   Object.keys(data.bankroll_daily||{}).forEach(value=>add(value,value,"日次資金運用"));
@@ -143,13 +161,14 @@ function renderRoiAttribution(bank){
 }
 function renderDaily(data,key){
   const daily=data.bankroll_daily||{};
-  const name=Object.keys(daily).find(value=>modelKey(value)===key)||"";
+  const names=Object.keys(daily).filter(value=>modelKey(value)===key);
+  const name=names.find(value=>String(value).toLowerCase().includes("standardized_365d_v2"))||names[0]||"";
   const rows=daily[name]||[];
   $("profitTitle").textContent=name?shortName(name):"日次データなし";
   drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0});
   drawLines($("dailyRoiChart"), [{label:"日次ROI", rows:rows.map(r=>({x:r.date, y:r.roi}))}], {baseline:1});
   drawGroupedBars($("ticketsChart"), rows.slice(-90).map(r=>({label:String(r.date||"").slice(5), a:r.tickets, b:(r.budget_used_fraction||0)*100})), {a:"点数", b:"使用率%"});
-  $("dailyRows").innerHTML=rows.map(r=>'<tr><td>'+esc(r.date||"-")+'</td><td>'+ratio(r.roi)+'</td><td class="'+(Number(r.profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.profit_yen)+'</td><td class="'+(Number(r.cumulative_profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.cumulative_profit_yen)+'</td><td>'+yen(r.stake_yen)+'</td><td>'+yen(r.return_yen)+'</td><td>'+fmt(r.tickets)+'</td><td>'+fmt(r.races)+'</td><td>'+pct(r.budget_used_fraction)+'</td></tr>').join("") || '<tr><td colspan="9" class="muted">選択モデルの日次資金運用データなし</td></tr>';
+  $("dailyRows").innerHTML=rows.map(r=>'<tr><td>'+esc(r.date||"-")+'</td><td>'+ratio(r.roi)+'</td><td class="'+(Number(r.profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.profit_yen)+'</td><td class="'+(Number(r.cumulative_profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.cumulative_profit_yen)+'</td><td>'+yen(r.stake_yen)+'</td><td>'+yen(r.return_yen)+'</td><td>'+fmt(r.tickets)+'</td><td>'+fmt(r.evaluated_races)+'</td><td>'+pct(r.budget_used_fraction)+'</td></tr>').join("") || '<tr><td colspan="9" class="muted">選択モデルの日次資金運用データなし</td></tr>';
 }
 function groupFoldSeries(folds, key){ const by=new Map(); for(const f of folds){ if(f[key]==null) continue; const k=shortName(f.model); if(!by.has(k)) by.set(k, []); by.get(k).push({x:f.fold, y:f[key]}); } return [...by.entries()].slice(-8).map(([label, rows])=>({label, rows:rows.sort((a,b)=>Number(a.x)-Number(b.x))})); }
 const AX={l:54,t:12,b:30,r:8};

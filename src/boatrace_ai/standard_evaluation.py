@@ -183,6 +183,12 @@ def build_protocol(
     if not rows:
         raise ValueError("no complete races for standardized evaluation")
     holdout_end = date.fromisoformat(str(rows[-1]["race_date"]))
+    expected_holdout_end = evaluation_cutoff - timedelta(days=1)
+    if holdout_end != expected_holdout_end:
+        raise ValueError(
+            "latest complete race day does not match the required full-day boundary: "
+            f"expected {expected_holdout_end.isoformat()}, got {holdout_end.isoformat()}"
+        )
     holdout_start = holdout_end - timedelta(days=max(1, int(days)) - 1)
     train_rows = [row for row in rows if str(row["race_date"]) < holdout_start.isoformat()]
     holdout_rows = [
@@ -384,15 +390,29 @@ def evaluate_promotions(
             continue
         checks = {
             "comparison_ready": comparison_ready,
-            "validation_passed": bool(row["validation"]["passed"]),
-            "roi_at_least_one": _number(row.get("roi"), -1.0) >= 1.0,
-            "profit_positive": _number(row.get("profit_yen"), 0.0) > 0.0,
-            "entry_log_loss_not_worse": _number(row.get("entry_log_loss"), float("inf"))
-            <= _number(incumbent.get("entry_log_loss"), float("-inf")),
-            "winner_top1_not_worse": _number(row.get("winner_top1_accuracy"), -1.0)
-            >= _number(incumbent.get("winner_top1_accuracy"), float("inf")),
-            "trifecta_top5_not_worse": _number(row.get("trifecta_top5_hit_rate"), -1.0)
-            >= _number(incumbent.get("trifecta_top5_hit_rate"), float("inf")),
+            "validation_passed": (
+                not PROMOTION_CRITERIA["all_model_validations_required"]
+                or bool(row["validation"]["passed"])
+            ),
+            "roi_at_least_one": _number(row.get("roi"), -1.0)
+            >= float(PROMOTION_CRITERIA["minimum_roi"]),
+            "profit_positive": _number(row.get("profit_yen"), 0.0)
+            > float(PROMOTION_CRITERIA["minimum_profit_yen_exclusive"]),
+            "entry_log_loss_not_worse": (
+                not PROMOTION_CRITERIA["entry_log_loss_not_worse_than_incumbent"]
+                or _number(row.get("entry_log_loss"), float("inf"))
+                <= _number(incumbent.get("entry_log_loss"), float("-inf"))
+            ),
+            "winner_top1_not_worse": (
+                not PROMOTION_CRITERIA["winner_top1_not_worse_than_incumbent"]
+                or _number(row.get("winner_top1_accuracy"), -1.0)
+                >= _number(incumbent.get("winner_top1_accuracy"), float("inf"))
+            ),
+            "trifecta_top5_not_worse": (
+                not PROMOTION_CRITERIA["trifecta_top5_not_worse_than_incumbent"]
+                or _number(row.get("trifecta_top5_hit_rate"), -1.0)
+                >= _number(incumbent.get("trifecta_top5_hit_rate"), float("inf"))
+            ),
         }
         candidate_eligible = all(checks.values())
         promotion = {
@@ -517,6 +537,19 @@ def consolidate(
 def _validate_protocol_shape(protocol: dict[str, Any]) -> None:
     if protocol.get("protocol_id") != PROTOCOL_ID:
         raise ValueError(f"unexpected protocol_id: {protocol.get('protocol_id')}")
+    if protocol.get("calendar_days") != 365:
+        raise ValueError("frozen protocol calendar_days must be 365")
+    if protocol.get("holdout_date_count") != 365:
+        raise ValueError("frozen protocol holdout_date_count must be 365")
+    try:
+        as_of_date = date.fromisoformat(str(protocol["as_of_date_jst"]))
+        holdout_end = date.fromisoformat(str(protocol["holdout_end"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("frozen protocol has invalid as-of or holdout end date") from exc
+    if holdout_end != as_of_date - timedelta(days=1):
+        raise ValueError("frozen protocol holdout_end must be one day before as_of_date_jst")
+    if protocol.get("full_day_boundary") is not True:
+        raise ValueError("frozen protocol requires full_day_boundary=true")
     if protocol.get("policy") != POLICY:
         raise ValueError("frozen protocol policy does not match the standardized policy")
     actual = str(protocol.get("protocol_sha256") or "")
