@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scipy import sparse
 from sklearn.feature_extraction import FeatureHasher
 
 from boatrace_ai.hashed_feature_dataset import (
     CACHE_VERSION,
+    _stack_csr_balanced,
     build_hashed_dataset,
     load_hashed_dataset,
     save_hashed_dataset,
@@ -96,3 +98,26 @@ def test_hashed_dataset_rejects_stale_race_identity(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_balanced_csr_stack_preserves_row_order_and_values() -> None:
+    batches = [
+        sparse.csr_matrix([[float(index), 1.0, float(index % 2)]])
+        for index in range(17)
+    ]
+    result = _stack_csr_balanced(
+        batches,
+        ensure_sparse_index32=_ensure_index32,
+    )
+    expected = sparse.vstack(
+        [
+            sparse.csr_matrix([[float(index), 1.0, float(index % 2)]])
+            for index in range(17)
+        ],
+        format="csr",
+    )
+    assert batches == []
+    assert result.shape == expected.shape
+    assert (result != expected).nnz == 0
+    assert result.indices.dtype.name == "int32"
+    assert result.indptr.dtype.name == "int32"

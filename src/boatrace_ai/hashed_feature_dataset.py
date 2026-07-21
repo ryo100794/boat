@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -110,7 +111,10 @@ def build_hashed_dataset(
         )
     if not matrices:
         raise ValueError("no hashed feature rows")
-    matrix = ensure_sparse_index32(sparse.vstack(matrices, format="csr"))
+    matrix = _stack_csr_balanced(
+        matrices,
+        ensure_sparse_index32=ensure_sparse_index32,
+    )
     rank_matrix = np.asarray(ranks, dtype=np.int8)
     if matrix.shape[0] != len(race_keys) * 6 or rank_matrix.shape != (
         len(race_keys),
@@ -126,6 +130,42 @@ def build_hashed_dataset(
         n_features=int(hasher.n_features),
         drop_feature_groups=drop_feature_groups,
     )
+
+
+def _stack_csr_balanced(
+    matrices: list[sparse.csr_matrix],
+    *,
+    ensure_sparse_index32: Callable[[Any], sparse.csr_matrix],
+) -> sparse.csr_matrix:
+    """Stack and consume CSR batches without a large multi-input temporary."""
+    current: list[sparse.csr_matrix | None] = list(matrices)
+    matrices.clear()
+    while len(current) > 1:
+        merged: list[sparse.csr_matrix | None] = []
+        for index in range(0, len(current), 2):
+            left = current[index]
+            current[index] = None
+            if left is None:
+                raise ValueError("missing CSR batch")
+            if index + 1 >= len(current):
+                merged.append(left)
+                continue
+            right = current[index + 1]
+            current[index + 1] = None
+            if right is None:
+                raise ValueError("missing CSR batch")
+            merged.append(
+                ensure_sparse_index32(
+                    sparse.vstack((left, right), format="csr"),
+                )
+            )
+            del left, right
+        current = merged
+        gc.collect()
+    result = current[0]
+    if result is None:
+        raise ValueError("no CSR batches")
+    return ensure_sparse_index32(result)
 
 
 def save_hashed_dataset(prefix: Path, dataset: HashedRaceDataset) -> None:
