@@ -35,6 +35,23 @@ EV_THRESHOLDS = (1.05, 1.10, 1.15, 1.20, 1.30, 1.50)
 MAX_ODDS = (20.0, 40.0, 80.0, None)
 MAX_TICKETS_PER_RACE = (1, 2, 3, 5)
 MIN_MODEL_MARKET_RATIOS = (1.0, 1.05, 1.10, 1.20)
+STAKING_MODES = {
+    "kelly_025": {
+        "fractional_kelly": 0.25,
+        "allocation_mode": "kelly_floor",
+        "min_daily_exposure_fraction": 0.0,
+    },
+    "kelly_100": {
+        "fractional_kelly": 1.0,
+        "allocation_mode": "kelly_floor",
+        "min_daily_exposure_fraction": 0.0,
+    },
+    "normalized_010": {
+        "fractional_kelly": 0.25,
+        "allocation_mode": "normalized_kelly",
+        "min_daily_exposure_fraction": 0.10,
+    },
+}
 EPSILON = 1e-12
 
 
@@ -130,19 +147,21 @@ def default_policy_grid() -> list[dict[str, Any]]:
         for max_odds in MAX_ODDS:
             for max_tickets in MAX_TICKETS_PER_RACE:
                 for min_ratio in MIN_MODEL_MARKET_RATIOS:
-                    odds_name = "none" if max_odds is None else str(int(max_odds))
-                    policies.append(
-                        {
-                            "name": (
-                                f"ev{ev_threshold:.2f}_odds{odds_name}_"
-                                f"r{max_tickets}_ratio{min_ratio:.2f}"
-                            ),
-                            "ev_threshold": ev_threshold,
-                            "max_odds": max_odds,
-                            "max_tickets_per_race": max_tickets,
-                            "min_model_market_ratio": min_ratio,
-                        }
-                    )
+                    for staking_mode in STAKING_MODES:
+                        odds_name = "none" if max_odds is None else str(int(max_odds))
+                        policies.append(
+                            {
+                                "name": (
+                                    f"ev{ev_threshold:.2f}_odds{odds_name}_"
+                                    f"r{max_tickets}_ratio{min_ratio:.2f}_{staking_mode}"
+                                ),
+                                "ev_threshold": ev_threshold,
+                                "max_odds": max_odds,
+                                "max_tickets_per_race": max_tickets,
+                                "min_model_market_ratio": min_ratio,
+                                "staking_mode": staking_mode,
+                            }
+                        )
     return policies
 
 
@@ -217,18 +236,22 @@ def simulate_policy(
     stake_yen = return_yen = tickets = hit_tickets = 0
     cumulative_profit = peak_profit = max_drawdown_yen = 0
     for race_date in sorted(evaluated_by_day):
+        staking = STAKING_MODES.get(
+            str(policy.get("staking_mode") or "kelly_025"),
+            STAKING_MODES["kelly_025"],
+        )
         result = allocate_adaptive_day(
             race_date,
             by_day.get(race_date, []),
             evaluated_by_day[race_date],
             daily_budget_yen=daily_budget_yen,
-            fractional_kelly=0.25,
+            fractional_kelly=float(staking["fractional_kelly"]),
             max_daily_exposure_fraction=0.30,
-            min_daily_exposure_fraction=0.0,
+            min_daily_exposure_fraction=float(staking["min_daily_exposure_fraction"]),
             race_cap_fraction=0.05,
             ticket_cap_fraction=0.02,
             max_daily_tickets=30,
-            allocation_mode="kelly_floor",
+            allocation_mode=str(staking["allocation_mode"]),
             stake_granularity_yen=STAKE_YEN,
             min_stake_yen=STAKE_YEN,
         )
