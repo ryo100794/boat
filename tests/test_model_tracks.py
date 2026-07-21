@@ -114,3 +114,31 @@ def test_model_tracks_exposes_t5_safe_provisional_metrics(tmp_path) -> None:
     assert shadow["trifecta_top5_hit_rate"] == 0.326316
     assert "3fold暫定・評価95R" in shadow["training"]
     assert shadow["evaluated_races"] == 95
+
+
+def test_model_tracks_exposes_market_calibrated_shadow(tmp_path) -> None:
+    remote = {
+        "jobs": [
+            {
+                "kind": "market_calibrated_shadow",
+                "status": "完了",
+                "result": {
+                    "metrics": {
+                        "evaluated_races": 279,
+                        "calibrated_trifecta_log_loss": 4.1323,
+                        "trifecta_top5_hit_rate": 0.2581,
+                        "roi": 0.0,
+                        "profit_yen": 0,
+                        "promotion_eligible": False,
+                    }
+                },
+            }
+        ]
+    }
+    tracks = _model_track_summaries(tmp_path, [], remote)
+    market = next(row for row in tracks if row["id"] == "market_calibrated_shadow")
+    assert market["include_odds"] is True
+    assert market["eligible_races"] == 279
+    assert market["trifecta_log_loss"] == 4.1323
+    assert market["trifecta_top5_hit_rate"] == 0.2581
+    assert market["promotion_eligible"] is False

@@ -45,6 +45,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 205734, "name": "standardized_365d_calibrated_mlp", "milestone": "M4-1", "kind": "standardized_365d_calibrated_mlp", "output": "data/models/standardized_365d_calibrated_mlp.json", "log": "logs/standardized_365d_runner.log"},
     {"pid": 205734, "name": "standardized_365d_listwise_feature_teacher", "milestone": "M4-3/M6", "kind": "standardized_365d_listwise_bankroll", "output": "data/models/standardized_365d_listwise_feature_teacher.json", "log": "logs/standardized_365d_runner.log"},
     {"pid": 205734, "name": "standardized_365d_listwise_newton", "milestone": "M4-3/M6", "kind": "standardized_365d_listwise_bankroll", "output": "data/models/standardized_365d_listwise_newton.json", "log": "logs/standardized_365d_runner.log"},
+    {"pid": 0, "name": "listwise_market_calibrated_shadow", "milestone": "M5/M6", "kind": "market_calibrated_shadow", "output": "data/models/listwise_market_calibrated_shadow.json", "log": "logs/runtime/market-calibrated-shadow.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -65,6 +66,7 @@ METRIC_KEYS = (
     "candidate_tickets", "winning_days", "losing_days", "budget_utilization",
     "promotion_eligible", "holdout_races", "profitable_folds",
     "bankroll_evaluated_races",
+    "calibrated_trifecta_log_loss", "evaluation_races", "evaluation_days",
 )
 DAILY_KEYS = (
     "race_date", "evaluated_races", "tickets", "races_bet", "stake_yen",

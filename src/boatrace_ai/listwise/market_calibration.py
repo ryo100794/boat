@@ -503,9 +503,16 @@ def walk_forward_evaluate(
         "daily_budget_yen": daily_budget_yen,
         "available_races": len(races),
         "available_days": len(dates),
+        "evaluated_races": len(evaluation_races),
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
         "probability_metrics": aggregate_metrics,
+        "calibrated_trifecta_log_loss": aggregate_metrics.get(
+            "calibrated_trifecta_log_loss"
+        ),
+        "trifecta_top5_hit_rate": aggregate_metrics.get(
+            "calibrated_trifecta_top5_hit_rate"
+        ),
         "tickets": sum(int(row["tickets"]) for row in daily_rows),
         "hit_tickets": sum(int(row["hit_tickets"]) for row in daily_rows),
         "stake_yen": stake_yen,

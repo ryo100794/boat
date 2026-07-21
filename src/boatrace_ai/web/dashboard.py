@@ -1515,6 +1515,7 @@ def _model_track_summaries(
         },
         *_calibrated_model_tracks(remote_evaluations),
         *_listwise_model_tracks(remote_evaluations),
+        *_market_calibrated_model_tracks(remote_evaluations),
     ]
 
 
@@ -1608,6 +1609,42 @@ def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str,
             "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
         })
     return rows
+
+
+def _market_calibrated_model_tracks(
+    remote_evaluations: dict[str, Any],
+) -> list[dict[str, Any]]:
+    jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
+    job = next(
+        (item for item in jobs or [] if item.get("kind") == "market_calibrated_shadow"),
+        {},
+    )
+    result = job.get("result") or {}
+    metrics = result.get("metrics") or {}
+    return [
+        {
+            "id": "market_calibrated_shadow",
+            "label": "listwise T-5市場較正 shadow",
+            "role": "比較評価・no-bet判定のみ",
+            "status": job.get("status") or "未登録",
+            "include_odds": True,
+            "model_file": "listwise_market_calibrated_shadow.json",
+            "teacher": "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の確定結果",
+            "training": "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位",
+            "eligible_races": metrics.get("evaluated_races"),
+            "target_races": 1000,
+            "backtest_available": job.get("status") == "完了" and bool(result),
+            "trifecta_log_loss": _float_or_none(
+                metrics.get("calibrated_trifecta_log_loss")
+            ),
+            "trifecta_top5_hit_rate": _float_or_none(
+                metrics.get("trifecta_top5_hit_rate")
+            ),
+            "roi": _float_or_none(metrics.get("roi")),
+            "profit_yen": metrics.get("profit_yen"),
+            "promotion_eligible": bool(metrics.get("promotion_eligible")),
+        }
+    ]
 
 
 def _remote_job_fold_progress(job: dict[str, Any]) -> tuple[int, int | None]:
@@ -3870,6 +3907,16 @@ def _roadmap_improvements(
     temporal_metrics = (
         ((temporal_no_bet or {}).get("result") or {}).get("metrics") or {}
     )
+    market_calibrated_job = next(
+        (row for row in remote_jobs if row.get("kind") == "market_calibrated_shadow"),
+        None,
+    )
+    market_calibrated_status = str(
+        (market_calibrated_job or {}).get("status") or "未登録"
+    )
+    market_calibrated_metrics = (
+        ((market_calibrated_job or {}).get("result") or {}).get("metrics") or {}
+    )
     eligible_races = int(realtime.get("eligible_races") or 0)
     readiness = min(1.0, float(realtime.get("readiness") or 0.0))
     shadow_running = any(
@@ -4184,19 +4231,38 @@ def _roadmap_improvements(
             "id": "M6-10",
             "milestone": "M6",
             "status": (
-                "暫定評価済み/要改善"
+                "評価完了/no-bet継続"
+                if market_calibrated_status == "完了"
+                else "日次shadow実行中"
+                if market_calibrated_status == "実行中"
+                else "暫定評価済み/要改善"
                 if shadow_evaluation.get("roi") is not None
                 else "正式評価待ち"
             ),
-            "progress": 55 if shadow_evaluation.get("roi") is not None else 25,
+            "progress": (
+                min(95, int(float(market_calibrated_metrics.get("evaluated_races") or 0) * 100 / 1000))
+                if market_calibrated_metrics
+                else 55
+                if shadow_evaluation.get("roi") is not None
+                else 25
+            ),
             "item": "実オッズ市場較正とno-bet条件の再設計",
             "next": (
-                f"T-5実オッズ暫定資金運用 {int(shadow_evaluation.get('bankroll_evaluated_races') or 0):,}R、"
-                f"ROI {float(shadow_evaluation.get('roi') or 0):.4f}、"
-                f"損益 {int(shadow_evaluation.get('profit_yen') or 0):,}円。"
-                "確率過信を抑える時間fold較正とno-bet条件を学習内で選び、1,000R正式評価へ進める。"
-                if shadow_evaluation.get("roi") is not None
-                else "T-5以前の実オッズだけで資金運用を評価し、市場確率較正とno-bet条件を学習内で選ぶ。"
+                f"完全日walk-forward {int(market_calibrated_metrics.get('evaluated_races') or 0):,}R。"
+                f"較正3連単LogLoss {float(market_calibrated_metrics.get('calibrated_trifecta_log_loss') or 0):.4f}、"
+                f"3T5 {float(market_calibrated_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%、"
+                f"ROI {float(market_calibrated_metrics.get('roi') or 0):.4f}、"
+                f"損益 {int(market_calibrated_metrics.get('profit_yen') or 0):,}円。"
+                "日別再現性未達のためno-bet。1,000R/30日まで日次shadowで継続する。"
+                if market_calibrated_metrics
+                else (
+                    f"T-5実オッズ暫定資金運用 {int(shadow_evaluation.get('bankroll_evaluated_races') or 0):,}R、"
+                    f"ROI {float(shadow_evaluation.get('roi') or 0):.4f}、"
+                    f"損益 {int(shadow_evaluation.get('profit_yen') or 0):,}円。"
+                    "市場較正日次shadowへ移行中。"
+                    if shadow_evaluation.get("roi") is not None
+                    else "T-5市場暗黙確率との較正を完全日walk-forwardで日次評価し、日別再現性がない購入条件はno-betとする。"
+                )
             ),
         },
         {

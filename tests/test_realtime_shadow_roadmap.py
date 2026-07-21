@@ -53,3 +53,35 @@ def test_m6_exposes_provisional_real_odds_evaluation() -> None:
     assert "LogLoss 0.3450" in rows["M6-1"]["next"]
     assert rows["M6-10"]["status"] == "暫定評価済み/要改善"
     assert "ROI 0.8400" in rows["M6-10"]["next"]
+
+
+def test_m6_exposes_market_calibrated_daily_shadow() -> None:
+    from boatrace_ai.web.dashboard import _roadmap_improvements
+
+    remote = {
+        "jobs": [
+            {
+                "kind": "market_calibrated_shadow",
+                "status": "完了",
+                "result": {
+                    "metrics": {
+                        "evaluated_races": 279,
+                        "calibrated_trifecta_log_loss": 4.132343,
+                        "trifecta_top5_hit_rate": 0.2580645,
+                        "roi": 0.0,
+                        "profit_yen": 0,
+                    }
+                },
+            }
+        ]
+    }
+    rows = {
+        row["id"]: row
+        for row in _roadmap_improvements({}, [], remote)
+    }
+    market = rows["M6-10"]
+    assert market["status"] == "評価完了/no-bet継続"
+    assert "279R" in market["next"]
+    assert "LogLoss 4.1323" in market["next"]
+    assert "3T5 25.81%" in market["next"]
+    assert "no-bet" in market["next"]
