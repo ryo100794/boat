@@ -1676,6 +1676,9 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "daily_budget_yen": policy.get("daily_budget_yen"),
         "stake_model": policy.get("stake_model"),
         "evaluated_races": data.get("evaluated_races"),
+        "entry_log_loss": _float_or_none(data.get("entry_log_loss")),
+        "winner_top1_accuracy": _float_or_none(data.get("winner_top1_accuracy")),
+        "trifecta_top5_hit_rate": _float_or_none(data.get("trifecta_top5_hit_rate")),
         "race_days": data.get("race_days"),
         "selected_races": data.get("selected_races"),
         "tickets": data.get("tickets"),
@@ -1732,6 +1735,13 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
                 "stake_model": None,
                 "evaluated_races": metrics.get("bankroll_evaluated_races")
                 or metrics.get("evaluated_races"),
+                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_top1_accuracy": _float_or_none(
+                    metrics.get("winner_top1_accuracy")
+                ),
+                "trifecta_top5_hit_rate": _float_or_none(
+                    metrics.get("trifecta_top5_hit_rate")
+                ),
                 "race_days": metrics.get("race_days"),
                 "selected_races": metrics.get("selected_races"),
                 "tickets": metrics.get("tickets"),

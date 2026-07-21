@@ -228,6 +228,14 @@ def test_model_report_contains_exactly_seven_unified_series(tmp_path) -> None:
     assert set(bankroll) == expected
     assert set(report["bankroll_daily"]) == expected
     assert all(len(rows) == 365 for rows in report["bankroll_daily"].values())
+    backtests_by_name = {row["name"]: row for row in report["backtests"]}
+    for row in report["bankroll"]:
+        if row["name"] not in expected:
+            continue
+        prediction = backtests_by_name[row["name"]]
+        assert row["entry_log_loss"] == prediction["entry_log_loss"]
+        assert row["winner_top1_accuracy"] == prediction["winner_top1_accuracy"]
+        assert row["trifecta_top5_hit_rate"] == prediction["trifecta_top5_hit_rate"]
 
 
 def test_report_rejects_corrupt_daily_race_total(tmp_path) -> None:
