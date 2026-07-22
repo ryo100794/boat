@@ -38,7 +38,7 @@ START_TO_DEADLINE_MINUTES = 5
 HISTORICAL_TARGET_DAYS = 3650
 REALTIME_SHADOW_TARGET_RACES = 1000
 REALTIME_SHADOW_MIN_SNAPSHOTS = 10
-REALTIME_SHADOW_EVALUATION_VERSION = 3
+REALTIME_SHADOW_EVALUATION_VERSION = 4
 TODAY_TARGET_RACES = len(VENUES) * len(RACES_PER_DAY)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
@@ -1520,7 +1520,7 @@ def _model_track_summaries(
                 if shadow_is_provisional
                 else "realtime_odds_shadow.joblib"
             ),
-            "teacher": "T-5以前の公式odds 10時点以上を持つ確定6艇レース / 1着=1・2着以下=0",
+            "teacher": "実締切5分前（保存出走時刻10分前）以前の公式odds 10時点以上 / 確定6艇・1着=1",
             "training": shadow_training,
             "eligible_races": eligible,
             "target_races": required,

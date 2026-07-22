@@ -31,7 +31,7 @@ from .features import (
 )
 
 
-REALTIME_ODDS_FEATURE_SET = "t5_context_v2_beforeinfo_odds_trend"
+REALTIME_ODDS_FEATURE_SET = "t5_context_v3_time_safe_beforeinfo_odds_trend"
 
 
 def _load_model_training_examples(
@@ -89,7 +89,7 @@ def train_model(
         "races": len({row["race_id"] for row in meta}),
         "through_date": through_date,
         "from_date": from_date,
-        "feature_cutoff": "deadline_minus_5_minutes",
+        "feature_cutoff": "stored_race_start_minus_10_minutes",
         "training_config": {
             "scaler": "StandardScaler(with_mean=False)",
             "classifier": "LogisticRegression",
@@ -186,7 +186,7 @@ def backtest_model(
         "include_odds": include_odds,
         "from_date": from_date,
         "feature_set": REALTIME_ODDS_FEATURE_SET if include_odds else "basic_entry_v1",
-        "feature_cutoff": "deadline_minus_5_minutes",
+        "feature_cutoff": "stored_race_start_minus_10_minutes",
         "training_config": {
             "scaler": "StandardScaler(with_mean=False)",
             "classifier": "LogisticRegression",

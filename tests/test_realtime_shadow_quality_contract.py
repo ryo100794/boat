@@ -20,7 +20,7 @@ def test_old_quality_contract_resets_incremental_baseline() -> None:
 def test_current_quality_contract_preserves_incremental_baseline() -> None:
     last_races, last_at, reason = evaluation_baseline(
         {
-            "evaluation_version": 3,
+            "evaluation_version": 4,
             "last_evaluated_races": 450,
             "last_evaluated_at": "2026-07-23T03:00:00+00:00",
         }

@@ -96,7 +96,7 @@ def test_model_tracks_exposes_t5_safe_provisional_metrics(tmp_path) -> None:
     (tmp_path / "realtime_odds_shadow_t5_safe_candidate_state.json").write_text(
         json.dumps(
             {
-                "evaluation_version": 3,
+                "evaluation_version": 4,
                 "eligible_races": 450,
                 "required_races": 450,
                 "last_evaluated_races": 450,

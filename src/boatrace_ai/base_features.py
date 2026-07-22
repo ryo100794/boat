@@ -6,7 +6,14 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from .constants import CLASS_RANK
-from .features import _num, entry_features, odds_lane_features, pre_t5_odds_count_sql
+from .features import (
+    MODEL_FEATURE_CUTOFF_FROM_START_MINUTES,
+    _num,
+    entry_features,
+    odds_lane_features,
+    pre_t5_odds_count_sql,
+    stored_jst_timestamp_sql,
+)
 
 
 HIGH_IS_GOOD = (
@@ -551,15 +558,19 @@ def _beforeinfo_cutoff_sql(
     before_alias: str,
     race_alias: str,
 ) -> str:
+    captured = stored_jst_timestamp_sql(conn, f"{before_alias}.captured_at")
+    start_at = stored_jst_timestamp_sql(conn, f"{race_alias}.deadline_at")
     if getattr(conn, "dialect", "sqlite") == "postgresql":
-        return (
-            f"CAST({before_alias}.captured_at AS timestamptz) <= "
-            f"CAST({race_alias}.deadline_at AS timestamptz) - INTERVAL '5 minutes'"
+        cutoff = (
+            f"{start_at} - INTERVAL "
+            f"'{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes'"
         )
-    return (
-        f"datetime({before_alias}.captured_at) <= "
-        f"datetime({race_alias}.deadline_at, '-5 minutes')"
-    )
+    else:
+        cutoff = (
+            f"datetime({start_at}, "
+            f"'-{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes')"
+        )
+    return f"{captured} <= {cutoff}"
 
 
 def _relative_values(row: sqlite3.Row, before: sqlite3.Row | dict[str, Any]) -> dict[str, float]:

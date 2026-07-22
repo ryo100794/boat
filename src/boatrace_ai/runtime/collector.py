@@ -14,7 +14,13 @@ from ..operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
 from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
 
-from ..ingestion.live import collect_odds, collect_racelist, collect_result, discover_races
+from ..ingestion.live import (
+    collect_beforeinfo,
+    collect_odds,
+    collect_racelist,
+    collect_result,
+    discover_races,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
             "odds_targets": 0,
             "odds_ok": 0,
             "odds_failed": 0,
+            "beforeinfo_targets": 0,
+            "beforeinfo_ok": 0,
+            "beforeinfo_failed": 0,
             "result_targets": 0,
             "result_rows": 0,
             "result_empty": 0,
@@ -100,11 +109,41 @@ def main(argv: list[str] | None = None) -> int:
                 start_at = stored_start_time(row["deadline_at"])
                 cutoff_at = estimated_deadline_from_start(start_at)
                 latest_odds = parse_time(row["latest_odds_at"], default_tz=timezone.utc)
+                latest_beforeinfo = parse_time(
+                    row["latest_beforeinfo_at"], default_tz=timezone.utc
+                )
                 latest_result_attempt = parse_time(row["latest_result_attempt_at"], default_tz=timezone.utc)
                 if not start_at or not cutoff_at:
                     continue
                 seconds_to_cutoff = (cutoff_at - now).total_seconds()
                 seconds_to_start = (start_at - now).total_seconds()
+
+                before_interval = beforeinfo_interval(
+                    seconds_to_start,
+                    has_rows=int(row["beforeinfo_lanes"] or 0) == 6,
+                )
+                before_age = (
+                    (now - latest_beforeinfo).total_seconds()
+                    if latest_beforeinfo
+                    else None
+                )
+                if before_interval is not None and (
+                    before_age is None or before_age >= before_interval
+                ):
+                    counters["beforeinfo_targets"] += 1
+                    before_ok = collect_beforeinfo(
+                        conn,
+                        race_date=target_date,
+                        jcd=row["jcd"],
+                        rno=int(row["rno"]),
+                        raw_dir=raw_dir,
+                    )
+                    conn.commit()
+                    if before_ok:
+                        counters["beforeinfo_ok"] += 1
+                    else:
+                        counters["beforeinfo_failed"] += 1
+                    time.sleep(args.sleep_page)
 
                 interval = odds_interval(seconds_to_cutoff)
                 if interval is None:
@@ -264,6 +303,8 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
         """
         SELECT r.race_id, r.jcd, r.rno, r.deadline_at,
                (SELECT MAX(captured_at) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS latest_odds_at,
+               (SELECT MAX(captured_at) FROM beforeinfo b WHERE b.race_id = r.race_id) AS latest_beforeinfo_at,
+               (SELECT COUNT(DISTINCT lane) FROM beforeinfo b WHERE b.race_id = r.race_id) AS beforeinfo_lanes,
                (SELECT MAX(fetched_at) FROM raw_pages rp WHERE rp.race_id = r.race_id AND rp.page_type = 'result') AS latest_result_attempt_at,
                (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows,
                EXISTS(
@@ -294,6 +335,16 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
         """,
         (race_date.isoformat(),),
     ).fetchall()
+
+
+def beforeinfo_interval(seconds_to_start: float, *, has_rows: bool) -> float | None:
+    if seconds_to_start < 5 * 60 or seconds_to_start > 30 * 60:
+        return None
+    if not has_rows:
+        return 30.0
+    if seconds_to_start <= 12 * 60:
+        return 30.0
+    return 90.0
 
 
 def odds_interval(seconds_to_cutoff: float) -> float | None:

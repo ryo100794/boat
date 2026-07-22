@@ -43,6 +43,15 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
             "VALUES (?, '2026-07-22', '01', '桐生', 1, '2026-07-22T12:00:00+09:00')",
             (race_id,),
         )
+        insert_odds_snapshot(
+            conn,
+            race_id,
+            "2026-07-22T02:49:00+00:00",
+            "11:49",
+            _odds(15.0),
+            "model-cutoff",
+            {"parser_version": "odds3t_dom_v2"},
+        )
         valid_id = insert_odds_snapshot(
             conn,
             race_id,
@@ -83,7 +92,8 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
     assert cutoff["snapshot_id"] == valid_id
     assert set(cutoff["odds"].values()) == {12.0}
     assert {row["snapshot_count"] for row in lane_features.values()} == {1.0}
-    assert signature["snapshot_count"] == 2
+    assert {row["latest_mean"] for row in lane_features.values()} == {15.0}
+    assert signature["snapshot_count"] == 3
 
 
 def test_collector_does_not_persist_legacy_fallback(monkeypatch, tmp_path) -> None:

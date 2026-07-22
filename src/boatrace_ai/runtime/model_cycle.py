@@ -12,7 +12,7 @@ from ..features import pre_t5_odds_count_sql
 from ..modeling import backtest_model, train_model
 
 
-MODEL_CYCLE_EVALUATION_VERSION = 3
+MODEL_CYCLE_EVALUATION_VERSION = 4
 
 
 def evaluation_baseline(

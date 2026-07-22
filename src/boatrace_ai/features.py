@@ -10,15 +10,40 @@ from .constants import CLASS_RANK, LANES
 from .odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 
 
+STORED_START_TO_BETTING_DEADLINE_MINUTES = 5
+MODEL_DECISION_LEAD_MINUTES = 5
+MODEL_FEATURE_CUTOFF_FROM_START_MINUTES = (
+    STORED_START_TO_BETTING_DEADLINE_MINUTES + MODEL_DECISION_LEAD_MINUTES
+)
+
+
+def stored_jst_timestamp_sql(conn, expression: str) -> str:
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        return (
+            f"(CASE WHEN CAST({expression} AS text) ~ "
+            "'(Z|[+-][0-9]{2}:[0-9]{2})$' "
+            f"THEN CAST({expression} AS timestamptz) "
+            f"ELSE CAST({expression} AS timestamp) AT TIME ZONE 'Asia/Tokyo' END)"
+        )
+    return (
+        f"(CASE WHEN substr({expression}, -1) = 'Z' "
+        f"OR substr({expression}, -6, 1) IN ('+', '-') "
+        f"THEN datetime({expression}) "
+        f"ELSE datetime({expression}, '-9 hours') END)"
+    )
+
+
 def pre_t5_odds_count_sql(conn, *, race_alias: str = "r") -> str:
+    start_at = stored_jst_timestamp_sql(conn, f"{race_alias}.deadline_at")
+    captured = stored_jst_timestamp_sql(conn, "os.captured_at")
     if getattr(conn, "dialect", "sqlite") == "postgresql":
         cutoff = (
-            f"CAST({race_alias}.deadline_at AS timestamptz) - INTERVAL '5 minutes'"
+            f"{start_at} - INTERVAL '{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes'"
         )
-        captured = "CAST(os.captured_at AS timestamptz)"
     else:
-        cutoff = f"datetime({race_alias}.deadline_at, '-5 minutes')"
-        captured = "datetime(os.captured_at)"
+        cutoff = (
+            f"datetime({start_at}, '-{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes')"
+        )
     return (
         "(SELECT COUNT(*) FROM odds_snapshots os "
         f"WHERE os.race_id = {race_alias}.race_id "
@@ -191,7 +216,7 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
     deadline_at = _parse_race_time(str(race["deadline_at"]))
     if deadline_at is None:
         return {}
-    cutoff_at = deadline_at - timedelta(minutes=5)
+    cutoff_at = deadline_at - timedelta(minutes=MODEL_FEATURE_CUTOFF_FROM_START_MINUTES)
     rows = conn.execute(
         """
         SELECT os.snapshot_id, os.captured_at, ot.combination, ot.odds
