@@ -1,16 +1,17 @@
 from pathlib import Path
+import re
 
 
 STATUS = Path("docs/PROJECT_STATUS.md").read_text(encoding="utf-8")
 
 
 def test_project_status_uses_current_evaluation_state() -> None:
-    assert "2026-07-22 20:07 UTC" in STATUS
+    assert re.search(r"更新日時: 20\d{2}-\d{2}-\d{2} \d{2}:\d{2} UTC", STATUS)
     assert "厳格T-5品質基準 | 390 / 450R" in STATUS
     assert "標準365日v2は7モデル" in STATUS
     assert "Newton市場残差の正式7月22日foldは133R" in STATUS
     assert "LogLoss 3.84354（市場3.86070）" in STATUS
-    assert "状態: v13稼働中" in STATUS
+    assert "状態: v14稼働中" in STATUS
     assert "レース単位と日clusterの両方" in STATUS
     assert "M6 資金運用モデル | 未完了/収益ゲート未達" in STATUS
     assert "M7 ソース整理 | 完了/運用監視" in STATUS
