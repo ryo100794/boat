@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
 import os
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -1127,6 +1129,18 @@ def write_scored_cache(
         temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def scored_cache_build_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Leakage-safe market calibration and bankroll shadow evaluation."
@@ -1178,21 +1192,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     cached = load_scored_cache(cache_path, contract=contract)
     if cached is None:
-        with connection(args.db) as conn:
-            races, dataset = score_real_odds_races(
-                conn,
-                artifact=artifact,
-                from_date=args.from_date,
-                through_date=args.through_date,
-                max_snapshot_age_seconds=args.max_snapshot_age_seconds,
-            )
-        write_scored_cache(
-            cache_path,
-            contract=contract,
-            races=races,
-            dataset=dataset,
-        )
-        cache_source = "built"
+        with scored_cache_build_lock(cache_path):
+            cached = load_scored_cache(cache_path, contract=contract)
+            if cached is None:
+                with connection(args.db) as conn:
+                    races, dataset = score_real_odds_races(
+                        conn,
+                        artifact=artifact,
+                        from_date=args.from_date,
+                        through_date=args.through_date,
+                        max_snapshot_age_seconds=args.max_snapshot_age_seconds,
+                    )
+                write_scored_cache(
+                    cache_path,
+                    contract=contract,
+                    races=races,
+                    dataset=dataset,
+                )
+                cache_source = "built"
+            else:
+                races, dataset = cached
+                cache_source = "disk_after_wait"
     else:
         races, dataset = cached
         cache_source = "disk"
