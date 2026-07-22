@@ -25,6 +25,7 @@ from ..feature_tuning import (
 )
 from ..features import latest_trifecta_odds_before_deadline
 from ..modeling import trifecta_predictions
+from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
 from .model import ListwiseLinearModel, stable_softmax
 
 
@@ -435,6 +436,8 @@ def probability_metrics(
 
 def predefined_ticket_diagnostics(
     races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int = 10_000,
 ) -> dict[str, Any]:
     descriptions = {
         "top5_flat": "モデルTop5を全点100円購入",
@@ -496,6 +499,10 @@ def predefined_ticket_diagnostics(
         "daily_budget_applied": False,
         "stake_per_ticket_yen": STAKE_YEN,
         "strategies": strategies,
+        "adaptive_bankroll": sequential_top5_ev_kelly_diagnostic(
+            races,
+            daily_budget_yen=daily_budget_yen,
+        ),
     }
 
 
@@ -593,7 +600,10 @@ def walk_forward_evaluate(
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
         "probability_metrics": aggregate_metrics,
-        "ticket_diagnostics": predefined_ticket_diagnostics(evaluation_races),
+        "ticket_diagnostics": predefined_ticket_diagnostics(
+            evaluation_races,
+            daily_budget_yen=daily_budget_yen,
+        ),
         "calibrated_trifecta_log_loss": aggregate_metrics.get(
             "calibrated_trifecta_log_loss"
         ),
