@@ -3232,11 +3232,15 @@ def archive_history(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any
     offset = _bounded_int(_archive_one(query, "offset", "0"), 0, 0, 1_000_000)
     with connect(db_path) as conn:
         cutoff_date, latest_date = _recent_cutoff(conn, days)
-        available_years = _history_years(cutoff_date, latest_date)
+        earliest_date = _history_earliest_date(conn) or cutoff_date
+        available_years = _history_years(earliest_date, latest_date)
         selected_year = _history_year(_archive_one(query, "year"), available_years)
-        start_date, end_date = _history_date_window(
-            cutoff_date, latest_date, selected_year
-        )
+        if selected_year is None:
+            start_date, end_date = cutoff_date, None
+        else:
+            start_date, end_date = _history_date_window(
+                earliest_date, latest_date, selected_year
+            )
         if kind == "race":
             race_id = _archive_required(query, "race_id")
             return {"kind": kind, "generated_at": _archive_now(), **_race_archive(conn, race_id)}
@@ -3829,6 +3833,11 @@ def _recent_cutoff(conn: sqlite3.Connection, days: int) -> tuple[str, str | None
         latest_date = now_jst().date()
     cutoff = latest_date - timedelta(days=days - 1)
     return cutoff.isoformat(), latest
+
+
+def _history_earliest_date(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute("SELECT MIN(race_date) FROM races").fetchone()
+    return str(row[0]) if row and row[0] else None
 
 
 def _days_from_cutoff(conn: sqlite3.Connection, cutoff_date: str) -> int:

@@ -96,7 +96,7 @@ def test_archive_history_defaults_to_ten_years_and_pages_into_older_years(tmp_pa
     assert selected_2025["end_date"] == "2025-12-31"
     assert selected_2025["summary"]["starts"] == 1
     assert [row["race_date"] for row in selected_2025["rows"]] == ["2025-07-20"]
-    assert selected_2025["available_years"] == list(range(2026, 2015, -1))
+    assert selected_2025["available_years"] == list(range(2026, 2017, -1))
 
 
 def test_archive_year_filter_applies_to_every_history_kind(tmp_path) -> None:
@@ -123,6 +123,35 @@ def test_archive_year_filter_applies_to_every_history_kind(tmp_path) -> None:
         payload = dashboard.archive_history(db_path, {**query, "year": ["2025"]})
         assert payload["rows"]
         assert {row["race_date"] for row in payload["rows"]} == {"2025-02-01"}
+
+
+def test_archive_year_navigation_is_independent_of_recent_period(tmp_path) -> None:
+    db_path = tmp_path / "archive-year-period.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        _seed(conn, "2026-07-20-23-01", "2026-07-20", "23", 1)
+        _seed(conn, "2020-02-01-23-01", "2020-02-01", "23", 1)
+
+    recent = dashboard.archive_history(
+        db_path,
+        {"kind": ["racer"], "racer_no": ["4072"], "days": ["90"]},
+    )
+    selected = dashboard.archive_history(
+        db_path,
+        {
+            "kind": ["racer"],
+            "racer_no": ["4072"],
+            "days": ["90"],
+            "year": ["2020"],
+        },
+    )
+
+    assert recent["available_years"] == list(range(2026, 2019, -1))
+    assert {row["race_date"] for row in recent["rows"]} == {"2026-07-20"}
+    assert selected["selected_year"] == 2020
+    assert selected["cutoff_date"] == "2020-02-01"
+    assert selected["end_date"] == "2020-12-31"
+    assert {row["race_date"] for row in selected["rows"]} == {"2020-02-01"}
 
 
 def test_archive_response_cache_reuses_identical_query(monkeypatch, tmp_path) -> None:
