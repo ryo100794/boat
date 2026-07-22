@@ -38,6 +38,7 @@ START_TO_DEADLINE_MINUTES = 5
 HISTORICAL_TARGET_DAYS = 3650
 REALTIME_SHADOW_TARGET_RACES = 1000
 REALTIME_SHADOW_MIN_SNAPSHOTS = 10
+REALTIME_SHADOW_EVALUATION_VERSION = 2
 TODAY_TARGET_RACES = len(VENUES) * len(RACES_PER_DAY)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
@@ -1448,15 +1449,28 @@ def _model_track_summaries(
         ),
         None,
     )
-    shadow = formal_shadow or provisional_shadow
+    raw_shadow = formal_shadow or provisional_shadow
     shadow_is_provisional = formal_shadow is None and provisional_shadow is not None
-    state_path = model_dir / "realtime_odds_shadow_state.json"
+    state_name = (
+        "realtime_odds_shadow_t5_safe_candidate_state.json"
+        if shadow_is_provisional
+        else "realtime_odds_shadow_state.json"
+    )
     try:
-        shadow_state = json.loads(state_path.read_text(encoding="utf-8"))
+        shadow_state = json.loads((model_dir / state_name).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         shadow_state = {}
     eligible = int(shadow_state.get("eligible_races") or 0)
     required = int(shadow_state.get("required_races") or REALTIME_SHADOW_TARGET_RACES)
+    artifact_races = int((raw_shadow or {}).get("races") or 0)
+    shadow_current = bool(
+        raw_shadow
+        and shadow_state.get("evaluation_version") == REALTIME_SHADOW_EVALUATION_VERSION
+        and int(shadow_state.get("last_evaluated_races") or 0) > 0
+        and artifact_races <= eligible
+    )
+    shadow = raw_shadow if shadow_current else None
+    shadow_stale = bool(raw_shadow and not shadow_current)
     shadow_training = (
         f"過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression "
         f"C=0.20・class_weightなし / 3fold暫定・評価{int(shadow.get('evaluated_races') or 0)}R"
@@ -1465,7 +1479,9 @@ def _model_track_summaries(
         "C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習"
     )
     shadow_status = (
-        "評価済み"
+        "品質更新後の再蓄積中"
+        if shadow_stale
+        else "評価済み"
         if formal_shadow
         else "暫定評価済み"
         if shadow_is_provisional

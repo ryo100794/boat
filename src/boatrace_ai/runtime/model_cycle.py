@@ -12,6 +12,21 @@ from ..features import pre_t5_odds_count_sql
 from ..modeling import backtest_model, train_model
 
 
+MODEL_CYCLE_EVALUATION_VERSION = 2
+
+
+def evaluation_baseline(
+    state: dict[str, object],
+) -> tuple[int, object | None, str | None]:
+    if state.get("evaluation_version") != MODEL_CYCLE_EVALUATION_VERSION:
+        return 0, None, "data_quality_contract_changed"
+    return (
+        int(state.get("last_evaluated_races") or 0),
+        state.get("last_evaluated_at"),
+        None,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Periodically run historical or realtime-odds shadow evaluation."
@@ -35,8 +50,11 @@ def main(argv: list[str] | None = None) -> int:
     init_db(args.db)
     state_path = Path(args.state) if args.state else None
     previous_state = read_state(state_path) if state_path else {}
-    last_evaluated_races = int(previous_state.get("last_evaluated_races") or 0)
-    last_evaluated_at = previous_state.get("last_evaluated_at")
+    (
+        last_evaluated_races,
+        last_evaluated_at,
+        baseline_reset_reason,
+    ) = evaluation_baseline(previous_state)
     model_path = Path(args.model)
     backtest_path = Path(args.backtest)
     loop = 0
@@ -48,10 +66,13 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "realtime_odds_shadow" if args.include_odds else "historical_only",
             "from_date": args.from_date,
             "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "evaluation_version": MODEL_CYCLE_EVALUATION_VERSION,
         }
         if last_evaluated_races:
             event["last_evaluated_races"] = last_evaluated_races
             event["last_evaluated_at"] = last_evaluated_at
+        if baseline_reset_reason:
+            event["baseline_reset_reason"] = baseline_reset_reason
         try:
             with connection(args.db) as conn:
                 counts = dataset_counts(
@@ -61,6 +82,13 @@ def main(argv: list[str] | None = None) -> int:
                     min_odds_snapshots=args.min_odds_snapshots,
                 )
                 eligible_races = counts["odds_result_races"] if args.include_odds else counts["races"]
+                if last_evaluated_races and eligible_races < last_evaluated_races:
+                    last_evaluated_races = 0
+                    last_evaluated_at = None
+                    baseline_reset_reason = "eligible_races_decreased_after_quality_filter"
+                    event["baseline_reset_reason"] = baseline_reset_reason
+                    event.pop("last_evaluated_races", None)
+                    event.pop("last_evaluated_at", None)
                 required_races = max(args.min_eligible_races, args.min_train_races + args.folds)
                 ready = eligible_races >= required_races
                 event.update(
