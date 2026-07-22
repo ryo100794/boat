@@ -65,3 +65,16 @@ blocks rather than one venue or one month.
 - Position-specific stagewise probabilities plus the retained two-coefficient Newton market residual scored LogLoss 3.84268 on the 133-race 2026-07-22 fold, versus 3.84354 for listwise plus Newton residual and 3.85637 for stagewise plus grid calibration.
 - The 0.00086 difference from the retained residual model is development evidence only. The existing stagewise shadow track is fixed to Newton residual before 2026-07-23 outcomes and that day is the next untouched architecture comparison.
 - No wagering or production promotion is allowed from this one-day result; the 30-day, 1,000-race, paired market-confidence, positive-profit, ROI, and fold-stability gates remain unchanged.
+
+## 2026-07-22 finish-position/lane residual probe
+
+- A 17-parameter Newton residual added strongly regularized lane 2-6 offsets for each of first, second, and third place. Regularization was selected on the 2026-07-20 to 2026-07-21 forward folds before testing 2026-07-22.
+- With listwise probabilities, LogLoss changed from 3.84354 to 3.84256, but 3T5 fell from 30.83% to 29.32%. With stagewise probabilities, LogLoss changed from 3.84268 to 3.84171 and 3T5 again fell to 29.32%.
+- The incremental LogLoss differences were about -0.001 for both source models and both 95% intervals crossed zero. Because ranking utility regressed and confidence was absent, the structured residual is rejected and is not added to a production shadow or promotion candidate.
+- The generic implementation and exact probe remain in Git so the hypothesis can be retested only after substantially more strict T-5 days accumulate; no coefficients from this development fold are deployed.
+
+## 2026-07-22 full-day source ensemble check
+
+- The earlier intraday ensemble result covered only 113 races, so it was rerun on the same final 133-race fold used by every v14 candidate. Source subset and regularization selection still used only 2026-07-20 and 2026-07-21.
+- The selected market, fixed-cutoff listwise, and stagewise ensemble produced LogLoss 3.90027 and 3T5 29.32%. This was worse than both the T-5 market at 3.86070/30.08% and stagewise plus global Newton residual at 3.84268/30.83%.
+- The ensemble is rejected as an unstable two-day source-weight fit. It is not registered for 2026-07-23 and will not be reconsidered until enough full-day strict T-5 folds support source-weight stability.
