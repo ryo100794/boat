@@ -26,6 +26,11 @@ from ..feature_tuning import (
 from ..features import latest_trifecta_odds_before_deadline
 from ..modeling import trifecta_predictions
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
+from .flat_policy import (
+    select_flat_policy,
+    simulate_flat_policy,
+    summarize_flat_candidates,
+)
 from .model import ListwiseLinearModel, stable_softmax
 from .stagewise_blend import (
     StagewiseBlendModel,
@@ -574,6 +579,7 @@ def walk_forward_evaluate(
     folds = []
     evaluation_races: list[dict[str, Any]] = []
     daily_rows = []
+    flat_daily_rows = []
     for index in range(min_calibration_days, len(dates)):
         calibration_dates = dates[:index]
         evaluation_date = dates[index]
@@ -590,6 +596,17 @@ def walk_forward_evaluate(
             calibrator=calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
+        )
+        flat_policy, flat_policy_grid = select_flat_policy(
+            calibration_races,
+            calibrator=calibrator,
+            probability_blender=blend_probabilities,
+        )
+        flat_bankroll = simulate_flat_policy(
+            holdout,
+            calibrator=calibrator,
+            policy=flat_policy,
+            probability_blender=blend_probabilities,
         )
         metrics = probability_metrics(holdout, calibrator=calibrator)
         folds.append(
@@ -611,11 +628,17 @@ def walk_forward_evaluate(
                     ),
                 )[:5],
                 "policy_diagnostics": summarize_policy_candidates(policy_grid),
+                "selected_flat_policy": flat_policy,
+                "flat_policy_diagnostics": summarize_flat_candidates(flat_policy_grid),
+                "flat_bankroll": {
+                    key: value for key, value in flat_bankroll.items() if key != "daily"
+                },
                 "probability_metrics": metrics,
                 "bankroll": {key: value for key, value in bankroll.items() if key != "daily"},
             }
         )
         daily_rows.extend(bankroll["daily"])
+        flat_daily_rows.extend(flat_bankroll["daily"])
         evaluation_races.extend(holdout)
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
@@ -627,6 +650,8 @@ def walk_forward_evaluate(
         max_drawdown_yen = max(max_drawdown_yen, peak_profit - cumulative_profit)
         row["cumulative_profit_yen"] = cumulative_profit
     profitable_folds = sum(int(fold["bankroll"]["profit_yen"] > 0) for fold in folds)
+    flat_stake_yen = sum(int(row["stake_yen"]) for row in flat_daily_rows)
+    flat_return_yen = sum(int(row["return_yen"]) for row in flat_daily_rows)
     aggregate_metrics = _aggregate_fold_probability_metrics(folds)
     promotion_gate = {
         "minimum_evaluation_races": 1000,
@@ -672,6 +697,19 @@ def walk_forward_evaluate(
         "profitable_folds": profitable_folds,
         "folds": folds,
         "daily": daily_rows,
+        "flat_policy_walk_forward": {
+            "comparison_role": "preselected_on_prior_days_fixed_100_yen_shadow",
+            "evaluation_races": len(evaluation_races),
+            "evaluation_days": len(flat_daily_rows),
+            "tickets": sum(int(row["tickets"]) for row in flat_daily_rows),
+            "hit_tickets": sum(int(row["hits"]) for row in flat_daily_rows),
+            "stake_yen": flat_stake_yen,
+            "return_yen": flat_return_yen,
+            "profit_yen": flat_return_yen - flat_stake_yen,
+            "roi": flat_return_yen / flat_stake_yen if flat_stake_yen else 0.0,
+            "winning_days": sum(int(row["profit_yen"] > 0) for row in flat_daily_rows),
+            "daily": flat_daily_rows,
+        },
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(
             value for key, value in promotion_gate.items() if key.endswith("_pass")

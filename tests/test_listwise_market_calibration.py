@@ -120,6 +120,8 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
         "2026-07-19",
         "2026-07-20",
     ]
+    assert result["flat_policy_walk_forward"]["evaluation_days"] == 2
+    assert result["folds"][0]["selected_flat_policy"]["no_bet"] is True
     assert result["promotion_gate"]["sample_size_pass"] is False
     assert result["promotion_eligible"] is False
 
