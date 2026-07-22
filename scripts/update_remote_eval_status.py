@@ -48,6 +48,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 0, "name": "listwise_market_calibrated_shadow", "milestone": "M5/M6", "kind": "market_calibrated_shadow", "output": "data/models/listwise_market_calibrated_shadow.json", "log": "logs/runtime/market-calibrated-shadow.log"},
     {"pid": 0, "name": "listwise_newton_cutoff_20260717", "milestone": "M4-3/M6", "kind": "listwise_cutoff_refit", "output": "data/models/listwise_newton_cutoff_20260717.json", "log": "logs/listwise_newton_cutoff_20260717.log"},
     {"pid": 0, "name": "listwise_market_calibrated_cutoff_shadow", "milestone": "M5/M6", "kind": "market_calibrated_cutoff_shadow", "output": "data/models/listwise_market_calibrated_cutoff_shadow.json", "log": "logs/listwise_market_calibrated_cutoff_shadow.log"},
+    {"pid": 0, "name": "conditional_order_365d", "milestone": "M4-3/M6", "kind": "conditional_order_365d", "output": "data/models/conditional_order_365d.json", "log": "logs/runtime/conditional-order-evaluation.log"},
     {"pid": 0, "name": "stagewise_mlp_365d", "milestone": "M4-4", "kind": "stagewise_mlp_365d", "output": "data/models/stagewise_mlp_365d.json", "log": "logs/stagewise_mlp_365d.log"},
     {"pid": 0, "name": "stagewise_blend_preselected_20260717", "milestone": "M4-4", "kind": "stagewise_blend_preselected", "output": "data/models/stagewise_blend_preselected_20260717.json", "log": "logs/stagewise_blend_preselected_20260717.log"},
     {"pid": 0, "name": "stagewise_blend_market_shadow", "milestone": "M5/M6", "kind": "market_calibrated_blend_shadow", "output": "data/models/stagewise_blend_market_shadow.json", "log": "logs/runtime/market-calibrated-blend-shadow.log"},
@@ -146,10 +147,14 @@ def result_summary(path):
     row["comparison_role"] = data.get("comparison_role")
     row["include_odds"] = data.get("include_odds")
     row["protocol_id"] = data.get("protocol_id")
+    row["promotion_eligible"] = data.get("promotion_eligible")
+    row["structure_gate"] = data.get("structure_gate")
+    row["bankroll_gate"] = data.get("bankroll_gate")
     holdout = (
         data.get("after_refit")
         or data.get("holdout_after_newton")
         or data.get("holdout")
+        or data.get("conditional_order")
         or data.get("stagewise")
         or (data.get("final_evaluation") or {}).get("selected_blend")
         or {}
@@ -187,8 +192,8 @@ def result_summary(path):
         row["drop_results"] = drops
     if "folds" in data:
         row["folds"] = len(data.get("folds") or [])
-    if "daily" in data:
-        daily = data.get("daily") or []
+    daily = (data.get("bankroll") or {}).get("daily") or data.get("daily") or []
+    if daily:
         row["daily_rows"] = len(daily)
         row["daily"] = [
             {key: item.get(key) for key in DAILY_KEYS if key in item}
