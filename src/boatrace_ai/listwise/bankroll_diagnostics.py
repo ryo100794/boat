@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .closing_odds import decision_odds
+
 
 STAKE_YEN = 100
 SETTLEMENT_DELAY_MINUTES = 10
@@ -59,7 +61,7 @@ def sequential_top5_ev_kelly_diagnostic(
                     still_pending.append((settles_at, payout))
             pending = still_pending
             probabilities = race["model_probabilities"]
-            odds = race["odds"]
+            odds = decision_odds(race)
             top5 = sorted(probabilities, key=probabilities.get, reverse=True)[:5]
             candidates = []
             for combination in top5:

@@ -4,6 +4,8 @@ import math
 from collections import defaultdict
 from typing import Any, Callable, Iterable
 
+from .closing_odds import decision_odds
+
 
 STAKE_YEN = 100
 
@@ -65,7 +67,7 @@ def simulate_flat_policy(
         for combination in ranked[: int(policy["max_model_rank"])]:
             probability = float(probabilities[combination])
             market_probability = float(race["market_probabilities"][combination])
-            odds = float(race["odds"][combination])
+            odds = float(decision_odds(race)[combination])
             if policy.get("min_odds") is not None and odds < float(policy["min_odds"]):
                 continue
             if policy.get("max_odds") is not None and odds > float(policy["max_odds"]):

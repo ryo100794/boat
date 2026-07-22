@@ -40,6 +40,12 @@ from .flat_policy import (
     summarize_flat_candidates,
 )
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
+from .closing_odds import (
+    attach_forecast_closing_odds,
+    closing_odds_metrics,
+    decision_odds,
+    fit_closing_odds_model,
+)
 from .model import ListwiseLinearModel, stable_softmax
 from .paired_bootstrap import paired_mean_bootstrap
 from .stagewise_blend import (
@@ -51,8 +57,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 10
-SCORED_CACHE_VERSION = 8
+MARKET_EVALUATION_VERSION = 11
+SCORED_CACHE_VERSION = 9
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -277,7 +283,7 @@ def simulate_policy(
             )
             candidates = []
             for combination, probability in calibrated.items():
-                odds = float(race["odds"][combination])
+                odds = float(decision_odds(race)[combination])
                 market_probability = float(race["market_probabilities"][combination])
                 estimated_ev = probability * odds
                 if estimated_ev < float(policy["ev_threshold"]):
@@ -301,7 +307,11 @@ def simulate_policy(
                         "estimated_ev": estimated_ev,
                         "estimated_payout_yen": odds * STAKE_YEN,
                         "payout_history_count": 0,
-                        "odds_source": "real_t5",
+                        "odds_source": (
+                            "forecast_final_from_real_t5"
+                            if race.get("estimated_final_odds")
+                            else "real_t5"
+                        ),
                         "actual_combination": race["actual_combination"],
                         "actual_payout_yen": int(race["actual_payout_yen"]),
                         "hit": combination == race["actual_combination"],
@@ -613,7 +623,7 @@ def predefined_ticket_diagnostics(
     }
     for race in races:
         probabilities = race["model_probabilities"]
-        odds = race["odds"]
+        odds = decision_odds(race)
         actual = str(race["actual_combination"])
         top5 = sorted(probabilities, key=probabilities.get, reverse=True)[:5]
         selections = {
@@ -773,6 +783,7 @@ def walk_forward_evaluate(
 
     folds = []
     evaluation_races: list[dict[str, Any]] = []
+    evaluation_policy_races: list[dict[str, Any]] = []
     market_loss_differences: list[float] = []
     market_top5_differences: list[float] = []
     market_cluster_labels: list[str] = []
@@ -804,24 +815,42 @@ def walk_forward_evaluate(
             calibrator, calibrator_grid = select_calibrator(calibration_races)
         else:
             raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
+        closing_odds_model = None
+        closing_odds_evaluation = None
+        calibration_policy_races = calibration_races
+        holdout_policy_races = holdout
+        try:
+            closing_odds_model = fit_closing_odds_model(calibration_races)
+        except ValueError:
+            pass
+        else:
+            calibration_policy_races = attach_forecast_closing_odds(
+                calibration_races, closing_odds_model
+            )
+            holdout_policy_races = attach_forecast_closing_odds(
+                holdout, closing_odds_model
+            )
+            closing_odds_evaluation = closing_odds_metrics(
+                holdout, closing_odds_model
+            )
         policy, policy_grid = select_policy(
-            calibration_races,
+            calibration_policy_races,
             calibrator=calibrator,
             daily_budget_yen=daily_budget_yen,
         )
         bankroll = simulate_policy(
-            holdout,
+            holdout_policy_races,
             calibrator=calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
         )
         flat_policy, flat_policy_grid = select_flat_policy(
-            calibration_races,
+            calibration_policy_races,
             calibrator=calibrator,
             probability_blender=blend_probabilities,
         )
         flat_bankroll = simulate_flat_policy(
-            holdout,
+            holdout_policy_races,
             calibrator=calibrator,
             policy=flat_policy,
             probability_blender=blend_probabilities,
@@ -846,6 +875,8 @@ def walk_forward_evaluate(
                 "calibrator": calibrator,
                 "calibrator_strategy": calibrator_strategy,
                 "calibrator_selection": calibrator_selection,
+                "closing_odds_model": closing_odds_model,
+                "closing_odds_evaluation": closing_odds_evaluation,
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
                 "policy_candidates": len(policy_grid),
@@ -881,6 +912,7 @@ def walk_forward_evaluate(
         daily_rows.extend(bankroll["daily"])
         flat_daily_rows.extend(flat_bankroll["daily"])
         evaluation_races.extend(holdout)
+        evaluation_policy_races.extend(holdout_policy_races)
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
@@ -927,7 +959,7 @@ def walk_forward_evaluate(
         "probability_metrics": aggregate_metrics,
         "market_comparison": market_comparison,
         "ticket_diagnostics": predefined_ticket_diagnostics(
-            evaluation_races,
+            evaluation_policy_races,
             daily_budget_yen=daily_budget_yen,
         ),
         "calibrated_trifecta_log_loss": aggregate_metrics.get(
@@ -1020,6 +1052,7 @@ def score_real_odds_races(
     payouts = _load_trifecta_payouts(conn)
     races = []
     skipped_no_odds = skipped_stale_odds = skipped_no_payout = 0
+    closing_odds_races = skipped_no_closing_odds = skipped_stale_closing_odds = 0
     for feature_rows in iter_artifact_feature_rows(
         conn,
         target_ids=target_ids,
@@ -1048,6 +1081,30 @@ def score_real_odds_races(
         ):
             skipped_stale_odds += 1
             continue
+        closing_snapshot = latest_trifecta_odds_before_deadline(
+            conn,
+            race_id,
+            min_combinations=120,
+            decision_lead_minutes=0,
+        )
+        closing_odds = None
+        if closing_snapshot is None or len(closing_snapshot.get("odds") or {}) != 120:
+            skipped_no_closing_odds += 1
+        else:
+            closing_age = snapshot_age_seconds(closing_snapshot)
+            if (
+                closing_age is None
+                or closing_age < 0.0
+                or closing_age > max_snapshot_age_seconds
+                or not snapshot_captured_after(closing_snapshot, snapshot)
+            ):
+                skipped_stale_closing_odds += 1
+            else:
+                closing_odds = {
+                    key: float(value)
+                    for key, value in closing_snapshot["odds"].items()
+                }
+                closing_odds_races += 1
         model_probabilities = artifact_model_probabilities(artifact, feature_rows)
         odds = {key: float(value) for key, value in snapshot["odds"].items()}
         market_probabilities = normalized_market_probabilities(odds)
@@ -1065,6 +1122,17 @@ def score_real_odds_races(
                 "model_probabilities": model_probabilities,
                 "market_probabilities": market_probabilities,
                 "odds": odds,
+                "closing_odds": closing_odds,
+                "closing_snapshot_id": (
+                    closing_snapshot.get("snapshot_id")
+                    if closing_odds is not None
+                    else None
+                ),
+                "closing_captured_at": (
+                    closing_snapshot.get("captured_at")
+                    if closing_odds is not None
+                    else None
+                ),
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "captured_at": snapshot.get("captured_at"),
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
@@ -1075,6 +1143,9 @@ def score_real_odds_races(
         "eligible_real_odds_races": len(races),
         "skipped_no_real_odds": skipped_no_odds,
         "skipped_stale_real_odds": skipped_stale_odds,
+        "closing_odds_races": closing_odds_races,
+        "skipped_no_closing_odds": skipped_no_closing_odds,
+        "skipped_stale_closing_odds": skipped_stale_closing_odds,
         "skipped_no_payout": skipped_no_payout,
     }
 
@@ -1090,6 +1161,21 @@ def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=captured.tzinfo or timezone.utc)
     return (deadline - captured.astimezone(deadline.tzinfo)).total_seconds()
+
+
+def snapshot_captured_after(
+    later: dict[str, Any], earlier: dict[str, Any]
+) -> bool:
+    try:
+        later_at = datetime.fromisoformat(str(later["captured_at"]))
+        earlier_at = datetime.fromisoformat(str(earlier["captured_at"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if later_at.tzinfo is None:
+        later_at = later_at.replace(tzinfo=timezone.utc)
+    if earlier_at.tzinfo is None:
+        earlier_at = earlier_at.replace(tzinfo=timezone.utc)
+    return later_at > earlier_at.astimezone(later_at.tzinfo)
 
 
 def _validate_artifact_before_period(artifact: dict[str, Any], *, from_date: str) -> None:
