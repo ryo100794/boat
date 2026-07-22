@@ -1668,6 +1668,28 @@ def _listwise_model_tracks(
     return rows
 
 
+def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
+    if not isinstance(loss, dict):
+        return {}
+    return {
+        "market_comparison_date": payload.get("evaluation_date"),
+        "market_comparison_races": loss.get("observations"),
+        "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
+        "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
+        "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
+        "market_improvement_probability": _float_or_none(
+            loss.get("probability_less_than_zero")
+        ),
+    }
+
+
 def _market_calibrated_model_tracks(
     remote_evaluations: dict[str, Any],
     model_dir: Path | None = None,
@@ -1680,6 +1702,7 @@ def _market_calibrated_model_tracks(
             "listwise T-5市場較正 shadow",
             "listwise_market_calibrated_shadow.json",
             "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の確定結果",
+            None,
         ),
         (
             "market_calibrated_cutoff_shadow",
@@ -1687,6 +1710,7 @@ def _market_calibrated_model_tracks(
             "listwise 7/17再学習 T-5 shadow",
             "listwise_market_calibrated_cutoff_shadow.json",
             "2026-07-17以前494,468Rの固定構造再学習 / T-5市場暗黙確率 / 7/18以降walk-forward",
+            None,
         ),
         (
             "market_calibrated_blend_shadow",
@@ -1694,6 +1718,7 @@ def _market_calibrated_model_tracks(
             "事前固定blend T-5 shadow",
             "stagewise_blend_market_shadow.json",
             "365日で固定した50:50 blend / T-5市場暗黙確率 / 7/18以降walk-forward",
+            "stagewise_blend_market_intraday_bootstrap.json",
         ),
         (
             "market_residual_shadow",
@@ -1701,10 +1726,19 @@ def _market_calibrated_model_tracks(
             "Newton市場残差 T-5 shadow",
             "listwise_market_residual_shadow.json",
             "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の日次前進検証",
+            "listwise_market_residual_intraday_bootstrap.json",
+        ),
+        (
+            "market_cutoff_residual_probe",
+            "market_cutoff_residual_probe",
+            "7/17再学習+Newton残差 開発診断",
+            "listwise_market_cutoff_residual_intraday_probe.json",
+            "7/17以前固定再学習 / 7/20-21で残差較正 / 7/22開発評価",
+            "listwise_market_cutoff_residual_intraday_bootstrap.json",
         ),
     )
     rows = []
-    for kind, track_id, label, model_file, teacher in specs:
+    for kind, track_id, label, model_file, teacher, bootstrap_file in specs:
         job = next((item for item in jobs or [] if item.get("kind") == kind), {})
         local_result = _local_evaluation_result(model_dir / model_file) if model_dir else None
         result = job.get("result") or local_result or {}
@@ -1716,26 +1750,41 @@ def _market_calibrated_model_tracks(
             else job.get("status")
             or ("完了" if local_result and not local_result.get("error") else "未登録")
         )
+        bootstrap = _market_bootstrap_summary(
+            model_dir / bootstrap_file if model_dir and bootstrap_file else None
+        )
+        calibrated_log_loss = _float_or_none(
+            metrics.get("calibrated_trifecta_log_loss")
+        )
+        if track_id in {"market_residual_shadow", "market_cutoff_residual_probe"}:
+            training = (
+                "2係数log-pool Newton法 / 日次前進正則化選択 / "
+                "完全日walk-forward / 1日1万円・100円単位"
+            )
+        else:
+            training = (
+                "幾何ブレンド+temperature較正 / 完全日walk-forward / "
+                "日別安定性no-bet / 1日1万円・100円単位"
+            )
         rows.append(
             {
                 "id": track_id,
                 "label": label,
-                "role": "比較評価・no-bet判定のみ",
+                "role": (
+                    "開発診断のみ・7/23以降で再確認"
+                    if track_id == "market_cutoff_residual_probe"
+                    else "比較評価・no-bet判定のみ"
+                ),
                 "status": status,
                 "include_odds": True,
                 "model_file": model_file,
                 "teacher": teacher,
-                "training": (
-                    "2係数log-pool Newton法 / 日次前進正則化選択 / 完全日walk-forward / 1日1万円・100円単位"
-                    if track_id == "market_residual_shadow"
-                    else "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位"
-                ),
+                "training": training,
                 "eligible_races": metrics.get("evaluated_races"),
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),
-                "trifecta_log_loss": _float_or_none(
-                    metrics.get("calibrated_trifecta_log_loss")
-                ),
+                "entry_log_loss": calibrated_log_loss,
+                "trifecta_log_loss": calibrated_log_loss,
                 "model_trifecta_log_loss": _float_or_none(
                     metrics.get("model_trifecta_log_loss")
                 ),
@@ -1748,6 +1797,7 @@ def _market_calibrated_model_tracks(
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
                 "promotion_eligible": bool(metrics.get("promotion_eligible")),
+                **bootstrap,
             }
         )
     return rows

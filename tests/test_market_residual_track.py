@@ -18,6 +18,22 @@ def test_model_report_exposes_newton_market_residual_shadow(tmp_path) -> None:
         encoding="utf-8",
     )
 
+    (tmp_path / "listwise_market_residual_intraday_bootstrap.json").write_text(
+        json.dumps(
+            {
+                "evaluation_date": "2026-07-22",
+                "log_loss_difference_calibrated_minus_market": {
+                    "observations": 113,
+                    "mean_difference": -0.02843,
+                    "ci95_lower": -0.05858,
+                    "ci95_upper": 0.00212,
+                    "probability_less_than_zero": 0.966,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
     tracks = {
         row["id"]: row
         for row in _model_track_summaries(tmp_path, [], {"jobs": []})
@@ -29,3 +45,7 @@ def test_model_report_exposes_newton_market_residual_shadow(tmp_path) -> None:
     assert residual["eligible_races"] == 0
     assert "Newton法" in residual["training"]
     assert residual["promotion_eligible"] is False
+    assert residual["market_comparison_races"] == 113
+    assert residual["market_log_loss_delta"] == -0.02843
+    assert residual["market_log_loss_delta_ci95_upper"] == 0.00212
+    assert residual["market_improvement_probability"] == 0.966
