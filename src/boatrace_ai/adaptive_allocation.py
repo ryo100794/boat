@@ -126,19 +126,31 @@ def allocate_adaptive_day(
         race_cap_fraction=race_cap_fraction,
     )
 
+    planned_stakes = plan_stakes(
+        prepared,
+        daily_budget_yen=daily_budget_yen,
+        min_daily_exposure_fraction=min_daily_exposure_fraction,
+        max_daily_exposure_fraction=max_daily_exposure_fraction,
+        race_cap_fraction=race_cap_fraction,
+        ticket_cap_fraction=ticket_cap_fraction,
+        allocation_mode=allocation_mode,
+        stake_granularity_yen=stake_granularity_yen,
+    )
     selected = []
     stake_yen = 0
     return_yen = 0
     hit_tickets = 0
-    for item in sorted(
-        prepared,
-        key=lambda row: (row["stake_fraction"], row["estimated_ev"]),
+    ranked_indices = sorted(
+        range(len(prepared)),
+        key=lambda index: (
+            prepared[index]["stake_fraction"],
+            prepared[index]["estimated_ev"],
+        ),
         reverse=True,
-    ):
-        ticket_stake = floor_to_granularity(
-            daily_budget_yen * float(item["stake_fraction"]),
-            stake_granularity_yen,
-        )
+    )
+    for index in ranked_indices:
+        item = prepared[index]
+        ticket_stake = planned_stakes[index]
         if ticket_stake < min_stake_yen:
             continue
         ticket_return = (
@@ -196,6 +208,75 @@ def allocate_adaptive_day(
         ),
         "selected_sample": selection_sample(selected),
     }
+
+
+def plan_stakes(
+    prepared: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+    min_daily_exposure_fraction: float,
+    max_daily_exposure_fraction: float,
+    race_cap_fraction: float,
+    ticket_cap_fraction: float,
+    allocation_mode: str,
+    stake_granularity_yen: int,
+) -> list[int]:
+    stakes = [
+        floor_to_granularity(
+            daily_budget_yen * float(item["stake_fraction"]),
+            stake_granularity_yen,
+        )
+        for item in prepared
+    ]
+    if allocation_mode != "normalized_kelly" or not prepared:
+        return stakes
+
+    daily_cap = floor_to_granularity(
+        daily_budget_yen * max_daily_exposure_fraction,
+        stake_granularity_yen,
+    )
+    target = min(
+        daily_cap,
+        floor_to_granularity(
+            daily_budget_yen * min_daily_exposure_fraction,
+            stake_granularity_yen,
+        ),
+    )
+    ticket_cap = floor_to_granularity(
+        daily_budget_yen * ticket_cap_fraction,
+        stake_granularity_yen,
+    )
+    race_cap = floor_to_granularity(
+        daily_budget_yen * race_cap_fraction,
+        stake_granularity_yen,
+    )
+    race_stakes: dict[str, int] = defaultdict(int)
+    for index, item in enumerate(prepared):
+        race_stakes[str(item["race_id"])] += stakes[index]
+
+    while sum(stakes) < target:
+        eligible = [
+            index
+            for index, item in enumerate(prepared)
+            if stakes[index] + stake_granularity_yen <= ticket_cap
+            and race_stakes[str(item["race_id"])] + stake_granularity_yen
+            <= race_cap
+            and sum(stakes) + stake_granularity_yen <= daily_cap
+        ]
+        if not eligible:
+            break
+        index = max(
+            eligible,
+            key=lambda candidate: (
+                daily_budget_yen * float(prepared[candidate]["stake_fraction"])
+                - stakes[candidate],
+                float(prepared[candidate]["estimated_ev"]),
+                float(prepared[candidate]["probability"]),
+            ),
+        )
+        stakes[index] += stake_granularity_yen
+        race_stakes[str(prepared[index]["race_id"])] += stake_granularity_yen
+    return stakes
 
 
 def apply_fraction_caps(
