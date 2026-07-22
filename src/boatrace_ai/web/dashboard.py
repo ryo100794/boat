@@ -1767,6 +1767,14 @@ def _market_calibrated_model_tracks(
             "T-10/T-5実オッズ / 5分換算モメンタム / 7/21較正・7/22開発評価",
             None,
         ),
+        (
+            "market_curvature_probe",
+            "market_curvature_probe",
+            "モデル市場乖離曲率 開発診断",
+            "listwise_market_curvature_intraday_probe.json",
+            "過去ログ/市場log比の符号付き二乗 / 7/20→21正則化選択 / 7/22開発評価",
+            None,
+        ),
     )
     rows = []
     for kind, track_id, label, model_file, teacher, bootstrap_file in specs:
@@ -1807,6 +1815,11 @@ def _market_calibrated_model_tracks(
                 "3係数log-pool Newton法 / T-10→T-5を5分換算 / "
                 "正則化1.0固定・7/22開発holdout"
             )
+        elif track_id == "market_curvature_probe":
+            training = (
+                "3係数log-pool Newton法 / 乖離符号付き二乗clip=4 / "
+                "日次前進正則化選択・7/22開発holdout"
+            )
         elif track_id in {
             "market_residual_shadow",
             "market_cutoff_residual_probe",
@@ -1826,7 +1839,10 @@ def _market_calibrated_model_tracks(
                 "label": label,
                 "role": (
                     "開発診断のみ・増分なしで棄却"
-                    if track_id == "market_momentum_probe"
+                    if track_id in {
+                        "market_momentum_probe",
+                        "market_curvature_probe",
+                    }
                     else "開発診断のみ・7/23以降で再確認"
                     if track_id == "market_cutoff_residual_probe"
                     else "比較評価・no-bet判定のみ"
