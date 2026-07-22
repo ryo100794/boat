@@ -194,7 +194,9 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert 'function loadArchivePage(offset)' in html
     assert 'function loadArchiveYear(year)' in html
     assert 'class="archive-year-nav"' in html
-    assert 'localStorage.getItem("boat.archiveDays") || "3650"' in html
+    assert 'archiveDays:3650' in html
+    assert 'localStorage.getItem("boat.archiveDays")' not in html
+    assert '.archive-year-nav { display:flex; flex-wrap:wrap;' in html
 
 
 def test_archive_stats_sql_is_portable_across_sqlite_and_postgresql(tmp_path) -> None:
