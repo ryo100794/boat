@@ -160,9 +160,20 @@ def main(argv: list[str] | None = None) -> int:
                     raw_dir=raw_dir,
                 )
                 conn.commit()
+                odds_collected = bool(ok)
                 if ok:
                     counters["odds_ok"] += 1
-                    if args.predict and model_path.exists():
+                else:
+                    counters["odds_failed"] += 1
+                if (
+                    args.predict
+                    and model_path.exists()
+                    and prediction_due(
+                        odds_collected=odds_collected,
+                        latest_prediction_at=row["latest_prediction_at"],
+                    )
+                ):
+                    try:
                         result = predict_open_races(
                             conn,
                             model_path=model_path,
@@ -173,8 +184,9 @@ def main(argv: list[str] | None = None) -> int:
                         counters["predicted"] += result["predicted"]
                         counters["prediction_failed"] += result["failed"]
                         conn.commit()
-                else:
-                    counters["odds_failed"] += 1
+                    except Exception:
+                        counters["prediction_failed"] += 1
+                        conn.rollback()
                 time.sleep(args.sleep_page)
         counters["now_jst"] = now.isoformat(timespec="seconds")
         print(json.dumps(counters, ensure_ascii=False), flush=True)
@@ -305,6 +317,7 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
                (SELECT MAX(captured_at) FROM odds_snapshots os WHERE os.race_id = r.race_id) AS latest_odds_at,
                (SELECT MAX(captured_at) FROM beforeinfo b WHERE b.race_id = r.race_id) AS latest_beforeinfo_at,
                (SELECT COUNT(DISTINCT lane) FROM beforeinfo b WHERE b.race_id = r.race_id) AS beforeinfo_lanes,
+               (SELECT MAX(generated_at) FROM predictions p WHERE p.race_id = r.race_id) AS latest_prediction_at,
                (SELECT MAX(fetched_at) FROM raw_pages rp WHERE rp.race_id = r.race_id AND rp.page_type = 'result') AS latest_result_attempt_at,
                (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL) AS result_rows,
                EXISTS(
@@ -335,6 +348,11 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
         """,
         (race_date.isoformat(),),
     ).fetchall()
+
+
+def prediction_due(*, odds_collected: bool, latest_prediction_at: Any) -> bool:
+    """Generate a history-only prediction once, then refresh it with each valid odds capture."""
+    return bool(odds_collected or not latest_prediction_at)
 
 
 def beforeinfo_interval(seconds_to_start: float, *, has_rows: bool) -> float | None:
