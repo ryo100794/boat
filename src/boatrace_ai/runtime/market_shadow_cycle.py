@@ -10,7 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..listwise.market_calibration import MARKET_EVALUATION_VERSION
+from ..db import connection
+from ..listwise.market_calibration import (
+    MARKET_EVALUATION_VERSION,
+    odds_data_signature,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -28,6 +32,7 @@ def evaluation_due(
     output_exists: bool,
     model_sha256: str | None = None,
     evaluation_version: int | None = None,
+    odds_signature: dict[str, int] | None = None,
 ) -> bool:
     if not output_exists:
         return True
@@ -36,6 +41,11 @@ def evaluation_due(
     if (
         evaluation_version is not None
         and state.get("evaluation_version") != evaluation_version
+    ):
+        return True
+    if (
+        odds_signature is not None
+        and state.get("odds_data_signature") != odds_signature
     ):
         return True
     return str(state.get("completed_through_date") or "") < through_date
@@ -98,6 +108,12 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
     output_path = Path(args.output)
     model_path = Path(args.model)
     model_hash = file_sha256(model_path)
+    with connection(args.db) as conn:
+        odds_signature = odds_data_signature(
+            conn,
+            from_date=args.from_date,
+            through_date=through_date,
+        )
     previous = read_state(state_path)
     event: dict[str, Any] = {
         "generated_at": generated_at,
@@ -107,6 +123,7 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         "model": str(model_path),
         "model_sha256": model_hash,
         "evaluation_version": MARKET_EVALUATION_VERSION,
+        "odds_data_signature": odds_signature,
     }
     if not evaluation_due(
         previous,
@@ -114,6 +131,7 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         output_exists=output_path.exists(),
         model_sha256=model_hash,
         evaluation_version=MARKET_EVALUATION_VERSION,
+        odds_signature=odds_signature,
     ):
         event.update(
             {

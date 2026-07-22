@@ -9,6 +9,7 @@ from boatrace_ai.features import (
     odds_lane_features,
 )
 from boatrace_ai.ingestion import live
+from boatrace_ai.listwise.market_calibration import odds_data_signature
 from boatrace_ai.odds_quality import (
     TRIFECTA_COMBINATION_KEYS,
     plausible_trifecta_odds,
@@ -73,12 +74,16 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
         latest = latest_trifecta_odds(conn, race_id)
         cutoff = latest_trifecta_odds_before_deadline(conn, race_id)
         lane_features = odds_lane_features(conn, race_id)
+        signature = odds_data_signature(
+            conn, from_date="2026-07-22", through_date="2026-07-22"
+        )
 
     assert set(latest.values()) == {12.0}
     assert cutoff is not None
     assert cutoff["snapshot_id"] == valid_id
     assert set(cutoff["odds"].values()) == {12.0}
     assert {row["snapshot_count"] for row in lane_features.values()} == {1.0}
+    assert signature["snapshot_count"] == 2
 
 
 def test_collector_does_not_persist_legacy_fallback(monkeypatch, tmp_path) -> None:

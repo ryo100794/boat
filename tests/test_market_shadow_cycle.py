@@ -36,6 +36,7 @@ def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
         "completed_through_date": "2026-07-21",
         "model_sha256": "a" * 64,
         "evaluation_version": 5,
+        "odds_data_signature": {"snapshot_count": 1},
     }
     assert not evaluation_due(
         state,
@@ -43,6 +44,7 @@ def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
         output_exists=True,
         model_sha256="a" * 64,
         evaluation_version=5,
+        odds_signature={"snapshot_count": 1},
     )
     assert evaluation_due(
         state,
@@ -50,6 +52,7 @@ def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
         output_exists=True,
         model_sha256="b" * 64,
         evaluation_version=5,
+        odds_signature={"snapshot_count": 1},
     )
     assert evaluation_due(
         state,
@@ -57,4 +60,13 @@ def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
         output_exists=True,
         model_sha256="a" * 64,
         evaluation_version=6,
+        odds_signature={"snapshot_count": 1},
+    )
+    assert evaluation_due(
+        state,
+        through_date="2026-07-21",
+        output_exists=True,
+        model_sha256="a" * 64,
+        evaluation_version=5,
+        odds_signature={"snapshot_count": 2},
     )

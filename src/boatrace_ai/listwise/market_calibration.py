@@ -25,6 +25,7 @@ from ..feature_tuning import (
 )
 from ..features import latest_trifecta_odds_before_deadline
 from ..modeling import trifecta_predictions
+from ..odds_quality import TRIFECTA_PARSER_VERSION
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
 from .flat_policy import (
     select_flat_policy,
@@ -876,6 +877,38 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def odds_data_signature(
+    conn,
+    *,
+    from_date: str,
+    through_date: str | None,
+) -> dict[str, int]:
+    filters = ["r.race_date >= ?", "os.parser_version = ?"]
+    params: list[Any] = [from_date, TRIFECTA_PARSER_VERSION]
+    if through_date is not None:
+        filters.append("r.race_date <= ?")
+        params.append(through_date)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS snapshot_count,
+               COALESCE(SUM(snapshot_id), 0) AS snapshot_id_sum,
+               COALESCE(MAX(snapshot_id), 0) AS max_snapshot_id
+        FROM (
+          SELECT DISTINCT os.snapshot_id
+          FROM odds_snapshots os
+          JOIN races r ON r.race_id = os.race_id
+          WHERE {" AND ".join(filters)}
+        ) valid_snapshots
+        """,
+        params,
+    ).fetchone()
+    return {
+        "snapshot_count": int(row["snapshot_count"] or 0),
+        "snapshot_id_sum": int(row["snapshot_id_sum"] or 0),
+        "max_snapshot_id": int(row["max_snapshot_id"] or 0),
+    }
+
+
 def scored_cache_contract(
     *,
     model_path: Path,
@@ -883,6 +916,7 @@ def scored_cache_contract(
     from_date: str,
     through_date: str | None,
     max_snapshot_age_seconds: float,
+    odds_signature: dict[str, int],
 ) -> dict[str, Any]:
     return {
         "version": MARKET_EVALUATION_VERSION,
@@ -893,6 +927,7 @@ def scored_cache_contract(
         "from_date": from_date,
         "through_date": through_date,
         "max_snapshot_age_seconds": max_snapshot_age_seconds,
+        "odds_data_signature": dict(odds_signature),
     }
 
 
@@ -966,12 +1001,19 @@ def main(argv: list[str] | None = None) -> int:
         else output_path.with_suffix(".races.joblib")
     )
     artifact = joblib.load(model_path)
+    with connection(args.db) as conn:
+        odds_signature = odds_data_signature(
+            conn,
+            from_date=args.from_date,
+            through_date=args.through_date,
+        )
     contract = scored_cache_contract(
         model_path=model_path,
         artifact=artifact,
         from_date=args.from_date,
         through_date=args.through_date,
         max_snapshot_age_seconds=args.max_snapshot_age_seconds,
+        odds_signature=odds_signature,
     )
     cached = load_scored_cache(cache_path, contract=contract)
     if cached is None:
