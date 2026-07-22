@@ -59,3 +59,9 @@ blocks rather than one venue or one month.
 - Market-entropy-conditioned residual: 260-race daily walk-forward LogLoss 3.83974 versus 3.83357, with Top-5 equal to the market at 33.08%. The entropy interaction did not add stable signal and was rejected.
 - T-10 to T-5 outcome momentum and signed disagreement curvature were also rejected on their untouched comparison folds. T-10 to T-5 movement is retained only for closing-price forecasting, where it reduced 2026-07-22 log-odds MAE from 0.17318 to 0.16537 on the same 126 races.
 - Rejected probe implementations are not kept on the production import path. Their exact code and tests remain recoverable from Git history.
+
+## 2026-07-23 preregistered market candidate
+
+- Position-specific stagewise probabilities plus the retained two-coefficient Newton market residual scored LogLoss 3.84268 on the 133-race 2026-07-22 fold, versus 3.84354 for listwise plus Newton residual and 3.85637 for stagewise plus grid calibration.
+- The 0.00086 difference from the retained residual model is development evidence only. The existing stagewise shadow track is fixed to Newton residual before 2026-07-23 outcomes and that day is the next untouched architecture comparison.
+- No wagering or production promotion is allowed from this one-day result; the 30-day, 1,000-race, paired market-confidence, positive-profit, ROI, and fold-stability gates remain unchanged.

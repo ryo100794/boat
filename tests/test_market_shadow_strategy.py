@@ -1,4 +1,5 @@
 from argparse import Namespace
+from pathlib import Path
 
 from boatrace_ai.listwise.market_calibration import (
     blend_probabilities,
@@ -66,3 +67,14 @@ def test_waiting_result_and_cycle_preserve_calibrator_strategy() -> None:
 
     assert result["calibrator_strategy"] == "newton_residual"
     assert command[command.index("--calibrator-strategy") + 1] == "newton_residual"
+
+
+def test_stagewise_shadow_uses_newton_residual_calibration() -> None:
+    script = (
+        Path(__file__).parents[1]
+        / "scripts"
+        / "deployment"
+        / "run-boatrace-market-blend-shadow.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "--calibrator-strategy newton_residual" in script

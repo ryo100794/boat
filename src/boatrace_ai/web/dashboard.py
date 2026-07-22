@@ -1920,7 +1920,7 @@ def _market_calibrated_model_tracks(
         (
             "market_calibrated_blend_shadow",
             "market_calibrated_blend_shadow",
-            "事前固定blend T-5 shadow",
+            "事前固定blend+Newton残差 T-5 shadow",
             "stagewise_blend_market_shadow.json",
             "365日で固定した50:50 blend / T-5市場暗黙確率 / 7/18以降walk-forward",
             "stagewise_blend_market_intraday_bootstrap.json",
@@ -2003,6 +2003,7 @@ def _market_calibrated_model_tracks(
                 "日次前進正則化選択・7/22開発holdout"
             )
         elif track_id in {
+            "market_calibrated_blend_shadow",
             "market_residual_shadow",
             "market_cutoff_residual_probe",
         }:
