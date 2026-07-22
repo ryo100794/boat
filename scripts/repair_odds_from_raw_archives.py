@@ -139,7 +139,7 @@ def _race_cutoff(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=JST)
-    return parsed.astimezone(timezone.utc) - timedelta(minutes=10)
+    return parsed.astimezone(timezone.utc) - timedelta(minutes=5)
 
 
 def _snapshot_inventory(conn, race_date: str) -> dict[str, list[tuple[int, datetime]]]:
