@@ -157,6 +157,7 @@ def send_html(handler: BaseHTTPRequestHandler, body: str, status: int = 200) -> 
     payload = body.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     try:

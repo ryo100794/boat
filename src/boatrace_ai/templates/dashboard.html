@@ -970,7 +970,7 @@ function archivePager(p){
   if(!p) return "";
   const limit = Number(p.limit || 80), offset = Number(p.offset || 0), returned = Number(p.returned || 0);
   const first = returned ? offset + 1 : 0, last = offset + returned;
-  return "<div class=\"archive-pager\"><span>" + first + "-" + last + "件</span><button type=\"button\" title=\"新しい履歴へ\" " + (p.has_previous ? "" : "disabled") + " onclick=\"loadArchivePage(" + Math.max(0, offset-limit) + ")\">&#x2039;</button><button type=\"button\" title=\"古い履歴へ\" " + (p.has_more ? "" : "disabled") + " onclick=\"loadArchivePage(" + (offset+limit) + ")\">&#x203a;</button></div>";
+  return "<div class=\"archive-pager\"><span>" + first + "-" + last + "件</span><button type=\"button\" title=\"新しい履歴へ\" " + (p.has_previous ? "" : "disabled") + " onclick=\"loadArchivePage(" + Math.max(0, offset-limit) + ")\">新しい</button><button type=\"button\" title=\"古い履歴へ\" " + (p.has_more ? "" : "disabled") + " onclick=\"loadArchivePage(" + (offset+limit) + ")\">古い</button></div>";
 }
 function loadArchivePage(offset){
   loadArchiveView("history", { ...state.archiveParams, offset });
