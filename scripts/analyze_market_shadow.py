@@ -8,6 +8,7 @@ from pathlib import Path
 import joblib
 
 from boatrace_ai.listwise.market_diagnostics import calibrator_stability_rows
+from boatrace_ai.listwise.market_residual import select_regularization_prequential
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,7 @@ def main() -> int:
                 row["pooled_log_loss"],
             ),
         ),
+        "newton_prequential": select_regularization_prequential(races),
         "candidates": rows,
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
