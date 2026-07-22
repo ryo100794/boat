@@ -163,12 +163,16 @@ def predict_conditional_odds(
     race_keys: Sequence[tuple[str, str, str, int]],
     *,
     lognormal_mean_correction: bool = True,
+    mean_correction_factor: float | None = None,
 ) -> np.ndarray:
     matrix = payout_features(probabilities, combinations, race_keys)
-    correction = (
-        0.5 * float(model.residual_variance)
-        if lognormal_mean_correction
-        else 0.0
+    factor = (
+        (1.0 if lognormal_mean_correction else 0.0)
+        if mean_correction_factor is None
+        else float(mean_correction_factor)
     )
+    if not np.isfinite(factor) or factor < 0.0 or factor > 1.0:
+        raise ValueError("mean correction factor must be between zero and one")
+    correction = 0.5 * float(model.residual_variance) * factor
     log_odds = matrix @ np.asarray(model.weights, dtype=np.float64) + correction
     return np.clip(np.exp(log_odds), MIN_ODDS, MAX_ODDS)

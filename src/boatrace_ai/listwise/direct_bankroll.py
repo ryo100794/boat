@@ -18,6 +18,7 @@ from ..roi_attribution import (
     summarize_fold_signal_stability,
     summarize_roi_attribution,
 )
+from .return_policy import calibration_policy_split
 from .payout_estimator import (
     ConditionalPayoutStatistics,
     fit_conditional_payout_statistics,
@@ -238,6 +239,212 @@ def _winner_samples(
     return winner_probabilities, winner_combinations, winner_keys, winner_payouts
 
 
+def _settle_policy_diagnostic(
+    candidates_by_day: dict[str, list[dict[str, Any]]],
+    evaluated_by_day: dict[str, set[str]],
+    race_dates: list[str],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    totals = zero_totals()
+    daily = []
+    state = (0, 0, 0)
+    for race_date in race_dates:
+        result = allocate_adaptive_day(
+            race_date,
+            candidates_by_day.get(race_date, []),
+            evaluated_by_day.get(race_date, set()),
+            daily_budget_yen=int(policy["daily_budget_yen"]),
+            fractional_kelly=float(policy["fractional_kelly"]),
+            max_daily_exposure_fraction=float(
+                policy["max_daily_exposure_fraction"]
+            ),
+            min_daily_exposure_fraction=float(
+                policy["min_daily_exposure_fraction"]
+            ),
+            race_cap_fraction=float(policy["race_cap_fraction"]),
+            ticket_cap_fraction=float(policy["ticket_cap_fraction"]),
+            max_daily_tickets=int(policy["max_daily_tickets"]),
+            allocation_mode=str(policy["allocation_mode"]),
+            stake_granularity_yen=int(policy["stake_granularity_yen"]),
+            min_stake_yen=int(policy["min_stake_yen"]),
+        )
+        state = append_day_result(
+            daily,
+            totals,
+            result,
+            cumulative_profit=state[0],
+            peak_profit=state[1],
+            max_drawdown=state[2],
+        )
+    stake_yen = int(totals["stake_yen"])
+    return_yen = int(totals["return_yen"])
+    return {
+        "tickets": int(totals["tickets"]),
+        "selected_races": int(totals["races_bet"]),
+        "hits": int(totals["hit_tickets"]),
+        "stake_yen": stake_yen,
+        "return_yen": return_yen,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "winning_days": int(totals["winning_days"]),
+        "losing_days": int(totals["losing_days"]),
+        "max_drawdown_yen": int(state[2]),
+    }
+
+
+def _select_conditional_payout_policy(
+    calibration_probabilities: np.ndarray,
+    calibration_market_probabilities: np.ndarray,
+    calibration_race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    *,
+    selection_days: int,
+    base_policy: dict[str, Any],
+    fallback_ridge: float,
+    ridge_candidates: tuple[float, ...],
+    correction_candidates: tuple[float, ...],
+    threshold_candidates: tuple[float, ...],
+    minimum_tickets: int,
+    minimum_hits: int,
+    minimum_winning_days: int,
+    minimum_roi: float,
+) -> tuple[float, float, float, str, list[dict[str, Any]], dict[str, Any] | None]:
+    split = calibration_policy_split(
+        calibration_race_keys, selection_days=selection_days
+    )
+    fallback_threshold = float(base_policy["ev_threshold"])
+    if split is None:
+        return fallback_ridge, 0.0, fallback_threshold, "fallback_fixed_policy", [], None
+    statistics = ConditionalPayoutStatistics.empty()
+    statistics.update(
+        *_winner_samples(
+            calibration_market_probabilities[:split],
+            calibration_race_keys[:split],
+            payouts,
+        )
+    )
+    selection_probabilities = calibration_probabilities[split:]
+    selection_market = calibration_market_probabilities[split:]
+    selection_keys = calibration_race_keys[split:]
+    race_dates = sorted({str(row[1]) for row in selection_keys})
+    flat_combinations = list(COMBINATION_LABELS) * len(selection_keys)
+    flat_keys = [key for key in selection_keys for _ in COMBINATION_LABELS]
+    threshold_values = tuple(
+        sorted({fallback_threshold, *(float(value) for value in threshold_candidates)})
+    )
+    candidate_floor = min(threshold_values)
+    diagnostics = []
+    for ridge_value in sorted(
+        {float(fallback_ridge), *(float(value) for value in ridge_candidates)}
+    ):
+        model = fit_conditional_payout_statistics(statistics, ridge=ridge_value)
+        for correction_factor in sorted(
+            {0.0, *(float(value) for value in correction_candidates)}
+        ):
+            estimated_odds = predict_conditional_odds(
+                model,
+                selection_market.reshape(-1),
+                flat_combinations,
+                flat_keys,
+                mean_correction_factor=correction_factor,
+            ).reshape(len(selection_keys), len(COMBINATION_LABELS))
+            candidates_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            evaluated_by_day: dict[str, set[str]] = defaultdict(set)
+            for row_index, race_key in enumerate(selection_keys):
+                race_id, race_date, _jcd, _rno = race_key
+                actual = payouts.get(str(race_id))
+                if actual is None:
+                    continue
+                evaluated_by_day[race_date].add(str(race_id))
+                payout_model = {
+                    combination: {
+                        "estimated_odds": float(estimated_odds[row_index, index]),
+                        "estimated_payout_yen": float(
+                            estimated_odds[row_index, index] * 100.0
+                        ),
+                        "history_count": float(model.training_samples),
+                        "odds_source": "conditional_payout_pre_evaluation",
+                    }
+                    for index, combination in enumerate(COMBINATION_LABELS)
+                }
+                candidates_by_day[race_date].extend(
+                    direct_candidates(
+                        selection_probabilities[row_index],
+                        race_key=race_key,
+                        actual=actual,
+                        payout_model=payout_model,
+                        ev_threshold=candidate_floor,
+                    )
+                )
+            for threshold in threshold_values:
+                policy = dict(base_policy)
+                policy["ev_threshold"] = threshold
+                filtered = {
+                    race_date: [
+                        row
+                        for row in rows
+                        if float(row["estimated_ev"]) >= threshold
+                    ]
+                    for race_date, rows in candidates_by_day.items()
+                }
+                settled = _settle_policy_diagnostic(
+                    filtered, evaluated_by_day, race_dates, policy
+                )
+                diagnostics.append(
+                    {
+                        "ridge": ridge_value,
+                        "mean_correction_factor": correction_factor,
+                        "ev_threshold": threshold,
+                        **settled,
+                    }
+                )
+    eligible = [
+        row
+        for row in diagnostics
+        if int(row["tickets"]) >= minimum_tickets
+        and int(row["hits"]) >= minimum_hits
+        and int(row["winning_days"]) >= minimum_winning_days
+        and float(row["roi"]) >= minimum_roi
+        and int(row["profit_yen"]) > 0
+    ]
+    if eligible:
+        selected = max(
+            eligible,
+            key=lambda row: (
+                int(row["tickets"]),
+                int(row["winning_days"]),
+                int(row["hits"]),
+                -float(row["ev_threshold"]),
+                -float(row["mean_correction_factor"]),
+                float(row["ridge"]),
+            ),
+        )
+        source = "pre_evaluation_adaptive_selection"
+    else:
+        selected = {
+            "ridge": float(fallback_ridge),
+            "mean_correction_factor": 0.0,
+            "ev_threshold": fallback_threshold,
+        }
+        source = "fallback_fixed_policy"
+    period = {
+        "fit_from": str(calibration_race_keys[0][1]),
+        "fit_through": str(calibration_race_keys[split - 1][1]),
+        "selection_from": str(calibration_race_keys[split][1]),
+        "selection_through": str(calibration_race_keys[-1][1]),
+        "fit_races": split,
+        "selection_races": len(calibration_race_keys) - split,
+    }
+    return (
+        float(selected["ridge"]),
+        float(selected["mean_correction_factor"]),
+        float(selected["ev_threshold"]),
+        source,
+        diagnostics,
+        period,
+    )
+
+
 def simulate_conditional_payout_walk_forward(
     probabilities: np.ndarray,
     *,
@@ -249,6 +456,14 @@ def simulate_conditional_payout_walk_forward(
     calibration_market_reference_probabilities: np.ndarray | None = None,
     policy: dict[str, Any] | None = None,
     ridge: float = 10.0,
+    ridge_candidates: tuple[float, ...] = (1.0, 10.0, 100.0),
+    mean_correction_candidates: tuple[float, ...] = (0.0, 0.5, 1.0),
+    threshold_candidates: tuple[float, ...] = (1.05, 1.10, 1.20),
+    policy_selection_days: int = 30,
+    minimum_selection_tickets: int = 100,
+    minimum_selection_hits: int = 10,
+    minimum_selection_winning_days: int = 8,
+    minimum_selection_roi: float = 1.05,
 ) -> dict[str, Any]:
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
@@ -272,6 +487,30 @@ def simulate_conditional_payout_walk_forward(
         raise ValueError("calibration market probabilities and race keys must align")
     independent_market_reference = market_reference_probabilities is not None
     selected_policy = dict(policy or standard_direct_policy())
+    (
+        selected_ridge,
+        selected_mean_correction,
+        selected_threshold,
+        selection_source,
+        selection_diagnostics,
+        selection_period,
+    ) = _select_conditional_payout_policy(
+        calibration_values,
+        calibration_market_values,
+        calibration_race_keys,
+        payouts,
+        selection_days=policy_selection_days,
+        base_policy=selected_policy,
+        fallback_ridge=ridge,
+        ridge_candidates=ridge_candidates,
+        correction_candidates=mean_correction_candidates,
+        threshold_candidates=threshold_candidates,
+        minimum_tickets=minimum_selection_tickets,
+        minimum_hits=minimum_selection_hits,
+        minimum_winning_days=minimum_selection_winning_days,
+        minimum_roi=minimum_selection_roi,
+    )
+    selected_policy["ev_threshold"] = selected_threshold
     selected_policy.update(
         {
             "payout_estimator": (
@@ -286,9 +525,15 @@ def simulate_conditional_payout_walk_forward(
                 if independent_market_reference
                 else "candidate probability"
             ),
-            "payout_point_estimate": "conditional median; no Jensen uplift",
-            "conditional_payout_ridge": float(ridge),
-            "selection": "fixed diagnostic policy; no evaluation-period tuning",
+            "payout_point_estimate": (
+                "conditional lognormal interpolation selected before evaluation"
+            ),
+            "conditional_payout_ridge": float(selected_ridge),
+            "mean_correction_factor": float(selected_mean_correction),
+            "selection": (
+                "pre-evaluation adaptive two-stage payout policy selection; "
+                "no evaluation-period tuning"
+            ),
         }
     )
     statistics = ConditionalPayoutStatistics.empty()
@@ -318,7 +563,7 @@ def simulate_conditional_payout_walk_forward(
     max_estimated_ev = 0.0
     residual_variances = []
     for day_index, race_date in enumerate(dates):
-        model = fit_conditional_payout_statistics(statistics, ridge=ridge)
+        model = fit_conditional_payout_statistics(statistics, ridge=selected_ridge)
         residual_variances.append(float(model.residual_variance))
         row_indices = row_indices_by_date[race_date]
         day_keys = [race_keys[index] for index in row_indices]
@@ -331,7 +576,7 @@ def simulate_conditional_payout_walk_forward(
             day_market_probabilities.reshape(-1),
             flat_combinations,
             flat_keys,
-            lognormal_mean_correction=False,
+            mean_correction_factor=selected_mean_correction,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
         estimated_ev = day_probabilities * estimated_odds
         max_estimated_ev = max(max_estimated_ev, float(estimated_ev.max()))
@@ -432,6 +677,19 @@ def simulate_conditional_payout_walk_forward(
         "max_drawdown_yen": int(state[2]),
         "payout_training_samples_initial": int(initial_samples),
         "payout_training_samples_final": int(statistics.samples),
+        "policy_selection": {
+            "source": selection_source,
+            "selection_days": int(policy_selection_days),
+            "minimum_tickets": int(minimum_selection_tickets),
+            "minimum_hits": int(minimum_selection_hits),
+            "minimum_winning_days": int(minimum_selection_winning_days),
+            "minimum_roi": float(minimum_selection_roi),
+            "selected_ridge": float(selected_ridge),
+            "selected_mean_correction_factor": float(selected_mean_correction),
+            "selected_ev_threshold": float(selected_threshold),
+            "period": selection_period,
+            "diagnostics": selection_diagnostics,
+        },
         "payout_diagnostics": {
             "candidate_combinations": int(len(race_keys) * len(COMBINATION_LABELS)),
             "max_estimated_ev": max_estimated_ev,

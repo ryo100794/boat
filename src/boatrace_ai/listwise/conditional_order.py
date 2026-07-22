@@ -582,6 +582,17 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         calibration_market_reference_probabilities=(
             calibration_baseline_probabilities
         ),
+        ridge=args.payout_ridge,
+        ridge_candidates=tuple(args.payout_ridges),
+        mean_correction_candidates=tuple(args.payout_mean_corrections),
+        threshold_candidates=tuple(args.payout_threshold_candidates),
+        policy_selection_days=args.payout_policy_selection_days,
+        minimum_selection_tickets=args.payout_minimum_selection_tickets,
+        minimum_selection_hits=args.payout_minimum_selection_hits,
+        minimum_selection_winning_days=(
+            args.payout_minimum_selection_winning_days
+        ),
+        minimum_selection_roi=args.payout_minimum_selection_roi,
     )
     expected_return_bankroll = simulate_expected_return_calibrated_bankroll(
         candidate_probabilities,
@@ -763,6 +774,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--regularizations", type=float, nargs="+", default=DEFAULT_REGULARIZATIONS)
     parser.add_argument("--max-iterations", type=int, default=100)
     parser.add_argument("--batch-races", type=int, default=4_000)
+    parser.add_argument("--payout-ridge", type=float, default=10.0)
+    parser.add_argument(
+        "--payout-ridges", type=float, nargs="+", default=[1.0, 10.0, 100.0]
+    )
+    parser.add_argument(
+        "--payout-mean-corrections",
+        type=float,
+        nargs="+",
+        default=[0.0, 0.5, 1.0],
+    )
+    parser.add_argument(
+        "--payout-threshold-candidates",
+        type=float,
+        nargs="+",
+        default=[1.05, 1.10, 1.20],
+    )
+    parser.add_argument("--payout-policy-selection-days", type=int, default=30)
+    parser.add_argument("--payout-minimum-selection-tickets", type=int, default=100)
+    parser.add_argument("--payout-minimum-selection-hits", type=int, default=10)
+    parser.add_argument(
+        "--payout-minimum-selection-winning-days", type=int, default=8
+    )
+    parser.add_argument("--payout-minimum-selection-roi", type=float, default=1.05)
     parser.add_argument("--return-regularization", type=float, default=0.01)
     parser.add_argument(
         "--return-regularizations",

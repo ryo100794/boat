@@ -35,7 +35,16 @@ def test_prediction_uses_lognormal_mean_correction() -> None:
         lognormal_mean_correction=False,
     )
 
+    halfway = predict_conditional_odds(
+        model,
+        [0.1],
+        ["1-2-3"],
+        [("r1", "2026-07-01", "01", 1)],
+        mean_correction_factor=0.5,
+    )
+
     np.testing.assert_allclose(predicted, [np.e])
+    np.testing.assert_allclose(halfway, [np.sqrt(np.e)])
     np.testing.assert_allclose(median, [1.1])
 
 

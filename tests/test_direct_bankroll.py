@@ -4,6 +4,7 @@ import numpy as np
 
 from boatrace_ai.listwise.direct_bankroll import (
     COMBINATION_LABELS,
+    _select_conditional_payout_policy,
     bootstrap_daily_bankroll,
     direct_candidates,
     simulate_conditional_payout_walk_forward,
@@ -157,6 +158,49 @@ def test_direct_bankroll_uses_fixed_daily_policy_and_settles_returns() -> None:
 
 
 
+def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
+    target_index = COMBINATION_LABELS.index("1-2-3")
+    calibration_keys = [
+        (f"cal-{day}-{race}", f"2026-06-{day:02d}", "01", race % 12 + 1)
+        for day in range(1, 5)
+        for race in range(30)
+    ]
+    probabilities = np.full((120, 120), 0.9 / 119.0)
+    probabilities[:, target_index] = 0.1
+    payouts = {
+        race_key[0]: {"combination": "1-2-3", "payout_yen": 2_000}
+        for race_key in calibration_keys
+    }
+
+    ridge, correction, threshold, source, diagnostics, period = (
+        _select_conditional_payout_policy(
+            probabilities,
+            probabilities,
+            calibration_keys,
+            payouts,
+            selection_days=2,
+            base_policy=standard_direct_policy(),
+            fallback_ridge=10.0,
+            ridge_candidates=(10.0,),
+            correction_candidates=(0.0,),
+            threshold_candidates=(1.20,),
+            minimum_tickets=10,
+            minimum_hits=5,
+            minimum_winning_days=1,
+            minimum_roi=1.05,
+        )
+    )
+
+    assert ridge == 10.0
+    assert correction == 0.0
+    assert threshold == 1.20
+    assert source == "pre_evaluation_adaptive_selection"
+    assert diagnostics[0]["tickets"] >= 10
+    assert diagnostics[0]["roi"] > 1.0
+    assert period["fit_through"] == "2026-06-02"
+    assert period["selection_from"] == "2026-06-03"
+
+
 def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> None:
     target_index = COMBINATION_LABELS.index("1-2-3")
     calibration_keys = [
@@ -212,6 +256,7 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
     assert result["evaluated_races"] == 2
     assert result["policy"]["market_reference"] == "fixed baseline probability"
+    assert result["policy_selection"]["source"] == "fallback_fixed_policy"
     diagnostics = result["payout_diagnostics"]
     assert diagnostics["candidate_combinations"] == 240
     assert np.isfinite(diagnostics["max_estimated_ev"])
