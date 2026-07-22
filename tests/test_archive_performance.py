@@ -70,6 +70,10 @@ def test_archive_history_defaults_to_ten_years_and_pages_into_older_years(tmp_pa
         db_path,
         {"kind": ["racer"], "racer_no": ["4072"], "offset": ["80"]},
     )
+    selected_2025 = dashboard.archive_history(
+        db_path,
+        {"kind": ["racer"], "racer_no": ["4072"], "year": ["2025"]},
+    )
 
     assert first["period_days"] == 3650
     assert first["summary"]["starts"] == 83
@@ -87,6 +91,38 @@ def test_archive_history_defaults_to_ten_years_and_pages_into_older_years(tmp_pa
         "2025-07-20",
         "2018-07-20",
     }
+    assert selected_2025["selected_year"] == 2025
+    assert selected_2025["cutoff_date"] == "2025-01-01"
+    assert selected_2025["end_date"] == "2025-12-31"
+    assert selected_2025["summary"]["starts"] == 1
+    assert [row["race_date"] for row in selected_2025["rows"]] == ["2025-07-20"]
+    assert selected_2025["available_years"] == list(range(2026, 2015, -1))
+
+
+def test_archive_year_filter_applies_to_every_history_kind(tmp_path) -> None:
+    db_path = tmp_path / "archive-year-kinds.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        _seed(conn, "2026-02-01-23-01", "2026-02-01", "23", 1)
+        _seed(conn, "2025-02-01-23-01", "2025-02-01", "23", 1)
+        for race_id in ("2026-02-01-23-01", "2025-02-01-23-01"):
+            conn.execute(
+                "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+                "VALUES (?, '3連単', '1-2-3', 1200)",
+                (race_id,),
+            )
+
+    queries = [
+        {"kind": ["venue"], "jcd": ["23"]},
+        {"kind": ["motor"], "motor_no": ["15"], "jcd": ["23"]},
+        {"kind": ["boat"], "boat_no": ["18"], "jcd": ["23"]},
+        {"kind": ["lane"], "lane": ["1"], "jcd": ["23"]},
+        {"kind": ["combo"], "combination": ["1-2-3"]},
+    ]
+    for query in queries:
+        payload = dashboard.archive_history(db_path, {**query, "year": ["2025"]})
+        assert payload["rows"]
+        assert {row["race_date"] for row in payload["rows"]} == {"2025-02-01"}
 
 
 def test_archive_response_cache_reuses_identical_query(monkeypatch, tmp_path) -> None:
@@ -124,6 +160,8 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert 'ctx.fillText("オッズ",0,0)' in html
     assert 'ctx.fillText("取得時刻 (JST)"' in html
     assert 'id="archivePeriod"' in html
+    assert 'id="archiveYear"' in html
+    assert 'year:state.archiveYear' in html
     assert 'function loadArchivePage(offset)' in html
     assert 'localStorage.getItem("boat.archiveDays") || "3650"' in html
 

@@ -3191,21 +3191,26 @@ def archive_history(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any
     offset = _bounded_int(_archive_one(query, "offset", "0"), 0, 0, 1_000_000)
     with connect(db_path) as conn:
         cutoff_date, latest_date = _recent_cutoff(conn, days)
+        available_years = _history_years(cutoff_date, latest_date)
+        selected_year = _history_year(_archive_one(query, "year"), available_years)
+        start_date, end_date = _history_date_window(
+            cutoff_date, latest_date, selected_year
+        )
         if kind == "race":
             race_id = _archive_required(query, "race_id")
             return {"kind": kind, "generated_at": _archive_now(), **_race_archive(conn, race_id)}
         if kind == "racer":
-            payload = _history_racer(conn, _archive_required(query, "racer_no"), cutoff_date, limit + 1, offset)
+            payload = _history_racer(conn, _archive_required(query, "racer_no"), start_date, limit + 1, offset, end_date)
         elif kind == "venue":
-            payload = _history_venue(conn, _archive_required(query, "jcd"), cutoff_date, limit + 1, offset)
+            payload = _history_venue(conn, _archive_required(query, "jcd"), start_date, limit + 1, offset, end_date)
         elif kind == "motor":
-            payload = _history_equipment(conn, "motor", _archive_required(query, "motor_no"), _archive_one(query, "jcd"), cutoff_date, limit + 1, offset)
+            payload = _history_equipment(conn, "motor", _archive_required(query, "motor_no"), _archive_one(query, "jcd"), start_date, limit + 1, offset, end_date)
         elif kind == "boat":
-            payload = _history_equipment(conn, "boat", _archive_required(query, "boat_no"), _archive_one(query, "jcd"), cutoff_date, limit + 1, offset)
+            payload = _history_equipment(conn, "boat", _archive_required(query, "boat_no"), _archive_one(query, "jcd"), start_date, limit + 1, offset, end_date)
         elif kind == "lane":
-            payload = _history_lane_fast(db_path, conn, _archive_required(query, "lane"), _archive_one(query, "jcd"), _archive_one(query, "rno"), cutoff_date, limit + 1, offset)
+            payload = _history_lane_fast(db_path, conn, _archive_required(query, "lane"), _archive_one(query, "jcd"), _archive_one(query, "rno"), start_date, limit + 1, offset, end_date)
         elif kind == "combo":
-            payload = _history_combo(conn, _archive_required(query, "combination"), cutoff_date, limit + 1, offset)
+            payload = _history_combo(conn, _archive_required(query, "combination"), start_date, limit + 1, offset, end_date)
         else:
             raise ValueError(f"unsupported history kind: {kind}")
     rows = payload.get("rows", [])
@@ -3219,10 +3224,14 @@ def archive_history(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any
         "has_more": has_more,
     }
     payload["period_days"] = days
-    payload["cutoff_date"] = cutoff_date
+    payload["cutoff_date"] = start_date
+    payload["end_date"] = end_date
     payload["latest_date"] = latest_date
+    payload["available_years"] = available_years
+    payload["selected_year"] = selected_year
     payload.setdefault("summary", {})["period_days"] = days
-    payload.setdefault("summary", {})["cutoff_date"] = cutoff_date
+    payload.setdefault("summary", {})["cutoff_date"] = start_date
+    payload.setdefault("summary", {})["end_date"] = end_date
     return payload
 
 
@@ -3309,7 +3318,7 @@ def _race_archive(conn: sqlite3.Connection, race_id: str) -> dict[str, Any]:
     return {"race": race, "entries": entries, "predictions": predictions, "payouts": payouts}
 
 
-def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0) -> dict[str, Any]:
+def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0, end_date: str | None = None) -> dict[str, Any]:
     summary = _add_rates(
         _archive_row(
             conn,
@@ -3331,9 +3340,9 @@ def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str, li
             FROM entries e
             JOIN races r ON r.race_id = e.race_id
             LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
-            WHERE e.racer_no = ? AND r.race_date >= ?
+            WHERE e.racer_no = ? AND r.race_date >= ? AND (CAST(? AS TEXT) IS NULL OR r.race_date <= ?)
             """,
-            (racer_no, cutoff_date),
+            (racer_no, cutoff_date, end_date, end_date),
         )
     )
     summary.setdefault("racer_no", racer_no)
@@ -3349,16 +3358,16 @@ def _history_racer(conn: sqlite3.Connection, racer_no: str, cutoff_date: str, li
         JOIN races r ON r.race_id = e.race_id
         LEFT JOIN race_results rr ON rr.race_id = e.race_id AND rr.lane = e.lane
         LEFT JOIN payouts p ON p.race_id = e.race_id AND p.bet_type = '3連単'
-        WHERE e.racer_no = ? AND r.race_date >= ?
+        WHERE e.racer_no = ? AND r.race_date >= ? AND (CAST(? AS TEXT) IS NULL OR r.race_date <= ?)
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC
         LIMIT ? OFFSET ?
         """,
-        (racer_no, cutoff_date, limit, offset),
+        (racer_no, cutoff_date, end_date, end_date, limit, offset),
     )
     return {"kind": "racer", "generated_at": _archive_now(), "summary": summary, "rows": rows}
 
 
-def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0) -> dict[str, Any]:
+def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0, end_date: str | None = None) -> dict[str, Any]:
     jcd = jcd.zfill(2)
     summary = _archive_row(
         conn,
@@ -3366,7 +3375,7 @@ def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: 
         WITH recent AS MATERIALIZED (
           SELECT race_id, race_date, jcd, venue_name, rno, title, race_type, distance_m
           FROM races
-          WHERE race_date >= ? AND jcd = ?
+          WHERE race_date >= ? AND (CAST(? AS TEXT) IS NULL OR race_date <= ?) AND jcd = ?
         )
         SELECT
           MAX(jcd) AS jcd,
@@ -3376,7 +3385,7 @@ def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: 
           AVG(distance_m) AS avg_distance_m
         FROM recent
         """,
-        (cutoff_date, jcd),
+        (cutoff_date, end_date, end_date, jcd),
     )
     summary = dict(summary or {})
     summary["jcd"] = summary.get("jcd") or jcd
@@ -3385,7 +3394,7 @@ def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: 
         conn,
         """
         WITH recent AS MATERIALIZED (
-          SELECT race_id FROM races WHERE race_date >= ? AND jcd = ?
+          SELECT race_id FROM races WHERE race_date >= ? AND (CAST(? AS TEXT) IS NULL OR race_date <= ?) AND jcd = ?
         )
         SELECT
           rr.lane,
@@ -3398,18 +3407,18 @@ def _history_venue(conn: sqlite3.Connection, jcd: str, cutoff_date: str, limit: 
         GROUP BY rr.lane
         ORDER BY rr.lane
         """,
-        (cutoff_date, jcd),
+        (cutoff_date, end_date, end_date, jcd),
     )
-    rows = _recent_races(conn, "r.race_date >= ? AND r.jcd = ?", (cutoff_date, jcd), limit, offset)
+    rows = _recent_races(conn, "r.race_date >= ? AND (CAST(? AS TEXT) IS NULL OR r.race_date <= ?) AND r.jcd = ?", (cutoff_date, end_date, end_date, jcd), limit, offset)
     return {"kind": "venue", "generated_at": _archive_now(), "summary": summary, "facets": facets, "rows": rows}
 
 
-def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: str | None, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0) -> dict[str, Any]:
+def _history_equipment(conn: sqlite3.Connection, kind: str, number: str, jcd: str | None, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0, end_date: str | None = None) -> dict[str, Any]:
     column = "motor_no" if kind == "motor" else "boat_no"
     rate2 = "motor_2_rate" if kind == "motor" else "boat_2_rate"
     rate3 = "motor_3_rate" if kind == "motor" else "boat_3_rate"
-    params: list[Any] = [number, cutoff_date]
-    filters = [f"e.{column} = ?", "r.race_date >= ?"]
+    params: list[Any] = [number, cutoff_date, end_date, end_date]
+    filters = [f"e.{column} = ?", "r.race_date >= ?", "(CAST(? AS TEXT) IS NULL OR r.race_date <= ?)"]
     if jcd:
         filters.append("r.jcd = ?")
         params.append(jcd.zfill(2))
@@ -3467,19 +3476,20 @@ def _history_lane_fast(
     cutoff_date: str,
     limit: int = _HISTORY_PAGE_SIZE,
     offset: int = 0,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
     days = _days_from_cutoff(conn, cutoff_date)
-    summary = _lane_summary(db_path, lane, days)
-    rows = _lane_rows_fast(conn, lane, cutoff_date, jcd, rno, limit, offset)
+    summary = _lane_summary(db_path, lane, days) if end_date is None else _lane_summary_window(conn, lane, cutoff_date, end_date, jcd, rno)
+    rows = _lane_rows_fast(conn, lane, cutoff_date, jcd, rno, limit, offset, end_date)
     return {"kind": "lane", "generated_at": _archive_now(), "summary": summary, "rows": rows}
 
 
-def _history_combo(conn: sqlite3.Connection, combination: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0) -> dict[str, Any]:
+def _history_combo(conn: sqlite3.Connection, combination: str, cutoff_date: str, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0, end_date: str | None = None) -> dict[str, Any]:
     summary = _archive_row(
         conn,
         """
         WITH recent AS MATERIALIZED (
-          SELECT race_id FROM races WHERE race_date >= ?
+          SELECT race_id FROM races WHERE race_date >= ? AND (CAST(? AS TEXT) IS NULL OR race_date <= ?)
         )
         SELECT
           ? AS combination,
@@ -3492,7 +3502,7 @@ def _history_combo(conn: sqlite3.Connection, combination: str, cutoff_date: str,
         JOIN payouts p ON p.race_id = r.race_id
         WHERE p.bet_type = '3連単' AND p.combination = ?
         """,
-        (cutoff_date, combination, combination),
+        (cutoff_date, end_date, end_date, combination, combination),
     )
     rows = _archive_rows(
         conn,
@@ -3500,7 +3510,7 @@ def _history_combo(conn: sqlite3.Connection, combination: str, cutoff_date: str,
         WITH recent AS MATERIALIZED (
           SELECT race_id, race_date, jcd, venue_name, rno, title
           FROM races
-          WHERE race_date >= ?
+          WHERE race_date >= ? AND (CAST(? AS TEXT) IS NULL OR race_date <= ?)
         )
         SELECT
           r.race_id, r.race_date, r.jcd, r.venue_name, r.rno, r.title,
@@ -3511,7 +3521,7 @@ def _history_combo(conn: sqlite3.Connection, combination: str, cutoff_date: str,
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC
         LIMIT ? OFFSET ?
         """,
-        (cutoff_date, combination, limit, offset),
+        (cutoff_date, end_date, end_date, combination, limit, offset),
     )
     return {"kind": "combo", "generated_at": _archive_now(), "summary": dict(summary or {}), "rows": rows}
 
@@ -3539,9 +3549,57 @@ def _lane_summary(db_path: Path, lane: str, days: int) -> dict[str, Any]:
     return {"lane": int(lane), "starts": 0, "result_rows": 0, "wins": 0, "top3": 0}
 
 
-def _lane_rows_fast(conn: sqlite3.Connection, lane: str, cutoff_date: str, jcd: str | None, rno: str | None, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0) -> list[dict[str, Any]]:
-    params: list[Any] = [int(lane), cutoff_date]
-    filters = ["rr.lane = ?", "r.race_date >= ?", "rr.rank IS NOT NULL"]
+def _lane_summary_window(
+    conn: sqlite3.Connection,
+    lane: str,
+    start_date: str,
+    end_date: str,
+    jcd: str | None,
+    rno: str | None,
+) -> dict[str, Any]:
+    params: list[Any] = [int(lane), start_date, end_date]
+    filters = [
+        "rr.lane = ?",
+        "r.race_date >= ?",
+        "r.race_date <= ?",
+        "rr.rank IS NOT NULL",
+    ]
+    if jcd:
+        filters.append("r.jcd = ?")
+        params.append(jcd.zfill(2))
+    if rno:
+        filters.append("r.rno = ?")
+        params.append(int(rno))
+    summary = _add_rates(
+        _archive_row(
+            conn,
+            f"""
+            SELECT
+              COUNT(*) AS starts,
+              COUNT(*) AS result_rows,
+              SUM(CASE WHEN rr.rank = 1 THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN rr.rank <= 3 THEN 1 ELSE 0 END) AS top3,
+              AVG(rr.rank) AS avg_rank,
+              AVG(rr.start_timing) AS avg_start,
+              AVG(e.national_win_rate) AS avg_national_win_rate,
+              AVG(e.local_win_rate) AS avg_local_win_rate,
+              AVG(e.motor_2_rate) AS avg_motor_2_rate,
+              AVG(e.boat_2_rate) AS avg_boat_2_rate
+            FROM race_results rr
+            JOIN races r ON r.race_id = rr.race_id
+            LEFT JOIN entries e ON e.race_id = rr.race_id AND e.lane = rr.lane
+            WHERE {" AND ".join(filters)}
+            """,
+            tuple(params),
+        )
+    )
+    summary["lane"] = int(lane)
+    return summary
+
+
+def _lane_rows_fast(conn: sqlite3.Connection, lane: str, cutoff_date: str, jcd: str | None, rno: str | None, limit: int = _HISTORY_PAGE_SIZE, offset: int = 0, end_date: str | None = None) -> list[dict[str, Any]]:
+    params: list[Any] = [int(lane), cutoff_date, end_date, end_date]
+    filters = ["rr.lane = ?", "r.race_date >= ?", "(CAST(? AS TEXT) IS NULL OR r.race_date <= ?)", "rr.rank IS NOT NULL"]
     if jcd:
         filters.append("r.jcd = ?")
         params.append(jcd.zfill(2))
@@ -3689,6 +3747,36 @@ def _scope_sql(scope: str) -> tuple[str, str, str, str]:
         "1 = 1",
         "rr.lane",
     )
+
+
+def _history_years(cutoff_date: str, latest_date: str | None) -> list[int]:
+    try:
+        first_year = date.fromisoformat(cutoff_date).year
+        last_year = date.fromisoformat(latest_date or cutoff_date).year
+    except ValueError:
+        return []
+    return list(range(last_year, first_year - 1, -1))
+
+
+def _history_year(raw: str | None, available_years: list[int]) -> int | None:
+    if not raw:
+        return None
+    try:
+        year = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return year if year in available_years else None
+
+
+def _history_date_window(
+    cutoff_date: str, latest_date: str | None, selected_year: int | None
+) -> tuple[str, str | None]:
+    if selected_year is None:
+        return cutoff_date, None
+    start = max(cutoff_date, f"{selected_year:04d}-01-01")
+    year_end = f"{selected_year:04d}-12-31"
+    end = min(latest_date, year_end) if latest_date else year_end
+    return start, end
 
 
 def _recent_cutoff(conn: sqlite3.Connection, days: int) -> tuple[str, str | None]:

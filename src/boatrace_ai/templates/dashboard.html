@@ -210,6 +210,7 @@
               <button id="archiveToday" type="button">当日</button>
               <button id="archiveStats" type="button">統計</button>
               <select id="archivePeriod" class="archive-period" title="履歴の表示期間"><option value="90">90日</option><option value="365">1年</option><option value="1095">3年</option><option value="3650">10年</option></select>
+              <select id="archiveYear" class="archive-period" title="履歴の年"><option value="">全期間</option></select>
             </div>
           </div>
           <div id="archiveMeta" class="archive-meta">選択したレース/選手/場/モーター/ボート/枠の蓄積データを表示</div>
@@ -238,7 +239,7 @@
   </div>
 
 <script>
-const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null, archiveDays:Number(localStorage.getItem("boat.archiveDays") || "3650"), archiveView:"overview", archiveParams:{} };
+const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null, archiveDays:Number(localStorage.getItem("boat.archiveDays") || "3650"), archiveYear:"", archiveView:"overview", archiveParams:{} };
 const $ = id => document.getElementById(id);
 function jstDate(){
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Tokyo", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(new Date());
@@ -901,11 +902,12 @@ function archiveTable(rows, columns, options={}){
 }
 async function loadArchiveView(view, params={}, opts={}){
   const d = $("raceDate").value || "";
-  const scoped = view === "history" ? { days:state.archiveDays, ...params } : params;
+  const scoped = view === "history" ? { days:state.archiveDays, year:state.archiveYear, ...params } : params;
   const merged = { date:d, ...scoped };
   state.archiveView = view;
   state.archiveParams = { ...params };
   $("archivePeriod").style.display = view === "history" ? "" : "none";
+  $("archiveYear").style.display = view === "history" ? "" : "none";
   const endpoint = view === "overview" ? "/api/archive/overview" : view === "today" ? "/api/archive/today" : view === "stats" ? "/api/archive/stats" : "/api/archive/history";
   $("archiveTitle").textContent = archiveTitle(view, merged);
   if(!opts.silent) $("archiveMeta").textContent = "読み込み中";
@@ -974,12 +976,17 @@ function loadArchivePage(offset){
   loadArchiveView("history", { ...state.archiveParams, offset });
 }
 function renderArchiveHistory(data){
+  const years = data.available_years || [];
+  const selectedYear = data.selected_year == null ? "" : String(data.selected_year);
+  $("archiveYear").innerHTML = `<option value="">全期間</option>${years.map(year => `<option value="${year}">${year}年</option>`).join("")}`;
+  $("archiveYear").value = selectedYear;
+  state.archiveYear = selectedYear;
   const s = data.summary || {};
   const pager = archivePager(data.pagination);
   $("archiveContent").innerHTML =
     archiveKvs([["対象",s.racer_name || s.venue_name || s.number || s.combination || s.lane || "-"],["出走/件数",s.starts || s.races || s.hits],["結果",s.result_rows || s.result_races],["1着率",s.win_rate,"pct"],["3着内",s.top3_rate,"pct"],["平均着",s.avg_rank],["平均ST",s.avg_start],["平均払戻",s.avg_payout_yen,"yen"]]) +
     (data.facets ? `<h3>内訳</h3>` + archiveTable(data.facets, [{key:"lane",label:"枠"},{key:"starts",label:"出走"},{key:"wins",label:"1着"},{key:"top3",label:"3内"},{key:"avg_start",label:"ST"}]) : "") +
-    `<h3>履歴 <small>${data.cutoff_date || "-"}以降</small></h3>` + archiveTable(data.rows || [], [
+    `<h3>履歴 <small>${data.cutoff_date || "-"} - ${data.end_date || data.latest_date || "-"}</small></h3>` + archiveTable(data.rows || [], [
       {key:"race_date",label:"日"},{key:"venue_name",label:"場"},{key:"rno",label:"R",mono:true},{key:"lane",label:"枠",mono:true},{key:"racer_name",label:"選手"},{key:"racer_class",label:"級"},
       {key:"motor_no",label:"M",mono:true},{key:"boat_no",label:"B",mono:true},{key:"rank",label:"着"},{key:"start_timing",label:"ST"},{key:"result_combination",label:"結果",mono:true},{key:"payout_yen",label:"払戻",format:yenCell}
     ], { raceLink:true }) + pager;
@@ -993,10 +1000,14 @@ function renderArchiveStats(data){
     ]);
 }
 function wireArchiveNav(){
+  $("archiveYear").onchange = () => {
+    state.archiveYear = $("archiveYear").value || "";
+    if(state.archiveView === "history") loadArchiveView("history", { ...state.archiveParams, year:state.archiveYear, offset:0 });
+  };
   $("archivePeriod").onchange = () => {
     state.archiveDays = Number($("archivePeriod").value || 3650);
     localStorage.setItem("boat.archiveDays", String(state.archiveDays));
-    if(state.archiveView === "history") loadArchiveView("history", { ...state.archiveParams, offset:0 });
+    if(state.archiveView === "history") loadArchiveView("history", { ...state.archiveParams, year:state.archiveYear, offset:0 });
   };
   $("navPast").onclick = () => loadArchiveView("overview");
   $("navToday").onclick = () => loadArchiveView("today", { jcd: state.jcd || "" });
