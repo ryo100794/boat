@@ -565,6 +565,82 @@ def predefined_ticket_diagnostics(
     }
 
 
+def waiting_walk_forward_result(
+    races: list[dict[str, Any]],
+    *,
+    dates: list[str],
+    daily_budget_yen: int,
+    min_calibration_days: int,
+) -> dict[str, Any]:
+    probability_metrics = {
+        "evaluated_races": 0,
+        "model_trifecta_log_loss": None,
+        "model_trifecta_top5_hit_rate": None,
+        "market_trifecta_log_loss": None,
+        "market_trifecta_top5_hit_rate": None,
+        "calibrated_trifecta_log_loss": None,
+        "calibrated_trifecta_top5_hit_rate": None,
+    }
+    promotion_gate = {
+        "minimum_evaluation_races": 1000,
+        "minimum_evaluation_days": 30,
+        "minimum_profitable_fold_fraction": 0.60,
+        "sample_size_pass": False,
+        "positive_profit_pass": False,
+        "roi_pass": False,
+        "fold_stability_pass": False,
+        "calibration_pass": False,
+        "no_lookahead_pass": True,
+    }
+    return {
+        "model": MODEL_NAME,
+        "status": "waiting_for_clean_evaluation_day",
+        "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
+        "validation_design": (
+            "Each evaluation day is untouched; calibration and policy selection use only earlier full days"
+        ),
+        "daily_budget_yen": daily_budget_yen,
+        "available_races": len(races),
+        "available_days": len(dates),
+        "minimum_calibration_days": min_calibration_days,
+        "required_additional_days": max(0, min_calibration_days + 1 - len(dates)),
+        "evaluated_races": 0,
+        "evaluation_races": 0,
+        "evaluation_days": 0,
+        "probability_metrics": probability_metrics,
+        "ticket_diagnostics": predefined_ticket_diagnostics(
+            [], daily_budget_yen=daily_budget_yen
+        ),
+        "calibrated_trifecta_log_loss": None,
+        "trifecta_top5_hit_rate": None,
+        "tickets": 0,
+        "hit_tickets": 0,
+        "stake_yen": 0,
+        "return_yen": 0,
+        "profit_yen": 0,
+        "roi": 0.0,
+        "max_drawdown_yen": 0,
+        "profitable_folds": 0,
+        "folds": [],
+        "daily": [],
+        "flat_policy_walk_forward": {
+            "comparison_role": "preselected_on_prior_days_fixed_100_yen_shadow",
+            "evaluation_races": 0,
+            "evaluation_days": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0.0,
+            "winning_days": 0,
+            "daily": [],
+        },
+        "promotion_gate": promotion_gate,
+        "promotion_eligible": False,
+    }
+
+
 def walk_forward_evaluate(
     races: list[dict[str, Any]],
     *,
@@ -576,7 +652,12 @@ def walk_forward_evaluate(
         by_day[str(race["race_date"])].append(race)
     dates = sorted(by_day)
     if len(dates) <= min_calibration_days:
-        raise ValueError("not enough full days for walk-forward calibration and evaluation")
+        return waiting_walk_forward_result(
+            races,
+            dates=dates,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+        )
 
     folds = []
     evaluation_races: list[dict[str, Any]] = []

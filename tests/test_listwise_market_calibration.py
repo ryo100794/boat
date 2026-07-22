@@ -126,6 +126,28 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     assert result["promotion_eligible"] is False
 
 
+def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in ("2026-07-20", "2026-07-21")
+        for rno in range(1, 13)
+    ]
+
+    result = walk_forward_evaluate(races, min_calibration_days=2)
+
+    assert result["status"] == "waiting_for_clean_evaluation_day"
+    assert result["available_days"] == 2
+    assert result["required_additional_days"] == 1
+    assert result["evaluation_races"] == 0
+    assert result["promotion_eligible"] is False
+    assert result["promotion_gate"]["no_lookahead_pass"] is True
+    assert all(
+        not value
+        for key, value in result["promotion_gate"].items()
+        if key.endswith("_pass") and key != "no_lookahead_pass"
+    )
+
+
 def test_scored_cache_requires_exact_contract(tmp_path) -> None:
     path = tmp_path / "scores.joblib"
     contract = {
