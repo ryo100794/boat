@@ -15,10 +15,12 @@ import numpy as np
 from scipy.optimize import minimize
 from sklearn.feature_extraction import FeatureHasher
 
+from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
+from .direct_bankroll import simulate_direct_bankroll
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -489,17 +491,57 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         }
         for month, values in sorted(positive_months.items())
     ]
-    gate = {
+    structure_gate = {
         "day_log_loss_ci_upper_at_most_zero": confidence["day_log_loss"]["ci95_upper"] <= 0.0,
         "day_top5_ci_lower_at_least_zero": confidence["day_top5"]["ci95_lower"] >= 0.0,
         "minimum_non_regressing_months": 8,
         "non_regressing_months": sum(row["mean_daily_log_loss_delta"] <= 0.0 for row in monthly),
     }
-    gate["pass"] = bool(
-        gate["day_log_loss_ci_upper_at_most_zero"]
-        and gate["day_top5_ci_lower_at_least_zero"]
-        and gate["non_regressing_months"] >= gate["minimum_non_regressing_months"]
+    structure_gate["pass"] = bool(
+        structure_gate["day_log_loss_ci_upper_at_most_zero"]
+        and structure_gate["day_top5_ci_lower_at_least_zero"]
+        and structure_gate["non_regressing_months"] >= structure_gate["minimum_non_regressing_months"]
     )
+    candidate_probabilities = conditional_probabilities(
+        scores[evaluation_start:evaluation_end], model
+    )
+    baseline_probabilities = conditional_probabilities(
+        scores[evaluation_start:evaluation_end], identity_model()
+    )
+    payouts = _load_trifecta_payouts(conn)
+    training_races = {str(row[0]) for row in race_keys[:train_end]}
+    candidate_bankroll = simulate_direct_bankroll(
+        candidate_probabilities,
+        race_keys=evaluation_keys,
+        payouts=payouts,
+        training_races=training_races,
+    )
+    baseline_bankroll = simulate_direct_bankroll(
+        baseline_probabilities,
+        race_keys=evaluation_keys,
+        payouts=payouts,
+        training_races=training_races,
+    )
+    bankroll_gate = {
+        "minimum_roi": 1.0,
+        "roi": candidate_bankroll["roi"],
+        "profit_yen": candidate_bankroll["profit_yen"],
+        "roi_pass": candidate_bankroll["roi"] > 1.0,
+        "profit_pass": candidate_bankroll["profit_yen"] > 0,
+        "baseline_roi": baseline_bankroll["roi"],
+        "baseline_profit_yen": baseline_bankroll["profit_yen"],
+        "baseline_improved": candidate_bankroll["roi"] > baseline_bankroll["roi"],
+    }
+    bankroll_gate["pass"] = bool(
+        bankroll_gate["roi_pass"]
+        and bankroll_gate["profit_pass"]
+        and bankroll_gate["baseline_improved"]
+    )
+    promotion_gate = {
+        "structure_pass": structure_gate["pass"],
+        "bankroll_pass": bankroll_gate["pass"],
+        "pass": bool(structure_gate["pass"] and bankroll_gate["pass"]),
+    }
     artifact = {
         "model": model,
         "base_model": baseline_model,
@@ -534,8 +576,16 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "paired_confidence": confidence,
         "monthly": monthly,
         "daily": daily,
-        "promotion_gate": gate,
-        "promotion_eligible": gate["pass"],
+        "bankroll": candidate_bankroll,
+        "baseline_bankroll": {
+            key: value
+            for key, value in baseline_bankroll.items()
+            if key != "daily"
+        },
+        "structure_gate": structure_gate,
+        "bankroll_gate": bankroll_gate,
+        "promotion_gate": promotion_gate,
+        "promotion_eligible": promotion_gate["pass"],
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     output = Path(args.output)
