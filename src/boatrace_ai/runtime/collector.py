@@ -358,7 +358,7 @@ def odds_interval(seconds_to_cutoff: float) -> float | None:
         return 45.0
     if seconds_to_cutoff <= 60 * 60:
         return 90.0
-    return 300.0
+    return None
 
 
 def parse_time(value: str | None, *, default_tz: timezone) -> datetime | None:
