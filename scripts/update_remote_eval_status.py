@@ -48,6 +48,9 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 0, "name": "listwise_market_calibrated_shadow", "milestone": "M5/M6", "kind": "market_calibrated_shadow", "output": "data/models/listwise_market_calibrated_shadow.json", "log": "logs/runtime/market-calibrated-shadow.log"},
     {"pid": 0, "name": "listwise_newton_cutoff_20260717", "milestone": "M4-3/M6", "kind": "listwise_cutoff_refit", "output": "data/models/listwise_newton_cutoff_20260717.json", "log": "logs/listwise_newton_cutoff_20260717.log"},
     {"pid": 0, "name": "listwise_market_calibrated_cutoff_shadow", "milestone": "M5/M6", "kind": "market_calibrated_cutoff_shadow", "output": "data/models/listwise_market_calibrated_cutoff_shadow.json", "log": "logs/listwise_market_calibrated_cutoff_shadow.log"},
+    {"pid": 0, "name": "stagewise_mlp_365d", "milestone": "M4-4", "kind": "stagewise_mlp_365d", "output": "data/models/stagewise_mlp_365d.json", "log": "logs/stagewise_mlp_365d.log"},
+    {"pid": 0, "name": "stagewise_blend_preselected_20260717", "milestone": "M4-4", "kind": "stagewise_blend_preselected", "output": "data/models/stagewise_blend_preselected_20260717.json", "log": "logs/stagewise_blend_preselected_20260717.log"},
+    {"pid": 0, "name": "stagewise_blend_market_shadow", "milestone": "M5/M6", "kind": "market_calibrated_blend_shadow", "output": "data/models/stagewise_blend_market_shadow.json", "log": "logs/runtime/market-calibrated-blend-shadow.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -69,6 +72,7 @@ METRIC_KEYS = (
     "promotion_eligible", "holdout_races", "profitable_folds",
     "bankroll_evaluated_races",
     "calibrated_trifecta_log_loss", "evaluation_races", "evaluation_days",
+    "trifecta_log_loss", "trifecta_top1_hit_rate",
     "model_trifecta_log_loss", "model_trifecta_top5_hit_rate",
     "market_trifecta_log_loss", "market_trifecta_top5_hit_rate",
 )
@@ -141,7 +145,14 @@ def result_summary(path):
     row["comparison_role"] = data.get("comparison_role")
     row["include_odds"] = data.get("include_odds")
     row["protocol_id"] = data.get("protocol_id")
-    holdout = data.get("after_refit") or data.get("holdout_after_newton") or data.get("holdout") or {}
+    holdout = (
+        data.get("after_refit")
+        or data.get("holdout_after_newton")
+        or data.get("holdout")
+        or data.get("stagewise")
+        or (data.get("final_evaluation") or {}).get("selected_blend")
+        or {}
+    )
     if isinstance(holdout, dict):
         for key in METRIC_KEYS:
             if key in holdout:

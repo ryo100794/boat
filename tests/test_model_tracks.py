@@ -188,6 +188,49 @@ def test_model_tracks_exposes_cutoff_refit_and_market_shadow(tmp_path) -> None:
     assert market["promotion_eligible"] is False
 
 
+def test_model_tracks_exposes_preselected_stagewise_blend(tmp_path) -> None:
+    remote = {
+        "jobs": [
+            {
+                "kind": "stagewise_blend_preselected",
+                "status": "完了",
+                "result": {
+                    "metrics": {
+                        "evaluated_races": 632,
+                        "trifecta_log_loss": 3.9465,
+                        "winner_top1_accuracy": 0.5459,
+                        "trifecta_top5_hit_rate": 0.3307,
+                    }
+                },
+            },
+            {
+                "kind": "market_calibrated_blend_shadow",
+                "status": "完了",
+                "result": {
+                    "metrics": {
+                        "evaluated_races": 275,
+                        "model_trifecta_log_loss": 3.9081,
+                        "model_trifecta_top5_hit_rate": 0.3527,
+                        "calibrated_trifecta_log_loss": 3.8953,
+                        "trifecta_top5_hit_rate": 0.3527,
+                        "roi": 0.0,
+                        "promotion_eligible": False,
+                    }
+                },
+            },
+        ]
+    }
+
+    tracks = {row["id"]: row for row in _model_track_summaries(tmp_path, [], remote)}
+
+    blend = tracks["stagewise_blend_preselected"]
+    market = tracks["market_calibrated_blend_shadow"]
+    assert blend["trifecta_top5_hit_rate"] == 0.3307
+    assert market["model_trifecta_log_loss"] == 3.9081
+    assert market["trifecta_log_loss"] == 3.8953
+    assert market["promotion_eligible"] is False
+
+
 def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> None:
     path = tmp_path / "market.json"
     path.write_text(

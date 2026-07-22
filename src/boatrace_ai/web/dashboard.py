@@ -1592,6 +1592,20 @@ def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str,
             "選択済み上位3着PL教師 / 2026-07-17以前494,468Rで再学習 / 7/18以降は完全未使用",
             "FeatureHasher 4,096・base_pastlog除外固定 / scaler移送warm start + 行列フリーNewton-CG",
         ),
+        (
+            "stagewise_mlp_365d",
+            "着順別 stagewise MLP 365日",
+            "stagewise_mlp_365d.json",
+            "各艇の着順0/1/2/3教師 / 2025-07-19以降48,429Rを未使用評価",
+            "FeatureHasher 4,096・base_pastlog除外 / MLP 64-16 / 着順別条件付き3連単確率",
+        ),
+        (
+            "stagewise_blend_preselected",
+            "listwise + stagewise 事前固定blend",
+            "stagewise_blend_preselected_20260717.json",
+            "365日48,259Rのみで50:50比率を固定 / 7/18-21の632Rは最終未使用評価",
+            "listwise PLと着順別MLPの確率平均 / 最終期間で比率再選択なし",
+        ),
     )
     rows = []
     for kind, label, model_file, teacher, training in specs:
@@ -1636,6 +1650,13 @@ def _market_calibrated_model_tracks(
             "listwise 7/17再学習 T-5 shadow",
             "listwise_market_calibrated_cutoff_shadow.json",
             "2026-07-17以前494,468Rの固定構造再学習 / T-5市場暗黙確率 / 7/18以降walk-forward",
+        ),
+        (
+            "market_calibrated_blend_shadow",
+            "market_calibrated_blend_shadow",
+            "事前固定blend T-5 shadow",
+            "stagewise_blend_market_shadow.json",
+            "365日で固定した50:50 blend / T-5市場暗黙確率 / 7/18以降walk-forward",
         ),
     )
     rows = []
