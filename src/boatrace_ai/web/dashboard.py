@@ -3942,6 +3942,22 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
 
     roi_ok = best_roi is not None and best_roi >= 1.0
     profit_ok = best_profit is not None and best_profit > 0
+    residual_result = _local_evaluation_result(
+        model_dir / "listwise_market_residual_shadow.json"
+    ) or {}
+    formal_market = _market_comparison_summary(
+        residual_result.get("market_comparison")
+    )
+    intraday_market = _market_bootstrap_summary(
+        model_dir / "listwise_market_residual_intraday_bootstrap.json"
+    )
+    market_confidence = formal_market or intraday_market
+    market_confidence_races = int(
+        market_confidence.get("market_comparison_races") or 0
+    )
+    market_confidence_pass = bool(
+        market_confidence.get("market_confidence_pass")
+    )
     return [
         {
             "target": "M6 ROI",
@@ -3975,6 +3991,29 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
                 if attribution_best else "ROI帰属つき時間fold成果物なし"
             ),
             "next": "同じ方向が後続foldでも再現し、資金運用ROI/損益も改善するか確認する" if attribution_candidate else "評価完了。stable=0のため相関上位特徴の直接採用を見送る",
+        },
+        {
+            "target": "M6 T-5市場信頼区間",
+            "status": (
+                "達成候補"
+                if market_confidence_pass
+                else "未達"
+                if market_confidence_races
+                else "評価待ち"
+            ),
+            "evidence": (
+                f"paired {market_confidence_races:,}R / LogLoss差 "
+                f"{float(market_confidence.get('market_log_loss_delta') or 0):+.5f} / "
+                f"95%CI [{float(market_confidence.get('market_log_loss_delta_ci95_lower') or 0):+.5f}, "
+                f"{float(market_confidence.get('market_log_loss_delta_ci95_upper') or 0):+.5f}]"
+                if market_confidence_races
+                else "未使用foldの市場比較なし"
+            ),
+            "next": (
+                "30日・1,000R、収益、fold安定性を満たすまでshadow継続"
+                if market_confidence_pass
+                else "LogLoss差CI上限0以下かつ3T5差CI下限0以上まで昇格しない"
+            ),
         },
         {
             "target": "Remote Eval",
@@ -4076,8 +4115,11 @@ def _roadmap_improvements(
 ) -> list[dict[str, Any]]:
     realtime = (progress or {}).get("realtime") or {}
     shadow_evaluation = (progress or {}).get("realtime_shadow_evaluation") or {}
+    strict_shadow_state = shadow_evaluation.get("state") or {}
     target_races = int(
-        realtime.get("target_eligible_races") or REALTIME_SHADOW_TARGET_RACES
+        strict_shadow_state.get("required_races")
+        or realtime.get("target_eligible_races")
+        or REALTIME_SHADOW_TARGET_RACES
     )
     remote_jobs = ((remote_evaluations or {}).get("jobs") or [])
     standardized_jobs = [
@@ -4143,8 +4185,17 @@ def _roadmap_improvements(
     market_calibrated_metrics = (
         ((market_calibrated_job or {}).get("result") or {}).get("metrics") or {}
     )
-    eligible_races = int(realtime.get("eligible_races") or 0)
-    readiness = min(1.0, float(realtime.get("readiness") or 0.0))
+    eligible_races = int(
+        strict_shadow_state.get("eligible_races", realtime.get("eligible_races"))
+        or 0
+    )
+    readiness = min(
+        1.0,
+        float(
+            strict_shadow_state.get("readiness", realtime.get("readiness"))
+            or 0.0
+        ),
+    )
     shadow_running = any(
         str(row.get("kind") or "") == "リアルタイムshadow"
         for row in (processes or [])
@@ -4278,11 +4329,11 @@ def _roadmap_improvements(
         {
             "id": "M2-4",
             "milestone": "M2/M4",
-            "status": "復旧済み/翌開催確認" if predictor_running else "要復旧",
-            "progress": 95 if predictor_running else 20,
+            "status": "完了/運用監視" if predictor_running else "要復旧",
+            "progress": 100 if predictor_running else 20,
             "item": "PostgreSQL収集常駐の予測オプション脱落",
             "next": (
-                "7月21日144Rは収集・結果・oddsが揃ったが予測0R。常駐へ--predictを復帰済み。次開催日の締切前予測生成を確認して閉じる。"
+                "常駐へ--predictを復帰し、7月22日144/144Rの締切前予測生成を確認。通常監視へ移管する。"
                 if predictor_running
                 else "収集常駐を--predict付きで再起動し、プロセス引数と予測生成を確認する。"
             ),
@@ -4349,7 +4400,7 @@ def _roadmap_improvements(
             "status": "蓄積中" if shadow_running else "要復旧",
             "progress": int(readiness * 100),
             "item": "実オッズ併用shadowの自動学習ゲート",
-            "next": f"締切前oddsを10時点以上持つ確定R {eligible_races:,}/{target_races:,}。450R以降は3fold暫定評価を自動更新し、1,000R到達後に正式5fold評価する。",
+            "next": f"厳格T-5品質R {eligible_races:,}/{target_races:,}。品質更新後の母数で暫定3foldを更新し、正式昇格は30日・1,000Rと市場差信頼区間で判定する。",
         },
         {
             "id": "M6-1",
@@ -4461,6 +4512,8 @@ def _roadmap_improvements(
                 if market_calibrated_status == "完了"
                 else "日次shadow実行中"
                 if market_calibrated_status == "実行中"
+                else "v9正式fold待ち"
+                if market_calibrated_status == "データ待ち"
                 else "暫定評価済み/要改善"
                 if shadow_evaluation.get("roi") is not None
                 else "正式評価待ち"
@@ -4474,7 +4527,9 @@ def _roadmap_improvements(
             ),
             "item": "実オッズ市場較正とno-bet条件の再設計",
             "next": (
-                f"完全日walk-forward {int(market_calibrated_metrics.get('evaluated_races') or 0):,}R。"
+                "T-5市場較正v9は7月22日を最初の未使用foldとして日付切替後に評価する。LogLoss差95%CI上限0以下、3T5差95%CI下限0以上、30日・1,000R、収益プラスをすべて要求する。"
+                if market_calibrated_status == "データ待ち"
+                else f"完全日walk-forward {int(market_calibrated_metrics.get('evaluated_races') or 0):,}R。"
                 f"較正3連単LogLoss {float(market_calibrated_metrics.get('calibrated_trifecta_log_loss') or 0):.4f}、"
                 f"3T5 {float(market_calibrated_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%、"
                 f"ROI {float(market_calibrated_metrics.get('roi') or 0):.4f}、"
@@ -4548,6 +4603,8 @@ def _roadmap_milestones(
     remote_evaluations = remote_evaluations or {}
     historical = progress.get("historical") or {}
     realtime = progress.get("realtime") or {}
+    shadow_evaluation = progress.get("realtime_shadow_evaluation") or {}
+    strict_shadow_state = shadow_evaluation.get("state") or {}
     process_kinds = {str(row.get("kind") or "") for row in processes}
     jobs = remote_evaluations.get("jobs") or []
     standardized_jobs = [
@@ -4636,9 +4693,21 @@ def _roadmap_milestones(
         if sanity_status == "実行中"
         else 75
     )
-    realtime_readiness = float(realtime.get("readiness") or 0.0)
+    realtime_eligible = int(
+        strict_shadow_state.get("eligible_races", realtime.get("eligible_races"))
+        or 0
+    )
     realtime_target = int(
-        realtime.get("target_eligible_races") or REALTIME_SHADOW_TARGET_RACES
+        strict_shadow_state.get("required_races")
+        or realtime.get("target_eligible_races")
+        or REALTIME_SHADOW_TARGET_RACES
+    )
+    realtime_readiness = min(
+        1.0,
+        float(
+            strict_shadow_state.get("readiness", realtime.get("readiness"))
+            or 0.0
+        ),
     )
     source_inventory = _v_file_inventory(PROJECT_ROOT / "src" / "boatrace_ai")
     source_clean = int(source_inventory.get("count") or 0) == 0
@@ -4715,7 +4784,7 @@ def _roadmap_milestones(
             "title": "リアルタイム併用モデル",
             "status": "並走/蓄積中" if shadow_running else "要起動",
             "progress": min(80, 10 + int(realtime_readiness * 70)) if shadow_running else 20,
-            "next": f"実オッズ付き完了R {int(realtime.get('eligible_races') or 0):,}/{realtime_target:,}。450R以降は暫定3foldを更新し、到達後に正式5fold評価する",
+            "next": f"厳格T-5品質R {realtime_eligible:,}/{realtime_target:,}。品質更新後の母数で暫定3foldを更新し、正式判定は時系列holdoutだけで行う",
         },
         {
             "id": "M6",
@@ -4728,7 +4797,7 @@ def _roadmap_milestones(
                 + (
                     "temporal no-bet 5foldを回収し、収益ゲートで終了判定する。"
                     if temporal_status != "完了"
-                    else "既存評価は回収済み。ROI/損益未達のため本番no-betを維持し、実オッズ1,000R正式評価を次候補とする。"
+                    else "既存評価は回収済み。ROI/損益未達のため本番no-betを維持し、T-5市場較正v9を30日・1,000Rのpaired信頼区間ゲートで継続する。"
                 )
                 if standardized_complete
                 else "標準365日同一holdout比較とtemporal no-bet評価を回収する。"
