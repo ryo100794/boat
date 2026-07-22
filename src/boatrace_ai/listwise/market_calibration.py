@@ -1129,6 +1129,8 @@ def main(argv: list[str] | None = None) -> int:
             "from_date": args.from_date,
             "through_date": args.through_date,
             "dataset": dataset,
+            "evaluation_version": MARKET_EVALUATION_VERSION,
+            "odds_data_signature": odds_signature,
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
         }

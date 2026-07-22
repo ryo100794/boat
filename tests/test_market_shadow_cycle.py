@@ -18,6 +18,11 @@ def test_completed_through_date_uses_previous_jst_day() -> None:
 
 
 def test_evaluation_due_only_for_new_completed_day() -> None:
+    assert evaluation_due(
+        {"status": "error", "completed_through_date": "2026-07-21"},
+        through_date="2026-07-21",
+        output_exists=True,
+    )
     assert evaluation_due({}, through_date="2026-07-21", output_exists=False)
     assert evaluation_due(
         {"completed_through_date": "2026-07-20"},

@@ -36,6 +36,8 @@ def evaluation_due(
 ) -> bool:
     if not output_exists:
         return True
+    if state.get("status") == "error":
+        return True
     if model_sha256 and state.get("model_sha256") != model_sha256:
         return True
     if (
@@ -115,6 +117,12 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
             through_date=through_date,
         )
     previous = read_state(state_path)
+    previous_output = read_state(output_path)
+    output_is_current = bool(
+        output_path.exists()
+        and previous_output.get("evaluation_version") == MARKET_EVALUATION_VERSION
+        and previous_output.get("odds_data_signature") == odds_signature
+    )
     event: dict[str, Any] = {
         "generated_at": generated_at,
         "target_through_date": through_date,
@@ -128,7 +136,7 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
     if not evaluation_due(
         previous,
         through_date=through_date,
-        output_exists=output_path.exists(),
+        output_exists=output_is_current,
         model_sha256=model_hash,
         evaluation_version=MARKET_EVALUATION_VERSION,
         odds_signature=odds_signature,
