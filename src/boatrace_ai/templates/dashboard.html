@@ -149,6 +149,10 @@
     .archive-tabs { display:flex; gap:3px; align-items:center; flex-wrap:wrap; }
     .archive-tabs button,.entry-actions button,.race-title-actions button { height:18px; padding:0 5px; border-radius:3px; font-size:9px; background:#fff; color:var(--accent); border-color:#9bbdc1; }
     .archive-period { height:18px; max-width:62px; padding:0 2px; border:1px solid #9bbdc1; border-radius:3px; background:#fff; color:var(--accent); font-size:9px; }
+    #archiveYear { min-width:72px; max-width:none; }
+    .archive-year-nav { display:flex; gap:2px; margin:3px 0; padding-bottom:2px; overflow-x:auto; scrollbar-width:thin; }
+    .archive-year-nav button { flex:0 0 auto; height:18px; min-width:38px; padding:0 4px; border:1px solid #9bbdc1; border-radius:3px; background:#fff; color:var(--accent); font-size:9px; }
+    .archive-year-nav button.active { border-color:var(--accent); background:var(--accent); color:#fff; font-weight:700; }
     .archive-pager { display:flex; align-items:center; justify-content:flex-end; gap:3px; margin:3px 0; font-size:9px; }
     .archive-pager button { height:18px; min-width:24px; padding:0 4px; border-radius:3px; font-size:9px; }
     .archive-meta { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -975,6 +979,10 @@ function archivePager(p){
 function loadArchivePage(offset){
   loadArchiveView("history", { ...state.archiveParams, offset });
 }
+function loadArchiveYear(year){
+  state.archiveYear = year == null ? "" : String(year);
+  loadArchiveView("history", { ...state.archiveParams, year:state.archiveYear, offset:0 });
+}
 function renderArchiveHistory(data){
   const years = data.available_years || [];
   const selectedYear = data.selected_year == null ? "" : String(data.selected_year);
@@ -983,8 +991,10 @@ function renderArchiveHistory(data){
   state.archiveYear = selectedYear;
   const s = data.summary || {};
   const pager = archivePager(data.pagination);
+  const yearNav = `<div class="archive-year-nav"><button type="button" class="${selectedYear ? "" : "active"}" onclick="loadArchiveYear(null)">全期間</button>${years.map(year => `<button type="button" class="${String(year)===selectedYear ? "active" : ""}" onclick="loadArchiveYear(${year})">${year}</button>`).join("")}</div>`;
   $("archiveContent").innerHTML =
     archiveKvs([["対象",s.racer_name || s.venue_name || s.number || s.combination || s.lane || "-"],["出走/件数",s.starts || s.races || s.hits],["結果",s.result_rows || s.result_races],["1着率",s.win_rate,"pct"],["3着内",s.top3_rate,"pct"],["平均着",s.avg_rank],["平均ST",s.avg_start],["平均払戻",s.avg_payout_yen,"yen"]]) +
+    yearNav +
     (data.facets ? `<h3>内訳</h3>` + archiveTable(data.facets, [{key:"lane",label:"枠"},{key:"starts",label:"出走"},{key:"wins",label:"1着"},{key:"top3",label:"3内"},{key:"avg_start",label:"ST"}]) : "") +
     `<h3>履歴 <small>${data.cutoff_date || "-"} - ${data.end_date || data.latest_date || "-"}</small></h3>` + archiveTable(data.rows || [], [
       {key:"race_date",label:"日"},{key:"venue_name",label:"場"},{key:"rno",label:"R",mono:true},{key:"lane",label:"枠",mono:true},{key:"racer_name",label:"選手"},{key:"racer_class",label:"級"},
@@ -1001,8 +1011,7 @@ function renderArchiveStats(data){
 }
 function wireArchiveNav(){
   $("archiveYear").onchange = () => {
-    state.archiveYear = $("archiveYear").value || "";
-    if(state.archiveView === "history") loadArchiveView("history", { ...state.archiveParams, year:state.archiveYear, offset:0 });
+    if(state.archiveView === "history") loadArchiveYear($("archiveYear").value || null);
   };
   $("archivePeriod").onchange = () => {
     state.archiveDays = Number($("archivePeriod").value || 3650);

@@ -192,6 +192,8 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert 'id="archiveYear"' in html
     assert 'year:state.archiveYear' in html
     assert 'function loadArchivePage(offset)' in html
+    assert 'function loadArchiveYear(year)' in html
+    assert 'class="archive-year-nav"' in html
     assert 'localStorage.getItem("boat.archiveDays") || "3650"' in html
 
 
