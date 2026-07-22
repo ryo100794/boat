@@ -1514,8 +1514,8 @@ def _model_track_summaries(
             "generated_at": shadow_state.get("generated_at"),
         },
         *_calibrated_model_tracks(remote_evaluations),
-        *_listwise_model_tracks(remote_evaluations),
-        *_market_calibrated_model_tracks(remote_evaluations),
+        *_listwise_model_tracks(remote_evaluations, model_dir),
+        *_market_calibrated_model_tracks(remote_evaluations, model_dir),
     ]
 
 
@@ -1561,7 +1561,10 @@ def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[st
     return rows
 
 
-def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+def _listwise_model_tracks(
+    remote_evaluations: dict[str, Any],
+    model_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
     specs = (
         (
@@ -1610,9 +1613,12 @@ def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str,
     rows = []
     for kind, label, model_file, teacher, training in specs:
         job = next((item for item in jobs or [] if item.get("kind") == kind), {})
-        result = job.get("result") or {}
+        local_result = _local_evaluation_result(model_dir / model_file) if model_dir else None
+        result = job.get("result") or local_result or {}
         metrics = result.get("metrics") or {}
-        status = job.get("status") or "未登録"
+        status = job.get("status") or (
+            "完了" if local_result and not local_result.get("error") else "未登録"
+        )
         rows.append({
             "id": kind,
             "label": label,
@@ -1634,6 +1640,7 @@ def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str,
 
 def _market_calibrated_model_tracks(
     remote_evaluations: dict[str, Any],
+    model_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
     specs = (
@@ -1662,21 +1669,25 @@ def _market_calibrated_model_tracks(
     rows = []
     for kind, track_id, label, model_file, teacher in specs:
         job = next((item for item in jobs or [] if item.get("kind") == kind), {})
-        result = job.get("result") or {}
+        local_result = _local_evaluation_result(model_dir / model_file) if model_dir else None
+        result = job.get("result") or local_result or {}
         metrics = result.get("metrics") or {}
+        status = job.get("status") or (
+            "完了" if local_result and not local_result.get("error") else "未登録"
+        )
         rows.append(
             {
                 "id": track_id,
                 "label": label,
                 "role": "比較評価・no-bet判定のみ",
-                "status": job.get("status") or "未登録",
+                "status": status,
                 "include_odds": True,
                 "model_file": model_file,
                 "teacher": teacher,
                 "training": "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位",
                 "eligible_races": metrics.get("evaluated_races"),
                 "target_races": 1000,
-                "backtest_available": job.get("status") == "完了" and bool(result),
+                "backtest_available": status == "完了" and bool(result),
                 "trifecta_log_loss": _float_or_none(
                     metrics.get("calibrated_trifecta_log_loss")
                 ),
@@ -3604,6 +3615,8 @@ _LOCAL_EVALUATION_METRICS = (
     "entry_brier",
     "winner_top1_accuracy",
     "trifecta_top5_hit_rate",
+    "trifecta_top1_hit_rate",
+    "trifecta_log_loss",
     "ranking_log_loss",
     "promotion_eligible",
     "holdout_races",
@@ -3687,6 +3700,8 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
         data.get("after_refit")
         or data.get("holdout_after_newton")
         or data.get("holdout")
+        or data.get("stagewise")
+        or (data.get("final_evaluation") or {}).get("selected_blend")
         or {}
     )
     if isinstance(holdout, dict):
