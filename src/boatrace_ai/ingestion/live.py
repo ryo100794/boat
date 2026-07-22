@@ -14,6 +14,7 @@ from ..db import (
 )
 from ..http import fetch_text, save_payload
 from ..official import race_index_url, race_page_url
+from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 from .result import parse_result_html_v2
 from .parsers import (
     parse_beforeinfo_html,
@@ -122,7 +123,11 @@ def collect_odds(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) ->
     if not html:
         return False
     parsed = parse_odds3t_html(html)
-    if parsed["parsed_count"] < 20:
+    if (
+        parsed.get("parser_version") != TRIFECTA_PARSER_VERSION
+        or parsed.get("parsed_count") != 120
+        or not plausible_trifecta_odds(parsed.get("odds") or {})
+    ):
         return False
     _ensure_minimal_race(conn, race_date=race_date, jcd=jcd, rno=rno, status="scheduled")
     insert_odds_snapshot(

@@ -77,8 +77,21 @@ def test_odds_trend_returns_latest_model_top_five_with_history(tmp_path) -> None
                     for index, (combination, _) in enumerate(latest)
                 },
                 f"https://example.test/{captured_at}",
-                {"parser_version": "test"},
+                {"parser_version": "odds3t_dom_v2"},
             )
+
+        insert_odds_snapshot(
+            conn,
+            race_id,
+            "2026-07-22T01:08:00+00:00",
+            "2026-07-22T01:08:00+00:00",
+            {
+                combination: float(index % 6 + 1)
+                for index, (combination, _) in enumerate(latest)
+            },
+            "https://example.test/legacy",
+            {"parser_version": "odds3t_legacy"},
+        )
 
     payload = dashboard.odds(
         db_path,

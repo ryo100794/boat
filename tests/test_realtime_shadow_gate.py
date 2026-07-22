@@ -11,7 +11,7 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
         CREATE TABLE races (race_id TEXT PRIMARY KEY, race_date TEXT, deadline_at TEXT);
         CREATE TABLE entries (race_id TEXT, lane INTEGER);
         CREATE TABLE race_results (race_id TEXT, lane INTEGER, rank INTEGER);
-        CREATE TABLE odds_snapshots (snapshot_id INTEGER PRIMARY KEY, race_id TEXT, captured_at TEXT);
+        CREATE TABLE odds_snapshots (snapshot_id INTEGER PRIMARY KEY, race_id TEXT, captured_at TEXT, parser_version TEXT);
         """
     )
     for race_id, race_date, snapshots in (
@@ -29,7 +29,7 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
             conn.execute("INSERT INTO entries VALUES (?, ?)", (race_id, lane))
             conn.execute("INSERT INTO race_results VALUES (?, ?, ?)", (race_id, lane, lane))
         conn.executemany(
-            "INSERT INTO odds_snapshots (race_id, captured_at) VALUES (?, ?)",
+            "INSERT INTO odds_snapshots (race_id, captured_at, parser_version) VALUES (?, ?, 'odds3t_dom_v2')",
             [(race_id, f"{race_date}T10:{minute:02d}:00+09:00") for minute in range(snapshots)],
         )
     counts = dataset_counts(

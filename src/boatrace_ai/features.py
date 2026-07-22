@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .constants import CLASS_RANK, LANES
+from .odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 
 
 def pre_t5_odds_count_sql(conn, *, race_alias: str = "r") -> str:
@@ -21,6 +22,7 @@ def pre_t5_odds_count_sql(conn, *, race_alias: str = "r") -> str:
     return (
         "(SELECT COUNT(*) FROM odds_snapshots os "
         f"WHERE os.race_id = {race_alias}.race_id "
+        f"AND os.parser_version = '{TRIFECTA_PARSER_VERSION}' "
         f"AND {captured} <= {cutoff}) >= ?"
     )
 
@@ -193,10 +195,12 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
         SELECT os.snapshot_id, os.captured_at, ot.combination, ot.odds
         FROM odds_snapshots os
         JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
-        WHERE os.race_id = ? AND ot.odds IS NOT NULL
+        WHERE os.race_id = ?
+          AND os.parser_version = ?
+          AND ot.odds IS NOT NULL
         ORDER BY os.captured_at, os.snapshot_id
         """,
-        (race_id,),
+        (race_id, TRIFECTA_PARSER_VERSION),
     ).fetchall()
     rows = [
         row
@@ -219,13 +223,25 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
         if sid not in by_snapshot:
             ordered_ids.append(sid)
         by_snapshot[sid].append(row)
-    first_rows = by_snapshot[ordered_ids[0]]
-    latest_rows = by_snapshot[ordered_ids[-1]]
+    valid_ids = [
+        snapshot_id
+        for snapshot_id in ordered_ids
+        if plausible_trifecta_odds(
+            {
+                str(row["combination"]): float(row["odds"])
+                for row in by_snapshot[snapshot_id]
+            }
+        )
+    ]
+    if not valid_ids:
+        return {}
+    first_rows = by_snapshot[valid_ids[0]]
+    latest_rows = by_snapshot[valid_ids[-1]]
     first = _aggregate_odds(first_rows)
     latest = _aggregate_odds(latest_rows)
 
     features: dict[int, dict[str, float]] = {}
-    snapshot_count = float(len(ordered_ids))
+    snapshot_count = float(len(valid_ids))
     for lane in LANES:
         latest_lane = latest.get(lane, {})
         first_lane = first.get(lane, {})
@@ -248,29 +264,31 @@ def odds_lane_features(conn: sqlite3.Connection, race_id: str) -> dict[int, dict
 
 
 def latest_trifecta_odds(conn: sqlite3.Connection, race_id: str) -> dict[str, float]:
-    row = conn.execute(
+    rows = conn.execute(
         """
         SELECT snapshot_id
         FROM odds_snapshots
-        WHERE race_id = ?
+        WHERE race_id = ? AND parser_version = ?
         ORDER BY captured_at DESC, snapshot_id DESC
-        LIMIT 1
+        LIMIT 8
         """,
-        (race_id,),
-    ).fetchone()
-    if not row:
-        return {}
-    return {
-        item["combination"]: float(item["odds"])
-        for item in conn.execute(
-            """
-            SELECT combination, odds
-            FROM odds_trifecta
-            WHERE snapshot_id = ? AND odds IS NOT NULL
-            """,
-            (row["snapshot_id"],),
-        ).fetchall()
-    }
+        (race_id, TRIFECTA_PARSER_VERSION),
+    ).fetchall()
+    for row in rows:
+        odds = {
+            item["combination"]: float(item["odds"])
+            for item in conn.execute(
+                """
+                SELECT combination, odds
+                FROM odds_trifecta
+                WHERE snapshot_id = ? AND odds IS NOT NULL
+                """,
+                (row["snapshot_id"],),
+            ).fetchall()
+        }
+        if plausible_trifecta_odds(odds):
+            return odds
+    return {}
 
 
 def latest_trifecta_odds_before_deadline(
@@ -306,12 +324,13 @@ def latest_trifecta_odds_before_deadline(
         JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
         WHERE os.race_id = ?
           AND os.bet_type = 'trifecta'
+          AND os.parser_version = ?
           AND ot.odds IS NOT NULL
           AND ot.odds > 0
         GROUP BY os.snapshot_id, os.captured_at, os.source_update_time
         HAVING COUNT(ot.odds) >= ?
         """,
-        (race_id, min_combinations),
+        (race_id, TRIFECTA_PARSER_VERSION, min_combinations),
     ).fetchall()
 
     eligible = []
@@ -324,29 +343,31 @@ def latest_trifecta_odds_before_deadline(
     if not eligible:
         return None
 
-    _captured_at, snapshot_id, snapshot = max(eligible, key=lambda item: (item[0], item[1]))
-    odds_rows = conn.execute(
-        """
-        SELECT combination, odds
-        FROM odds_trifecta
-        WHERE snapshot_id = ?
-          AND odds IS NOT NULL
-          AND odds > 0
-        """,
-        (snapshot_id,),
-    ).fetchall()
-    odds = {row["combination"]: float(row["odds"]) for row in odds_rows}
-    if len(odds) < min_combinations:
-        return None
-
-    return {
-        "snapshot_id": snapshot_id,
-        "captured_at": snapshot["captured_at"],
-        "source_update_time": snapshot["source_update_time"],
-        "odds_deadline_at": odds_deadline_at.isoformat(timespec="seconds"),
-        "odds_count": len(odds),
-        "odds": odds,
-    }
+    for _captured_at, snapshot_id, snapshot in sorted(
+        eligible, key=lambda item: (item[0], item[1]), reverse=True
+    ):
+        odds_rows = conn.execute(
+            """
+            SELECT combination, odds
+            FROM odds_trifecta
+            WHERE snapshot_id = ?
+              AND odds IS NOT NULL
+              AND odds > 0
+            """,
+            (snapshot_id,),
+        ).fetchall()
+        odds = {row["combination"]: float(row["odds"]) for row in odds_rows}
+        if len(odds) < min_combinations or not plausible_trifecta_odds(odds):
+            continue
+        return {
+            "snapshot_id": snapshot_id,
+            "captured_at": snapshot["captured_at"],
+            "source_update_time": snapshot["source_update_time"],
+            "odds_deadline_at": odds_deadline_at.isoformat(timespec="seconds"),
+            "odds_count": len(odds),
+            "odds": odds,
+        }
+    return None
 
 
 def _parse_race_time(value: str) -> datetime | None:

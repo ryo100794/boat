@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from boatrace_ai.ingestion.parsers import parse_odds3t_html
+from boatrace_ai.odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 from boatrace_ai.postgresql import connection
 
 
@@ -77,8 +78,9 @@ def repair_archives(
             html = _tar_member(archive, member).decode("utf-8", errors="replace")
             parsed = parse_odds3t_html(html)
             if (
-                parsed.get("parser_version") != "odds3t_dom_v2"
+                parsed.get("parser_version") != TRIFECTA_PARSER_VERSION
                 or int(parsed.get("parsed_count") or 0) != 120
+                or not plausible_trifecta_odds(parsed.get("odds") or {})
             ):
                 parse_failed += 1
                 continue
@@ -96,7 +98,7 @@ def repair_archives(
                 WHERE snapshot_id = ?
                 """,
                 (
-                    "odds3t_dom_v2",
+                    TRIFECTA_PARSER_VERSION,
                     json.dumps(parsed, ensure_ascii=False, sort_keys=True),
                     snapshot_id,
                 ),

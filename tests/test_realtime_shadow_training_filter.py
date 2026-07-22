@@ -1,3 +1,5 @@
+from itertools import permutations
+
 import numpy as np
 from scipy.sparse import csr_matrix
 
@@ -30,13 +32,21 @@ def test_shadow_training_requires_odds_history_and_complete_results(tmp_path) ->
                 for snapshot, minute in enumerate((*range(10), 16, 21)):
                     cursor = conn.execute(
                         "INSERT INTO odds_snapshots "
-                        "(race_id, bet_type, captured_at) VALUES (?, '3t', ?)",
+                        "(race_id, bet_type, captured_at, parser_version) VALUES (?, 'trifecta', ?, 'odds3t_dom_v2')",
                         (race_id, f"2026-07-18T10:{minute:02}:00+09:00"),
                     )
-                    conn.execute(
+                    conn.executemany(
                         "INSERT INTO odds_trifecta "
-                        "(snapshot_id, race_id, combination, odds) VALUES (?, ?, '1-2-3', ?)",
-                        (cursor.lastrowid, race_id, 10.0 + snapshot),
+                        "(snapshot_id, race_id, combination, odds) VALUES (?, ?, ?, ?)",
+                        [
+                            (
+                                cursor.lastrowid,
+                                race_id,
+                                "-".join(map(str, combination)),
+                                10.0 + snapshot,
+                            )
+                            for combination in permutations(range(1, 7), 3)
+                        ],
                     )
 
         features, labels, meta = load_training_examples(

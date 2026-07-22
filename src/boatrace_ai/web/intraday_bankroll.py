@@ -6,10 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from ..base_features import prediction_features
-from ..fast_math import TRIFECTA_COMBINATIONS
 from ..historical_model import positive_probs
 from ..legacy_model_aliases import load_model_bundle
 from ..modeling import _normalize_lane_probs, trifecta_predictions
+from ..odds_quality import (
+    TRIFECTA_COMBINATION_KEYS,
+    TRIFECTA_PARSER_VERSION,
+    plausible_trifecta_odds,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -20,9 +24,8 @@ FRACTIONAL_KELLY = 0.25
 RACE_CAP_FRACTION = 0.10
 TICKET_CAP_FRACTION = 0.03
 STAKE_UNIT_YEN = 100
-MAX_LANE_MARKER_ODDS = 8
 PAYOUT_PRIOR_WEIGHT = 30.0
-COMBINATIONS = tuple("-".join(map(str, item)) for item in TRIFECTA_COMBINATIONS)
+COMBINATIONS = TRIFECTA_COMBINATION_KEYS
 MODEL_FILES = (
     ("no_odds_v8", "no_odds_v8 主系", "win_model_no_odds_v8.joblib"),
     ("no_odds_v7", "no_odds_v7", "win_model_no_odds_v7.joblib"),
@@ -412,11 +415,11 @@ def _latest_valid_odds_snapshot(
         FROM odds_snapshots os
         WHERE os.race_id = ? AND os.bet_type = 'trifecta'
           AND os.captured_at <= ?
-          AND os.parser_version = 'odds3t_dom_v2'
+          AND os.parser_version = ?
         ORDER BY os.captured_at DESC, os.snapshot_id DESC
         LIMIT 8
         """,
-        (race_id, cutoff_utc),
+        (race_id, cutoff_utc, TRIFECTA_PARSER_VERSION),
     ).fetchall()
     rejected = 0
     expected = set(COMBINATIONS)
@@ -434,7 +437,7 @@ def _latest_valid_odds_snapshot(
             for item in odds_rows
             if item["odds"] is not None
         }
-        if set(odds) != expected or not _plausible_odds(odds):
+        if set(odds) != expected or not plausible_trifecta_odds(odds):
             rejected += 1
             continue
         return {
@@ -444,15 +447,6 @@ def _latest_valid_odds_snapshot(
         }, rejected
     return None, rejected
 
-
-def _plausible_odds(odds: dict[str, float]) -> bool:
-    values = list(odds.values())
-    return (
-        len(values) == 120
-        and all(math.isfinite(value) and value >= 1.0 for value in values)
-        and sum(value in {1, 2, 3, 4, 5, 6} for value in values)
-        <= MAX_LANE_MARKER_ODDS
-    )
 
 
 def _allocate_race(

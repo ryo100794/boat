@@ -57,8 +57,8 @@ def _insert_race(
         return
     cursor = conn.execute(
         """
-        INSERT INTO odds_snapshots (race_id, bet_type, captured_at, source_update_time)
-        VALUES (?, 'trifecta', ?, '11:54')
+        INSERT INTO odds_snapshots (race_id, bet_type, captured_at, source_update_time, parser_version)
+        VALUES (?, 'trifecta', ?, '11:54', 'odds3t_dom_v2')
         """,
         (race_id, f"{race_date}T11:54:00+09:00"),
     )
@@ -118,12 +118,14 @@ def test_flat_top5_profit_and_prediction_metrics(tmp_path) -> None:
 
 def test_five_times_odds_is_not_break_even_at_thirty_percent_top5_hit_rate(tmp_path) -> None:
     specs = []
+    odds = _all_odds(10.0)
+    odds.update({combination: 5.0 for combination in TOP5})
     for index in range(10):
         hit = index < 3
         race_id = f"2026-07-19-01-{index + 1:02d}"
         actual = (1, 2, 3, 4, 5, 6) if hit else (6, 5, 4, 3, 2, 1)
         winning = "1-2-3" if hit else "6-5-4"
-        specs.append((_prediction(race_id, actual_order=actual), winning, 500, _all_odds(5.0)))
+        specs.append((_prediction(race_id, actual_order=actual), winning, 500, odds))
 
     result = _evaluate(tmp_path, specs)
     strategy = result["strategies"]["B_top5_odds_gte_5"]
@@ -155,7 +157,7 @@ def test_race_without_complete_real_odds_is_excluded_from_all_strategies(tmp_pat
 
 
 def test_ev_strategy_uses_pl_probability_times_pre_deadline_odds(tmp_path) -> None:
-    odds = _all_odds(1.0)
+    odds = _all_odds(1.1)
     odds["1-2-3"] = 20.0
     prediction = _prediction("2026-07-19-01-01", actual_order=(1, 2, 3, 4, 5, 6))
 

@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
 from ..official import race_page_url, ymd
+from ..odds_quality import TRIFECTA_PARSER_VERSION
 from ..standard_evaluation import (
     MODEL_SOURCES,
     POLICY as STANDARD_POLICY,
@@ -296,10 +297,11 @@ def odds(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
             FROM odds_snapshots os
             JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
             WHERE os.race_id = ?
+              AND os.parser_version = ?
               AND ot.combination IN ({placeholders})
             ORDER BY os.captured_at, ot.combination
             """,
-            (race_id, *query_combinations),
+            (race_id, TRIFECTA_PARSER_VERSION, *query_combinations),
         ).fetchall()
 
     trends = {combination: [] for combination in query_combinations}
