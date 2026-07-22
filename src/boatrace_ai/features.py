@@ -323,6 +323,7 @@ def latest_trifecta_odds_before_deadline(
     race_id: str,
     *,
     min_combinations: int = 120,
+    decision_lead_minutes: int = 0,
 ) -> dict[str, Any] | None:
     race = conn.execute(
         """
@@ -338,7 +339,12 @@ def latest_trifecta_odds_before_deadline(
     start_at = _parse_race_time(str(race["deadline_at"]))
     if start_at is None:
         return None
-    odds_deadline_at = start_at - timedelta(minutes=5)
+    betting_deadline_at = start_at - timedelta(
+        minutes=STORED_START_TO_BETTING_DEADLINE_MINUTES
+    )
+    odds_deadline_at = betting_deadline_at - timedelta(
+        minutes=max(0, int(decision_lead_minutes))
+    )
 
     snapshots = conn.execute(
         """
@@ -391,6 +397,8 @@ def latest_trifecta_odds_before_deadline(
             "captured_at": snapshot["captured_at"],
             "source_update_time": snapshot["source_update_time"],
             "odds_deadline_at": odds_deadline_at.isoformat(timespec="seconds"),
+            "betting_deadline_at": betting_deadline_at.isoformat(timespec="seconds"),
+            "decision_lead_minutes": max(0, int(decision_lead_minutes)),
             "odds_count": len(odds),
             "odds": odds,
         }

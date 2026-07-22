@@ -23,7 +23,10 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
-from ..features import latest_trifecta_odds_before_deadline
+from ..features import (
+    MODEL_DECISION_LEAD_MINUTES,
+    latest_trifecta_odds_before_deadline,
+)
 from ..modeling import trifecta_predictions
 from ..odds_quality import TRIFECTA_PARSER_VERSION
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
@@ -42,7 +45,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 6
+MARKET_EVALUATION_VERSION = 7
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -890,6 +893,7 @@ def score_real_odds_races(
             conn,
             race_id,
             min_combinations=120,
+            decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
         )
         if snapshot is None or len(snapshot.get("odds") or {}) != 120:
             skipped_no_odds += 1

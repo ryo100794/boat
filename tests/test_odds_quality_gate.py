@@ -43,7 +43,7 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
             "VALUES (?, '2026-07-22', '01', '桐生', 1, '2026-07-22T12:00:00+09:00')",
             (race_id,),
         )
-        insert_odds_snapshot(
+        model_id = insert_odds_snapshot(
             conn,
             race_id,
             "2026-07-22T02:49:00+00:00",
@@ -82,6 +82,9 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
 
         latest = latest_trifecta_odds(conn, race_id)
         cutoff = latest_trifecta_odds_before_deadline(conn, race_id)
+        decision_cutoff = latest_trifecta_odds_before_deadline(
+            conn, race_id, decision_lead_minutes=5
+        )
         lane_features = odds_lane_features(conn, race_id)
         signature = odds_data_signature(
             conn, from_date="2026-07-22", through_date="2026-07-22"
@@ -91,6 +94,10 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
     assert cutoff is not None
     assert cutoff["snapshot_id"] == valid_id
     assert set(cutoff["odds"].values()) == {12.0}
+    assert decision_cutoff is not None
+    assert decision_cutoff["snapshot_id"] == model_id
+    assert decision_cutoff["decision_lead_minutes"] == 5
+    assert decision_cutoff["betting_deadline_at"].endswith("11:55:00+09:00")
     assert {row["snapshot_count"] for row in lane_features.values()} == {1.0}
     assert {row["latest_mean"] for row in lane_features.values()} == {15.0}
     assert signature["snapshot_count"] == 3

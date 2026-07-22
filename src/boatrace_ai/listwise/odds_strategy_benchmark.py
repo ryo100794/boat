@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from ..db import connection, init_db
-from ..features import latest_trifecta_odds_before_deadline
+from ..features import (
+    MODEL_DECISION_LEAD_MINUTES,
+    latest_trifecta_odds_before_deadline,
+)
 
 
 BET_TYPE = "3連単"
@@ -75,6 +78,7 @@ def evaluate_odds_strategies(
             conn,
             race_id,
             min_combinations=120,
+            decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
         )
         odds = _normal_odds(odds_snapshot)
         if odds is None:

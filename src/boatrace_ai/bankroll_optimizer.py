@@ -22,7 +22,10 @@ from .bankroll_backtest import (
     _load_trifecta_payouts,
 )
 from .db import connection, init_db
-from .features import latest_trifecta_odds_before_deadline
+from .features import (
+    MODEL_DECISION_LEAD_MINUTES,
+    latest_trifecta_odds_before_deadline,
+)
 from .feature_tuning import (
     FEATURE_SET,
     iter_scored_races,
@@ -181,7 +184,11 @@ def adaptive_bankroll_streaming(
             real_odds_snapshot = None
             if require_real_odds:
                 if race_id_value not in real_odds_by_race:
-                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(conn, race_id_value)
+                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(
+                        conn,
+                        race_id_value,
+                        decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
+                    )
                 real_odds_snapshot = real_odds_by_race[race_id_value]
                 if real_odds_snapshot is None:
                     skipped_no_real_odds += 1

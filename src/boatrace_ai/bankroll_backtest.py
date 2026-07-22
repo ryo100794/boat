@@ -10,7 +10,11 @@ from sklearn.metrics import brier_score_loss
 
 from .bankroll_policy import race_confidence
 from .db import connection, init_db
-from .features import latest_trifecta_odds_before_deadline, load_training_examples
+from .features import (
+    MODEL_DECISION_LEAD_MINUTES,
+    latest_trifecta_odds_before_deadline,
+    load_training_examples,
+)
 from .modeling import (
     _make_pipeline,
     _normalize_lane_probs,
@@ -132,7 +136,11 @@ def bankroll_backtest(
             real_odds_snapshot = None
             if require_real_odds:
                 if race_id_value not in real_odds_by_race:
-                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(conn, race_id_value)
+                    real_odds_by_race[race_id_value] = latest_trifecta_odds_before_deadline(
+                        conn,
+                        race_id_value,
+                        decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
+                    )
                 real_odds_snapshot = real_odds_by_race[race_id_value]
                 if real_odds_snapshot is None:
                     skipped_no_real_odds += 1

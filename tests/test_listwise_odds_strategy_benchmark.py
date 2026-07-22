@@ -58,9 +58,9 @@ def _insert_race(
     cursor = conn.execute(
         """
         INSERT INTO odds_snapshots (race_id, bet_type, captured_at, source_update_time, parser_version)
-        VALUES (?, 'trifecta', ?, '11:54', 'odds3t_dom_v2')
+        VALUES (?, 'trifecta', ?, '11:49', 'odds3t_dom_v2')
         """,
-        (race_id, f"{race_date}T11:54:00+09:00"),
+        (race_id, f"{race_date}T11:49:00+09:00"),
     )
     snapshot_id = cursor.lastrowid
     conn.executemany(
