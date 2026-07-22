@@ -12,6 +12,12 @@ from ..adaptive_allocation import (
 )
 from ..bankroll_backtest import _build_payout_model
 from ..fast_math import TRIFECTA_COMBINATIONS
+from ..roi_attribution import (
+    merge_roi_attribution,
+    new_roi_attribution,
+    summarize_fold_signal_stability,
+    summarize_roi_attribution,
+)
 
 
 COMBINATION_LABELS = tuple(
@@ -285,7 +291,14 @@ def simulate_direct_bankroll(
     totals = zero_totals()
     daily = []
     state = (0, 0, 0)
-    for race_date in sorted({str(row[1]) for row in race_keys}):
+    race_dates = sorted({str(row[1]) for row in race_keys})
+    fold_count = min(5, len(race_dates))
+    fold_attributions = [new_roi_attribution() for _ in range(fold_count)]
+    for day_index, race_date in enumerate(race_dates):
+        fold_index = min(
+            fold_count - 1,
+            day_index * fold_count // len(race_dates),
+        )
         result = allocate_adaptive_day(
             race_date,
             candidates_by_day.get(race_date, []),
@@ -306,6 +319,7 @@ def simulate_direct_bankroll(
                 selected_policy["stake_granularity_yen"]
             ),
             min_stake_yen=int(selected_policy["min_stake_yen"]),
+            roi_attribution=fold_attributions[fold_index],
         )
         state = append_day_result(
             daily,
@@ -317,6 +331,17 @@ def simulate_direct_bankroll(
         )
     stake_yen = int(totals["stake_yen"])
     return_yen = int(totals["return_yen"])
+    attribution = new_roi_attribution()
+    for fold_attribution in fold_attributions:
+        merge_roi_attribution(attribution, fold_attribution)
+    attribution_summary = summarize_roi_attribution(attribution)
+    fold_summaries = [
+        summarize_roi_attribution(fold_attribution)
+        for fold_attribution in fold_attributions
+    ]
+    attribution_summary["fold_stability"] = summarize_fold_signal_stability(
+        fold_summaries
+    )
     return {
         "policy": selected_policy,
         "evaluation_days": len(daily),
@@ -332,5 +357,6 @@ def simulate_direct_bankroll(
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),
+        "ticket_roi_attribution": attribution_summary,
         "daily": daily,
     }
