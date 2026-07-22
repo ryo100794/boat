@@ -22,6 +22,10 @@ def test_model_report_exposes_newton_market_residual_shadow(tmp_path) -> None:
         json.dumps(
             {
                 "evaluation_date": "2026-07-22",
+                "point_metrics": {
+                    "calibrated_trifecta_log_loss": 3.78665,
+                    "calibrated_trifecta_top5_hit_rate": 0.31858,
+                },
                 "log_loss_difference_calibrated_minus_market": {
                     "observations": 113,
                     "mean_difference": -0.02843,
@@ -46,6 +50,8 @@ def test_model_report_exposes_newton_market_residual_shadow(tmp_path) -> None:
     assert "Newton法" in residual["training"]
     assert residual["promotion_eligible"] is False
     assert residual["market_comparison_races"] == 113
+    assert residual["entry_log_loss"] == 3.78665
+    assert residual["trifecta_top5_hit_rate"] == 0.31858
     assert residual["market_log_loss_delta"] == -0.02843
     assert residual["market_log_loss_delta_ci95_upper"] == 0.00212
     assert residual["market_improvement_probability"] == 0.966

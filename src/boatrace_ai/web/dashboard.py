@@ -1678,9 +1678,16 @@ def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
     loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
     if not isinstance(loss, dict):
         return {}
+    point = payload.get("point_metrics") or {}
     return {
         "market_comparison_date": payload.get("evaluation_date"),
         "market_comparison_races": loss.get("observations"),
+        "market_probe_log_loss": _float_or_none(
+            point.get("calibrated_trifecta_log_loss")
+        ),
+        "market_probe_top5_hit_rate": _float_or_none(
+            point.get("calibrated_trifecta_top5_hit_rate")
+        ),
         "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
         "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
         "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
@@ -1756,6 +1763,17 @@ def _market_calibrated_model_tracks(
         calibrated_log_loss = _float_or_none(
             metrics.get("calibrated_trifecta_log_loss")
         )
+        displayed_log_loss = (
+            calibrated_log_loss
+            if calibrated_log_loss is not None
+            else bootstrap.get("market_probe_log_loss")
+        )
+        formal_top5 = _float_or_none(metrics.get("trifecta_top5_hit_rate"))
+        displayed_top5 = (
+            formal_top5
+            if formal_top5 is not None
+            else bootstrap.get("market_probe_top5_hit_rate")
+        )
         if track_id in {"market_residual_shadow", "market_cutoff_residual_probe"}:
             training = (
                 "2係数log-pool Newton法 / 日次前進正則化選択 / "
@@ -1783,14 +1801,12 @@ def _market_calibrated_model_tracks(
                 "eligible_races": metrics.get("evaluated_races"),
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),
-                "entry_log_loss": calibrated_log_loss,
-                "trifecta_log_loss": calibrated_log_loss,
+                "entry_log_loss": displayed_log_loss,
+                "trifecta_log_loss": displayed_log_loss,
                 "model_trifecta_log_loss": _float_or_none(
                     metrics.get("model_trifecta_log_loss")
                 ),
-                "trifecta_top5_hit_rate": _float_or_none(
-                    metrics.get("trifecta_top5_hit_rate")
-                ),
+                "trifecta_top5_hit_rate": displayed_top5,
                 "model_trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("model_trifecta_top5_hit_rate")
                 ),

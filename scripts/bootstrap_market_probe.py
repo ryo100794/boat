@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         "evaluation_date": evaluation_date,
         "calibrator_strategy": strategy,
         "calibrator": calibrator,
+        "point_metrics": fold.get("probability_metrics") or {},
         "log_loss_difference_calibrated_minus_market": paired_mean_bootstrap(
             loss_differences,
             samples=args.samples,
