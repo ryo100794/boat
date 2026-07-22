@@ -7,12 +7,14 @@ from boatrace_ai.listwise.direct_bankroll import (
     standard_direct_policy,
 )
 from boatrace_ai.listwise.return_bankroll import (
+    _select_return_regularization,
     simulate_expected_return_calibrated_bankroll,
 )
 
 from boatrace_ai.listwise.return_calibrator import (
     FEATURE_COUNT,
     expected_return_features,
+    expected_return_poisson_loss,
     fit_expected_return_calibrator,
     predict_expected_returns,
 )
@@ -43,6 +45,19 @@ def test_expected_return_features_encode_candidate_market_edge() -> None:
     assert matrix[0, 45] == 1.0
     assert matrix[0, 56] > 0.0
     assert matrix[1, 56] < 0.0
+
+
+def test_poisson_validation_loss_prefers_calibrated_returns() -> None:
+    race_keys = [("r1", "2026-07-01", "01", 1)]
+    payouts = {"r1": {"combination": "1-2-3", "payout_yen": 200}}
+    calibrated = expected_return_poisson_loss(
+        np.asarray([[2.0, 0.1]]), race_keys, payouts, COMBINATION_INDEX
+    )
+    reversed_values = expected_return_poisson_loss(
+        np.asarray([[0.1, 2.0]]), race_keys, payouts, COMBINATION_INDEX
+    )
+
+    assert calibrated < reversed_values
 
 
 def test_newton_return_calibrator_learns_relative_value() -> None:
@@ -91,6 +106,42 @@ def test_newton_return_calibrator_learns_relative_value() -> None:
     assert predicted[:500, 0].mean() > predicted[:500, 1].mean()
     assert predicted[500:, 1].mean() > predicted[500:, 0].mean()
     assert 0.8 < predicted[:500, 0].mean() < 1.5
+
+
+def test_return_regularization_uses_pre_policy_temporal_validation() -> None:
+    target_index = ALL_COMBINATIONS.index("1-2-3")
+    race_keys = [
+        (f"r-{day}-{race}", f"2026-06-{day:02d}", "01", race)
+        for day in range(1, 5)
+        for race in range(1, 6)
+    ]
+    candidate = np.full((20, 120), 0.4 / 119.0)
+    candidate[:, target_index] = 0.6
+    market = np.full((20, 120), 0.8 / 119.0)
+    market[:, target_index] = 0.2
+    payouts = {
+        race_key[0]: {"combination": "1-2-3", "payout_yen": 200}
+        for race_key in race_keys
+    }
+
+    selected, diagnostics, period = _select_return_regularization(
+        candidate,
+        market,
+        race_keys,
+        payouts,
+        fit_stop=15,
+        validation_days=1,
+        candidates=(0.1, 1.0),
+        fallback=0.01,
+        max_iterations=5,
+        batch_races=10,
+    )
+
+    assert selected in {0.01, 0.1, 1.0}
+    assert len(diagnostics) == 3
+    assert all(np.isfinite(row["poisson_loss"]) for row in diagnostics)
+    assert period["fit_through"] == "2026-06-02"
+    assert period["validation_from"] == "2026-06-03"
 
 
 def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:

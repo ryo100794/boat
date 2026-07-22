@@ -20,6 +20,7 @@ from .direct_bankroll import (
     standard_direct_policy,
 )
 from .return_calibrator import (
+    expected_return_poisson_loss,
     fit_expected_return_calibrator,
     predict_expected_returns,
 )
@@ -184,6 +185,78 @@ def _adaptive_threshold_diagnostics(
     return diagnostics
 
 
+def _select_return_regularization(
+    candidate_probabilities: np.ndarray,
+    market_probabilities: np.ndarray,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    *,
+    fit_stop: int,
+    validation_days: int,
+    candidates: tuple[float, ...],
+    fallback: float,
+    max_iterations: int,
+    batch_races: int,
+) -> tuple[float, list[dict[str, Any]], dict[str, Any] | None]:
+    validation_split = calibration_policy_split(
+        race_keys[:fit_stop], selection_days=validation_days
+    )
+    candidate_values = tuple(
+        sorted({float(fallback), *(float(value) for value in candidates)})
+    )
+    if validation_split is None:
+        return float(fallback), [], None
+    diagnostics = []
+    for regularization in candidate_values:
+        model = fit_expected_return_calibrator(
+            candidate_probabilities[:validation_split],
+            market_probabilities[:validation_split],
+            race_keys[:validation_split],
+            payouts,
+            COMBINATION_LANES,
+            COMBINATION_INDEX,
+            regularization=regularization,
+            max_iterations=max_iterations,
+            batch_races=batch_races,
+        )
+        predicted = predict_expected_returns(
+            model,
+            candidate_probabilities[validation_split:fit_stop],
+            market_probabilities[validation_split:fit_stop],
+            race_keys[validation_split:fit_stop],
+            COMBINATION_LANES,
+            batch_races=batch_races,
+        )
+        loss = expected_return_poisson_loss(
+            predicted,
+            race_keys[validation_split:fit_stop],
+            payouts,
+            COMBINATION_INDEX,
+        )
+        diagnostics.append(
+            {
+                "regularization": regularization,
+                "poisson_loss": loss,
+                "iterations": int(model.iterations),
+                "converged": bool(model.converged),
+                "gradient_norm": float(model.gradient_norm),
+            }
+        )
+    selected = min(
+        diagnostics,
+        key=lambda row: (float(row["poisson_loss"]), -float(row["regularization"])),
+    )
+    period = {
+        "fit_from": str(race_keys[0][1]),
+        "fit_through": str(race_keys[validation_split - 1][1]),
+        "validation_from": str(race_keys[validation_split][1]),
+        "validation_through": str(race_keys[fit_stop - 1][1]),
+        "fit_races": validation_split,
+        "validation_races": fit_stop - validation_split,
+    }
+    return float(selected["regularization"]), diagnostics, period
+
+
 def simulate_expected_return_calibrated_bankroll(
     probabilities: np.ndarray,
     *,
@@ -195,12 +268,16 @@ def simulate_expected_return_calibrated_bankroll(
     calibration_race_keys: list[tuple[str, str, str, int]],
     policy: dict[str, Any] | None = None,
     regularization: float = 0.01,
+    regularization_candidates: tuple[float, ...] = (0.001, 0.01, 0.1, 1.0),
+    regularization_validation_days: int = 15,
     max_iterations: int = 20,
     batch_races: int = 500,
     policy_selection_days: int = 30,
     threshold_candidates: tuple[float, ...] = DEFAULT_THRESHOLD_CANDIDATES,
     minimum_selection_tickets: int = 100,
     minimum_selection_roi: float = 1.05,
+    minimum_selection_hits: int = 10,
+    minimum_selection_winning_days: int = 8,
 ) -> dict[str, Any]:
     values = np.asarray(probabilities, dtype=np.float64)
     market_values = np.asarray(market_reference_probabilities, dtype=np.float64)
@@ -227,6 +304,26 @@ def simulate_expected_return_calibrated_bankroll(
         calibration_race_keys,
         selection_days=policy_selection_days,
     )
+    selected_regularization = float(regularization)
+    regularization_diagnostics: list[dict[str, Any]] = []
+    regularization_period = None
+    if split is not None:
+        (
+            selected_regularization,
+            regularization_diagnostics,
+            regularization_period,
+        ) = _select_return_regularization(
+            calibration_values,
+            calibration_market_values,
+            calibration_race_keys,
+            payouts,
+            fit_stop=split,
+            validation_days=regularization_validation_days,
+            candidates=regularization_candidates,
+            fallback=regularization,
+            max_iterations=max_iterations,
+            batch_races=batch_races,
+        )
     policy_diagnostics: list[dict[str, Any]] = []
     selected_threshold = fixed_threshold
     selection_source = "fallback_fixed_threshold"
@@ -239,7 +336,7 @@ def simulate_expected_return_calibrated_bankroll(
             payouts,
             COMBINATION_LANES,
             COMBINATION_INDEX,
-            regularization=regularization,
+            regularization=selected_regularization,
             max_iterations=max_iterations,
             batch_races=batch_races,
         )
@@ -265,6 +362,8 @@ def simulate_expected_return_calibrated_bankroll(
             fallback=fixed_threshold,
             minimum_tickets=minimum_selection_tickets,
             minimum_roi=minimum_selection_roi,
+            minimum_hits=minimum_selection_hits,
+            minimum_winning_days=minimum_selection_winning_days,
         )
         selection_period = {
             "fit_from": str(calibration_race_keys[0][1]),
@@ -282,7 +381,7 @@ def simulate_expected_return_calibrated_bankroll(
         payouts,
         COMBINATION_LANES,
         COMBINATION_INDEX,
-        regularization=regularization,
+        regularization=selected_regularization,
         max_iterations=max_iterations,
         batch_races=batch_races,
     )
@@ -302,7 +401,7 @@ def simulate_expected_return_calibrated_bankroll(
                 "pre-evaluation all-ticket expected-return Poisson calibration"
             ),
             "market_reference": "fixed baseline probability",
-            "expected_return_regularization": float(regularization),
+            "expected_return_regularization": float(selected_regularization),
             "expected_return_training_samples": int(calibrator.training_samples),
             "selection": (
                 "pre-evaluation temporal threshold selection; no evaluation-period tuning"
@@ -375,6 +474,18 @@ def simulate_expected_return_calibrated_bankroll(
             sorted({str(row[1]) for row in race_keys}),
             fixed_policy,
         )
+    result["regularization_selection"] = {
+        "source": (
+            "pre_evaluation_poisson_validation"
+            if regularization_diagnostics
+            else "fallback_fixed_regularization"
+        ),
+        "fallback_regularization": float(regularization),
+        "selected_regularization": float(selected_regularization),
+        "validation_days": int(regularization_validation_days),
+        "period": regularization_period,
+        "diagnostics": regularization_diagnostics,
+    }
     result["return_calibrator"] = {
         "method": "Poisson log-link damped Newton",
         "regularization": float(calibrator.regularization),
@@ -392,6 +503,8 @@ def simulate_expected_return_calibrated_bankroll(
         "selection_days": int(policy_selection_days),
         "minimum_tickets": int(minimum_selection_tickets),
         "minimum_roi": float(minimum_selection_roi),
+        "minimum_hits": int(minimum_selection_hits),
+        "minimum_winning_days": int(minimum_selection_winning_days),
         "period": selection_period,
         "threshold_diagnostics": policy_diagnostics,
     }

@@ -594,12 +594,20 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         ),
         calibration_race_keys=race_keys[validation_start:train_end],
         regularization=args.return_regularization,
+        regularization_candidates=tuple(args.return_regularizations),
+        regularization_validation_days=(
+            args.return_regularization_validation_days
+        ),
         max_iterations=args.return_max_iterations,
         batch_races=args.return_batch_races,
         policy_selection_days=args.return_policy_selection_days,
         threshold_candidates=tuple(args.return_threshold_candidates),
         minimum_selection_tickets=args.return_minimum_selection_tickets,
         minimum_selection_roi=args.return_minimum_selection_roi,
+        minimum_selection_hits=args.return_minimum_selection_hits,
+        minimum_selection_winning_days=(
+            args.return_minimum_selection_winning_days
+        ),
     )
     expected_return_fixed_bankroll = expected_return_bankroll.pop(
         "fixed_threshold_comparison", None
@@ -756,6 +764,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-iterations", type=int, default=100)
     parser.add_argument("--batch-races", type=int, default=4_000)
     parser.add_argument("--return-regularization", type=float, default=0.01)
+    parser.add_argument(
+        "--return-regularizations",
+        type=float,
+        nargs="+",
+        default=[0.001, 0.01, 0.1, 1.0],
+    )
+    parser.add_argument(
+        "--return-regularization-validation-days", type=int, default=15
+    )
     parser.add_argument("--return-max-iterations", type=int, default=20)
     parser.add_argument("--return-batch-races", type=int, default=500)
     parser.add_argument("--return-policy-selection-days", type=int, default=30)
@@ -767,6 +784,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--return-minimum-selection-tickets", type=int, default=100)
     parser.add_argument("--return-minimum-selection-roi", type=float, default=1.05)
+    parser.add_argument("--return-minimum-selection-hits", type=int, default=10)
+    parser.add_argument(
+        "--return-minimum-selection-winning-days", type=int, default=8
+    )
     parser.add_argument("--promote-legacy-cache", action="store_true")
     return parser
 

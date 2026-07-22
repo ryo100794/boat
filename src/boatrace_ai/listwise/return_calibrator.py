@@ -142,6 +142,36 @@ def _objective_gradient_hessian(
     return objective, gradient, hessian
 
 
+def expected_return_poisson_loss(
+    predicted_returns: np.ndarray,
+    race_keys: Sequence[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    combination_index: dict[str, int],
+) -> float:
+    predicted = np.asarray(predicted_returns, dtype=np.float64)
+    if predicted.ndim != 2 or predicted.shape[0] != len(race_keys):
+        raise ValueError("predicted returns and race keys must align")
+    if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
+        raise ValueError("predicted returns must be finite and positive")
+    valid_indices = [
+        index
+        for index, race_key in enumerate(race_keys)
+        if str(race_key[0]) in payouts
+        and str(payouts[str(race_key[0])].get("combination"))
+        in combination_index
+    ]
+    if not valid_indices:
+        raise ValueError("Poisson validation requires complete payouts")
+    targets = expected_return_targets(
+        [race_keys[index] for index in valid_indices],
+        payouts,
+        combination_index,
+        predicted.shape[1],
+    )
+    means = predicted[valid_indices]
+    return float(np.mean(means - targets * np.log(means)))
+
+
 def fit_expected_return_calibrator(
     candidate_probabilities: np.ndarray,
     market_probabilities: np.ndarray,

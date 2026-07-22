@@ -102,6 +102,29 @@ def test_adaptive_threshold_diagnostics_use_operational_allocator() -> None:
     assert diagnostics[1]["profit_yen"] > 0
 
 
+def test_threshold_selection_rejects_sparse_wins() -> None:
+    threshold, source = select_policy_threshold(
+        [
+            {
+                "ev_threshold": 1.25,
+                "tickets": 102,
+                "hits": 3,
+                "winning_days": 3,
+                "roi": 1.21,
+                "profit_yen": 5_000,
+            }
+        ],
+        fallback=1.20,
+        minimum_tickets=100,
+        minimum_roi=1.05,
+        minimum_hits=10,
+        minimum_winning_days=8,
+    )
+
+    assert threshold == 1.20
+    assert source == "fallback_fixed_threshold"
+
+
 def test_threshold_selection_falls_back_without_evidence() -> None:
     threshold, source = select_policy_threshold(
         [{"ev_threshold": 1.05, "tickets": 99, "roi": 2.0, "profit_yen": 100}],

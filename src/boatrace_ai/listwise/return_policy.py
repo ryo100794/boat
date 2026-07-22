@@ -80,11 +80,15 @@ def select_policy_threshold(
     fallback: float,
     minimum_tickets: int,
     minimum_roi: float,
+    minimum_hits: int = 0,
+    minimum_winning_days: int = 0,
 ) -> tuple[float, str]:
     eligible = [
         row
         for row in diagnostics
         if int(row["tickets"]) >= minimum_tickets
+        and int(row.get("hits") or 0) >= minimum_hits
+        and int(row.get("winning_days") or 0) >= minimum_winning_days
         and float(row["roi"]) >= minimum_roi
         and int(row["profit_yen"]) > 0
     ]
