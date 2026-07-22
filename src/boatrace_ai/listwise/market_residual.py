@@ -272,3 +272,21 @@ def select_regularization_prequential(
         "final_calibrator": final_calibrator,
         "candidates": candidates,
     }
+
+
+def fit_fixed_regularization(
+    races: list[dict[str, Any]], *, regularization: float = 1.0
+) -> dict[str, Any]:
+    dates = sorted({str(race["race_date"]) for race in races})
+    calibrator = fit_log_pool_newton(races, regularization=regularization)
+    return {
+        "validation_design": (
+            "Regularization is preregistered because fewer than two calibration "
+            "days are available; no holdout selection is performed"
+        ),
+        "dates": dates,
+        "selected_regularization": float(regularization),
+        "prequential_log_loss": None,
+        "final_calibrator": calibrator,
+        "candidates": [],
+    }

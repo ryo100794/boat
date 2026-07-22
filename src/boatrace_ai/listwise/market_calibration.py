@@ -785,9 +785,19 @@ def walk_forward_evaluate(
         holdout = by_day[evaluation_date]
         calibrator_selection = None
         if calibrator_strategy == "newton_residual":
-            from .market_residual import select_regularization_prequential
+            from .market_residual import (
+                fit_fixed_regularization,
+                select_regularization_prequential,
+            )
 
-            calibrator_selection = select_regularization_prequential(calibration_races)
+            calibration_day_count = len(
+                {str(race["race_date"]) for race in calibration_races}
+            )
+            calibrator_selection = (
+                select_regularization_prequential(calibration_races)
+                if calibration_day_count >= 2
+                else fit_fixed_regularization(calibration_races)
+            )
             calibrator = dict(calibrator_selection["final_calibrator"])
             calibrator_grid = []
         elif calibrator_strategy == "grid":

@@ -1,6 +1,7 @@
 import math
 
 from boatrace_ai.listwise.market_residual import (
+    fit_fixed_regularization,
     fit_log_pool_newton,
     log_pool_probabilities,
     residual_probability_metrics,
@@ -63,3 +64,18 @@ def test_regularization_selection_is_forward_only() -> None:
         for candidate in result["candidates"]
         for fold in candidate["folds"]
     )
+
+
+def test_single_day_calibration_uses_preregistered_regularization() -> None:
+    races = [
+        _race("2026-07-20", "1-2-3", 0.8, 0.55),
+        _race("2026-07-20", "1-3-2", 0.2, 0.45),
+    ]
+
+    result = fit_fixed_regularization(races)
+
+    assert result["dates"] == ["2026-07-20"]
+    assert result["selected_regularization"] == 1.0
+    assert result["prequential_log_loss"] is None
+    assert result["candidates"] == []
+    assert result["final_calibrator"]["converged"] is True

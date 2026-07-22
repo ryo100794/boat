@@ -102,3 +102,44 @@ def test_walk_forward_executes_newton_residual_branch(monkeypatch) -> None:
     assert result["evaluation_races"] == 1
     assert result["folds"][0]["calibrator_selection"] is selected
     assert result["folds"][0]["calibrator"]["model_weight"] == 0.1
+
+
+def test_walk_forward_supports_preregistered_single_day_provisional_track(
+    monkeypatch,
+) -> None:
+    races = [
+        _race("2026-07-20", "1-2-3"),
+        _race("2026-07-21", "1-3-2"),
+    ]
+    fixed = {
+        "validation_design": "preregistered single-day calibration",
+        "selected_regularization": 1.0,
+        "final_calibrator": {
+            "model_weight": 0.1,
+            "temperature": 0.9,
+            "model_coefficient": 1.0 / 9.0,
+            "market_coefficient": 1.0,
+        },
+        "candidates": [],
+    }
+    monkeypatch.setattr(market_residual, "fit_fixed_regularization", lambda races: fixed)
+    monkeypatch.setattr(
+        market_calibration,
+        "select_policy",
+        lambda *args, **kwargs: ({"name": "no_bet", "no_bet": True}, []),
+    )
+    monkeypatch.setattr(
+        market_calibration,
+        "select_flat_policy",
+        lambda *args, **kwargs: ({"name": "no_bet", "no_bet": True}, []),
+    )
+
+    result = market_calibration.walk_forward_evaluate(
+        races,
+        min_calibration_days=1,
+        calibrator_strategy="newton_residual",
+    )
+
+    selection = result["folds"][0]["calibrator_selection"]
+    assert result["evaluation_days"] == 1
+    assert selection is fixed
