@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from boatrace_ai.db import connection
+
 
 JST = timezone(timedelta(hours=9))
 
@@ -186,11 +188,11 @@ def audit(conn: sqlite3.Connection, race_date: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit per-race collection completeness for one day")
-    parser.add_argument("--db", default="data/boatrace.sqlite", type=Path)
+    parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--date", required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    with sqlite3.connect(args.db) as conn:
+    with connection(args.db) as conn:
         result = audit(conn, args.date)
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
