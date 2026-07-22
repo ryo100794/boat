@@ -284,8 +284,13 @@ def simulate_conditional_payout_walk_forward(
     fold_count = min(5, len(dates))
     fold_attributions = [new_roi_attribution() for _ in range(fold_count)]
     combination_rows = list(COMBINATION_LABELS)
+    ev_thresholds = (0.80, 0.90, 1.00, 1.05, 1.10, 1.20)
+    ev_counts = {f"{threshold:.2f}": 0 for threshold in ev_thresholds}
+    max_estimated_ev = 0.0
+    residual_variances = []
     for day_index, race_date in enumerate(dates):
         model = fit_conditional_payout_statistics(statistics, ridge=ridge)
+        residual_variances.append(float(model.residual_variance))
         row_indices = row_indices_by_date[race_date]
         day_keys = [race_keys[index] for index in row_indices]
         day_probabilities = values[row_indices]
@@ -297,6 +302,10 @@ def simulate_conditional_payout_walk_forward(
             flat_combinations,
             flat_keys,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
+        estimated_ev = day_probabilities * estimated_odds
+        max_estimated_ev = max(max_estimated_ev, float(estimated_ev.max()))
+        for threshold in ev_thresholds:
+            ev_counts[f"{threshold:.2f}"] += int(np.sum(estimated_ev >= threshold))
         candidates = []
         evaluated_races = set()
         for local_index, race_key in enumerate(day_keys):
@@ -390,6 +399,17 @@ def simulate_conditional_payout_walk_forward(
         "max_drawdown_yen": int(state[2]),
         "payout_training_samples_initial": int(initial_samples),
         "payout_training_samples_final": int(statistics.samples),
+        "payout_diagnostics": {
+            "candidate_combinations": int(len(race_keys) * len(COMBINATION_LABELS)),
+            "max_estimated_ev": max_estimated_ev,
+            "estimated_ev_at_least": ev_counts,
+            "residual_variance_initial": (
+                residual_variances[0] if residual_variances else None
+            ),
+            "residual_variance_final": (
+                residual_variances[-1] if residual_variances else None
+            ),
+        },
         "ticket_roi_attribution": attribution_summary,
         "daily": daily,
     }

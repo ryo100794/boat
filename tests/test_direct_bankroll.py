@@ -207,3 +207,12 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert result["payout_training_samples_final"] == 62
     assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
     assert result["evaluated_races"] == 2
+    diagnostics = result["payout_diagnostics"]
+    assert diagnostics["candidate_combinations"] == 240
+    assert np.isfinite(diagnostics["max_estimated_ev"])
+    assert diagnostics["max_estimated_ev"] > 0.0
+    counts = diagnostics["estimated_ev_at_least"]
+    assert counts["0.80"] >= counts["0.90"] >= counts["1.00"]
+    assert counts["1.00"] >= counts["1.05"] >= counts["1.10"] >= counts["1.20"]
+    assert diagnostics["residual_variance_initial"] >= 0.0
+    assert diagnostics["residual_variance_final"] >= 0.0
