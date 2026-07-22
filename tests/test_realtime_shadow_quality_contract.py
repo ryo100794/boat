@@ -66,3 +66,5 @@ def test_model_report_hides_pre_quality_filter_odds_metrics(tmp_path) -> None:
     assert shadow["entry_log_loss"] is None
     assert shadow["winner_top1_accuracy"] is None
     assert shadow["trifecta_top5_hit_rate"] is None
+    assert "3fold暫定" in shadow["training"]
+    assert "450R到達後" in shadow["training"]

@@ -1471,14 +1471,26 @@ def _model_track_summaries(
     )
     shadow = raw_shadow if shadow_current else None
     shadow_stale = bool(raw_shadow and not shadow_current)
-    shadow_training = (
-        f"過去ログ+展示・天候・進入・地元・艇機+T-5 odds系列 / StandardScaler / LogisticRegression "
-        f"C=0.20・class_weightなし / 3fold暫定・評価{int(shadow.get('evaluated_races') or 0)}R"
-        if shadow_is_provisional and shadow
-        else "過去ログ+展示・天候・進入・地元・艇機+T-5 odds系列 / StandardScaler / LogisticRegression "
-        "C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習"
+    shadow_feature_summary = (
+        "過去ログ+展示・天候・進入・地元・艇機+T-5 odds系列 / "
+        "StandardScaler / LogisticRegression C=0.20・class_weightなし"
     )
+    if shadow_is_provisional:
+        provisional_progress = (
+            f"評価{int(shadow.get('evaluated_races') or 0)}R"
+            if shadow
+            else f"{required:,}R到達後に暫定学習"
+        )
+        shadow_training = (
+            f"{shadow_feature_summary} / 3fold暫定・{provisional_progress}"
+        )
+    else:
+        shadow_training = (
+            f"{shadow_feature_summary} / 5fold時系列・1,000R到達後に正式学習"
+        )
     shadow_status = (
+
+
         "品質更新後の再蓄積中"
         if shadow_stale
         else "評価済み"
