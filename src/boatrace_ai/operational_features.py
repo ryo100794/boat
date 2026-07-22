@@ -7,6 +7,7 @@ from typing import Any
 from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .features import _num
 from .base_features import _group_by_race, race_relative_features
+from .feature_schema import FEATURE_SCHEMA_VERSION, uses_missing_safe_series
 from .contextual_features import RollingState, _race_sort_key
 from .series_features_form import base_pastlog_features
 
@@ -185,7 +186,12 @@ def cached_series_features(row: sqlite3.Row) -> dict[str, Any]:
     return {field: _num(row[field]) for field in CACHE_FIELDS}
 
 
-def series_relative_features(rows: list[sqlite3.Row]) -> dict[int, dict[str, float]]:
+def series_relative_features(
+    rows: list[sqlite3.Row],
+    *,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> dict[int, dict[str, float]]:
+    missing_safe = uses_missing_safe_series(feature_schema_version)
     by_lane = {int(row["lane"]): cached_series_features(row) for row in rows}
     out = {lane: {} for lane in by_lane}
     for field, high_is_good in SERIES_RELATIVE_FIELDS.items():
@@ -197,16 +203,29 @@ def series_relative_features(rows: list[sqlite3.Row]) -> dict[int, dict[str, flo
             std = variance ** 0.5 or 1.0
         else:
             std = 1.0
-        ranks = _ranks(values, high_is_good=high_is_good)
+        ranks = (
+            _ranks(values, high_is_good=high_is_good)
+            if missing_safe
+            else _legacy_ranks(values, high_is_good=high_is_good)
+        )
         for lane, value in values.items():
             is_present = value >= 0
-            out[lane][f"has_{field}"] = int(is_present)
+            if missing_safe:
+                out[lane][f"has_{field}"] = int(is_present)
             out[lane][f"{field}_rank"] = ranks[lane]
             out[lane][f"{field}_vs_mean"] = (
-                value - mean if is_present and mean >= 0 else 0.0
+                value - mean
+                if is_present and mean >= 0
+                else 0.0
+                if missing_safe
+                else -1.0
             )
             out[lane][f"{field}_z"] = (
-                (value - mean) / std if is_present and mean >= 0 else 0.0
+                (value - mean) / std
+                if is_present and mean >= 0
+                else 0.0
+                if missing_safe
+                else -1.0
             )
     return out
 
@@ -223,3 +242,11 @@ def _ranks(values: dict[int, float], *, high_is_good: bool) -> dict[int, int]:
             previous = value
         result[lane] = rank
     return result
+
+
+def _legacy_ranks(values: dict[int, float], *, high_is_good: bool) -> dict[int, int]:
+    ordered = sorted(
+        values.items(),
+        key=lambda item: (item[1] < 0, -item[1] if high_is_good else item[1], item[0]),
+    )
+    return {lane: index + 1 for index, (lane, _) in enumerate(ordered)}

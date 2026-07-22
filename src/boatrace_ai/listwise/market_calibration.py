@@ -103,6 +103,7 @@ def iter_artifact_feature_rows(
         conn,
         include_races=target_ids,
         drop_feature_groups=artifact_drop_feature_groups(artifact),
+        feature_schema_version=artifact.get("feature_schema_version"),
     )
 
 

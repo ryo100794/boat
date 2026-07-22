@@ -1,4 +1,5 @@
 from boatrace_ai.cache_entry_series_features import CACHE_FIELDS
+from boatrace_ai.feature_schema import LEGACY_FEATURE_SCHEMA_VERSION
 from boatrace_ai.operational_features import _ranks, series_relative_features
 
 
@@ -49,3 +50,16 @@ def test_series_presence_is_separate_from_competition_rank() -> None:
     assert features[3]["series_starts_rank"] == 3
     assert features[4]["has_series_starts"] == 0
     assert features[4]["series_starts_rank"] == 0
+
+
+def test_legacy_schema_reproduces_old_missing_encoding() -> None:
+    features = series_relative_features(
+        [_row(lane) for lane in range(1, 7)],
+        feature_schema_version=LEGACY_FEATURE_SCHEMA_VERSION,
+    )
+
+    for lane in range(1, 7):
+        assert "has_series_starts" not in features[lane]
+        assert features[lane]["series_starts_rank"] == lane
+        assert features[lane]["series_starts_vs_mean"] == -1.0
+        assert features[lane]["series_starts_z"] == -1.0

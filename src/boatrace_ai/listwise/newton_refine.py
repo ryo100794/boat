@@ -416,6 +416,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "feature_variant": selected["feature_variant"],
             "drop_feature_groups": dropped,
             "n_features": int(search_result["n_features"]),
+            "feature_schema_version": search_result["feature_schema_version"],
             "trained_races": selection_end,
             "trained_through": race_keys[selection_end - 1],
             "target": selected["target"],

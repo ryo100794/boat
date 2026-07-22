@@ -44,6 +44,7 @@ def score_date(conn, *, artifact: dict[str, Any], race_date: str) -> dict[str, A
             race_rows,
             state,
             drop_feature_groups=dropped,
+            feature_schema_version=artifact.get("feature_schema_version"),
         )
         matrix = _ensure_sparse_index32(
             hasher.transform([to_hashable(item["features"]) for item in feature_rows])

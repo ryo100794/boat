@@ -14,11 +14,12 @@ import numpy as np
 from scipy import sparse
 from sklearn.feature_extraction import FeatureHasher
 
+from .feature_schema import FEATURE_SCHEMA_VERSION
+
 
 # Version 1 files are left in place and rejected per prefix; callers lazily rebuild
 # them as version 2 instead of globally invalidating caches used by running jobs.
 CACHE_VERSION = 2
-FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing-safe"
 
 
 @dataclass(frozen=True)

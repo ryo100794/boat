@@ -374,6 +374,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "feature_variant": "drop_base_pastlog",
         "drop_feature_groups": dropped,
         "n_features": n_features,
+        "feature_schema_version": manifest["feature_schema_version"],
         "trained_races": train_end,
         "trained_through": race_keys[train_end - 1],
         "training_cutoff": args.training_through,

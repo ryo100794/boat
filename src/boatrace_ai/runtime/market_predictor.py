@@ -151,6 +151,7 @@ class MarketPredictor:
                 race_rows,
                 state,
                 drop_feature_groups=dropped,
+                feature_schema_version=self._artifact.get("feature_schema_version"),
             )
             probabilities[race_id] = artifact_model_probabilities(
                 self._artifact, feature_rows

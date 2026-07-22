@@ -297,6 +297,9 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "feature_variant": evaluation_stage_artifact.get("feature_variant"),
         "drop_feature_groups": dropped,
         "n_features": n_features,
+        "feature_schema_version": evaluation_stage_artifact.get(
+            "feature_schema_version"
+        ),
         "trained_races": evaluation_stage_artifact.get("trained_races"),
         "trained_through": evaluation_stage_artifact.get("trained_through"),
         "training_cutoff": evaluation_stage_artifact.get("training_cutoff"),

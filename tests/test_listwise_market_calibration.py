@@ -248,11 +248,12 @@ def test_predefined_ticket_diagnostics_are_separate_from_policy_selection() -> N
 def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
     observed = {}
 
-    def fake_rows(conn, *, include_races, drop_feature_groups):
+    def fake_rows(conn, *, include_races, drop_feature_groups, feature_schema_version):
         observed.update(
             conn=conn,
             include_races=include_races,
             drop_feature_groups=drop_feature_groups,
+            feature_schema_version=feature_schema_version,
         )
         return iter(())
 
@@ -271,5 +272,6 @@ def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
         "conn": "connection",
         "include_races": {"race-1"},
         "drop_feature_groups": ("base_pastlog",),
+        "feature_schema_version": None,
     }
     assert artifact_drop_feature_groups({}) == ()

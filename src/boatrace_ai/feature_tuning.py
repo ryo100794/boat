@@ -26,6 +26,7 @@ from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
 from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
 from .contextual_features import RollingState, _race_sort_key
+from .feature_schema import FEATURE_SCHEMA_VERSION
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
 from .modeling import _race_level_metrics
@@ -502,6 +503,7 @@ def iter_scored_races(
     bundle: dict[str, Any],
     include_races: set[str],
     drop_feature_groups: Iterable[str] | str | None = None,
+    feature_schema_version: str | None = None,
 ) -> Iterable[list[dict[str, Any]]]:
     if drop_feature_groups is None:
         drop_feature_groups = bundle.get("drop_feature_groups", ())
@@ -512,6 +514,9 @@ def iter_scored_races(
         conn,
         include_races=include_races,
         drop_feature_groups=drop_feature_groups,
+        feature_schema_version=(
+            feature_schema_version or bundle.get("feature_schema_version")
+        ),
     ):
         features = [to_hashable(item["features"]) for item in race_features]
         matrix = _ensure_sparse_index32(hasher.transform(features))
@@ -541,12 +546,14 @@ def iter_training_entries(
     *,
     include_races: set[str] | None = None,
     drop_feature_groups: Iterable[str] | str | None = None,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> Iterable[tuple[dict[str, Any], int, dict[str, Any]]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     for race_features in iter_race_feature_rows(
         conn,
         include_races=include_races,
         drop_feature_groups=drop_feature_groups,
+        feature_schema_version=feature_schema_version,
     ):
         for item in race_features:
             meta = item["meta"]
@@ -558,6 +565,7 @@ def iter_race_feature_rows(
     *,
     include_races: set[str] | None = None,
     drop_feature_groups: Iterable[str] | str | None = None,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> Iterable[list[dict[str, Any]]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     state = RollingState()
@@ -575,7 +583,12 @@ def iter_race_feature_rows(
             current_date = race_date_value
         use_race = include_races is None or race_id_value in include_races
         if use_race:
-            yield build_race_features(race_rows, state, drop_feature_groups=drop_feature_groups)
+            yield build_race_features(
+                race_rows,
+                state,
+                drop_feature_groups=drop_feature_groups,
+                feature_schema_version=feature_schema_version,
+            )
         day_updates.append(race_rows)
     for rows in day_updates:
         state.update_race(rows)
@@ -586,6 +599,7 @@ def build_race_features(
     state: RollingState,
     *,
     drop_feature_groups: Iterable[str] | str | None = None,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> list[dict[str, Any]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     dropped = set(drop_feature_groups)
@@ -598,7 +612,14 @@ def build_race_features(
         if "base_pastlog" not in dropped
         else {}
     )
-    series_relatives = series_relative_features(race_rows) if "series_relative" not in dropped else {}
+    series_relatives = (
+        series_relative_features(
+            race_rows,
+            feature_schema_version=feature_schema_version,
+        )
+        if "series_relative" not in dropped
+        else {}
+    )
     out = []
     for row in race_rows:
         lane = int(row["lane"])

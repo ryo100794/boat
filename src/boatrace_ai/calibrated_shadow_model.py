@@ -270,6 +270,7 @@ def iter_scored_races(
         conn,
         include_races=include_races,
         drop_feature_groups=bundle.get("drop_feature_groups", ()),
+        feature_schema_version=bundle.get("feature_schema_version"),
     ):
         raw = predict_probabilities(
             bundle,
