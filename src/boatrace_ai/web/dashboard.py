@@ -1735,6 +1735,20 @@ def _listwise_model_tracks(
             "FeatureHasher 4,096 / 4特徴群drop-one / race-softmax / Adam / 未使用10% holdout",
         ),
         (
+            "listwise_missing_safe_365d",
+            "listwise 欠損安全化 365日",
+            "listwise_missing_safe_365d_5fold.json",
+            "公式過去10年の確定6艇レース / 上位3着Plackett-Luce教師 / 欠損値は順位0・派生値0とpresence特徴へ分離",
+            "FeatureHasher 16,384 / 2025-07-18から365日48,424R・5fold / 学習内で教師とL2を選択",
+        ),
+        (
+            "listwise_legacy_schema_365d",
+            "listwise 旧欠損表現 対照群",
+            "listwise_legacy_schema_365d_5fold.json",
+            "欠損安全化モデルと同じレース・教師候補 / 旧スキーマでは欠損順位と派生値を従来表現のまま使用",
+            "FeatureHasher 16,384 / 2025-07-18から365日48,424R・5fold / 新スキーマとの対照評価専用",
+        ),
+        (
             "newton_listwise_bankroll",
             "listwise Newton-CG shadow",
             "listwise_newton_cg_v1.json",

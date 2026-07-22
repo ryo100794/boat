@@ -82,3 +82,27 @@ def test_model_tracks_include_listwise_search_and_newton(tmp_path) -> None:
     assert by_id["newton_listwise_bankroll"]["status"] == "待機中"
     assert "Plackett-Luce" in by_id["feature_teacher_search"]["teacher"]
     assert "Newton-CG" in by_id["newton_listwise_bankroll"]["training"]
+
+
+def test_model_tracks_keep_missing_safe_and_legacy_ablation_separate(tmp_path) -> None:
+    (tmp_path / "listwise_missing_safe_365d_5fold.json").write_text(
+        '{"evaluated_races":48424,"entry_log_loss":0.33,'
+        '"winner_top1_accuracy":0.57,"trifecta_top5_hit_rate":0.32,'
+        '"roi":0.84,"profit_yen":-1000}',
+        encoding="utf-8",
+    )
+    rows = _model_track_summaries(tmp_path, [], {"jobs": []})
+    by_id = {row["id"]: row for row in rows}
+
+    current = by_id["listwise_missing_safe_365d"]
+    legacy = by_id["listwise_legacy_schema_365d"]
+    assert current["status"] == "完了"
+    assert current["eligible_races"] == 48424
+    assert current["entry_log_loss"] == 0.33
+    assert current["winner_top1_accuracy"] == 0.57
+    assert current["trifecta_top5_hit_rate"] == 0.32
+    assert current["roi"] == 0.84
+    assert current["profit_yen"] == -1000
+    assert "欠損値は順位0" in current["teacher"]
+    assert legacy["status"] == "未登録"
+    assert "旧スキーマ" in legacy["teacher"]
