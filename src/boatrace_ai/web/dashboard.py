@@ -985,6 +985,29 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             errors.append({"file": path.name, "error": str(exc)})
             continue
         label = _report_label(path, data)
+        conditional_metrics = data.get("conditional_order")
+        direct_bankroll = data.get("bankroll")
+        if isinstance(conditional_metrics, dict) and isinstance(direct_bankroll, dict):
+            probability_result = {
+                **conditional_metrics,
+                "model": data.get("model"),
+                "generated_at": data.get("generated_at"),
+                "entry_log_loss": conditional_metrics.get("trifecta_log_loss"),
+            }
+            bankroll_result = {
+                **direct_bankroll,
+                "model": data.get("model"),
+                "generated_at": data.get("generated_at"),
+                "entry_log_loss": conditional_metrics.get("trifecta_log_loss"),
+                "trifecta_top1_hit_rate": conditional_metrics.get("trifecta_top1_hit_rate"),
+                "trifecta_top5_hit_rate": conditional_metrics.get("trifecta_top5_hit_rate"),
+            }
+            backtests.append(_backtest_summary(path, label, probability_result))
+            bankroll.append(_bankroll_summary(path, label, bankroll_result))
+            daily_rows = _daily_report_rows(direct_bankroll.get("daily") or [])
+            if daily_rows:
+                bankroll_daily[label] = daily_rows
+            continue
         if _is_feature_correlation_result(data):
             feature_diagnostics.append(_feature_correlation_summary(path, label, data))
         if _is_bankroll_result(data):
@@ -1626,6 +1649,13 @@ def _listwise_model_tracks(
             "FeatureHasher 4,096・base_pastlog除外固定 / scaler移送warm start + 行列フリーNewton-CG",
         ),
         (
+            "conditional_order_365d",
+            "条件付き着順遷移 365日候補",
+            "conditional_order_365d.json",
+            "2025-07-19以前446,384R・固定Newton艇スコア・1-3着の公式確定順序",
+            "着順別temperature 3係数 + 条件付き遷移108係数・L-BFGS・学習内90日でL2選択",
+        ),
+        (
             "stagewise_mlp_365d",
             "着順別 stagewise MLP 365日",
             "stagewise_mlp_365d.json",
@@ -1649,6 +1679,19 @@ def _listwise_model_tracks(
         status = job.get("status") or (
             "完了" if local_result and not local_result.get("error") else "未登録"
         )
+        conditional = kind == "conditional_order_365d"
+        if conditional and local_result:
+            if local_result.get("promotion_eligible"):
+                status = "総合昇格ゲート通過"
+            elif local_result.get("bankroll_gate"):
+                status = "要改善/収益ゲート未達"
+            else:
+                status = "資金運用評価待ち"
+        log_loss = (
+            metrics.get("trifecta_log_loss")
+            if conditional
+            else metrics.get("entry_log_loss")
+        )
         rows.append({
             "id": kind,
             "label": label,
@@ -1660,10 +1703,17 @@ def _listwise_model_tracks(
             "training": training,
             "eligible_races": metrics.get("evaluated_races") or metrics.get("holdout_races"),
             "target_races": None,
-            "backtest_available": status == "完了" and bool(result),
-            "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+            "backtest_available": bool(result) and (status == "完了" or conditional),
+            "entry_log_loss": _float_or_none(log_loss),
             "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
             "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
+            "roi": _float_or_none(metrics.get("roi")),
+            "profit_yen": metrics.get("profit_yen"),
+            "promotion_eligible": (
+                bool(local_result.get("promotion_eligible"))
+                if conditional and local_result
+                else None
+            ),
         })
     return rows
 
@@ -3897,6 +3947,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
         data.get("after_refit")
         or data.get("holdout_after_newton")
         or data.get("holdout")
+        or data.get("conditional_order")
         or data.get("stagewise")
         or (data.get("final_evaluation") or {}).get("selected_blend")
         or {}
@@ -3923,7 +3974,10 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
     result["status"] = data.get("status")
     result["feature_set"] = data.get("feature_set")
     result["market_comparison"] = data.get("market_comparison")
-    result["daily"] = data.get("daily") or []
+    result["daily"] = (data.get("bankroll") or {}).get("daily") or data.get("daily") or []
+    result["promotion_eligible"] = data.get("promotion_eligible")
+    result["structure_gate"] = data.get("structure_gate")
+    result["bankroll_gate"] = data.get("bankroll_gate")
     if isinstance(data.get("folds"), list):
         result["folds"] = len(data["folds"])
     if "ticket_roi_attribution" in data:
