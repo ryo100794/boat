@@ -266,14 +266,47 @@ def main() -> int:
             earlier_decision_lead_minutes=args.earlier_decision_lead_minutes,
             max_snapshot_age_seconds=args.max_snapshot_age_seconds,
         )
+    evaluation = evaluate_momentum_candidate(
+        augmented,
+        evaluation_date=args.evaluation_date,
+        fixed_regularization=args.fixed_regularization,
+    )
+    incremental = evaluation["momentum_vs_baseline"]
+    versus_market = evaluation["momentum_vs_market"]
+    incremental_loss = incremental["log_loss_difference"]
+    incremental_top5 = incremental["top5_hit_difference"]
+    incremental_pass = bool(
+        float(incremental_loss["ci95_upper"]) <= 0.0
+        and float(incremental_top5["ci95_lower"]) >= 0.0
+    )
+    market_loss = versus_market["log_loss_difference"]
+    market_top5 = versus_market["top5_hit_difference"]
+    market_confidence_pass = bool(
+        float(market_loss["ci95_upper"]) <= 0.0
+        and float(market_top5["ci95_lower"]) >= 0.0
+    )
+    momentum_metrics = evaluation["momentum_newton_residual"]["metrics"]
     payload = {
+        "status": (
+            "candidate_requires_new_day_confirmation"
+            if incremental_pass
+            else "rejected_no_incremental_value"
+        ),
+        "promotion_eligible": False,
         "source_cache": str(args.cache),
         "dataset": dataset,
-        **evaluate_momentum_candidate(
-            augmented,
-            evaluation_date=args.evaluation_date,
-            fixed_regularization=args.fixed_regularization,
-        ),
+        "evaluated_races": momentum_metrics["evaluated_races"],
+        "calibrated_trifecta_log_loss": momentum_metrics["trifecta_log_loss"],
+        "trifecta_top5_hit_rate": momentum_metrics["trifecta_top5_hit_rate"],
+        "incremental_confidence_pass": incremental_pass,
+        "market_comparison": {
+            "comparison_role": "paired development holdout; momentum minus T-5 market",
+            "evaluation_races": momentum_metrics["evaluated_races"],
+            "log_loss_difference_calibrated_minus_market": market_loss,
+            "top5_hit_difference_calibrated_minus_market": market_top5,
+            "confidence_pass": market_confidence_pass,
+        },
+        **evaluation,
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output:

@@ -1759,6 +1759,14 @@ def _market_calibrated_model_tracks(
             "7/17以前固定再学習 / 7/20-21で残差較正 / 7/22開発評価",
             "listwise_market_cutoff_residual_intraday_bootstrap.json",
         ),
+        (
+            "market_momentum_probe",
+            "market_momentum_probe",
+            "T-10→T-5オッズ推移 開発診断",
+            "listwise_market_momentum_intraday_probe.json",
+            "T-10/T-5実オッズ / 5分換算モメンタム / 7/21較正・7/22開発評価",
+            None,
+        ),
     )
     rows = []
     for kind, track_id, label, model_file, teacher, bootstrap_file in specs:
@@ -1794,7 +1802,11 @@ def _market_calibrated_model_tracks(
             if formal_top5 is not None
             else bootstrap.get("market_probe_top5_hit_rate")
         )
-        if track_id in {"market_residual_shadow", "market_cutoff_residual_probe"}:
+        if track_id in {
+            "market_residual_shadow",
+            "market_cutoff_residual_probe",
+            "market_momentum_probe",
+        }:
             training = (
                 "2係数log-pool Newton法 / 日次前進正則化選択 / "
                 "完全日walk-forward / 1日1万円・100円単位"
@@ -1809,7 +1821,9 @@ def _market_calibrated_model_tracks(
                 "id": track_id,
                 "label": label,
                 "role": (
-                    "開発診断のみ・7/23以降で再確認"
+                    "開発診断のみ・増分なしで棄却"
+                    if track_id == "market_momentum_probe"
+                    else "開発診断のみ・7/23以降で再確認"
                     if track_id == "market_cutoff_residual_probe"
                     else "比較評価・no-bet判定のみ"
                 ),
