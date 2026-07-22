@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 from boatrace_ai.db import connection, init_db
@@ -47,6 +48,47 @@ def test_targeted_archive_queries_filter_before_aggregation(tmp_path) -> None:
     assert boat["summary"]["number"] == 18
 
 
+def test_archive_history_defaults_to_ten_years_and_pages_into_older_years(tmp_path) -> None:
+    db_path = tmp_path / "archive-pages.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        for index in range(81):
+            _seed(
+                conn,
+                f"2026-07-20-23-{index + 1:03d}",
+                (date(2026, 7, 20) - timedelta(days=index)).isoformat(),
+                "23",
+                index % 6 + 1,
+            )
+        _seed(conn, "2025-07-20-23-01", "2025-07-20", "23", 1)
+        _seed(conn, "2018-07-20-23-01", "2018-07-20", "23", 1)
+
+    first = dashboard.archive_history(
+        db_path, {"kind": ["racer"], "racer_no": ["4072"]}
+    )
+    second = dashboard.archive_history(
+        db_path,
+        {"kind": ["racer"], "racer_no": ["4072"], "offset": ["80"]},
+    )
+
+    assert first["period_days"] == 3650
+    assert first["summary"]["starts"] == 83
+    assert len(first["rows"]) == 80
+    assert first["pagination"] == {
+        "limit": 80,
+        "offset": 0,
+        "returned": 80,
+        "has_previous": False,
+        "has_more": True,
+    }
+    assert second["pagination"]["has_previous"] is True
+    assert second["pagination"]["has_more"] is False
+    assert {row["race_date"] for row in second["rows"]} >= {
+        "2025-07-20",
+        "2018-07-20",
+    }
+
+
 def test_archive_response_cache_reuses_identical_query(monkeypatch, tmp_path) -> None:
     dashboard._ARCHIVE_API_CACHE.clear()
     calls = []
@@ -81,6 +123,9 @@ def test_dashboard_uses_lazy_official_racer_photos() -> None:
     assert "drawTrend(data.series || [], state.combo)" in html
     assert 'ctx.fillText("オッズ",0,0)' in html
     assert 'ctx.fillText("取得時刻 (JST)"' in html
+    assert 'id="archivePeriod"' in html
+    assert 'function loadArchivePage(offset)' in html
+    assert 'localStorage.getItem("boat.archiveDays") || "3650"' in html
 
 
 def test_archive_stats_sql_is_portable_across_sqlite_and_postgresql(tmp_path) -> None:

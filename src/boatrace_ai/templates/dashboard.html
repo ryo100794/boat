@@ -148,6 +148,9 @@
     .archive-head h2 { margin:0; font-size:12px; }
     .archive-tabs { display:flex; gap:3px; align-items:center; flex-wrap:wrap; }
     .archive-tabs button,.entry-actions button,.race-title-actions button { height:18px; padding:0 5px; border-radius:3px; font-size:9px; background:#fff; color:var(--accent); border-color:#9bbdc1; }
+    .archive-period { height:18px; max-width:62px; padding:0 2px; border:1px solid #9bbdc1; border-radius:3px; background:#fff; color:var(--accent); font-size:9px; }
+    .archive-pager { display:flex; align-items:center; justify-content:flex-end; gap:3px; margin:3px 0; font-size:9px; }
+    .archive-pager button { height:18px; min-width:24px; padding:0 4px; border-radius:3px; font-size:9px; }
     .archive-meta { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .archive-content { max-height:430px; overflow:auto; border-top:1px solid var(--line); }
     .archive-kv { display:grid; grid-template-columns:repeat(4,minmax(82px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); margin:4px 0; }
@@ -206,6 +209,7 @@
               <button id="archivePast" type="button">過去総合</button>
               <button id="archiveToday" type="button">当日</button>
               <button id="archiveStats" type="button">統計</button>
+              <select id="archivePeriod" class="archive-period" title="履歴の表示期間"><option value="90">90日</option><option value="365">1年</option><option value="1095">3年</option><option value="3650">10年</option></select>
             </div>
           </div>
           <div id="archiveMeta" class="archive-meta">選択したレース/選手/場/モーター/ボート/枠の蓄積データを表示</div>
@@ -234,7 +238,7 @@
   </div>
 
 <script>
-const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null };
+const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null, archiveDays:Number(localStorage.getItem("boat.archiveDays") || "3650"), archiveView:"overview", archiveParams:{} };
 const $ = id => document.getElementById(id);
 function jstDate(){
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Tokyo", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(new Date());
@@ -243,6 +247,7 @@ function jstDate(){
 }
 const today = jstDate();
 $("raceDate").value = "";
+$("archivePeriod").value = String(state.archiveDays);
 $("reload").onclick = loadAll;
 $("bankrollModel").onchange = () => {
   state.bankModel = $("bankrollModel").value;
@@ -896,7 +901,11 @@ function archiveTable(rows, columns, options={}){
 }
 async function loadArchiveView(view, params={}, opts={}){
   const d = $("raceDate").value || "";
-  const merged = { date:d, ...params };
+  const scoped = view === "history" ? { days:state.archiveDays, ...params } : params;
+  const merged = { date:d, ...scoped };
+  state.archiveView = view;
+  state.archiveParams = { ...params };
+  $("archivePeriod").style.display = view === "history" ? "" : "none";
   const endpoint = view === "overview" ? "/api/archive/overview" : view === "today" ? "/api/archive/today" : view === "stats" ? "/api/archive/stats" : "/api/archive/history";
   $("archiveTitle").textContent = archiveTitle(view, merged);
   if(!opts.silent) $("archiveMeta").textContent = "読み込み中";
@@ -955,15 +964,25 @@ function renderArchiveToday(data){
     {key:"deadline_at",label:"締切/出",format:hm},{key:"entries",label:"出走"},{key:"odds_snapshots",label:"od"},{key:"beforeinfo_rows",label:"展示"},{key:"result_rows",label:"結果"},{key:"latest_prediction",label:"予測"}
   ], { raceLink:true });
 }
+function archivePager(p){
+  if(!p) return "";
+  const limit = Number(p.limit || 80), offset = Number(p.offset || 0), returned = Number(p.returned || 0);
+  const first = returned ? offset + 1 : 0, last = offset + returned;
+  return "<div class=\"archive-pager\"><span>" + first + "-" + last + "件</span><button type=\"button\" title=\"新しい履歴へ\" " + (p.has_previous ? "" : "disabled") + " onclick=\"loadArchivePage(" + Math.max(0, offset-limit) + ")\">&#x2039;</button><button type=\"button\" title=\"古い履歴へ\" " + (p.has_more ? "" : "disabled") + " onclick=\"loadArchivePage(" + (offset+limit) + ")\">&#x203a;</button></div>";
+}
+function loadArchivePage(offset){
+  loadArchiveView("history", { ...state.archiveParams, offset });
+}
 function renderArchiveHistory(data){
   const s = data.summary || {};
+  const pager = archivePager(data.pagination);
   $("archiveContent").innerHTML =
     archiveKvs([["対象",s.racer_name || s.venue_name || s.number || s.combination || s.lane || "-"],["出走/件数",s.starts || s.races || s.hits],["結果",s.result_rows || s.result_races],["1着率",s.win_rate,"pct"],["3着内",s.top3_rate,"pct"],["平均着",s.avg_rank],["平均ST",s.avg_start],["平均払戻",s.avg_payout_yen,"yen"]]) +
     (data.facets ? `<h3>内訳</h3>` + archiveTable(data.facets, [{key:"lane",label:"枠"},{key:"starts",label:"出走"},{key:"wins",label:"1着"},{key:"top3",label:"3内"},{key:"avg_start",label:"ST"}]) : "") +
-    `<h3>履歴</h3>` + archiveTable(data.rows || [], [
+    `<h3>履歴 <small>${data.cutoff_date || "-"}以降</small></h3>` + archiveTable(data.rows || [], [
       {key:"race_date",label:"日"},{key:"venue_name",label:"場"},{key:"rno",label:"R",mono:true},{key:"lane",label:"枠",mono:true},{key:"racer_name",label:"選手"},{key:"racer_class",label:"級"},
       {key:"motor_no",label:"M",mono:true},{key:"boat_no",label:"B",mono:true},{key:"rank",label:"着"},{key:"start_timing",label:"ST"},{key:"result_combination",label:"結果",mono:true},{key:"payout_yen",label:"払戻",format:yenCell}
-    ], { raceLink:true });
+    ], { raceLink:true }) + pager;
 }
 function renderArchiveStats(data){
   $("archiveContent").innerHTML =
@@ -974,6 +993,11 @@ function renderArchiveStats(data){
     ]);
 }
 function wireArchiveNav(){
+  $("archivePeriod").onchange = () => {
+    state.archiveDays = Number($("archivePeriod").value || 3650);
+    localStorage.setItem("boat.archiveDays", String(state.archiveDays));
+    if(state.archiveView === "history") loadArchiveView("history", { ...state.archiveParams, offset:0 });
+  };
   $("navPast").onclick = () => loadArchiveView("overview");
   $("navToday").onclick = () => loadArchiveView("today", { jcd: state.jcd || "" });
   $("navStats").onclick = () => loadArchiveView("stats", { scope:"lane" });
