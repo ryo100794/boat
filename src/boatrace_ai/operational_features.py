@@ -199,15 +199,27 @@ def series_relative_features(rows: list[sqlite3.Row]) -> dict[int, dict[str, flo
             std = 1.0
         ranks = _ranks(values, high_is_good=high_is_good)
         for lane, value in values.items():
+            is_present = value >= 0
+            out[lane][f"has_{field}"] = int(is_present)
             out[lane][f"{field}_rank"] = ranks[lane]
-            out[lane][f"{field}_vs_mean"] = value - mean if value >= 0 and mean >= 0 else -1.0
-            out[lane][f"{field}_z"] = (value - mean) / std if value >= 0 and mean >= 0 else -1.0
+            out[lane][f"{field}_vs_mean"] = (
+                value - mean if is_present and mean >= 0 else 0.0
+            )
+            out[lane][f"{field}_z"] = (
+                (value - mean) / std if is_present and mean >= 0 else 0.0
+            )
     return out
 
 
 def _ranks(values: dict[int, float], *, high_is_good: bool) -> dict[int, int]:
-    ordered = sorted(
-        values.items(),
-        key=lambda item: (item[1] < 0, -item[1] if high_is_good else item[1], item[0]),
-    )
-    return {lane: index + 1 for index, (lane, _) in enumerate(ordered)}
+    valid = [(lane, value) for lane, value in values.items() if value >= 0]
+    ordered = sorted(valid, key=lambda item: -item[1] if high_is_good else item[1])
+    result = {lane: 0 for lane in values}
+    previous: float | None = None
+    rank = 0
+    for index, (lane, value) in enumerate(ordered, start=1):
+        if previous is None or value != previous:
+            rank = index
+            previous = value
+        result[lane] = rank
+    return result
