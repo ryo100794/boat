@@ -80,7 +80,7 @@ def read_state(path: Path) -> dict[str, Any]:
 
 
 def build_command(args: argparse.Namespace, *, through_date: str) -> list[str]:
-    return [
+    command = [
         sys.executable,
         "-m",
         "boatrace_ai.listwise.market_calibration",
@@ -98,9 +98,14 @@ def build_command(args: argparse.Namespace, *, through_date: str) -> list[str]:
         str(args.daily_budget_yen),
         "--min-calibration-days",
         str(args.min_calibration_days),
+        "--calibrator-strategy",
+        args.calibrator_strategy,
         "--max-snapshot-age-seconds",
         str(args.max_snapshot_age_seconds),
     ]
+    if getattr(args, "scored_cache", None):
+        command.extend(["--scored-cache", args.scored_cache])
+    return command
 
 
 def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[str, Any]:
@@ -122,6 +127,7 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         output_path.exists()
         and previous_output.get("evaluation_version") == MARKET_EVALUATION_VERSION
         and previous_output.get("odds_data_signature") == odds_signature
+        and previous_output.get("calibrator_strategy") == args.calibrator_strategy
     )
     event: dict[str, Any] = {
         "generated_at": generated_at,
@@ -131,6 +137,7 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         "model": str(model_path),
         "model_sha256": model_hash,
         "evaluation_version": MARKET_EVALUATION_VERSION,
+        "calibrator_strategy": args.calibrator_strategy,
         "odds_data_signature": odds_signature,
     }
     if not evaluation_due(
@@ -188,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-date", default="2026-07-18")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--min-calibration-days", type=int, default=2)
+    parser.add_argument(
+        "--calibrator-strategy",
+        choices=("grid", "newton_residual"),
+        default="grid",
+    )
+    parser.add_argument("--scored-cache")
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=3600.0)
     parser.add_argument("--timeout", type=int, default=3600)

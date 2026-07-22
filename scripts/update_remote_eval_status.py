@@ -51,6 +51,7 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 0, "name": "stagewise_mlp_365d", "milestone": "M4-4", "kind": "stagewise_mlp_365d", "output": "data/models/stagewise_mlp_365d.json", "log": "logs/stagewise_mlp_365d.log"},
     {"pid": 0, "name": "stagewise_blend_preselected_20260717", "milestone": "M4-4", "kind": "stagewise_blend_preselected", "output": "data/models/stagewise_blend_preselected_20260717.json", "log": "logs/stagewise_blend_preselected_20260717.log"},
     {"pid": 0, "name": "stagewise_blend_market_shadow", "milestone": "M5/M6", "kind": "market_calibrated_blend_shadow", "output": "data/models/stagewise_blend_market_shadow.json", "log": "logs/runtime/market-calibrated-blend-shadow.log"},
+    {"pid": 0, "name": "listwise_market_residual_shadow", "milestone": "M5/M6", "kind": "market_residual_shadow", "output": "data/models/listwise_market_residual_shadow.json", "log": "logs/runtime/market-residual-shadow.log"},
 ]
 
 REMOTE_CODE = r'''

@@ -1667,6 +1667,13 @@ def _market_calibrated_model_tracks(
             "stagewise_blend_market_shadow.json",
             "365日で固定した50:50 blend / T-5市場暗黙確率 / 7/18以降walk-forward",
         ),
+        (
+            "market_residual_shadow",
+            "market_residual_shadow",
+            "Newton市場残差 T-5 shadow",
+            "listwise_market_residual_shadow.json",
+            "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の日次前進検証",
+        ),
     )
     rows = []
     for kind, track_id, label, model_file, teacher in specs:
@@ -1690,7 +1697,11 @@ def _market_calibrated_model_tracks(
                 "include_odds": True,
                 "model_file": model_file,
                 "teacher": teacher,
-                "training": "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位",
+                "training": (
+                    "2係数log-pool Newton法 / 日次前進正則化選択 / 完全日walk-forward / 1日1万円・100円単位"
+                    if track_id == "market_residual_shadow"
+                    else "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位"
+                ),
                 "eligible_races": metrics.get("evaluated_races"),
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),

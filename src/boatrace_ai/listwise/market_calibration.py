@@ -42,7 +42,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 5
+MARKET_EVALUATION_VERSION = 6
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -571,6 +571,7 @@ def waiting_walk_forward_result(
     dates: list[str],
     daily_budget_yen: int,
     min_calibration_days: int,
+    calibrator_strategy: str = "grid",
 ) -> dict[str, Any]:
     probability_metrics = {
         "evaluated_races": 0,
@@ -595,6 +596,7 @@ def waiting_walk_forward_result(
     return {
         "model": MODEL_NAME,
         "status": "waiting_for_clean_evaluation_day",
+        "calibrator_strategy": calibrator_strategy,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
         "validation_design": (
             "Each evaluation day is untouched; calibration and policy selection use only earlier full days"
@@ -646,6 +648,7 @@ def walk_forward_evaluate(
     *,
     daily_budget_yen: int = 10_000,
     min_calibration_days: int = 2,
+    calibrator_strategy: str = "grid",
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -657,6 +660,7 @@ def walk_forward_evaluate(
             dates=dates,
             daily_budget_yen=daily_budget_yen,
             min_calibration_days=min_calibration_days,
+            calibrator_strategy=calibrator_strategy,
         )
 
     folds = []
@@ -668,7 +672,17 @@ def walk_forward_evaluate(
         evaluation_date = dates[index]
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
         holdout = by_day[evaluation_date]
-        calibrator, calibrator_grid = select_calibrator(calibration_races)
+        calibrator_selection = None
+        if calibrator_strategy == "newton_residual":
+            from .market_residual import select_regularization_prequential
+
+            calibrator_selection = select_regularization_prequential(calibration_races)
+            calibrator = dict(calibrator_selection["final_calibrator"])
+            calibrator_grid = []
+        elif calibrator_strategy == "grid":
+            calibrator, calibrator_grid = select_calibrator(calibration_races)
+        else:
+            raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
         policy, policy_grid = select_policy(
             calibration_races,
             calibrator=calibrator,
@@ -700,16 +714,22 @@ def walk_forward_evaluate(
                 "calibration_races": len(calibration_races),
                 "evaluation_races": len(holdout),
                 "calibrator": calibrator,
+                "calibrator_strategy": calibrator_strategy,
+                "calibrator_selection": calibrator_selection,
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
                 "policy_candidates": len(policy_grid),
-                "calibrator_top5": sorted(
-                    calibrator_grid,
-                    key=lambda row: (
-                        row["trifecta_log_loss"],
-                        -row["trifecta_top5_hit_rate"],
-                    ),
-                )[:5],
+                "calibrator_top5": (
+                    sorted(
+                        calibrator_grid,
+                        key=lambda row: (
+                            row["trifecta_log_loss"],
+                            -row["trifecta_top5_hit_rate"],
+                        ),
+                    )[:5]
+                    if calibrator_strategy == "grid"
+                    else []
+                ),
                 "policy_diagnostics": summarize_policy_candidates(policy_grid),
                 "selected_flat_policy": flat_policy,
                 "flat_policy_diagnostics": summarize_flat_candidates(flat_policy_grid),
@@ -750,6 +770,7 @@ def walk_forward_evaluate(
     return {
         "model": MODEL_NAME,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
+        "calibrator_strategy": calibrator_strategy,
         "validation_design": (
             "Each evaluation day is untouched; calibration and policy selection use only earlier full days"
         ),
@@ -1066,6 +1087,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--through-date")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--min-calibration-days", type=int, default=2)
+    parser.add_argument(
+        "--calibrator-strategy",
+        choices=("grid", "newton_residual"),
+        default="grid",
+    )
     parser.add_argument("--scored-cache")
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
     return parser
@@ -1120,6 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
         races,
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
+        calibrator_strategy=args.calibrator_strategy,
     )
     result.update(
         {

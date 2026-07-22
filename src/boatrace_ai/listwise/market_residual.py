@@ -157,9 +157,12 @@ def fit_log_pool_newton(
     objective, gradient, _ = _objective_gradient_hessian(
         races, coefficients, regularization=regularization
     )
+    coefficient_sum = float(coefficients[0] + coefficients[1])
     return {
         "model_coefficient": float(coefficients[0]),
         "market_coefficient": float(coefficients[1]),
+        "model_weight": float(coefficients[0]) / coefficient_sum,
+        "temperature": 1.0 / coefficient_sum,
         "regularization": float(regularization),
         "objective": float(objective),
         "gradient_norm": float(np.linalg.norm(gradient)),
