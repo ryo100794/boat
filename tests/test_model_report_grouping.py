@@ -57,6 +57,7 @@ def test_unified_summary_and_promotion_display_are_explicit() -> None:
     assert "summaryBank.map" not in render_source
     assert "function mergeComparisonRows" in MODEL_REPORT_HTML
     assert "function trackLoss" in MODEL_REPORT_HTML
+    assert "row.name||row.file||row.model" in MODEL_REPORT_HTML
     assert 'status==="retain_incumbent"' in protocol_source
     assert "判定状態不明" in protocol_source
     for text in ("policy odds", "Kelly", "露出", "上限", "単位・最低", "不合格:"):

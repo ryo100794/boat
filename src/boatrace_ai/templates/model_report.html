@@ -118,17 +118,17 @@ function modelValues(row){ return [row&&row.name,row&&row.file,row&&row.model,ro
 function modelMatches(row,key){ return modelValues(row).some(value=>modelKey(value)===key); }
 function comparisonIdentity(row){
   const scope=String((row&&row.evaluation_scope)||"unknown");
-  const value=(row&&(row.model||row.name||row.file))||"unknown";
+  const value=(row&&(row.name||row.file||row.model))||"unknown";
   return scope+":"+modelKey(value);
 }
 function mergeComparisonRows(tests,bankroll){
   const rows=new Map();
   const add=(item,type)=>{
     const id=comparisonIdentity(item);
-    if(!rows.has(id)) rows.set(id,{id:id,scope:item.evaluation_scope||"unknown",name:item.model||item.name||item.file||"-",prediction:null,bankroll:null});
+    if(!rows.has(id)) rows.set(id,{id:id,scope:item.evaluation_scope||"unknown",name:item.name||item.file||item.model||"-",prediction:null,bankroll:null});
     const row=rows.get(id);
     row[type]=item;
-    if(type==="prediction") row.name=item.model||item.name||item.file||row.name;
+    if(type==="prediction") row.name=item.name||item.file||item.model||row.name;
   };
   (tests||[]).forEach(item=>add(item,"prediction"));
   (bankroll||[]).forEach(item=>add(item,"bankroll"));
