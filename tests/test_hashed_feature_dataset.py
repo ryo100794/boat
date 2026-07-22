@@ -10,6 +10,7 @@ import pytest
 from scipy import sparse
 from sklearn.feature_extraction import FeatureHasher
 
+from boatrace_ai.feature_schema import LEGACY_FEATURE_SCHEMA_VERSION
 from boatrace_ai.hashed_feature_dataset import (
     CACHE_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -163,6 +164,27 @@ def test_hashed_dataset_can_build_without_writing_cache(tmp_path: Path) -> None:
     assert source == "built"
     assert dataset.race_count == 2
     assert not list(tmp_path.iterdir())
+
+
+def test_hashed_dataset_cache_preserves_explicit_feature_schema(tmp_path: Path) -> None:
+    race_keys = [("2026-01-01-01-01", "2026-01-01", "01", 1)]
+    prefix = tmp_path / "legacy-features"
+    dataset, source = load_or_build_hashed_dataset(
+        cache_prefix=prefix,
+        race_keys=race_keys,
+        race_rows=lambda: iter([next(_race_rows())]),
+        hasher=FeatureHasher(n_features=256, input_type="dict", alternate_sign=False),
+        to_hashable=lambda row: row,
+        ensure_sparse_index32=_ensure_index32,
+        drop_feature_groups=(),
+        batch_size=6,
+        feature_schema_version=LEGACY_FEATURE_SCHEMA_VERSION,
+    )
+
+    assert source == "built"
+    assert dataset.feature_schema_version == LEGACY_FEATURE_SCHEMA_VERSION
+    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["feature_schema_version"] == LEGACY_FEATURE_SCHEMA_VERSION
 
 
 def _saved_dataset(tmp_path: Path, *, n_features: int = 64):

@@ -55,6 +55,7 @@ def load_or_build_hashed_dataset(
     drop_feature_groups: tuple[str, ...],
     batch_size: int,
     write_cache: bool = True,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> tuple[HashedRaceDataset, str]:
     if cache_prefix is not None:
         loaded = load_hashed_dataset(
@@ -63,6 +64,7 @@ def load_or_build_hashed_dataset(
             n_features=int(hasher.n_features),
             drop_feature_groups=drop_feature_groups,
             hasher=hasher,
+            feature_schema_version=feature_schema_version,
         )
         if loaded is not None:
             return loaded, "disk"
@@ -75,6 +77,7 @@ def load_or_build_hashed_dataset(
         ensure_sparse_index32=ensure_sparse_index32,
         drop_feature_groups=drop_feature_groups,
         batch_size=batch_size,
+        feature_schema_version=feature_schema_version,
     )
     if cache_prefix is not None and write_cache:
         save_hashed_dataset(cache_prefix, dataset)
@@ -90,6 +93,7 @@ def build_hashed_dataset(
     ensure_sparse_index32: Callable[[Any], sparse.csr_matrix],
     drop_feature_groups: tuple[str, ...],
     batch_size: int,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> HashedRaceDataset:
     matrices: list[sparse.csr_matrix] = []
     batch: list[dict[str, float]] = []
@@ -141,6 +145,7 @@ def build_hashed_dataset(
         n_features=int(hasher.n_features),
         drop_feature_groups=drop_feature_groups,
         hasher_settings=feature_hasher_settings(hasher),
+        feature_schema_version=feature_schema_version,
     )
 
 

@@ -21,6 +21,7 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
+from ..feature_schema import FEATURE_SCHEMA_VERSION, LEGACY_FEATURE_SCHEMA_VERSION
 from ..hashed_feature_dataset import load_or_build_hashed_dataset
 from .model import (
     FEATURE_SET,
@@ -61,12 +62,14 @@ def run_backtest(conn, *, output_path: Path, args: argparse.Namespace) -> dict[s
             conn,
             include_races={race_id for race_id, *_rest in race_keys},
             drop_feature_groups=drop_groups,
+            feature_schema_version=args.feature_schema_version,
         ),
         hasher=hasher,
         to_hashable=to_hashable,
         ensure_sparse_index32=_ensure_sparse_index32,
         drop_feature_groups=drop_groups,
         batch_size=args.batch_races * 6,
+        feature_schema_version=args.feature_schema_version,
     )
     boundaries = full_day_fold_boundaries(
         race_keys, folds=args.folds, min_train_races=args.min_train_races
@@ -165,6 +168,7 @@ def run_backtest(conn, *, output_path: Path, args: argparse.Namespace) -> dict[s
         "model": MODEL_NAME,
         "comparison_role": "redesign_shadow_nested_walk_forward",
         "feature_set": FEATURE_SET,
+        "feature_schema_version": dataset.feature_schema_version,
         "include_odds": False,
         "model_structure": "shared linear lane utility; race softmax; PL top-three or winner loss",
         "validation_design": "nested expanding-window; complete-day folds; train-prefix-only scaler",
@@ -229,6 +233,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-features", type=int, default=1 << 14)
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument(
+        "--feature-schema-version",
+        choices=(FEATURE_SCHEMA_VERSION, LEGACY_FEATURE_SCHEMA_VERSION),
+        default=FEATURE_SCHEMA_VERSION,
+        help="Feature semantics to use; select legacy only for controlled ablation.",
+    )
     parser.add_argument("--learning-rate", type=float, default=0.02)
     parser.add_argument("--targets", default="winner,top3_pl")
     parser.add_argument("--alphas", default="0.00001,0.0001")
