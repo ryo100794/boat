@@ -46,6 +46,8 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 205734, "name": "standardized_365d_listwise_feature_teacher", "milestone": "M4-3/M6", "kind": "standardized_365d_listwise_bankroll", "output": "data/models/standardized_365d_listwise_feature_teacher.json", "log": "logs/standardized_365d_runner.log"},
     {"pid": 205734, "name": "standardized_365d_listwise_newton", "milestone": "M4-3/M6", "kind": "standardized_365d_listwise_bankroll", "output": "data/models/standardized_365d_listwise_newton.json", "log": "logs/standardized_365d_runner.log"},
     {"pid": 0, "name": "listwise_market_calibrated_shadow", "milestone": "M5/M6", "kind": "market_calibrated_shadow", "output": "data/models/listwise_market_calibrated_shadow.json", "log": "logs/runtime/market-calibrated-shadow.log"},
+    {"pid": 0, "name": "listwise_newton_cutoff_20260717", "milestone": "M4-3/M6", "kind": "listwise_cutoff_refit", "output": "data/models/listwise_newton_cutoff_20260717.json", "log": "logs/listwise_newton_cutoff_20260717.log"},
+    {"pid": 0, "name": "listwise_market_calibrated_cutoff_shadow", "milestone": "M5/M6", "kind": "market_calibrated_cutoff_shadow", "output": "data/models/listwise_market_calibrated_cutoff_shadow.json", "log": "logs/listwise_market_calibrated_cutoff_shadow.log"},
 ]
 
 REMOTE_CODE = r'''
@@ -67,6 +69,8 @@ METRIC_KEYS = (
     "promotion_eligible", "holdout_races", "profitable_folds",
     "bankroll_evaluated_races",
     "calibrated_trifecta_log_loss", "evaluation_races", "evaluation_days",
+    "model_trifecta_log_loss", "model_trifecta_top5_hit_rate",
+    "market_trifecta_log_loss", "market_trifecta_top5_hit_rate",
 )
 DAILY_KEYS = (
     "race_date", "evaluated_races", "tickets", "races_bet", "stake_yen",
@@ -132,7 +136,7 @@ def result_summary(path):
     row["comparison_role"] = data.get("comparison_role")
     row["include_odds"] = data.get("include_odds")
     row["protocol_id"] = data.get("protocol_id")
-    holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
+    holdout = data.get("after_refit") or data.get("holdout_after_newton") or data.get("holdout") or {}
     if isinstance(holdout, dict):
         for key in METRIC_KEYS:
             if key in holdout:

@@ -1585,6 +1585,13 @@ def _listwise_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str,
             "3つの学習内時系列窓 / 特徴量群・1着/上位3着教師・正則化の期間安定性",
             "平均順位損失+fold分散 / 平均Top1と最悪fold制約 / 最新区間は診断扱い / 資金1万円",
         ),
+        (
+            "listwise_cutoff_refit",
+            "listwise 7/17期限固定再学習",
+            "listwise_newton_cutoff_20260717.json",
+            "選択済み上位3着PL教師 / 2026-07-17以前494,468Rで再学習 / 7/18以降は完全未使用",
+            "FeatureHasher 4,096・base_pastlog除外固定 / scaler移送warm start + 行列フリーNewton-CG",
+        ),
     )
     rows = []
     for kind, label, model_file, teacher, training in specs:
@@ -1615,36 +1622,58 @@ def _market_calibrated_model_tracks(
     remote_evaluations: dict[str, Any],
 ) -> list[dict[str, Any]]:
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
-    job = next(
-        (item for item in jobs or [] if item.get("kind") == "market_calibrated_shadow"),
-        {},
+    specs = (
+        (
+            "market_calibrated_shadow",
+            "market_calibrated_shadow",
+            "listwise T-5市場較正 shadow",
+            "listwise_market_calibrated_shadow.json",
+            "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の確定結果",
+        ),
+        (
+            "market_calibrated_cutoff_shadow",
+            "market_calibrated_cutoff_shadow",
+            "listwise 7/17再学習 T-5 shadow",
+            "listwise_market_calibrated_cutoff_shadow.json",
+            "2026-07-17以前494,468Rの固定構造再学習 / T-5市場暗黙確率 / 7/18以降walk-forward",
+        ),
     )
-    result = job.get("result") or {}
-    metrics = result.get("metrics") or {}
-    return [
-        {
-            "id": "market_calibrated_shadow",
-            "label": "listwise T-5市場較正 shadow",
-            "role": "比較評価・no-bet判定のみ",
-            "status": job.get("status") or "未登録",
-            "include_odds": True,
-            "model_file": "listwise_market_calibrated_shadow.json",
-            "teacher": "2026-05-09以前の公式過去ログモデル / T-5市場暗黙確率 / 前日以前の確定結果",
-            "training": "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位",
-            "eligible_races": metrics.get("evaluated_races"),
-            "target_races": 1000,
-            "backtest_available": job.get("status") == "完了" and bool(result),
-            "trifecta_log_loss": _float_or_none(
-                metrics.get("calibrated_trifecta_log_loss")
-            ),
-            "trifecta_top5_hit_rate": _float_or_none(
-                metrics.get("trifecta_top5_hit_rate")
-            ),
-            "roi": _float_or_none(metrics.get("roi")),
-            "profit_yen": metrics.get("profit_yen"),
-            "promotion_eligible": bool(metrics.get("promotion_eligible")),
-        }
-    ]
+    rows = []
+    for kind, track_id, label, model_file, teacher in specs:
+        job = next((item for item in jobs or [] if item.get("kind") == kind), {})
+        result = job.get("result") or {}
+        metrics = result.get("metrics") or {}
+        rows.append(
+            {
+                "id": track_id,
+                "label": label,
+                "role": "比較評価・no-bet判定のみ",
+                "status": job.get("status") or "未登録",
+                "include_odds": True,
+                "model_file": model_file,
+                "teacher": teacher,
+                "training": "幾何ブレンド+temperature較正 / 完全日walk-forward / 日別安定性no-bet / 1日1万円・100円単位",
+                "eligible_races": metrics.get("evaluated_races"),
+                "target_races": 1000,
+                "backtest_available": job.get("status") == "完了" and bool(result),
+                "trifecta_log_loss": _float_or_none(
+                    metrics.get("calibrated_trifecta_log_loss")
+                ),
+                "model_trifecta_log_loss": _float_or_none(
+                    metrics.get("model_trifecta_log_loss")
+                ),
+                "trifecta_top5_hit_rate": _float_or_none(
+                    metrics.get("trifecta_top5_hit_rate")
+                ),
+                "model_trifecta_top5_hit_rate": _float_or_none(
+                    metrics.get("model_trifecta_top5_hit_rate")
+                ),
+                "roi": _float_or_none(metrics.get("roi")),
+                "profit_yen": metrics.get("profit_yen"),
+                "promotion_eligible": bool(metrics.get("promotion_eligible")),
+            }
+        )
+    return rows
 
 
 def _remote_job_fold_progress(job: dict[str, Any]) -> tuple[int, int | None]:
