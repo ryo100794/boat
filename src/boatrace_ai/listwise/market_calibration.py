@@ -39,6 +39,7 @@ from .flat_policy import (
     simulate_flat_policy,
     summarize_flat_candidates,
 )
+from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .model import ListwiseLinearModel, stable_softmax
 from .paired_bootstrap import paired_mean_bootstrap
 from .stagewise_blend import (
@@ -50,7 +51,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 9
+MARKET_EVALUATION_VERSION = 10
 SCORED_CACHE_VERSION = 8
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -536,6 +537,9 @@ def paired_market_differences(
 def market_comparison_confidence(
     loss_differences: list[float],
     top5_differences: list[float],
+    *,
+    cluster_labels: list[str],
+    minimum_cluster_days: int = 5,
 ) -> dict[str, Any]:
     loss = paired_mean_bootstrap(
         loss_differences,
@@ -547,17 +551,43 @@ def market_comparison_confidence(
         samples=20_000,
         seed=20260723,
     )
+    clustered_loss = paired_cluster_mean_bootstrap(
+        loss_differences,
+        cluster_labels,
+        samples=20_000,
+        seed=20260726,
+    )
+    clustered_top5 = paired_cluster_mean_bootstrap(
+        top5_differences,
+        cluster_labels,
+        samples=20_000,
+        seed=20260727,
+    )
+    race_level_pass = bool(
+        float(loss["ci95_upper"]) <= 0.0
+        and float(top5["ci95_lower"]) >= 0.0
+    )
+    cluster_count = int(clustered_loss["clusters"])
+    day_cluster_pass = bool(
+        cluster_count >= minimum_cluster_days
+        and float(clustered_loss["ci95_upper"]) <= 0.0
+        and float(clustered_top5["ci95_lower"]) >= 0.0
+    )
     return {
         "comparison_role": (
-            "paired race-level bootstrap; negative LogLoss difference is better"
+            "paired race-level and whole-day cluster bootstrap; negative "
+            "LogLoss difference is better"
         ),
         "evaluation_races": len(loss_differences),
+        "evaluation_days": cluster_count,
+        "minimum_cluster_days": minimum_cluster_days,
         "log_loss_difference_calibrated_minus_market": loss,
         "top5_hit_difference_calibrated_minus_market": top5,
-        "confidence_pass": bool(
-            float(loss["ci95_upper"]) <= 0.0
-            and float(top5["ci95_lower"]) >= 0.0
-        ),
+        "day_cluster_log_loss_difference_calibrated_minus_market": clustered_loss,
+        "day_cluster_top5_hit_difference_calibrated_minus_market": clustered_top5,
+        "race_level_confidence_pass": race_level_pass,
+        "day_cluster_confidence_pass": day_cluster_pass,
+        "confidence_pass": race_level_pass and day_cluster_pass,
     }
 
 
@@ -682,6 +712,10 @@ def waiting_walk_forward_result(
         "market_comparison": {
             "comparison_role": "waiting for the first untouched evaluation day",
             "evaluation_races": 0,
+            "evaluation_days": 0,
+            "minimum_cluster_days": 5,
+            "race_level_confidence_pass": False,
+            "day_cluster_confidence_pass": False,
             "confidence_pass": False,
         },
         "ticket_diagnostics": predefined_ticket_diagnostics(
@@ -741,6 +775,7 @@ def walk_forward_evaluate(
     evaluation_races: list[dict[str, Any]] = []
     market_loss_differences: list[float] = []
     market_top5_differences: list[float] = []
+    market_cluster_labels: list[str] = []
     daily_rows = []
     flat_daily_rows = []
     for index in range(min_calibration_days, len(dates)):
@@ -788,6 +823,9 @@ def walk_forward_evaluate(
         )
         market_loss_differences.extend(fold_loss_differences)
         market_top5_differences.extend(fold_top5_differences)
+        market_cluster_labels.extend(
+            [evaluation_date] * len(fold_loss_differences)
+        )
         folds.append(
             {
                 "fold": len(folds) + 1,
@@ -849,6 +887,7 @@ def walk_forward_evaluate(
     market_comparison = market_comparison_confidence(
         market_loss_differences,
         market_top5_differences,
+        cluster_labels=market_cluster_labels,
     )
     promotion_gate = {
         "minimum_evaluation_races": 1000,

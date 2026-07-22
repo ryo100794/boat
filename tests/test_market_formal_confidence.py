@@ -44,13 +44,28 @@ def _race(race_date: str, rno: int) -> dict:
     }
 
 
-def test_market_confidence_requires_noninferior_top5_and_better_log_loss() -> None:
-    passing = market_comparison_confidence([-0.1] * 20, [0.0] * 20)
+def test_market_confidence_requires_race_and_day_cluster_evidence() -> None:
+    labels = [f"day-{index // 4}" for index in range(20)]
+    passing = market_comparison_confidence(
+        [-0.1] * 20,
+        [0.0] * 20,
+        cluster_labels=labels,
+    )
     assert passing["confidence_pass"] is True
+    assert passing["race_level_confidence_pass"] is True
+    assert passing["day_cluster_confidence_pass"] is True
+    assert passing["evaluation_days"] == 5
     assert passing["log_loss_difference_calibrated_minus_market"]["ci95_upper"] < 0
+    assert passing[
+        "day_cluster_log_loss_difference_calibrated_minus_market"
+    ]["ci95_upper"] < 0
     assert passing["top5_hit_difference_calibrated_minus_market"]["ci95_lower"] == 0
 
-    failing = market_comparison_confidence([0.1] * 20, [0.0] * 20)
+    failing = market_comparison_confidence(
+        [0.1] * 20,
+        [0.0] * 20,
+        cluster_labels=labels,
+    )
     assert failing["confidence_pass"] is False
 
 
@@ -71,7 +86,10 @@ def test_walk_forward_reports_paired_market_confidence() -> None:
     assert result["folds"][0]["market_comparison"][
         "log_loss_mean_difference"
     ] < 0
-    assert result["promotion_gate"]["market_confidence_pass"] is True
+    assert comparison["race_level_confidence_pass"] is True
+    assert comparison["day_cluster_confidence_pass"] is False
+    assert comparison["evaluation_days"] == 1
+    assert result["promotion_gate"]["market_confidence_pass"] is False
 
 
 def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> None:
@@ -87,5 +105,5 @@ def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> N
         odds_signature={"snapshot_count": 10},
     )
 
-    assert MARKET_EVALUATION_VERSION == 9
+    assert MARKET_EVALUATION_VERSION == 10
     assert contract["version"] == SCORED_CACHE_VERSION == 8

@@ -1673,6 +1673,12 @@ def _market_comparison_summary(payload: Any) -> dict[str, Any]:
         return {}
     loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
     top5 = payload.get("top5_hit_difference_calibrated_minus_market") or {}
+    cluster_loss = payload.get(
+        "day_cluster_log_loss_difference_calibrated_minus_market"
+    ) or {}
+    cluster_top5 = payload.get(
+        "day_cluster_top5_hit_difference_calibrated_minus_market"
+    ) or {}
     if not isinstance(loss, dict) or not loss.get("observations"):
         return {}
     return {
@@ -1686,6 +1692,25 @@ def _market_comparison_summary(payload: Any) -> dict[str, Any]:
         "market_top5_delta": _float_or_none(top5.get("mean_difference")),
         "market_top5_delta_ci95_lower": _float_or_none(top5.get("ci95_lower")),
         "market_top5_delta_ci95_upper": _float_or_none(top5.get("ci95_upper")),
+        "market_comparison_days": cluster_loss.get("clusters"),
+        "market_day_log_loss_delta_ci95_lower": _float_or_none(
+            cluster_loss.get("ci95_lower")
+        ),
+        "market_day_log_loss_delta_ci95_upper": _float_or_none(
+            cluster_loss.get("ci95_upper")
+        ),
+        "market_day_top5_delta_ci95_lower": _float_or_none(
+            cluster_top5.get("ci95_lower")
+        ),
+        "market_day_top5_delta_ci95_upper": _float_or_none(
+            cluster_top5.get("ci95_upper")
+        ),
+        "market_race_confidence_pass": bool(
+            payload.get("race_level_confidence_pass")
+        ),
+        "market_day_confidence_pass": bool(
+            payload.get("day_cluster_confidence_pass")
+        ),
         "market_confidence_pass": bool(payload.get("confidence_pass")),
     }
 
@@ -3992,6 +4017,9 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
     market_confidence_pass = bool(
         market_confidence.get("market_confidence_pass")
     )
+    market_confidence_days = int(
+        market_confidence.get("market_comparison_days") or 0
+    )
     return [
         {
             "target": "M6 ROI",
@@ -4040,6 +4068,13 @@ def _quality_gates(model_dir: Path, remote_evaluations: dict[str, Any]) -> list[
                 f"{float(market_confidence.get('market_log_loss_delta') or 0):+.5f} / "
                 f"95%CI [{float(market_confidence.get('market_log_loss_delta_ci95_lower') or 0):+.5f}, "
                 f"{float(market_confidence.get('market_log_loss_delta_ci95_upper') or 0):+.5f}]"
+                + (
+                    f" / day cluster {market_confidence_days}日 "
+                    f"[{float(market_confidence.get('market_day_log_loss_delta_ci95_lower') or 0):+.5f}, "
+                    f"{float(market_confidence.get('market_day_log_loss_delta_ci95_upper') or 0):+.5f}]"
+                    if market_confidence_days
+                    else ""
+                )
                 if market_confidence_races
                 else "未使用foldの市場比較なし"
             ),
