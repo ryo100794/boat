@@ -1012,6 +1012,35 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             daily_rows = _daily_report_rows(direct_bankroll.get("daily") or [])
             if daily_rows:
                 bankroll_daily[label] = daily_rows
+            walk_forward = data.get("conditional_payout_walk_forward") or {}
+            walk_bankroll = walk_forward.get("bankroll") or {}
+            walk_confidence = walk_forward.get("bankroll_confidence") or {}
+            if isinstance(walk_bankroll, dict) and walk_bankroll:
+                walk_label = f"{label}_conditional_payout_walk_forward"
+                walk_result = {
+                    **walk_bankroll,
+                    "model": f"{data.get('model')}_conditional_payout_walk_forward",
+                    "generated_at": data.get("generated_at"),
+                    "entry_log_loss": conditional_metrics.get("trifecta_log_loss"),
+                    "trifecta_top1_hit_rate": conditional_metrics.get(
+                        "trifecta_top1_hit_rate"
+                    ),
+                    "trifecta_top5_hit_rate": conditional_metrics.get(
+                        "trifecta_top5_hit_rate"
+                    ),
+                    "roi_ci95_lower": walk_confidence.get("roi_ci95_lower"),
+                    "roi_ci95_upper": walk_confidence.get("roi_ci95_upper"),
+                    "roi_delta_ci95_lower": walk_confidence.get(
+                        "roi_delta_ci95_lower"
+                    ),
+                    "roi_delta_ci95_upper": walk_confidence.get(
+                        "roi_delta_ci95_upper"
+                    ),
+                }
+                bankroll.append(_bankroll_summary(path, walk_label, walk_result))
+                walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
+                if walk_daily:
+                    bankroll_daily[walk_label] = walk_daily
             continue
         if _is_feature_correlation_result(data):
             feature_diagnostics.append(_feature_correlation_summary(path, label, data))

@@ -47,6 +47,36 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
             "roi_delta_ci95_lower": -0.06,
             "roi_delta_ci95_upper": 0.09,
         },
+        "conditional_payout_walk_forward": {
+            "role": "development diagnostic",
+            "promotion_eligible": False,
+            "bankroll": {
+                "evaluated_races": 48_437,
+                "roi": 0.98,
+                "profit_yen": -2_000,
+                "stake_yen": 100_000,
+                "return_yen": 98_000,
+                "daily": [
+                    {
+                        "race_date": "2025-07-20",
+                        "evaluated_races": 130,
+                        "tickets": 1,
+                        "stake_yen": 300,
+                        "return_yen": 0,
+                        "profit_yen": -300,
+                        "cumulative_profit_yen": -300,
+                        "roi": 0.0,
+                        "budget_used_fraction": 0.03,
+                    }
+                ],
+            },
+            "bankroll_confidence": {
+                "roi_ci95_lower": 0.92,
+                "roi_ci95_upper": 1.04,
+                "roi_delta_ci95_lower": -0.04,
+                "roi_delta_ci95_upper": 0.08,
+            },
+        },
         "structure_gate": {"pass": True},
         "bankroll_gate": {"pass": bankroll_pass},
         "promotion_gate": {
@@ -107,6 +137,19 @@ def test_model_report_separates_conditional_metrics_and_bankroll(tmp_path) -> No
     assert bankroll["roi_ci95_upper"] == 1.08
     assert bankroll["roi_delta_ci95_lower"] == -0.06
     assert len(report["bankroll_daily"]["pastlog_conditional_order"]) == 1
+    walk_forward = next(
+        row
+        for row in report["bankroll"]
+        if row["name"]
+        == "pastlog_conditional_order_conditional_payout_walk_forward"
+    )
+    assert walk_forward["roi"] == 0.98
+    assert walk_forward["roi_ci95_lower"] == 0.92
+    assert len(
+        report["bankroll_daily"][
+            "pastlog_conditional_order_conditional_payout_walk_forward"
+        ]
+    ) == 1
 
 
 def test_local_result_does_not_treat_structure_only_as_promotion(tmp_path) -> None:

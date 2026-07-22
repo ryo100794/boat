@@ -6,6 +6,7 @@ from boatrace_ai.listwise.direct_bankroll import (
     COMBINATION_LABELS,
     bootstrap_daily_bankroll,
     direct_candidates,
+    simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
     standard_direct_policy,
 )
@@ -153,3 +154,56 @@ def test_direct_bankroll_uses_fixed_daily_policy_and_settles_returns() -> None:
     assert dimensions["first_lane"]["buckets"][0]["bucket"] == "1"
     assert dimensions["first_lane"]["buckets"][0]["tickets"] == 1
     assert attribution["fold_stability"]["folds"] == 1
+
+
+
+def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> None:
+    target_index = COMBINATION_LABELS.index("1-2-3")
+    calibration_keys = [
+        (
+            f"cal-{index}",
+            "2026-06-01",
+            f"{index % 24 + 1:02d}",
+            index % 12 + 1,
+        )
+        for index in range(60)
+    ]
+    calibration_probabilities = np.full((60, 120), 0.8 / 119.0)
+    target_probabilities = np.linspace(0.05, 0.20, 60)
+    calibration_probabilities[:, target_index] = target_probabilities
+    calibration_probabilities /= calibration_probabilities.sum(axis=1, keepdims=True)
+    race_keys = [
+        ("day-1", "2026-07-01", "01", 1),
+        ("day-2", "2026-07-02", "01", 1),
+    ]
+    probabilities = np.full((2, 120), 0.9 / 119.0)
+    probabilities[:, target_index] = 0.1
+    payouts = {
+        race_id: {
+            "combination": "1-2-3",
+            "payout_yen": int(round(200.0 / probability)),
+        }
+        for (race_id, _date, _jcd, _rno), probability in zip(
+            calibration_keys,
+            target_probabilities,
+        )
+    }
+    payouts.update(
+        {
+            "day-1": {"combination": "1-2-3", "payout_yen": 2_000},
+            "day-2": {"combination": "1-2-3", "payout_yen": 2_000},
+        }
+    )
+
+    result = simulate_conditional_payout_walk_forward(
+        probabilities,
+        race_keys=race_keys,
+        payouts=payouts,
+        calibration_probabilities=calibration_probabilities,
+        calibration_race_keys=calibration_keys,
+    )
+
+    assert result["payout_training_samples_initial"] == 60
+    assert result["payout_training_samples_final"] == 62
+    assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
+    assert result["evaluated_races"] == 2

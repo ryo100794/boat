@@ -20,7 +20,11 @@ from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
-from .direct_bankroll import bootstrap_daily_bankroll, simulate_direct_bankroll
+from .direct_bankroll import (
+    bootstrap_daily_bankroll,
+    simulate_conditional_payout_walk_forward,
+    simulate_direct_bankroll,
+)
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -456,6 +460,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     validation_start = _date_boundary(race_keys, validation_start_date, inclusive=False)
     validation_start = min(train_end - 1, max(1, validation_start))
     candidates = []
+    calibration_models: dict[float, ConditionalOrderModel] = {}
     for regularization in args.regularizations:
         model, fit = fit_conditional_order(
             scores[:validation_start],
@@ -476,6 +481,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                 "validation": _public_metrics(metrics),
             }
         )
+        calibration_models[float(regularization)] = model
     selected = min(
         candidates,
         key=lambda row: (
@@ -542,6 +548,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     baseline_probabilities = conditional_probabilities(
         scores[evaluation_start:evaluation_end], identity_model()
     )
+    calibration_model = calibration_models[float(selected["regularization"])]
+    calibration_probabilities = conditional_probabilities(
+        scores[validation_start:train_end],
+        calibration_model,
+    )
     payouts = _load_trifecta_payouts(conn)
     training_races = {str(row[0]) for row in race_keys[:train_end]}
     candidate_bankroll = simulate_direct_bankroll(
@@ -555,6 +566,22 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         race_keys=evaluation_keys,
         payouts=payouts,
         training_races=training_races,
+    )
+    conditional_payout_bankroll = simulate_conditional_payout_walk_forward(
+        candidate_probabilities,
+        race_keys=evaluation_keys,
+        payouts=payouts,
+        calibration_probabilities=calibration_probabilities,
+        calibration_race_keys=race_keys[validation_start:train_end],
+    )
+    conditional_payout_confidence = bootstrap_daily_bankroll(
+        conditional_payout_bankroll["daily"],
+        baseline_daily=baseline_bankroll["daily"],
+    )
+    conditional_payout_gate = bankroll_promotion_gate(
+        conditional_payout_bankroll,
+        baseline_bankroll,
+        conditional_payout_confidence,
     )
     bankroll_confidence = bootstrap_daily_bankroll(
         candidate_bankroll["daily"],
@@ -606,6 +633,16 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "daily": daily,
         "bankroll": candidate_bankroll,
         "bankroll_confidence": bankroll_confidence,
+        "conditional_payout_walk_forward": {
+            "role": (
+                "post-holdout development diagnostic; future untouched-day "
+                "confirmation required"
+            ),
+            "promotion_eligible": False,
+            "bankroll": conditional_payout_bankroll,
+            "bankroll_confidence": conditional_payout_confidence,
+            "diagnostic_gate": conditional_payout_gate,
+        },
         "baseline_bankroll": {
             key: value
             for key, value in baseline_bankroll.items()

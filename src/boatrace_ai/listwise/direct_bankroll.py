@@ -18,12 +18,20 @@ from ..roi_attribution import (
     summarize_fold_signal_stability,
     summarize_roi_attribution,
 )
+from .payout_estimator import (
+    ConditionalPayoutStatistics,
+    fit_conditional_payout_statistics,
+    predict_conditional_odds,
+)
 
 
 COMBINATION_LABELS = tuple(
     "-".join(str(lane) for lane in combination)
     for combination in TRIFECTA_COMBINATIONS
 )
+COMBINATION_INDEX = {
+    combination: index for index, combination in enumerate(COMBINATION_LABELS)
+}
 
 
 def _finite_quantile(values: np.ndarray) -> tuple[float, float]:
@@ -203,6 +211,190 @@ def standard_direct_policy() -> dict[str, Any]:
     }
 
 
+def _winner_samples(
+    probabilities: np.ndarray,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+) -> tuple[list[float], list[str], list[tuple[str, str, str, int]], list[float]]:
+    values = np.asarray(probabilities, dtype=np.float64)
+    if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
+        raise ValueError("winner sample probabilities and race keys must align")
+    winner_probabilities = []
+    winner_combinations = []
+    winner_keys = []
+    winner_payouts = []
+    for row_index, race_key in enumerate(race_keys):
+        actual = payouts.get(str(race_key[0]))
+        if actual is None:
+            continue
+        combination = str(actual["combination"])
+        combination_index = COMBINATION_INDEX.get(combination)
+        if combination_index is None:
+            continue
+        winner_probabilities.append(float(values[row_index, combination_index]))
+        winner_combinations.append(combination)
+        winner_keys.append(race_key)
+        winner_payouts.append(float(actual["payout_yen"]))
+    return winner_probabilities, winner_combinations, winner_keys, winner_payouts
+
+
+def simulate_conditional_payout_walk_forward(
+    probabilities: np.ndarray,
+    *,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    calibration_probabilities: np.ndarray,
+    calibration_race_keys: list[tuple[str, str, str, int]],
+    policy: dict[str, Any] | None = None,
+    ridge: float = 10.0,
+) -> dict[str, Any]:
+    values = np.asarray(probabilities, dtype=np.float64)
+    if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
+        raise ValueError("probability matrix and race keys must align")
+    selected_policy = dict(policy or standard_direct_policy())
+    selected_policy.update(
+        {
+            "payout_estimator": (
+                "daily walk-forward log-payout ridge using model probability, "
+                "finish lanes, venue, and race number"
+            ),
+            "conditional_payout_ridge": float(ridge),
+            "selection": "fixed diagnostic policy; no evaluation-period tuning",
+        }
+    )
+    statistics = ConditionalPayoutStatistics.empty()
+    statistics.update(
+        *_winner_samples(
+            calibration_probabilities,
+            calibration_race_keys,
+            payouts,
+        )
+    )
+    initial_samples = statistics.samples
+    dates = sorted({str(row[1]) for row in race_keys})
+    row_indices_by_date = {
+        race_date: [
+            index for index, row in enumerate(race_keys) if str(row[1]) == race_date
+        ]
+        for race_date in dates
+    }
+    totals = zero_totals()
+    daily = []
+    state = (0, 0, 0)
+    fold_count = min(5, len(dates))
+    fold_attributions = [new_roi_attribution() for _ in range(fold_count)]
+    combination_rows = list(COMBINATION_LABELS)
+    for day_index, race_date in enumerate(dates):
+        model = fit_conditional_payout_statistics(statistics, ridge=ridge)
+        row_indices = row_indices_by_date[race_date]
+        day_keys = [race_keys[index] for index in row_indices]
+        day_probabilities = values[row_indices]
+        flat_combinations = combination_rows * len(row_indices)
+        flat_keys = [race_key for race_key in day_keys for _ in COMBINATION_LABELS]
+        estimated_odds = predict_conditional_odds(
+            model,
+            day_probabilities.reshape(-1),
+            flat_combinations,
+            flat_keys,
+        ).reshape(len(row_indices), len(COMBINATION_LABELS))
+        candidates = []
+        evaluated_races = set()
+        for local_index, race_key in enumerate(day_keys):
+            actual = payouts.get(str(race_key[0]))
+            if actual is None:
+                continue
+            evaluated_races.add(str(race_key[0]))
+            payout_model = {
+                combination: {
+                    "estimated_odds": float(
+                        estimated_odds[local_index, combo_index]
+                    ),
+                    "estimated_payout_yen": float(
+                        estimated_odds[local_index, combo_index] * 100.0
+                    ),
+                    "history_count": float(model.training_samples),
+                    "odds_source": "conditional_payout_walk_forward",
+                }
+                for combo_index, combination in enumerate(COMBINATION_LABELS)
+            }
+            candidates.extend(
+                direct_candidates(
+                    day_probabilities[local_index],
+                    race_key=race_key,
+                    actual=actual,
+                    payout_model=payout_model,
+                    ev_threshold=float(selected_policy["ev_threshold"]),
+                )
+            )
+        fold_index = min(
+            fold_count - 1,
+            day_index * fold_count // len(dates),
+        )
+        result = allocate_adaptive_day(
+            race_date,
+            candidates,
+            evaluated_races,
+            daily_budget_yen=int(selected_policy["daily_budget_yen"]),
+            fractional_kelly=float(selected_policy["fractional_kelly"]),
+            max_daily_exposure_fraction=float(
+                selected_policy["max_daily_exposure_fraction"]
+            ),
+            min_daily_exposure_fraction=float(
+                selected_policy["min_daily_exposure_fraction"]
+            ),
+            race_cap_fraction=float(selected_policy["race_cap_fraction"]),
+            ticket_cap_fraction=float(selected_policy["ticket_cap_fraction"]),
+            max_daily_tickets=int(selected_policy["max_daily_tickets"]),
+            allocation_mode=str(selected_policy["allocation_mode"]),
+            stake_granularity_yen=int(selected_policy["stake_granularity_yen"]),
+            min_stake_yen=int(selected_policy["min_stake_yen"]),
+            roi_attribution=fold_attributions[fold_index],
+        )
+        result["payout_training_samples"] = int(model.training_samples)
+        state = append_day_result(
+            daily,
+            totals,
+            result,
+            cumulative_profit=state[0],
+            peak_profit=state[1],
+            max_drawdown=state[2],
+        )
+        statistics.update(*_winner_samples(day_probabilities, day_keys, payouts))
+
+    attribution = new_roi_attribution()
+    for fold_attribution in fold_attributions:
+        merge_roi_attribution(attribution, fold_attribution)
+    attribution_summary = summarize_roi_attribution(attribution)
+    attribution_summary["fold_stability"] = summarize_fold_signal_stability(
+        [
+            summarize_roi_attribution(fold_attribution)
+            for fold_attribution in fold_attributions
+        ]
+    )
+    stake_yen = int(totals["stake_yen"])
+    return_yen = int(totals["return_yen"])
+    return {
+        "policy": selected_policy,
+        "evaluation_days": len(daily),
+        "evaluated_races": int(totals["evaluated_races"]),
+        "candidate_tickets": int(totals["candidate_tickets"]),
+        "selected_tickets": int(totals["tickets"]),
+        "races_bet": int(totals["races_bet"]),
+        "hit_tickets": int(totals["hit_tickets"]),
+        "stake_yen": stake_yen,
+        "return_yen": return_yen,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "winning_days": int(totals["winning_days"]),
+        "losing_days": int(totals["losing_days"]),
+        "max_drawdown_yen": int(state[2]),
+        "payout_training_samples_initial": int(initial_samples),
+        "payout_training_samples_final": int(statistics.samples),
+        "ticket_roi_attribution": attribution_summary,
+        "daily": daily,
+    }
+
+
 def direct_candidates(
     probabilities: np.ndarray,
     *,
@@ -244,7 +436,7 @@ def direct_candidates(
                 ),
                 "estimated_ev": estimated_ev,
                 "payout_history_count": int(estimate["history_count"]),
-                "odds_source": "payout_model",
+                "odds_source": str(estimate.get("odds_source") or "payout_model"),
                 "actual_combination": str(actual["combination"]),
                 "actual_payout_yen": int(actual["payout_yen"]),
                 "hit": combination == str(actual["combination"]),
