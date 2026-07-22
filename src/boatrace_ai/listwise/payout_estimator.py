@@ -25,7 +25,6 @@ class ConditionalPayoutStatistics:
     target_cross: np.ndarray
     target_square_sum: float
     samples: int
-    weight_sum: float
 
     @classmethod
     def empty(cls) -> "ConditionalPayoutStatistics":
@@ -34,7 +33,6 @@ class ConditionalPayoutStatistics:
             target_cross=np.zeros(FEATURE_COUNT, dtype=np.float64),
             target_square_sum=0.0,
             samples=0,
-            weight_sum=0.0,
         )
 
     def update(
@@ -43,31 +41,13 @@ class ConditionalPayoutStatistics:
         combinations: Sequence[str],
         race_keys: Sequence[tuple[str, str, str, int]],
         payouts_yen: Sequence[float],
-        sample_weights: Sequence[float] | None = None,
     ) -> None:
         matrix = payout_features(probabilities, combinations, race_keys)
         targets = payout_targets(payouts_yen, expected_rows=len(matrix))
-        weights = _sample_weights(sample_weights, expected_rows=len(matrix))
-        self.gram += matrix.T @ (weights[:, None] * matrix)
-        self.target_cross += matrix.T @ (weights * targets)
-        self.target_square_sum += float(weights @ (targets * targets))
+        self.gram += matrix.T @ matrix
+        self.target_cross += matrix.T @ targets
+        self.target_square_sum += float(targets @ targets)
         self.samples += len(matrix)
-        self.weight_sum += float(weights.sum())
-
-
-def _sample_weights(
-    sample_weights: Sequence[float] | None,
-    *,
-    expected_rows: int,
-) -> np.ndarray:
-    if sample_weights is None:
-        return np.ones(expected_rows, dtype=np.float64)
-    weights = np.asarray(sample_weights, dtype=np.float64)
-    if weights.shape != (expected_rows,):
-        raise ValueError("sample weights must match payout rows")
-    if not np.all(np.isfinite(weights)) or np.any(weights <= 0.0):
-        raise ValueError("sample weights must be finite and positive")
-    return weights
 
 
 def payout_features(
@@ -166,7 +146,7 @@ def fit_conditional_payout_statistics(
     )
     residual_variance = max(
         0.0,
-        residual_sum_squares / max(1.0, statistics.weight_sum - FEATURE_COUNT),
+        residual_sum_squares / max(1, statistics.samples - FEATURE_COUNT),
     )
     return ConditionalPayoutRegressor(
         weights=weights,

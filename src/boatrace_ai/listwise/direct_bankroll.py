@@ -238,17 +238,6 @@ def _winner_samples(
     return winner_probabilities, winner_combinations, winner_keys, winner_payouts
 
 
-def _stabilized_inverse_probability_weights(
-    winner_probabilities: list[float],
-) -> np.ndarray:
-    probabilities = np.asarray(winner_probabilities, dtype=np.float64)
-    if not len(probabilities):
-        return np.empty(0, dtype=np.float64)
-    if not np.all(np.isfinite(probabilities)) or np.any(probabilities <= 0.0):
-        raise ValueError("winner probabilities must be finite and positive")
-    return np.clip(1.0 / (len(COMBINATION_LABELS) * probabilities), 0.1, 10.0)
-
-
 def simulate_conditional_payout_walk_forward(
     probabilities: np.ndarray,
     *,
@@ -297,27 +286,19 @@ def simulate_conditional_payout_walk_forward(
                 if independent_market_reference
                 else "candidate probability"
             ),
-            "payout_training_weighting": (
-                "stabilized inverse winner probability; clip 0.1-10.0"
-            ),
             "conditional_payout_ridge": float(ridge),
             "selection": "fixed diagnostic policy; no evaluation-period tuning",
         }
     )
     statistics = ConditionalPayoutStatistics.empty()
-    calibration_samples = _winner_samples(
-        calibration_market_values,
-        calibration_race_keys,
-        payouts,
-    )
     statistics.update(
-        *calibration_samples,
-        sample_weights=_stabilized_inverse_probability_weights(
-            calibration_samples[0]
-        ),
+        *_winner_samples(
+            calibration_market_values,
+            calibration_race_keys,
+            payouts,
+        )
     )
     initial_samples = statistics.samples
-    initial_weight_sum = statistics.weight_sum
     dates = sorted({str(row[1]) for row in race_keys})
     row_indices_by_date = {
         race_date: [
@@ -416,14 +397,8 @@ def simulate_conditional_payout_walk_forward(
             peak_profit=state[1],
             max_drawdown=state[2],
         )
-        daily_samples = _winner_samples(
-            day_market_probabilities, day_keys, payouts
-        )
         statistics.update(
-            *daily_samples,
-            sample_weights=_stabilized_inverse_probability_weights(
-                daily_samples[0]
-            ),
+            *_winner_samples(day_market_probabilities, day_keys, payouts)
         )
 
     attribution = new_roi_attribution()
@@ -455,8 +430,6 @@ def simulate_conditional_payout_walk_forward(
         "max_drawdown_yen": int(state[2]),
         "payout_training_samples_initial": int(initial_samples),
         "payout_training_samples_final": int(statistics.samples),
-        "payout_training_weight_sum_initial": float(initial_weight_sum),
-        "payout_training_weight_sum_final": float(statistics.weight_sum),
         "payout_diagnostics": {
             "candidate_combinations": int(len(race_keys) * len(COMBINATION_LABELS)),
             "max_estimated_ev": max_estimated_ev,
