@@ -40,6 +40,7 @@ from .flat_policy import (
     summarize_flat_candidates,
 )
 from .model import ListwiseLinearModel, stable_softmax
+from .paired_bootstrap import paired_mean_bootstrap
 from .stagewise_blend import (
     StagewiseBlendModel,
     blend_probabilities as blend_architecture_probabilities,
@@ -49,7 +50,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 8
+MARKET_EVALUATION_VERSION = 9
+SCORED_CACHE_VERSION = 8
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -500,6 +502,65 @@ def probability_metrics(
     return result
 
 
+def paired_market_differences(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+) -> tuple[list[float], list[float]]:
+    loss_differences = []
+    top5_differences = []
+    for race in races:
+        market = race["market_probabilities"]
+        calibrated = blend_probabilities(
+            race["model_probabilities"],
+            market,
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        actual = str(race["actual_combination"])
+        market_loss = -math.log(max(EPSILON, float(market.get(actual, 0.0))))
+        calibrated_loss = -math.log(
+            max(EPSILON, float(calibrated.get(actual, 0.0)))
+        )
+        loss_differences.append(calibrated_loss - market_loss)
+        market_top5 = sorted(market, key=market.get, reverse=True)[:5]
+        calibrated_top5 = sorted(
+            calibrated, key=calibrated.get, reverse=True
+        )[:5]
+        top5_differences.append(
+            float(actual in calibrated_top5) - float(actual in market_top5)
+        )
+    return loss_differences, top5_differences
+
+
+def market_comparison_confidence(
+    loss_differences: list[float],
+    top5_differences: list[float],
+) -> dict[str, Any]:
+    loss = paired_mean_bootstrap(
+        loss_differences,
+        samples=20_000,
+        seed=20260722,
+    )
+    top5 = paired_mean_bootstrap(
+        top5_differences,
+        samples=20_000,
+        seed=20260723,
+    )
+    return {
+        "comparison_role": (
+            "paired race-level bootstrap; negative LogLoss difference is better"
+        ),
+        "evaluation_races": len(loss_differences),
+        "log_loss_difference_calibrated_minus_market": loss,
+        "top5_hit_difference_calibrated_minus_market": top5,
+        "confidence_pass": bool(
+            float(loss["ci95_upper"]) <= 0.0
+            and float(top5["ci95_lower"]) >= 0.0
+        ),
+    }
+
+
 def predefined_ticket_diagnostics(
     races: list[dict[str, Any]],
     *,
@@ -598,6 +659,7 @@ def waiting_walk_forward_result(
         "roi_pass": False,
         "fold_stability_pass": False,
         "calibration_pass": False,
+        "market_confidence_pass": False,
         "no_lookahead_pass": True,
     }
     return {
@@ -617,6 +679,11 @@ def waiting_walk_forward_result(
         "evaluation_races": 0,
         "evaluation_days": 0,
         "probability_metrics": probability_metrics,
+        "market_comparison": {
+            "comparison_role": "waiting for the first untouched evaluation day",
+            "evaluation_races": 0,
+            "confidence_pass": False,
+        },
         "ticket_diagnostics": predefined_ticket_diagnostics(
             [], daily_budget_yen=daily_budget_yen
         ),
@@ -672,6 +739,8 @@ def walk_forward_evaluate(
 
     folds = []
     evaluation_races: list[dict[str, Any]] = []
+    market_loss_differences: list[float] = []
+    market_top5_differences: list[float] = []
     daily_rows = []
     flat_daily_rows = []
     for index in range(min_calibration_days, len(dates)):
@@ -713,6 +782,12 @@ def walk_forward_evaluate(
             probability_blender=blend_probabilities,
         )
         metrics = probability_metrics(holdout, calibrator=calibrator)
+        fold_loss_differences, fold_top5_differences = paired_market_differences(
+            holdout,
+            calibrator=calibrator,
+        )
+        market_loss_differences.extend(fold_loss_differences)
+        market_top5_differences.extend(fold_top5_differences)
         folds.append(
             {
                 "fold": len(folds) + 1,
@@ -744,6 +819,14 @@ def walk_forward_evaluate(
                     key: value for key, value in flat_bankroll.items() if key != "daily"
                 },
                 "probability_metrics": metrics,
+                "market_comparison": {
+                    "log_loss_mean_difference": (
+                        sum(fold_loss_differences) / len(fold_loss_differences)
+                    ),
+                    "top5_mean_difference": (
+                        sum(fold_top5_differences) / len(fold_top5_differences)
+                    ),
+                },
                 "bankroll": {key: value for key, value in bankroll.items() if key != "daily"},
             }
         )
@@ -763,6 +846,10 @@ def walk_forward_evaluate(
     flat_stake_yen = sum(int(row["stake_yen"]) for row in flat_daily_rows)
     flat_return_yen = sum(int(row["return_yen"]) for row in flat_daily_rows)
     aggregate_metrics = _aggregate_fold_probability_metrics(folds)
+    market_comparison = market_comparison_confidence(
+        market_loss_differences,
+        market_top5_differences,
+    )
     promotion_gate = {
         "minimum_evaluation_races": 1000,
         "minimum_evaluation_days": 30,
@@ -772,6 +859,7 @@ def walk_forward_evaluate(
         "roi_pass": return_yen / stake_yen > 1.0 if stake_yen else False,
         "fold_stability_pass": profitable_folds >= math.ceil(len(folds) * 0.60),
         "calibration_pass": _calibration_gate_pass(aggregate_metrics),
+        "market_confidence_pass": bool(market_comparison["confidence_pass"]),
         "no_lookahead_pass": True,
     }
     return {
@@ -788,6 +876,7 @@ def walk_forward_evaluate(
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
         "probability_metrics": aggregate_metrics,
+        "market_comparison": market_comparison,
         "ticket_diagnostics": predefined_ticket_diagnostics(
             evaluation_races,
             daily_budget_yen=daily_budget_yen,
@@ -1077,7 +1166,7 @@ def scored_cache_contract(
     odds_signature: dict[str, int],
 ) -> dict[str, Any]:
     return {
-        "version": MARKET_EVALUATION_VERSION,
+        "version": SCORED_CACHE_VERSION,
         "model_sha256": file_sha256(model_path),
         "trained_through": tuple(artifact.get("trained_through") or ()),
         "feature_variant": artifact.get("feature_variant"),

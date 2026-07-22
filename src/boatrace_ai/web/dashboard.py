@@ -1668,6 +1668,28 @@ def _listwise_model_tracks(
     return rows
 
 
+def _market_comparison_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
+    top5 = payload.get("top5_hit_difference_calibrated_minus_market") or {}
+    if not isinstance(loss, dict) or not loss.get("observations"):
+        return {}
+    return {
+        "market_comparison_races": loss.get("observations"),
+        "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
+        "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
+        "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
+        "market_improvement_probability": _float_or_none(
+            loss.get("probability_less_than_zero")
+        ),
+        "market_top5_delta": _float_or_none(top5.get("mean_difference")),
+        "market_top5_delta_ci95_lower": _float_or_none(top5.get("ci95_lower")),
+        "market_top5_delta_ci95_upper": _float_or_none(top5.get("ci95_upper")),
+        "market_confidence_pass": bool(payload.get("confidence_pass")),
+    }
+
+
 def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
     if path is None or not path.is_file():
         return {}
@@ -1675,24 +1697,18 @@ def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
-    if not isinstance(loss, dict):
+    comparison = _market_comparison_summary(payload)
+    if not comparison:
         return {}
     point = payload.get("point_metrics") or {}
     return {
+        **comparison,
         "market_comparison_date": payload.get("evaluation_date"),
-        "market_comparison_races": loss.get("observations"),
         "market_probe_log_loss": _float_or_none(
             point.get("calibrated_trifecta_log_loss")
         ),
         "market_probe_top5_hit_rate": _float_or_none(
             point.get("calibrated_trifecta_top5_hit_rate")
-        ),
-        "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
-        "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
-        "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
-        "market_improvement_probability": _float_or_none(
-            loss.get("probability_less_than_zero")
         ),
     }
 
@@ -1760,6 +1776,10 @@ def _market_calibrated_model_tracks(
         bootstrap = _market_bootstrap_summary(
             model_dir / bootstrap_file if model_dir and bootstrap_file else None
         )
+        formal_comparison = _market_comparison_summary(
+            result.get("market_comparison")
+        )
+        comparison = formal_comparison or bootstrap
         calibrated_log_loss = _float_or_none(
             metrics.get("calibrated_trifecta_log_loss")
         )
@@ -1813,7 +1833,7 @@ def _market_calibrated_model_tracks(
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
                 "promotion_eligible": bool(metrics.get("promotion_eligible")),
-                **bootstrap,
+                **comparison,
             }
         )
     return rows
@@ -3843,6 +3863,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
     result["model"] = data.get("model")
     result["status"] = data.get("status")
     result["feature_set"] = data.get("feature_set")
+    result["market_comparison"] = data.get("market_comparison")
     result["daily"] = data.get("daily") or []
     if isinstance(data.get("folds"), list):
         result["folds"] = len(data["folds"])
