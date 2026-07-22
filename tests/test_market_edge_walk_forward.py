@@ -34,3 +34,15 @@ def test_walk_forward_edge_diagnostics_scores_only_later_days() -> None:
     assert report["folds"][0]["training_dates"] == ["2026-07-20"]
     assert sum(row["tickets"] for row in report["all_tickets"]) == 240
     assert sum(row["tickets"] for row in report["top5_tickets"]) == 10
+
+
+
+def test_walk_forward_edge_diagnostics_can_keep_real_t5_prices() -> None:
+    report = walk_forward_edge_diagnostics(
+        [_race("2026-07-20"), _race("2026-07-21"), _race("2026-07-22")],
+        forecast_closing=False,
+    )
+
+    assert report["price_basis"] == "real_t5"
+    assert report["evaluation_races"] == 2
+    assert sum(row["tickets"] for row in report["all_tickets"]) == 240

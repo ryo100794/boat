@@ -118,7 +118,10 @@ def summarize_edge_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def walk_forward_edge_diagnostics(
-    races: list[dict[str, Any]], *, min_calibration_days: int = 1
+    races: list[dict[str, Any]],
+    *,
+    min_calibration_days: int = 1,
+    forecast_closing: bool = True,
 ) -> dict[str, Any]:
     from .closing_odds import attach_forecast_closing_odds, fit_closing_odds_model
     from .market_calibration import blend_probabilities
@@ -143,7 +146,12 @@ def walk_forward_edge_diagnostics(
         )
         calibrator = dict(selection["final_calibrator"])
         closing_model = fit_closing_odds_model(training)
-        holdout = attach_forecast_closing_odds(by_day[dates[index]], closing_model)
+        raw_holdout = by_day[dates[index]]
+        holdout = (
+            attach_forecast_closing_odds(raw_holdout, closing_model)
+            if forecast_closing
+            else raw_holdout
+        )
         fold_records = edge_records(
             holdout,
             calibrator=calibrator,
@@ -160,4 +168,8 @@ def walk_forward_edge_diagnostics(
                 "closing_odds_model": closing_model,
             }
         )
-    return {**summarize_edge_records(records), "folds": folds}
+    return {
+        **summarize_edge_records(records),
+        "price_basis": "forecast_closing" if forecast_closing else "real_t5",
+        "folds": folds,
+    }
