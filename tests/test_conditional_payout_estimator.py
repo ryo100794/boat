@@ -100,3 +100,39 @@ def test_conditional_payout_regression_learns_probability_payout_relation() -> N
     )
     assert predicted[0] > predicted[1] * 5.0
     np.testing.assert_allclose(predicted, [39.0, 3.9], rtol=0.25)
+
+
+def test_weighted_statistics_match_integer_sample_replication() -> None:
+    probabilities = [0.10, 0.05]
+    combinations = ["1-2-3", "6-5-4"]
+    race_keys = [
+        ("a", "2026-07-01", "01", 1),
+        ("b", "2026-07-01", "24", 12),
+    ]
+    payouts = [800.0, 3_000.0]
+    weighted = ConditionalPayoutStatistics.empty()
+    weighted.update(
+        probabilities,
+        combinations,
+        race_keys,
+        payouts,
+        sample_weights=[1.0, 3.0],
+    )
+    repeated = ConditionalPayoutStatistics.empty()
+    repeated.update(
+        [probabilities[0], *([probabilities[1]] * 3)],
+        [combinations[0], *([combinations[1]] * 3)],
+        [race_keys[0], *([race_keys[1]] * 3)],
+        [payouts[0], *([payouts[1]] * 3)],
+    )
+
+    weighted_model = fit_conditional_payout_statistics(weighted)
+    repeated_model = fit_conditional_payout_statistics(repeated)
+
+    assert weighted.samples == 2
+    assert weighted.weight_sum == 4.0
+    np.testing.assert_allclose(weighted_model.weights, repeated_model.weights)
+    assert np.isclose(
+        weighted_model.residual_variance,
+        repeated_model.residual_variance,
+    )
