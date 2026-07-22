@@ -194,6 +194,8 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
             "day-2": {"combination": "1-2-3", "payout_yen": 2_000},
         }
     )
+    market_probabilities = np.full((2, 120), 0.95 / 119.0)
+    market_probabilities[:, target_index] = 0.05
 
     result = simulate_conditional_payout_walk_forward(
         probabilities,
@@ -201,16 +203,19 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
         payouts=payouts,
         calibration_probabilities=calibration_probabilities,
         calibration_race_keys=calibration_keys,
+        market_reference_probabilities=market_probabilities,
+        calibration_market_reference_probabilities=calibration_probabilities,
     )
 
     assert result["payout_training_samples_initial"] == 60
     assert result["payout_training_samples_final"] == 62
     assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
     assert result["evaluated_races"] == 2
+    assert result["policy"]["market_reference"] == "fixed baseline probability"
     diagnostics = result["payout_diagnostics"]
     assert diagnostics["candidate_combinations"] == 240
     assert np.isfinite(diagnostics["max_estimated_ev"])
-    assert diagnostics["max_estimated_ev"] > 0.0
+    assert diagnostics["max_estimated_ev"] > 1.2
     counts = diagnostics["estimated_ev_at_least"]
     assert counts["0.80"] >= counts["0.90"] >= counts["1.00"]
     assert counts["1.00"] >= counts["1.05"] >= counts["1.10"] >= counts["1.20"]

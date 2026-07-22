@@ -245,18 +245,46 @@ def simulate_conditional_payout_walk_forward(
     payouts: dict[str, dict[str, Any]],
     calibration_probabilities: np.ndarray,
     calibration_race_keys: list[tuple[str, str, str, int]],
+    market_reference_probabilities: np.ndarray | None = None,
+    calibration_market_reference_probabilities: np.ndarray | None = None,
     policy: dict[str, Any] | None = None,
     ridge: float = 10.0,
 ) -> dict[str, Any]:
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
         raise ValueError("probability matrix and race keys must align")
+    market_values = np.asarray(
+        probabilities
+        if market_reference_probabilities is None
+        else market_reference_probabilities,
+        dtype=np.float64,
+    )
+    if market_values.shape != values.shape:
+        raise ValueError("market reference probabilities and race keys must align")
+    calibration_values = np.asarray(calibration_probabilities, dtype=np.float64)
+    calibration_market_values = np.asarray(
+        calibration_values
+        if calibration_market_reference_probabilities is None
+        else calibration_market_reference_probabilities,
+        dtype=np.float64,
+    )
+    if calibration_market_values.shape != calibration_values.shape:
+        raise ValueError("calibration market probabilities and race keys must align")
+    independent_market_reference = market_reference_probabilities is not None
     selected_policy = dict(policy or standard_direct_policy())
     selected_policy.update(
         {
             "payout_estimator": (
-                "daily walk-forward log-payout ridge using model probability, "
+                "daily walk-forward log-payout ridge using fixed baseline market "
+                "reference, finish lanes, venue, and race number"
+                if independent_market_reference
+                else "daily walk-forward log-payout ridge using model probability, "
                 "finish lanes, venue, and race number"
+            ),
+            "market_reference": (
+                "fixed baseline probability"
+                if independent_market_reference
+                else "candidate probability"
             ),
             "conditional_payout_ridge": float(ridge),
             "selection": "fixed diagnostic policy; no evaluation-period tuning",
@@ -265,7 +293,7 @@ def simulate_conditional_payout_walk_forward(
     statistics = ConditionalPayoutStatistics.empty()
     statistics.update(
         *_winner_samples(
-            calibration_probabilities,
+            calibration_market_values,
             calibration_race_keys,
             payouts,
         )
@@ -294,11 +322,12 @@ def simulate_conditional_payout_walk_forward(
         row_indices = row_indices_by_date[race_date]
         day_keys = [race_keys[index] for index in row_indices]
         day_probabilities = values[row_indices]
+        day_market_probabilities = market_values[row_indices]
         flat_combinations = combination_rows * len(row_indices)
         flat_keys = [race_key for race_key in day_keys for _ in COMBINATION_LABELS]
         estimated_odds = predict_conditional_odds(
             model,
-            day_probabilities.reshape(-1),
+            day_market_probabilities.reshape(-1),
             flat_combinations,
             flat_keys,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
@@ -368,7 +397,9 @@ def simulate_conditional_payout_walk_forward(
             peak_profit=state[1],
             max_drawdown=state[2],
         )
-        statistics.update(*_winner_samples(day_probabilities, day_keys, payouts))
+        statistics.update(
+            *_winner_samples(day_market_probabilities, day_keys, payouts)
+        )
 
     attribution = new_roi_attribution()
     for fold_attribution in fold_attributions:

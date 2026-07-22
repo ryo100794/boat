@@ -553,6 +553,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         scores[validation_start:train_end],
         calibration_model,
     )
+    calibration_baseline_probabilities = conditional_probabilities(
+        scores[validation_start:train_end],
+        identity_model(),
+    )
     payouts = _load_trifecta_payouts(conn)
     training_races = {str(row[0]) for row in race_keys[:train_end]}
     candidate_bankroll = simulate_direct_bankroll(
@@ -573,6 +577,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         payouts=payouts,
         calibration_probabilities=calibration_probabilities,
         calibration_race_keys=race_keys[validation_start:train_end],
+        market_reference_probabilities=baseline_probabilities,
+        calibration_market_reference_probabilities=(
+            calibration_baseline_probabilities
+        ),
     )
     conditional_payout_confidence = bootstrap_daily_bankroll(
         conditional_payout_bankroll["daily"],
