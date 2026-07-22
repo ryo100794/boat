@@ -10,6 +10,7 @@ from boatrace_ai.listwise.market_calibration import (
     iter_artifact_feature_rows,
     normalized_market_probabilities,
     policy_calibration_eligible,
+    predefined_ticket_diagnostics,
     load_scored_cache,
     select_calibrator,
     select_policy,
@@ -177,6 +178,19 @@ def test_snapshot_age_is_measured_against_t5_boundary() -> None:
     }
     assert snapshot_age_seconds(snapshot) == 40.0
     assert snapshot_age_seconds({"captured_at": "bad"}) is None
+
+
+def test_predefined_ticket_diagnostics_are_separate_from_policy_selection() -> None:
+    result = predefined_ticket_diagnostics([_race("2026-07-20", 1)])
+    strategies = result["strategies"]
+    assert result["uses_only_evaluation_folds"] is True
+    assert result["daily_budget_applied"] is False
+    assert strategies["top5_flat"]["tickets"] == 5
+    assert strategies["top5_flat"]["return_yen"] == 500
+    assert strategies["top5_odds_gte_5"]["tickets"] == 4
+    assert strategies["top5_odds_gte_5"]["return_yen"] == 0
+    assert strategies["top5_ev_gte_1"]["tickets"] == 1
+    assert strategies["top5_ev_gte_1"]["roi"] == 5.0
 
 
 def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:

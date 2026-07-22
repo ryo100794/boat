@@ -433,6 +433,72 @@ def probability_metrics(
     return result
 
 
+def predefined_ticket_diagnostics(
+    races: list[dict[str, Any]],
+) -> dict[str, Any]:
+    descriptions = {
+        "top5_flat": "モデルTop5を全点100円購入",
+        "top5_odds_gte_5": "モデルTop5のうちT-5オッズ5倍以上を100円購入",
+        "top5_ev_gte_1": "モデルTop5のうちモデル確率×T-5オッズ1.0以上を100円購入",
+    }
+    totals = {
+        name: {
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "hit_tickets": 0,
+            "hit_races": 0,
+        }
+        for name in descriptions
+    }
+    for race in races:
+        probabilities = race["model_probabilities"]
+        odds = race["odds"]
+        actual = str(race["actual_combination"])
+        top5 = sorted(probabilities, key=probabilities.get, reverse=True)[:5]
+        selections = {
+            "top5_flat": top5,
+            "top5_odds_gte_5": [
+                combination
+                for combination in top5
+                if float(odds[combination]) >= 5.0
+            ],
+            "top5_ev_gte_1": [
+                combination
+                for combination in top5
+                if float(probabilities[combination]) * float(odds[combination]) >= 1.0
+            ],
+        }
+        for name, combinations in selections.items():
+            row = totals[name]
+            row["tickets"] += len(combinations)
+            row["stake_yen"] += len(combinations) * STAKE_YEN
+            if actual in combinations:
+                row["return_yen"] += int(race["actual_payout_yen"])
+                row["hit_tickets"] += 1
+                row["hit_races"] += 1
+
+    strategies = {}
+    for name, values in totals.items():
+        stake = int(values["stake_yen"])
+        returned = int(values["return_yen"])
+        strategies[name] = {
+            "description": descriptions[name],
+            "evaluated_races": len(races),
+            **values,
+            "profit_yen": returned - stake,
+            "roi": returned / stake if stake else None,
+            "race_hit_rate": values["hit_races"] / len(races) if races else None,
+        }
+    return {
+        "comparison_role": "fixed_ticket_diagnostic_not_policy_selection_or_promotion",
+        "uses_only_evaluation_folds": True,
+        "daily_budget_applied": False,
+        "stake_per_ticket_yen": STAKE_YEN,
+        "strategies": strategies,
+    }
+
+
 def walk_forward_evaluate(
     races: list[dict[str, Any]],
     *,
@@ -527,6 +593,7 @@ def walk_forward_evaluate(
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
         "probability_metrics": aggregate_metrics,
+        "ticket_diagnostics": predefined_ticket_diagnostics(evaluation_races),
         "calibrated_trifecta_log_loss": aggregate_metrics.get(
             "calibrated_trifecta_log_loss"
         ),
