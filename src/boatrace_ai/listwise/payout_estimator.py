@@ -14,6 +14,7 @@ FEATURE_COUNT = 54
 @dataclass(frozen=True)
 class ConditionalPayoutRegressor:
     weights: np.ndarray
+    residual_variance: float
     ridge: float
     training_samples: int
 
@@ -22,6 +23,7 @@ class ConditionalPayoutRegressor:
 class ConditionalPayoutStatistics:
     gram: np.ndarray
     target_cross: np.ndarray
+    target_square_sum: float
     samples: int
 
     @classmethod
@@ -29,6 +31,7 @@ class ConditionalPayoutStatistics:
         return cls(
             gram=np.zeros((FEATURE_COUNT, FEATURE_COUNT), dtype=np.float64),
             target_cross=np.zeros(FEATURE_COUNT, dtype=np.float64),
+            target_square_sum=0.0,
             samples=0,
         )
 
@@ -43,6 +46,7 @@ class ConditionalPayoutStatistics:
         targets = payout_targets(payouts_yen, expected_rows=len(matrix))
         self.gram += matrix.T @ matrix
         self.target_cross += matrix.T @ targets
+        self.target_square_sum += float(targets @ targets)
         self.samples += len(matrix)
 
 
@@ -135,8 +139,18 @@ def fit_conditional_payout_statistics(
         np.asarray(statistics.gram, dtype=np.float64) + penalty,
         np.asarray(statistics.target_cross, dtype=np.float64),
     )
+    residual_sum_squares = float(
+        statistics.target_square_sum
+        - 2.0 * weights @ statistics.target_cross
+        + weights @ statistics.gram @ weights
+    )
+    residual_variance = max(
+        0.0,
+        residual_sum_squares / max(1, statistics.samples - FEATURE_COUNT),
+    )
     return ConditionalPayoutRegressor(
         weights=weights,
+        residual_variance=residual_variance,
         ridge=float(ridge),
         training_samples=int(statistics.samples),
     )
@@ -149,5 +163,8 @@ def predict_conditional_odds(
     race_keys: Sequence[tuple[str, str, str, int]],
 ) -> np.ndarray:
     matrix = payout_features(probabilities, combinations, race_keys)
-    log_odds = matrix @ np.asarray(model.weights, dtype=np.float64)
+    log_odds = (
+        matrix @ np.asarray(model.weights, dtype=np.float64)
+        + 0.5 * float(model.residual_variance)
+    )
     return np.clip(np.exp(log_odds), MIN_ODDS, MAX_ODDS)
