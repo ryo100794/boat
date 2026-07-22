@@ -1041,6 +1041,37 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
                     bankroll_daily[walk_label] = walk_daily
+            return_calibration = data.get("expected_return_calibration") or {}
+            return_bankroll = return_calibration.get("bankroll") or {}
+            return_confidence = return_calibration.get("bankroll_confidence") or {}
+            if isinstance(return_bankroll, dict) and return_bankroll:
+                return_label = f"{label}_expected_return_calibration"
+                return_result = {
+                    **return_bankroll,
+                    "model": f"{data.get('model')}_expected_return_calibration",
+                    "generated_at": data.get("generated_at"),
+                    "entry_log_loss": conditional_metrics.get("trifecta_log_loss"),
+                    "trifecta_top1_hit_rate": conditional_metrics.get(
+                        "trifecta_top1_hit_rate"
+                    ),
+                    "trifecta_top5_hit_rate": conditional_metrics.get(
+                        "trifecta_top5_hit_rate"
+                    ),
+                    "roi_ci95_lower": return_confidence.get("roi_ci95_lower"),
+                    "roi_ci95_upper": return_confidence.get("roi_ci95_upper"),
+                    "roi_delta_ci95_lower": return_confidence.get(
+                        "roi_delta_ci95_lower"
+                    ),
+                    "roi_delta_ci95_upper": return_confidence.get(
+                        "roi_delta_ci95_upper"
+                    ),
+                }
+                bankroll.append(
+                    _bankroll_summary(path, return_label, return_result)
+                )
+                return_daily = _daily_report_rows(return_bankroll.get("daily") or [])
+                if return_daily:
+                    bankroll_daily[return_label] = return_daily
             continue
         if _is_feature_correlation_result(data):
             feature_diagnostics.append(_feature_correlation_summary(path, label, data))

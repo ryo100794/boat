@@ -77,6 +77,36 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
                 "roi_delta_ci95_upper": 0.08,
             },
         },
+        "expected_return_calibration": {
+            "role": "development diagnostic",
+            "promotion_eligible": False,
+            "bankroll": {
+                "evaluated_races": 48_437,
+                "roi": 1.01,
+                "profit_yen": 1_000,
+                "stake_yen": 100_000,
+                "return_yen": 101_000,
+                "daily": [
+                    {
+                        "race_date": "2025-07-20",
+                        "evaluated_races": 130,
+                        "tickets": 1,
+                        "stake_yen": 300,
+                        "return_yen": 600,
+                        "profit_yen": 300,
+                        "cumulative_profit_yen": 300,
+                        "roi": 2.0,
+                        "budget_used_fraction": 0.03,
+                    }
+                ],
+            },
+            "bankroll_confidence": {
+                "roi_ci95_lower": 0.94,
+                "roi_ci95_upper": 1.10,
+                "roi_delta_ci95_lower": -0.02,
+                "roi_delta_ci95_upper": 0.12,
+            },
+        },
         "structure_gate": {"pass": True},
         "bankroll_gate": {"pass": bankroll_pass},
         "promotion_gate": {
@@ -148,6 +178,19 @@ def test_model_report_separates_conditional_metrics_and_bankroll(tmp_path) -> No
     assert len(
         report["bankroll_daily"][
             "pastlog_conditional_order_conditional_payout_walk_forward"
+        ]
+    ) == 1
+    expected_return = next(
+        row
+        for row in report["bankroll"]
+        if row["name"]
+        == "pastlog_conditional_order_expected_return_calibration"
+    )
+    assert expected_return["roi"] == 1.01
+    assert expected_return["roi_ci95_lower"] == 0.94
+    assert len(
+        report["bankroll_daily"][
+            "pastlog_conditional_order_expected_return_calibration"
         ]
     ) == 1
 

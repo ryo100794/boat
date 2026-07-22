@@ -25,6 +25,7 @@ from .direct_bankroll import (
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
 )
+from .return_bankroll import simulate_expected_return_calibrated_bankroll
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -582,6 +583,20 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             calibration_baseline_probabilities
         ),
     )
+    expected_return_bankroll = simulate_expected_return_calibrated_bankroll(
+        candidate_probabilities,
+        race_keys=evaluation_keys,
+        payouts=payouts,
+        market_reference_probabilities=baseline_probabilities,
+        calibration_probabilities=calibration_probabilities,
+        calibration_market_reference_probabilities=(
+            calibration_baseline_probabilities
+        ),
+        calibration_race_keys=race_keys[validation_start:train_end],
+        regularization=args.return_regularization,
+        max_iterations=args.return_max_iterations,
+        batch_races=args.return_batch_races,
+    )
     conditional_payout_confidence = bootstrap_daily_bankroll(
         conditional_payout_bankroll["daily"],
         baseline_daily=baseline_bankroll["daily"],
@@ -590,6 +605,15 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         conditional_payout_bankroll,
         baseline_bankroll,
         conditional_payout_confidence,
+    )
+    expected_return_confidence = bootstrap_daily_bankroll(
+        expected_return_bankroll["daily"],
+        baseline_daily=baseline_bankroll["daily"],
+    )
+    expected_return_gate = bankroll_promotion_gate(
+        expected_return_bankroll,
+        baseline_bankroll,
+        expected_return_confidence,
     )
     bankroll_confidence = bootstrap_daily_bankroll(
         candidate_bankroll["daily"],
@@ -651,6 +675,16 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "bankroll_confidence": conditional_payout_confidence,
             "diagnostic_gate": conditional_payout_gate,
         },
+        "expected_return_calibration": {
+            "role": (
+                "post-holdout development diagnostic; future untouched-day "
+                "confirmation required"
+            ),
+            "promotion_eligible": False,
+            "bankroll": expected_return_bankroll,
+            "bankroll_confidence": expected_return_confidence,
+            "diagnostic_gate": expected_return_gate,
+        },
         "baseline_bankroll": {
             key: value
             for key, value in baseline_bankroll.items()
@@ -686,6 +720,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--regularizations", type=float, nargs="+", default=DEFAULT_REGULARIZATIONS)
     parser.add_argument("--max-iterations", type=int, default=100)
     parser.add_argument("--batch-races", type=int, default=4_000)
+    parser.add_argument("--return-regularization", type=float, default=0.01)
+    parser.add_argument("--return-max-iterations", type=int, default=20)
+    parser.add_argument("--return-batch-races", type=int, default=500)
     parser.add_argument("--promote-legacy-cache", action="store_true")
     return parser
 
