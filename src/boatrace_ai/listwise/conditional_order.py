@@ -20,7 +20,7 @@ from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
-from .direct_bankroll import simulate_direct_bankroll
+from .direct_bankroll import bootstrap_daily_bankroll, simulate_direct_bankroll
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -364,6 +364,40 @@ def _daily_rows(
     return rows
 
 
+def bankroll_promotion_gate(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    confidence: dict[str, Any],
+) -> dict[str, Any]:
+    values = {
+        "roi": float(candidate["roi"]),
+        "profit_yen": float(candidate["profit_yen"]),
+        "baseline_roi": float(baseline["roi"]),
+        "baseline_profit_yen": float(baseline["profit_yen"]),
+        "roi_ci95_lower": float(confidence["roi_ci95_lower"]),
+        "roi_delta_ci95_lower": float(confidence["roi_delta_ci95_lower"]),
+    }
+    if not all(math.isfinite(value) for value in values.values()):
+        raise ValueError("bankroll promotion metrics must be finite")
+    gate = {
+        "minimum_roi": 1.0,
+        **values,
+        "roi_pass": values["roi"] > 1.0,
+        "profit_pass": values["profit_yen"] > 0.0,
+        "baseline_improved": values["roi"] > values["baseline_roi"],
+        "roi_ci_lower_above_one": values["roi_ci95_lower"] > 1.0,
+        "roi_delta_ci_lower_above_zero": values["roi_delta_ci95_lower"] > 0.0,
+    }
+    gate["pass"] = bool(
+        gate["roi_pass"]
+        and gate["profit_pass"]
+        and gate["baseline_improved"]
+        and gate["roi_ci_lower_above_one"]
+        and gate["roi_delta_ci_lower_above_zero"]
+    )
+    return gate
+
+
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     baseline_artifact = joblib.load(args.baseline_model)
@@ -522,20 +556,14 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         payouts=payouts,
         training_races=training_races,
     )
-    bankroll_gate = {
-        "minimum_roi": 1.0,
-        "roi": candidate_bankroll["roi"],
-        "profit_yen": candidate_bankroll["profit_yen"],
-        "roi_pass": candidate_bankroll["roi"] > 1.0,
-        "profit_pass": candidate_bankroll["profit_yen"] > 0,
-        "baseline_roi": baseline_bankroll["roi"],
-        "baseline_profit_yen": baseline_bankroll["profit_yen"],
-        "baseline_improved": candidate_bankroll["roi"] > baseline_bankroll["roi"],
-    }
-    bankroll_gate["pass"] = bool(
-        bankroll_gate["roi_pass"]
-        and bankroll_gate["profit_pass"]
-        and bankroll_gate["baseline_improved"]
+    bankroll_confidence = bootstrap_daily_bankroll(
+        candidate_bankroll["daily"],
+        baseline_daily=baseline_bankroll["daily"],
+    )
+    bankroll_gate = bankroll_promotion_gate(
+        candidate_bankroll,
+        baseline_bankroll,
+        bankroll_confidence,
     )
     promotion_gate = {
         "structure_pass": structure_gate["pass"],
@@ -577,6 +605,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "monthly": monthly,
         "daily": daily,
         "bankroll": candidate_bankroll,
+        "bankroll_confidence": bankroll_confidence,
         "baseline_bankroll": {
             key: value
             for key, value in baseline_bankroll.items()

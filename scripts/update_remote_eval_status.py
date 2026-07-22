@@ -150,6 +150,7 @@ def result_summary(path):
     row["promotion_eligible"] = data.get("promotion_eligible")
     row["structure_gate"] = data.get("structure_gate")
     row["bankroll_gate"] = data.get("bankroll_gate")
+    row["bankroll_confidence"] = data.get("bankroll_confidence")
     holdout = (
         data.get("after_refit")
         or data.get("holdout_after_newton")

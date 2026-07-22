@@ -41,6 +41,12 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
                 }
             ],
         },
+        "bankroll_confidence": {
+            "roi_ci95_lower": 0.87,
+            "roi_ci95_upper": 1.08,
+            "roi_delta_ci95_lower": -0.06,
+            "roi_delta_ci95_upper": 0.09,
+        },
         "structure_gate": {"pass": True},
         "bankroll_gate": {"pass": bankroll_pass},
         "promotion_gate": {
@@ -97,6 +103,9 @@ def test_model_report_separates_conditional_metrics_and_bankroll(tmp_path) -> No
     assert bankroll["entry_log_loss"] == 3.8099
     assert bankroll["roi"] == 0.91
     assert bankroll["profit_yen"] == -9_000
+    assert bankroll["roi_ci95_lower"] == 0.87
+    assert bankroll["roi_ci95_upper"] == 1.08
+    assert bankroll["roi_delta_ci95_lower"] == -0.06
     assert len(report["bankroll_daily"]["pastlog_conditional_order"]) == 1
 
 

@@ -34,12 +34,12 @@
       <div class="panel"><h2><span>fold別 LogLoss</span><span class="muted">全モデル・低いほど良い</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>資金運用 ROI</span><span class="muted">全モデル・払戻 ÷ 投資</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
     </div>
-    <div class="panel"><h2><span>全モデル総合表</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>投資</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>全モデル総合表</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
     <div class="panel"><h2><span>全モデル・スイープ候補比較</span><span class="muted">候補比較</span></h2><table><thead><tr><th>variant</th><th>LogLoss</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div>
   </section>
   <section id="selectedModelGroup" class="report-group">
     <div class="group-heading"><h2>モデル個別集計</h2><div class="group-controls"><label for="modelSelect">対象モデル</label><select id="modelSelect"></select></div></div>
-    <div class="panel"><h2><span>選択モデル性能表</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>投資</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>選択モデル性能表</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>モデル</th><th>種別</th><th>評価R</th><th>LogLoss</th><th>1着</th><th>3T5</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
     <div class="grid three">
       <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>日次ROI推移</span><span class="muted">選択モデル</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
@@ -134,7 +134,7 @@ function renderSelectedModel(data){
   $("selectedModelMeta").textContent=option?option.textContent:"対象なし";
   const tests=(data.backtests||[]).filter(x=>modelMatches(x,key));
   const bank=(data.bankroll||[]).filter(x=>modelMatches(x,key));
-  $("modelDetailRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("") || '<tr><td colspan="9" class="muted">選択モデルの集計結果なし</td></tr>';
+  $("modelDetailRows").innerHTML=[...tests.map(x=>summaryRow(x,"BT")),...bank.map(x=>summaryRow(x,"資金"))].join("") || '<tr><td colspan="11" class="muted">選択モデルの集計結果なし</td></tr>';
   renderDaily(data,key);
   renderFeatureDiagnostics((data.feature_diagnostics||[]).filter(x=>modelMatches(x,key)));
   renderRoiAttribution(bank);
@@ -151,7 +151,8 @@ function renderEvaluationJobs(jobs,generatedAt){
   $("evaluationRows").innerHTML=jobs.map(x=>{ const status=String(x.status||"-"); const cls=status==="完了"?"done":status==="失敗"?"failed":x.running?"running":""; const fold=x.expected_folds?`${x.completed_folds||0}/${x.expected_folds}`:(x.completed_folds||"-"); const metric=x.real_odds_races!=null?`${fmt(x.evaluated_races)}/${fmt(x.real_odds_races)}`:fmt(x.evaluated_races); return `<tr><td class="name-cell" title="${esc(x.name)}">${esc(x.name||"-")}</td><td>${esc(x.milestone||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td class="mono">${fold}</td><td class="mono">${esc(x.elapsed||"-")}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${metric}</td></tr>`; }).join("") || `<tr><td colspan="8" class="muted">評価ジョブ情報なし</td></tr>`;
 }
 function scopeText(value){ const text=String(value||"legacy:unknown"); if(text==="standard_365d_v2") return "365d v2 unified"; if(text==="standard_365d") return "365d v1 legacy"; const parts=text.split(":"); return parts[0]==="legacy"&&parts.length===4 ? parts[1]+".."+parts[2]+" ("+parts[3]+"d)" : "legacy period unknown"; }
-function summaryRow(x,type){ const cls=Number(x.profit_yen||0)>=0?"pos":"neg"; const name=esc(x.name||x.file||"-"); const scope=esc(scopeText(x.evaluation_scope)); return "<tr><td class=\"name-cell\" title=\""+name+" / "+scope+"\">"+name+"<br><span class=\"muted\">"+scope+"</span></td><td>"+type+"</td><td>"+fmt(x.evaluated_races)+"</td><td>"+ratio(x.entry_log_loss)+"</td><td>"+pct(x.winner_top1_accuracy)+"</td><td>"+pct(x.trifecta_top5_hit_rate)+"</td><td>"+ratio(x.roi)+"</td><td class=\""+(x.profit_yen==null?"":cls)+"\">"+(x.profit_yen==null?"-":yen(x.profit_yen))+"</td><td>"+(x.stake_yen==null?"-":yen(x.stake_yen))+"</td></tr>"; }
+function roiInterval(lower,upper){ return lower==null||upper==null?"-":"["+ratio(lower)+", "+ratio(upper)+"]"; }
+function summaryRow(x,type){ const cls=Number(x.profit_yen||0)>=0?"pos":"neg"; const name=esc(x.name||x.file||"-"); const scope=esc(scopeText(x.evaluation_scope)); return "<tr><td class=\"name-cell\" title=\""+name+" / "+scope+"\">"+name+"<br><span class=\"muted\">"+scope+"</span></td><td>"+type+"</td><td>"+fmt(x.evaluated_races)+"</td><td>"+ratio(x.entry_log_loss)+"</td><td>"+pct(x.winner_top1_accuracy)+"</td><td>"+pct(x.trifecta_top5_hit_rate)+"</td><td>"+ratio(x.roi)+"</td><td class=\"mono\">"+roiInterval(x.roi_ci95_lower,x.roi_ci95_upper)+"</td><td class=\"mono\">"+roiInterval(x.roi_delta_ci95_lower,x.roi_delta_ci95_upper)+"</td><td class=\""+(x.profit_yen==null?"":cls)+"\">"+(x.profit_yen==null?"-":yen(x.profit_yen))+"</td><td>"+(x.stake_yen==null?"-":yen(x.stake_yen))+"</td></tr>"; }
 function featureName(row){ return row && row.feature ? row.feature : "-"; }
 function renderFeatureDiagnostics(features){
   const latest=features[features.length-1]||{}; const families=latest.family_summary||[]; const suspects=latest.suspect_features||[];

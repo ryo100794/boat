@@ -20,6 +20,160 @@ COMBINATION_LABELS = tuple(
 )
 
 
+def _finite_quantile(values: np.ndarray) -> tuple[float, float]:
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if not len(finite):
+        raise ValueError("bootstrap produced no finite ratio samples")
+    lower, upper = np.quantile(finite, (0.025, 0.975))
+    return float(lower), float(upper)
+
+
+def _roi(return_yen: float, stake_yen: float) -> float:
+    return float(return_yen / stake_yen) if stake_yen > 0.0 else 0.0
+
+
+def bootstrap_daily_bankroll(
+    daily: list[dict[str, Any]],
+    *,
+    baseline_daily: list[dict[str, Any]] | None = None,
+    samples: int = 20_000,
+    seed: int = 20260727,
+    chunk_size: int = 1_000,
+) -> dict[str, Any]:
+    if not daily:
+        raise ValueError("daily bankroll rows must not be empty")
+    if samples < 100:
+        raise ValueError("samples must be at least 100")
+    dates = [str(row["race_date"]) for row in daily]
+    if len(set(dates)) != len(dates):
+        raise ValueError("daily bankroll rows must contain unique dates")
+
+    stakes = np.asarray([row["stake_yen"] for row in daily], dtype=np.float64)
+    returns = np.asarray([row["return_yen"] for row in daily], dtype=np.float64)
+    if not np.all(np.isfinite(stakes)) or not np.all(np.isfinite(returns)):
+        raise ValueError("daily stake and return values must be finite")
+    if np.any(stakes < 0.0) or np.any(returns < 0.0):
+        raise ValueError("daily stake and return values must be non-negative")
+
+    baseline_stakes = None
+    baseline_returns = None
+    if baseline_daily is not None:
+        baseline_by_date = {str(row["race_date"]): row for row in baseline_daily}
+        if set(baseline_by_date) != set(dates):
+            raise ValueError("candidate and baseline daily dates must match")
+        baseline_stakes = np.asarray(
+            [baseline_by_date[date]["stake_yen"] for date in dates],
+            dtype=np.float64,
+        )
+        baseline_returns = np.asarray(
+            [baseline_by_date[date]["return_yen"] for date in dates],
+            dtype=np.float64,
+        )
+        if (
+            not np.all(np.isfinite(baseline_stakes))
+            or not np.all(np.isfinite(baseline_returns))
+            or np.any(baseline_stakes < 0.0)
+            or np.any(baseline_returns < 0.0)
+        ):
+            raise ValueError(
+                "baseline stake and return values must be finite and non-negative"
+            )
+
+    rng = np.random.default_rng(seed)
+    boot_profit = np.empty(samples, dtype=np.float64)
+    boot_roi = np.empty(samples, dtype=np.float64)
+    boot_profit_delta = (
+        np.empty(samples, dtype=np.float64) if baseline_stakes is not None else None
+    )
+    boot_roi_delta = (
+        np.empty(samples, dtype=np.float64) if baseline_stakes is not None else None
+    )
+    step = max(1, int(chunk_size))
+    for start in range(0, samples, step):
+        stop = min(samples, start + step)
+        indices = rng.integers(0, len(dates), size=(stop - start, len(dates)))
+        sampled_stakes = stakes[indices].sum(axis=1)
+        sampled_returns = returns[indices].sum(axis=1)
+        boot_profit[start:stop] = sampled_returns - sampled_stakes
+        candidate_roi = np.divide(
+            sampled_returns,
+            sampled_stakes,
+            out=np.zeros_like(sampled_returns),
+            where=sampled_stakes > 0.0,
+        )
+        boot_roi[start:stop] = candidate_roi
+        if baseline_stakes is not None and baseline_returns is not None:
+            sampled_baseline_stakes = baseline_stakes[indices].sum(axis=1)
+            sampled_baseline_returns = baseline_returns[indices].sum(axis=1)
+            boot_profit_delta[start:stop] = (
+                sampled_returns
+                - sampled_stakes
+                - sampled_baseline_returns
+                + sampled_baseline_stakes
+            )
+            baseline_roi = np.divide(
+                sampled_baseline_returns,
+                sampled_baseline_stakes,
+                out=np.zeros_like(sampled_baseline_returns),
+                where=sampled_baseline_stakes > 0.0,
+            )
+            boot_roi_delta[start:stop] = candidate_roi - baseline_roi
+
+    profit_lower, profit_upper = _finite_quantile(boot_profit)
+    roi_lower, roi_upper = _finite_quantile(boot_roi)
+    result = {
+        "days": len(dates),
+        "samples": int(samples),
+        "profit_yen": float(returns.sum() - stakes.sum()),
+        "profit_ci95_lower_yen": float(profit_lower),
+        "profit_ci95_upper_yen": float(profit_upper),
+        "roi": _roi(returns.sum(), stakes.sum()),
+        "roi_ci95_lower": float(roi_lower),
+        "roi_ci95_upper": float(roi_upper),
+        "probability_profit_above_zero": float(np.mean(boot_profit > 0.0)),
+        "probability_roi_above_one": float(
+            np.mean(boot_roi[np.isfinite(boot_roi)] > 1.0)
+        ),
+    }
+    if baseline_stakes is not None and baseline_returns is not None:
+        profit_delta_lower, profit_delta_upper = _finite_quantile(
+            boot_profit_delta
+        )
+        roi_delta_lower, roi_delta_upper = _finite_quantile(boot_roi_delta)
+        result.update(
+            {
+                "baseline_profit_yen": float(
+                    baseline_returns.sum() - baseline_stakes.sum()
+                ),
+                "baseline_roi": _roi(
+                    baseline_returns.sum(), baseline_stakes.sum()
+                ),
+                "profit_delta_yen": float(
+                    returns.sum()
+                    - stakes.sum()
+                    - baseline_returns.sum()
+                    + baseline_stakes.sum()
+                ),
+                "profit_delta_ci95_lower_yen": float(profit_delta_lower),
+                "profit_delta_ci95_upper_yen": float(profit_delta_upper),
+                "roi_delta": (
+                    _roi(returns.sum(), stakes.sum())
+                    - _roi(baseline_returns.sum(), baseline_stakes.sum())
+                ),
+                "roi_delta_ci95_lower": float(roi_delta_lower),
+                "roi_delta_ci95_upper": float(roi_delta_upper),
+                "probability_profit_delta_above_zero": float(
+                    np.mean(boot_profit_delta > 0.0)
+                ),
+                "probability_roi_delta_above_zero": float(
+                    np.mean(boot_roi_delta[np.isfinite(boot_roi_delta)] > 0.0)
+                ),
+            }
+        )
+    return result
+
+
 def standard_direct_policy() -> dict[str, Any]:
     return {
         "daily_budget_yen": 10_000,

@@ -12,6 +12,7 @@ def test_remote_status_generated_code_is_valid_python() -> None:
     assert 'data.get("conditional_order")' in source
     assert 'data.get("bankroll")' in source
     assert 'row["bankroll_gate"]' in source
+    assert 'row["bankroll_confidence"]' in source
 
 
 def test_remote_status_registers_conditional_order_artifact() -> None:

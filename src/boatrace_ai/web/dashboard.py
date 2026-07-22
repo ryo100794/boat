@@ -987,6 +987,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         label = _report_label(path, data)
         conditional_metrics = data.get("conditional_order")
         direct_bankroll = data.get("bankroll")
+        bankroll_confidence = data.get("bankroll_confidence") or {}
         if isinstance(conditional_metrics, dict) and isinstance(direct_bankroll, dict):
             probability_result = {
                 **conditional_metrics,
@@ -1001,6 +1002,10 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 "entry_log_loss": conditional_metrics.get("trifecta_log_loss"),
                 "trifecta_top1_hit_rate": conditional_metrics.get("trifecta_top1_hit_rate"),
                 "trifecta_top5_hit_rate": conditional_metrics.get("trifecta_top5_hit_rate"),
+                "roi_ci95_lower": bankroll_confidence.get("roi_ci95_lower"),
+                "roi_ci95_upper": bankroll_confidence.get("roi_ci95_upper"),
+                "roi_delta_ci95_lower": bankroll_confidence.get("roi_delta_ci95_lower"),
+                "roi_delta_ci95_upper": bankroll_confidence.get("roi_delta_ci95_upper"),
             }
             backtests.append(_backtest_summary(path, label, probability_result))
             bankroll.append(_bankroll_summary(path, label, bankroll_result))
@@ -2127,6 +2132,10 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "return_yen": data.get("return_yen"),
         "profit_yen": data.get("profit_yen"),
         "roi": _float_or_none(data.get("roi")),
+        "roi_ci95_lower": _float_or_none(data.get("roi_ci95_lower")),
+        "roi_ci95_upper": _float_or_none(data.get("roi_ci95_upper")),
+        "roi_delta_ci95_lower": _float_or_none(data.get("roi_delta_ci95_lower")),
+        "roi_delta_ci95_upper": _float_or_none(data.get("roi_delta_ci95_upper")),
         "ticket_hit_rate": _float_or_none(data.get("ticket_hit_rate")),
         "race_hit_rate": _float_or_none(data.get("race_hit_rate")),
         "winning_days": data.get("winning_days"),

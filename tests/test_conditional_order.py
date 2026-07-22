@@ -5,6 +5,7 @@ import numpy as np
 from boatrace_ai.listwise.conditional_order import (
     ConditionalOrderModel,
     _pack,
+    bankroll_promotion_gate,
     conditional_probabilities,
     evaluate_probabilities,
     fit_conditional_order,
@@ -15,6 +16,27 @@ from boatrace_ai.listwise.stagewise_mlp import (
     COMBINATION_LANES,
     stagewise_trifecta_probabilities,
 )
+
+
+def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> None:
+    candidate = {"roi": 1.05, "profit_yen": 5_000}
+    baseline = {"roi": 0.90, "profit_yen": -10_000}
+
+    weak = bankroll_promotion_gate(
+        candidate,
+        baseline,
+        {"roi_ci95_lower": 0.99, "roi_delta_ci95_lower": 0.01},
+    )
+    strong = bankroll_promotion_gate(
+        candidate,
+        baseline,
+        {"roi_ci95_lower": 1.01, "roi_delta_ci95_lower": 0.01},
+    )
+
+    assert weak["roi_pass"] is True
+    assert weak["roi_ci_lower_above_one"] is False
+    assert weak["pass"] is False
+    assert strong["pass"] is True
 
 
 def test_identity_matches_standard_pl_and_probabilities_sum_to_one() -> None:
