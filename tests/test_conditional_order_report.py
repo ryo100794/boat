@@ -110,6 +110,39 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
                 "roi_delta_ci95_upper": 0.12,
             },
         },
+        "expected_return_fixed_threshold": {
+            "role": "fixed 1.20 threshold comparison",
+            "promotion_eligible": False,
+            "bankroll": {
+                "evaluated_races": 48_437,
+                "selected_tickets": 800,
+                "races_bet": 600,
+                "hit_tickets": 40,
+                "roi": 0.99,
+                "profit_yen": -1_000,
+                "stake_yen": 100_000,
+                "return_yen": 99_000,
+                "daily": [
+                    {
+                        "race_date": "2025-07-20",
+                        "evaluated_races": 130,
+                        "tickets": 1,
+                        "stake_yen": 300,
+                        "return_yen": 0,
+                        "profit_yen": -300,
+                        "cumulative_profit_yen": -300,
+                        "roi": 0.0,
+                        "budget_used_fraction": 0.03,
+                    }
+                ],
+            },
+            "bankroll_confidence": {
+                "roi_ci95_lower": 0.90,
+                "roi_ci95_upper": 1.08,
+                "roi_delta_ci95_lower": -0.06,
+                "roi_delta_ci95_upper": 0.10,
+            },
+        },
         "structure_gate": {"pass": True},
         "bankroll_gate": {"pass": bankroll_pass},
         "promotion_gate": {
@@ -197,6 +230,20 @@ def test_model_report_separates_conditional_metrics_and_bankroll(tmp_path) -> No
     assert len(
         report["bankroll_daily"][
             "pastlog_conditional_order_expected_return_calibration"
+        ]
+    ) == 1
+    fixed_return = next(
+        row
+        for row in report["bankroll"]
+        if row["name"]
+        == "pastlog_conditional_order_expected_return_fixed_threshold"
+    )
+    assert fixed_return["roi"] == 0.99
+    assert fixed_return["roi_ci95_lower"] == 0.90
+    assert fixed_return["tickets"] == 800
+    assert len(
+        report["bankroll_daily"][
+            "pastlog_conditional_order_expected_return_fixed_threshold"
         ]
     ) == 1
 

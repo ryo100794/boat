@@ -596,6 +596,13 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         regularization=args.return_regularization,
         max_iterations=args.return_max_iterations,
         batch_races=args.return_batch_races,
+        policy_selection_days=args.return_policy_selection_days,
+        threshold_candidates=tuple(args.return_threshold_candidates),
+        minimum_selection_tickets=args.return_minimum_selection_tickets,
+        minimum_selection_roi=args.return_minimum_selection_roi,
+    )
+    expected_return_fixed_bankroll = expected_return_bankroll.pop(
+        "fixed_threshold_comparison", None
     )
     conditional_payout_confidence = bootstrap_daily_bankroll(
         conditional_payout_bankroll["daily"],
@@ -614,6 +621,23 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         expected_return_bankroll,
         baseline_bankroll,
         expected_return_confidence,
+    )
+    expected_return_fixed_confidence = (
+        bootstrap_daily_bankroll(
+            expected_return_fixed_bankroll["daily"],
+            baseline_daily=baseline_bankroll["daily"],
+        )
+        if expected_return_fixed_bankroll is not None
+        else None
+    )
+    expected_return_fixed_gate = (
+        bankroll_promotion_gate(
+            expected_return_fixed_bankroll,
+            baseline_bankroll,
+            expected_return_fixed_confidence,
+        )
+        if expected_return_fixed_bankroll is not None
+        else None
     )
     bankroll_confidence = bootstrap_daily_bankroll(
         candidate_bankroll["daily"],
@@ -685,6 +709,17 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "bankroll_confidence": expected_return_confidence,
             "diagnostic_gate": expected_return_gate,
         },
+        "expected_return_fixed_threshold": (
+            {
+                "role": "fixed 1.20 threshold comparison",
+                "promotion_eligible": False,
+                "bankroll": expected_return_fixed_bankroll,
+                "bankroll_confidence": expected_return_fixed_confidence,
+                "diagnostic_gate": expected_return_fixed_gate,
+            }
+            if expected_return_fixed_bankroll is not None
+            else None
+        ),
         "baseline_bankroll": {
             key: value
             for key, value in baseline_bankroll.items()
@@ -723,6 +758,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--return-regularization", type=float, default=0.01)
     parser.add_argument("--return-max-iterations", type=int, default=20)
     parser.add_argument("--return-batch-races", type=int, default=500)
+    parser.add_argument("--return-policy-selection-days", type=int, default=30)
+    parser.add_argument(
+        "--return-threshold-candidates",
+        type=float,
+        nargs="+",
+        default=[1.05, 1.10, 1.15, 1.20, 1.25],
+    )
+    parser.add_argument("--return-minimum-selection-tickets", type=int, default=100)
+    parser.add_argument("--return-minimum-selection-roi", type=float, default=1.05)
     parser.add_argument("--promote-legacy-cache", action="store_true")
     return parser
 

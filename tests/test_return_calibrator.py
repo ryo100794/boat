@@ -144,5 +144,7 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     assert result["selected_tickets"] >= 2
     assert result["hit_tickets"] >= 2
     assert result["policy"]["expected_return_training_samples"] == 24_000
+    assert result["policy"]["ev_threshold"] == 0.9
+    assert result["policy_selection"]["source"] == "fallback_fixed_threshold"
     assert result["return_calibrator"]["iterations"] <= 30
     assert np.isfinite(result["return_calibrator"]["gradient_norm"])
