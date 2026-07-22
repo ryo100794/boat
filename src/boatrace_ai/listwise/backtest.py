@@ -40,6 +40,19 @@ from .validation import (
 from ..modeling import _race_level_metrics
 
 
+_OUTPUT_AVAILABLE = True
+
+
+def emit_json(payload: Any, *, indent: int | None = None) -> None:
+    global _OUTPUT_AVAILABLE
+    if not _OUTPUT_AVAILABLE:
+        return
+    try:
+        print(json.dumps(payload, ensure_ascii=False, indent=indent), flush=True)
+    except (BrokenPipeError, OSError):
+        _OUTPUT_AVAILABLE = False
+
+
 def run_backtest(conn, *, output_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     race_keys = load_complete_race_ids(conn)
@@ -156,7 +169,7 @@ def run_backtest(conn, *, output_path: Path, args: argparse.Namespace) -> dict[s
         }
         fold_rows.append(fold_row)
         compact = {key: value for key, value in fold_row.items() if key not in {"candidate_results", "training_history"}}
-        print(json.dumps(compact, ensure_ascii=False), flush=True)
+        emit_json(compact)
 
     stake_yen = int(totals["stake_yen"])
     return_yen = int(totals["return_yen"])
@@ -255,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     with connection(args.db) as conn:
         result = run_backtest(conn, output_path=Path(args.output), args=args)
     compact = {key: value for key, value in result.items() if key not in {"folds", "daily"}}
-    print(json.dumps(compact, ensure_ascii=False, indent=2), flush=True)
+    emit_json(compact, indent=2)
     return 0
 
 
