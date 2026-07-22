@@ -7,6 +7,7 @@ import pytest
 from boatrace_ai.listwise.market_calibration import (
     artifact_drop_feature_groups,
     blend_probabilities,
+    fit_deployment_configuration,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
     policy_calibration_eligible,
@@ -122,6 +123,11 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     ]
     assert result["flat_policy_walk_forward"]["evaluation_days"] == 2
     assert result["folds"][0]["selected_flat_policy"]["no_bet"] is True
+    deployment = result["deployment_configuration"]
+    assert deployment["role"] == "next_day_refit_not_evaluation"
+    assert deployment["trained_through_date"] == "2026-07-21"
+    assert deployment["training_races"] == 48
+    assert deployment["calibrator_strategy"] == "grid"
     assert result["promotion_gate"]["sample_size_pass"] is False
     assert result["promotion_eligible"] is False
 
@@ -146,6 +152,28 @@ def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
         for key, value in result["promotion_gate"].items()
         if key.endswith("_pass") and key != "no_lookahead_pass"
     )
+
+
+def test_newton_deployment_refits_all_completed_dates() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in ("2026-07-20", "2026-07-21", "2026-07-22")
+        for rno in range(1, 5)
+    ]
+    for index, race in enumerate(races):
+        if index % 2:
+            race["actual_combination"] = "6-5-4"
+
+    deployment = fit_deployment_configuration(
+        races,
+        daily_budget_yen=10_000,
+        calibrator_strategy="newton_residual",
+    )
+
+    assert deployment["trained_through_date"] == "2026-07-22"
+    assert deployment["training_races"] == 12
+    assert deployment["calibrator"]["iterations"] <= 50
+    assert deployment["calibrator"]["training_races"] == 12
 
 
 def test_scored_cache_requires_exact_contract(tmp_path) -> None:

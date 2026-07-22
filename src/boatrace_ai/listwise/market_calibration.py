@@ -58,7 +58,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 13
+MARKET_EVALUATION_VERSION = 14
 SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -762,6 +762,68 @@ def waiting_walk_forward_result(
     }
 
 
+def fit_deployment_configuration(
+    races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+    calibrator_strategy: str,
+) -> dict[str, Any]:
+    """Refit a next-day configuration on all completed evaluation data."""
+    if not races:
+        raise ValueError("deployment configuration requires completed races")
+    dates = sorted({str(race["race_date"]) for race in races})
+    calibrator_selection: dict[str, Any] | None = None
+    calibrator_candidates = 0
+    if calibrator_strategy == "newton_residual":
+        from .market_residual import (
+            fit_fixed_regularization,
+            select_regularization_prequential,
+        )
+
+        calibrator_selection = (
+            select_regularization_prequential(races)
+            if len(dates) >= 2
+            else fit_fixed_regularization(races)
+        )
+        calibrator = dict(calibrator_selection["final_calibrator"])
+    elif calibrator_strategy == "grid":
+        calibrator, candidates = select_calibrator(races)
+        calibrator_candidates = len(candidates)
+    else:
+        raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
+
+    closing_odds_selection = None
+    policy_races = races
+    try:
+        closing_odds_selection = select_closing_odds_model(races)
+    except ValueError:
+        pass
+    else:
+        policy_races = attach_selected_closing_odds(races, closing_odds_selection)
+    selected_policy, policy_grid = select_policy(
+        policy_races,
+        calibrator=calibrator,
+        daily_budget_yen=daily_budget_yen,
+    )
+    return {
+        "role": "next_day_refit_not_evaluation",
+        "validation_design": (
+            "Refit only after all listed dates are complete; valid strictly after "
+            "trained_through_date"
+        ),
+        "calibrator_strategy": calibrator_strategy,
+        "trained_dates": dates,
+        "trained_through_date": dates[-1],
+        "training_races": len(races),
+        "calibrator": calibrator,
+        "calibrator_selection": calibrator_selection,
+        "calibrator_candidates": calibrator_candidates,
+        "closing_odds_selection": closing_odds_selection,
+        "selected_policy": selected_policy,
+        "policy_diagnostics": summarize_policy_candidates(policy_grid),
+    }
+
+
 def walk_forward_evaluate(
     races: list[dict[str, Any]],
     *,
@@ -959,6 +1021,11 @@ def walk_forward_evaluate(
         "market_confidence_pass": bool(market_comparison["confidence_pass"]),
         "no_lookahead_pass": True,
     }
+    deployment_configuration = fit_deployment_configuration(
+        races,
+        daily_budget_yen=daily_budget_yen,
+        calibrator_strategy=calibrator_strategy,
+    )
     return {
         "model": MODEL_NAME,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
@@ -1008,6 +1075,7 @@ def walk_forward_evaluate(
             "winning_days": sum(int(row["profit_yen"] > 0) for row in flat_daily_rows),
             "daily": flat_daily_rows,
         },
+        "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(
             value for key, value in promotion_gate.items() if key.endswith("_pass")
@@ -1536,6 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
         {
             "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "source_model": str(args.model),
+            "source_model_sha256": contract["model_sha256"],
             "source_model_trained_through": artifact.get("trained_through"),
             "from_date": args.from_date,
             "through_date": args.through_date,
