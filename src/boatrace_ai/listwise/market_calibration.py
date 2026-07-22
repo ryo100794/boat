@@ -25,7 +25,9 @@ from ..feature_tuning import (
 )
 from ..features import (
     MODEL_DECISION_LEAD_MINUTES,
+    MODEL_FEATURE_CUTOFF_FROM_START_MINUTES,
     latest_trifecta_odds_before_deadline,
+    stored_jst_timestamp_sql,
 )
 from ..modeling import trifecta_predictions
 from ..odds_quality import TRIFECTA_PARSER_VERSION
@@ -45,7 +47,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 7
+MARKET_EVALUATION_VERSION = 8
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -989,26 +991,74 @@ def odds_data_signature(
     from_date: str,
     through_date: str | None,
 ) -> dict[str, int]:
-    filters = ["r.race_date >= ?", "os.parser_version = ?"]
-    params: list[Any] = [from_date, TRIFECTA_PARSER_VERSION]
+    filters = ["r.race_date >= ?"]
+    params: list[Any] = [TRIFECTA_PARSER_VERSION, from_date]
     if through_date is not None:
         filters.append("r.race_date <= ?")
         params.append(through_date)
+    captured_at = stored_jst_timestamp_sql(conn, "os.captured_at")
+    start_at = stored_jst_timestamp_sql(conn, "r.deadline_at")
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        feature_cutoff = (
+            f"{start_at} - INTERVAL "
+            f"'{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes'"
+        )
+    else:
+        feature_cutoff = (
+            f"datetime({start_at}, "
+            f"'-{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes')"
+        )
     row = conn.execute(
         f"""
-        SELECT COUNT(*) AS snapshot_count,
+        WITH selected AS (
+          SELECT
+            r.race_id,
+            CASE WHEN EXISTS (
+              SELECT 1
+              FROM payouts p
+              WHERE p.race_id = r.race_id
+                AND p.bet_type = '3連単'
+                AND p.payout_yen IS NOT NULL
+            ) THEN 1 ELSE 0 END AS has_payout,
+            (
+              SELECT os.snapshot_id
+              FROM odds_snapshots os
+              WHERE os.race_id = r.race_id
+                AND os.bet_type = 'trifecta'
+                AND os.parser_version = ?
+                AND {captured_at} <= {feature_cutoff}
+                AND (
+                  SELECT COUNT(*)
+                  FROM odds_trifecta ot
+                  WHERE ot.snapshot_id = os.snapshot_id
+                    AND ot.odds IS NOT NULL
+                    AND ot.odds > 0
+                ) = 120
+              ORDER BY {captured_at} DESC, os.snapshot_id DESC
+              LIMIT 1
+            ) AS snapshot_id
+          FROM races r
+          WHERE {" AND ".join(filters)}
+            AND r.deadline_at IS NOT NULL
+            AND (
+              SELECT COUNT(DISTINCT rr.lane)
+              FROM race_results rr
+              WHERE rr.race_id = r.race_id
+                AND rr.rank IS NOT NULL
+            ) = 6
+        )
+        SELECT COUNT(*) AS complete_race_count,
+               COALESCE(SUM(has_payout), 0) AS payout_race_count,
+               COUNT(snapshot_id) AS snapshot_count,
                COALESCE(SUM(snapshot_id), 0) AS snapshot_id_sum,
                COALESCE(MAX(snapshot_id), 0) AS max_snapshot_id
-        FROM (
-          SELECT DISTINCT os.snapshot_id
-          FROM odds_snapshots os
-          JOIN races r ON r.race_id = os.race_id
-          WHERE {" AND ".join(filters)}
-        ) valid_snapshots
+        FROM selected
         """,
         params,
     ).fetchone()
     return {
+        "complete_race_count": int(row["complete_race_count"] or 0),
+        "payout_race_count": int(row["payout_race_count"] or 0),
         "snapshot_count": int(row["snapshot_count"] or 0),
         "snapshot_id_sum": int(row["snapshot_id_sum"] or 0),
         "max_snapshot_id": int(row["max_snapshot_id"] or 0),

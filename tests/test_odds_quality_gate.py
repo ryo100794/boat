@@ -100,7 +100,8 @@ def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
     assert decision_cutoff["betting_deadline_at"].endswith("11:55:00+09:00")
     assert {row["snapshot_count"] for row in lane_features.values()} == {1.0}
     assert {row["latest_mean"] for row in lane_features.values()} == {15.0}
-    assert signature["snapshot_count"] == 3
+    assert signature["complete_race_count"] == 0
+    assert signature["snapshot_count"] == 0
 
 
 def test_collector_does_not_persist_legacy_fallback(monkeypatch, tmp_path) -> None:
