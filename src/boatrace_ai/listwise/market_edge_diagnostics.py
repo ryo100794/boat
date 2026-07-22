@@ -114,3 +114,50 @@ def summarize_edge_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             [record for record in records if int(record["probability_rank"]) <= 5]
         ),
     }
+
+
+
+def walk_forward_edge_diagnostics(
+    races: list[dict[str, Any]], *, min_calibration_days: int = 1
+) -> dict[str, Any]:
+    from .closing_odds import attach_forecast_closing_odds, fit_closing_odds_model
+    from .market_calibration import blend_probabilities
+    from .market_residual import (
+        fit_fixed_regularization,
+        select_regularization_prequential,
+    )
+
+    by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in races:
+        by_day[str(race["race_date"])].append(race)
+    dates = sorted(by_day)
+    records = []
+    folds = []
+    for index in range(min_calibration_days, len(dates)):
+        training_dates = dates[:index]
+        training = [race for day in training_dates for race in by_day[day]]
+        selection = (
+            select_regularization_prequential(training)
+            if len(training_dates) >= 2
+            else fit_fixed_regularization(training)
+        )
+        calibrator = dict(selection["final_calibrator"])
+        closing_model = fit_closing_odds_model(training)
+        holdout = attach_forecast_closing_odds(by_day[dates[index]], closing_model)
+        fold_records = edge_records(
+            holdout,
+            calibrator=calibrator,
+            probability_blender=blend_probabilities,
+        )
+        records.extend(fold_records)
+        folds.append(
+            {
+                "training_dates": training_dates,
+                "evaluation_date": dates[index],
+                "training_races": len(training),
+                "evaluation_races": len(holdout),
+                "calibrator": calibrator,
+                "closing_odds_model": closing_model,
+            }
+        )
+    return {**summarize_edge_records(records), "folds": folds}
