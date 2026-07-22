@@ -23,7 +23,9 @@ def pre_t5_odds_count_sql(conn, *, race_alias: str = "r") -> str:
         "(SELECT COUNT(*) FROM odds_snapshots os "
         f"WHERE os.race_id = {race_alias}.race_id "
         f"AND os.parser_version = '{TRIFECTA_PARSER_VERSION}' "
-        f"AND {captured} <= {cutoff}) >= ?"
+        f"AND {captured} <= {cutoff} "
+        "AND (SELECT COUNT(*) FROM odds_trifecta ot "
+        "WHERE ot.snapshot_id = os.snapshot_id AND ot.odds IS NOT NULL AND ot.odds > 0) = 120) >= ?"
     )
 
 

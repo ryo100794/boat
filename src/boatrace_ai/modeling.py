@@ -16,15 +16,46 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from .legacy_model_aliases import load_model_bundle
+from .base_features import (
+    load_training_examples as load_contextual_training_examples,
+    prediction_features as contextual_prediction_features,
+)
 from .db import insert_prediction_rows, race_id
 from .fast_math import TRIFECTA_COMBINATIONS, plackett_luce_probabilities
 from .features import (
     entry_features,
     latest_trifecta_odds,
     load_race_entries,
-    load_training_examples,
+    load_training_examples as load_basic_training_examples,
     odds_lane_features,
 )
+
+
+REALTIME_ODDS_FEATURE_SET = "t5_context_v2_beforeinfo_odds_trend"
+
+
+def _load_model_training_examples(
+    conn,
+    *,
+    include_odds: bool = False,
+    through_date: str | None = None,
+    from_date: str | None = None,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
+):
+    loader = (
+        load_contextual_training_examples
+        if include_odds
+        else load_basic_training_examples
+    )
+    return loader(
+        conn,
+        through_date=through_date,
+        from_date=from_date,
+        include_odds=include_odds,
+        min_odds_snapshots=min_odds_snapshots,
+        complete_results_only=complete_results_only,
+    )
 
 
 def train_model(
@@ -38,7 +69,7 @@ def train_model(
     complete_results_only: bool = False,
     min_examples: int = 100,
 ) -> dict[str, Any]:
-    X, y, meta = load_training_examples(
+    X, y, meta = _load_model_training_examples(
         conn,
         through_date=through_date,
         from_date=from_date,
@@ -68,6 +99,7 @@ def train_model(
         },
         "include_odds": include_odds,
         "target": "lane_win_probability",
+        "feature_set": REALTIME_ODDS_FEATURE_SET if include_odds else "basic_entry_v1",
     }
     model_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({"pipeline": pipeline, "metadata": metadata}, model_path)
@@ -85,7 +117,7 @@ def backtest_model(
     complete_results_only: bool = False,
     min_train_races: int = 500,
 ) -> dict[str, Any]:
-    X, y, meta = load_training_examples(
+    X, y, meta = _load_model_training_examples(
         conn,
         from_date=from_date,
         include_odds=include_odds,
@@ -153,6 +185,7 @@ def backtest_model(
         "races": len(races),
         "include_odds": include_odds,
         "from_date": from_date,
+        "feature_set": REALTIME_ODDS_FEATURE_SET if include_odds else "basic_entry_v1",
         "feature_cutoff": "deadline_minus_5_minutes",
         "training_config": {
             "scaler": "StandardScaler(with_mean=False)",
@@ -183,11 +216,17 @@ def predict_race(
     entries = load_race_entries(conn, race_id=race_id_value)
     if len(entries) != 6:
         raise ValueError(f"race needs six entries before prediction: {race_id_value}")
-    odds_features = odds_lane_features(conn, race_id_value)
-    X = [
-        entry_features(row, odds_features=odds_features.get(int(row["lane"]), {}))
-        for row in entries
-    ]
+    metadata = bundle.get("metadata") or {}
+    if metadata.get("feature_set") == REALTIME_ODDS_FEATURE_SET:
+        X = contextual_prediction_features(
+            conn, race_id=race_id_value, include_odds=True
+        )
+    else:
+        odds_features = odds_lane_features(conn, race_id_value)
+        X = [
+            entry_features(row, odds_features=odds_features.get(int(row["lane"]), {}))
+            for row in entries
+        ]
     lane_probs_raw = _positive_probs(pipeline, X)
     lane_probs = _normalize_lane_probs(
         {int(entry["lane"]): lane_probs_raw[index] for index, entry in enumerate(entries)}

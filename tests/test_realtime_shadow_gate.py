@@ -1,4 +1,5 @@
 import sqlite3
+from itertools import permutations
 
 from boatrace_ai.runtime.model_cycle import dataset_counts, evaluation_due, read_state
 
@@ -12,6 +13,7 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
         CREATE TABLE entries (race_id TEXT, lane INTEGER);
         CREATE TABLE race_results (race_id TEXT, lane INTEGER, rank INTEGER);
         CREATE TABLE odds_snapshots (snapshot_id INTEGER PRIMARY KEY, race_id TEXT, captured_at TEXT, parser_version TEXT);
+        CREATE TABLE odds_trifecta (snapshot_id INTEGER, combination TEXT, odds REAL);
         """
     )
     for race_id, race_date, snapshots in (
@@ -28,10 +30,19 @@ def test_shadow_gate_counts_only_races_with_enough_odds_snapshots() -> None:
         for lane in lanes:
             conn.execute("INSERT INTO entries VALUES (?, ?)", (race_id, lane))
             conn.execute("INSERT INTO race_results VALUES (?, ?, ?)", (race_id, lane, lane))
-        conn.executemany(
-            "INSERT INTO odds_snapshots (race_id, captured_at, parser_version) VALUES (?, ?, 'odds3t_dom_v2')",
-            [(race_id, f"{race_date}T10:{minute:02d}:00+09:00") for minute in range(snapshots)],
-        )
+        for minute in range(snapshots):
+            cursor = conn.execute(
+                "INSERT INTO odds_snapshots (race_id, captured_at, parser_version) "
+                "VALUES (?, ?, 'odds3t_dom_v2')",
+                (race_id, f"{race_date}T10:{minute:02d}:00+09:00"),
+            )
+            conn.executemany(
+                "INSERT INTO odds_trifecta VALUES (?, ?, ?)",
+                [
+                    (cursor.lastrowid, "-".join(map(str, combo)), 10.0)
+                    for combo in permutations(range(1, 7), 3)
+                ],
+            )
     counts = dataset_counts(
         conn,
         from_date="2026-07-18",

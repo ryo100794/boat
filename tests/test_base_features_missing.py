@@ -69,7 +69,7 @@ def test_training_example_stream_filters_races_and_uses_latest_beforeinfo() -> N
         """
         CREATE TABLE races (
           race_id TEXT, race_date TEXT, jcd TEXT, rno INTEGER,
-          race_type TEXT, distance_m INTEGER
+          race_type TEXT, distance_m INTEGER, deadline_at TEXT
         );
         CREATE TABLE entries (
           race_id TEXT, lane INTEGER, racer_no INTEGER, racer_name TEXT,
@@ -95,8 +95,8 @@ def test_training_example_stream_filters_races_and_uses_latest_beforeinfo() -> N
     race_ids = ("202601010101", "202601020101")
     for day, race_id in enumerate(race_ids, start=1):
         conn.execute(
-            "INSERT INTO races VALUES (?, ?, '01', 1, 'general', 1800)",
-            (race_id, f"2026-01-{day:02d}"),
+            "INSERT INTO races VALUES (?, ?, '01', 1, 'general', 1800, ?)",
+            (race_id, f"2026-01-{day:02d}", f"2026-01-{day:02d}T01:00:00+00:00"),
         )
         for lane in range(1, 7):
             conn.execute(

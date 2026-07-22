@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from .constants import CLASS_RANK
-from .features import _num, entry_features, odds_lane_features
+from .features import _num, entry_features, odds_lane_features, pre_t5_odds_count_sql
 
 
 HIGH_IS_GOOD = (
@@ -66,6 +66,8 @@ def load_training_examples(
     from_date: str | None = None,
     include_odds: bool = False,
     include_research: bool = True,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
     features: list[dict[str, Any]] = []
     labels: list[int] = []
@@ -76,6 +78,8 @@ def load_training_examples(
         from_date=from_date,
         include_odds=include_odds,
         include_research=include_research,
+        min_odds_snapshots=min_odds_snapshots,
+        complete_results_only=complete_results_only,
     ):
         features.append(item)
         labels.append(label)
@@ -91,23 +95,34 @@ def iter_training_examples(
     include_odds: bool = False,
     include_research: bool = True,
     include_races: set[str] | None = None,
+    min_odds_snapshots: int = 0,
+    complete_results_only: bool = False,
 ) -> Iterable[tuple[dict[str, Any], int, dict[str, Any]]]:
     through_date = through_date or os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     filters: list[str] = []
     params: list[Any] = []
     if through_date:
-        filters.append("race_date <= ?")
+        filters.append("r.race_date <= ?")
         params.append(through_date)
     if from_date:
-        filters.append("race_date >= ?")
+        filters.append("r.race_date >= ?")
         params.append(from_date)
+    odds_eligible_races: set[str] | None = None
+    if min_odds_snapshots > 0:
+        odds_filters = [*filters, pre_t5_odds_count_sql(conn)]
+        odds_where = " AND ".join(odds_filters)
+        odds_rows = conn.execute(
+            f"SELECT r.race_id FROM races r WHERE {odds_where}",
+            (*params, int(min_odds_snapshots)),
+        ).fetchall()
+        odds_eligible_races = {str(row["race_id"]) for row in odds_rows}
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     date_rows = conn.execute(
         f"""
-        SELECT DISTINCT race_date
-        FROM races
+        SELECT DISTINCT r.race_date
+        FROM races r
         {where}
-        ORDER BY race_date
+        ORDER BY r.race_date
         """,
         params,
     ).fetchall()
@@ -145,6 +160,8 @@ def iter_training_examples(
         for race_rows in _iter_complete_race_rows(rows):
             race_id_value = str(race_rows[0]["race_id"])
             if include_races is not None and race_id_value not in include_races:
+                continue
+            if odds_eligible_races is not None and race_id_value not in odds_eligible_races:
                 continue
             before_rows = {
                 lane: beforeinfo.get((race_id_value, lane), {})
@@ -194,8 +211,9 @@ def _latest_beforeinfo_between(
     from_date: str,
     through_date: str,
 ) -> dict[tuple[str, int], sqlite3.Row]:
+    cutoff = _beforeinfo_cutoff_sql(conn, before_alias="b2", race_alias="r2")
     rows = conn.execute(
-        """
+        f"""
         SELECT b.*
         FROM beforeinfo b
         JOIN (
@@ -203,6 +221,7 @@ def _latest_beforeinfo_between(
           FROM beforeinfo b2
           JOIN races r2 ON r2.race_id = b2.race_id
           WHERE r2.race_date >= ? AND r2.race_date <= ?
+            AND {cutoff}
           GROUP BY b2.race_id, b2.lane
         ) latest ON latest.race_id = b.race_id
           AND latest.lane = b.lane
@@ -501,29 +520,46 @@ def _group_by_race(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
 
 def _latest_beforeinfo(conn: sqlite3.Connection, race_id: str | None = None) -> dict[tuple[str, int], sqlite3.Row]:
     params: list[Any] = []
-    filter_sql = ""
     latest_filter_sql = ""
     if race_id:
-        latest_filter_sql = "WHERE race_id = ?"
-        filter_sql = "WHERE b.race_id = ?"
-        params.extend((race_id, race_id))
+        latest_filter_sql = "AND b2.race_id = ?"
+        params.append(race_id)
+    cutoff = _beforeinfo_cutoff_sql(conn, before_alias="b2", race_alias="r2")
     rows = conn.execute(
         f"""
         SELECT b.*
         FROM beforeinfo b
         JOIN (
-          SELECT race_id, lane, MAX(captured_at) AS captured_at
-          FROM beforeinfo
+          SELECT b2.race_id, b2.lane, MAX(b2.captured_at) AS captured_at
+          FROM beforeinfo b2
+          JOIN races r2 ON r2.race_id = b2.race_id
+          WHERE {cutoff}
           {latest_filter_sql}
-          GROUP BY race_id, lane
+          GROUP BY b2.race_id, b2.lane
         ) latest ON latest.race_id = b.race_id
           AND latest.lane = b.lane
           AND latest.captured_at = b.captured_at
-        {filter_sql}
         """,
         params,
     ).fetchall()
     return {(row["race_id"], int(row["lane"])): row for row in rows}
+
+
+def _beforeinfo_cutoff_sql(
+    conn,
+    *,
+    before_alias: str,
+    race_alias: str,
+) -> str:
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        return (
+            f"CAST({before_alias}.captured_at AS timestamptz) <= "
+            f"CAST({race_alias}.deadline_at AS timestamptz) - INTERVAL '5 minutes'"
+        )
+    return (
+        f"datetime({before_alias}.captured_at) <= "
+        f"datetime({race_alias}.deadline_at, '-5 minutes')"
+    )
 
 
 def _relative_values(row: sqlite3.Row, before: sqlite3.Row | dict[str, Any]) -> dict[str, float]:

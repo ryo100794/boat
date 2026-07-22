@@ -38,7 +38,7 @@ START_TO_DEADLINE_MINUTES = 5
 HISTORICAL_TARGET_DAYS = 3650
 REALTIME_SHADOW_TARGET_RACES = 1000
 REALTIME_SHADOW_MIN_SNAPSHOTS = 10
-REALTIME_SHADOW_EVALUATION_VERSION = 2
+REALTIME_SHADOW_EVALUATION_VERSION = 3
 TODAY_TARGET_RACES = len(VENUES) * len(RACES_PER_DAY)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_STATUS_PATH = PROJECT_ROOT / "docs" / "PROJECT_STATUS.md"
@@ -1472,10 +1472,10 @@ def _model_track_summaries(
     shadow = raw_shadow if shadow_current else None
     shadow_stale = bool(raw_shadow and not shadow_current)
     shadow_training = (
-        f"過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression "
+        f"過去ログ+展示・天候・進入・地元・艇機+T-5 odds系列 / StandardScaler / LogisticRegression "
         f"C=0.20・class_weightなし / 3fold暫定・評価{int(shadow.get('evaluated_races') or 0)}R"
         if shadow_is_provisional and shadow
-        else "過去ログ特徴+T-5 odds系列 / StandardScaler / LogisticRegression "
+        else "過去ログ+展示・天候・進入・地元・艇機+T-5 odds系列 / StandardScaler / LogisticRegression "
         "C=0.20・class_weightなし / 5fold時系列 / 1,000R到達後に正式学習"
     )
     shadow_status = (
