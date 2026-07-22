@@ -4581,7 +4581,7 @@ def _roadmap_improvements(
                 if market_calibrated_status == "完了"
                 else "日次shadow実行中"
                 if market_calibrated_status == "実行中"
-                else "v9正式fold待ち"
+                else "v10正式fold待ち"
                 if market_calibrated_status == "データ待ち"
                 else "暫定評価済み/要改善"
                 if shadow_evaluation.get("roi") is not None
@@ -4596,7 +4596,7 @@ def _roadmap_improvements(
             ),
             "item": "実オッズ市場較正とno-bet条件の再設計",
             "next": (
-                "T-5市場較正v9は7月22日を最初の未使用foldとして日付切替後に評価する。LogLoss差95%CI上限0以下、3T5差95%CI下限0以上、30日・1,000R、収益プラスをすべて要求する。"
+                "T-5市場較正v10は7月22日を最初の未使用foldとして日付切替後に評価する。LogLoss差95%CI上限0以下、3T5差95%CI下限0以上、30日・1,000R、収益プラスをすべて要求する。"
                 if market_calibrated_status == "データ待ち"
                 else f"完全日walk-forward {int(market_calibrated_metrics.get('evaluated_races') or 0):,}R。"
                 f"較正3連単LogLoss {float(market_calibrated_metrics.get('calibrated_trifecta_log_loss') or 0):.4f}、"
@@ -4866,7 +4866,7 @@ def _roadmap_milestones(
                 + (
                     "temporal no-bet 5foldを回収し、収益ゲートで終了判定する。"
                     if temporal_status != "完了"
-                    else "既存評価は回収済み。ROI/損益未達のため本番no-betを維持し、T-5市場較正v9を30日・1,000Rのpaired信頼区間ゲートで継続する。"
+                    else "既存評価は回収済み。ROI/損益未達のため本番no-betを維持し、T-5市場較正v10を30日・1,000Rのrace/day-cluster両信頼区間ゲートで継続する。"
                 )
                 if standardized_complete
                 else "標準365日同一holdout比較とtemporal no-bet評価を回収する。"

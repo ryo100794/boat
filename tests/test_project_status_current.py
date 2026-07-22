@@ -10,6 +10,8 @@ def test_project_status_uses_current_evaluation_state() -> None:
     assert "標準365日v2は7モデル" in STATUS
     assert "Newton市場残差の7月22日開発診断は113R" in STATUS
     assert "95%CI `[-0.05858, +0.00212]`" in STATUS
+    assert "状態: v10稼働中" in STATUS
+    assert "レース単位と日clusterの両方" in STATUS
     assert "M6 資金運用モデル | 未完了/収益ゲート未達" in STATUS
     assert "M7 ソース整理 | 完了/運用監視" in STATUS
     assert "M6-11: T-10→T-5モメンタム" in STATUS
