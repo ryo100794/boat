@@ -1802,10 +1802,14 @@ def _market_calibrated_model_tracks(
             if formal_top5 is not None
             else bootstrap.get("market_probe_top5_hit_rate")
         )
-        if track_id in {
+        if track_id == "market_momentum_probe":
+            training = (
+                "3係数log-pool Newton法 / T-10→T-5を5分換算 / "
+                "正則化1.0固定・7/22開発holdout"
+            )
+        elif track_id in {
             "market_residual_shadow",
             "market_cutoff_residual_probe",
-            "market_momentum_probe",
         }:
             training = (
                 "2係数log-pool Newton法 / 日次前進正則化選択 / "

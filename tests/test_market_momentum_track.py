@@ -40,6 +40,8 @@ def test_model_report_records_rejected_market_momentum_probe(tmp_path) -> None:
     momentum = tracks["market_momentum_probe"]
 
     assert momentum["role"] == "開発診断のみ・増分なしで棄却"
+    assert "3係数log-pool Newton法" in momentum["training"]
+    assert "正則化1.0固定" in momentum["training"]
     assert momentum["eligible_races"] == 113
     assert momentum["entry_log_loss"] == 3.789103
     assert momentum["trifecta_top5_hit_rate"] == 0.309735
