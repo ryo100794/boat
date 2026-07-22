@@ -6,6 +6,8 @@ from boatrace_ai.listwise.closing_odds_momentum import (
     attach_momentum_closing_odds,
     fit_momentum_closing_odds_model,
     momentum_closing_odds_metrics,
+    select_closing_odds_model,
+    attach_selected_closing_odds,
 )
 
 
@@ -62,3 +64,51 @@ def test_momentum_price_model_rejects_incomplete_snapshots() -> None:
                 }
             ]
         )
+
+
+
+def test_price_model_selection_requires_prior_day_improvement() -> None:
+    races = []
+    for race_date in ("2026-07-21", "2026-07-22"):
+        for rising in (True, False):
+            race = _race(rising=rising)
+            race["race_date"] = race_date
+            races.append(race)
+
+    selection = select_closing_odds_model(
+        races, minimum_relative_improvement=0.01
+    )
+
+    assert selection["selected"] == "momentum"
+    assert selection["prequential_evaluation_races"] == 2
+    assert selection["prequential_momentum_mae"] < selection[
+        "prequential_baseline_mae"
+    ]
+
+
+def test_price_model_selection_falls_back_without_two_momentum_days() -> None:
+    race = _race(rising=True)
+    race["race_date"] = "2026-07-21"
+    selection = select_closing_odds_model([race])
+    missing = dict(race)
+    missing.pop("earlier_market_probabilities")
+    augmented = attach_selected_closing_odds([missing], selection)
+
+    assert selection["selected"] == "baseline"
+    assert selection["prequential_evaluation_races"] == 0
+    assert augmented[0]["closing_odds_forecast_source"] == "baseline"
+
+
+
+def test_price_model_selection_excludes_incomplete_closing_snapshot() -> None:
+    baseline_race = _race(rising=True)
+    baseline_race["race_date"] = "2026-07-21"
+    baseline_race.pop("earlier_market_probabilities")
+    incomplete = _race(rising=False)
+    incomplete["race_date"] = "2026-07-21"
+    incomplete["closing_odds"] = {}
+
+    selection = select_closing_odds_model([baseline_race, incomplete])
+
+    assert selection["selected"] == "baseline"
+    assert selection["eligible_momentum_races"] == 0

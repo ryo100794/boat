@@ -39,12 +39,13 @@ from .flat_policy import (
     simulate_flat_policy,
     summarize_flat_candidates,
 )
+from .market_edge_diagnostics import edge_records, summarize_edge_records
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
-from .closing_odds import (
-    attach_forecast_closing_odds,
-    closing_odds_metrics,
-    decision_odds,
-    fit_closing_odds_model,
+from .closing_odds import decision_odds
+from .closing_odds_momentum import (
+    attach_selected_closing_odds,
+    select_closing_odds_model,
+    selected_closing_odds_metrics,
 )
 from .model import ListwiseLinearModel, stable_softmax
 from .paired_bootstrap import paired_mean_bootstrap
@@ -57,8 +58,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 12
-SCORED_CACHE_VERSION = 9
+MARKET_EVALUATION_VERSION = 13
+SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -789,6 +790,7 @@ def walk_forward_evaluate(
     market_cluster_labels: list[str] = []
     daily_rows = []
     flat_daily_rows = []
+    edge_diagnostic_records = []
     for index in range(min_calibration_days, len(dates)):
         calibration_dates = dates[:index]
         evaluation_date = dates[index]
@@ -816,22 +818,28 @@ def walk_forward_evaluate(
         else:
             raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
         closing_odds_model = None
+        closing_odds_selection = None
         closing_odds_evaluation = None
         calibration_policy_races = calibration_races
         holdout_policy_races = holdout
         try:
-            closing_odds_model = fit_closing_odds_model(calibration_races)
+            closing_odds_selection = select_closing_odds_model(calibration_races)
         except ValueError:
             pass
         else:
-            calibration_policy_races = attach_forecast_closing_odds(
-                calibration_races, closing_odds_model
+            selected_price_model = str(closing_odds_selection["selected"])
+            closing_odds_model = dict(
+                closing_odds_selection[f"{selected_price_model}_model"]
             )
-            holdout_policy_races = attach_forecast_closing_odds(
-                holdout, closing_odds_model
+            closing_odds_model["model_type"] = selected_price_model
+            calibration_policy_races = attach_selected_closing_odds(
+                calibration_races, closing_odds_selection
             )
-            closing_odds_evaluation = closing_odds_metrics(
-                holdout, closing_odds_model
+            holdout_policy_races = attach_selected_closing_odds(
+                holdout, closing_odds_selection
+            )
+            closing_odds_evaluation = selected_closing_odds_metrics(
+                holdout, closing_odds_selection
             )
         policy, policy_grid = select_policy(
             calibration_policy_races,
@@ -856,6 +864,13 @@ def walk_forward_evaluate(
             probability_blender=blend_probabilities,
         )
         metrics = probability_metrics(holdout, calibrator=calibrator)
+        edge_diagnostic_records.extend(
+            edge_records(
+                holdout_policy_races,
+                calibrator=calibrator,
+                probability_blender=blend_probabilities,
+            )
+        )
         fold_loss_differences, fold_top5_differences = paired_market_differences(
             holdout,
             calibrator=calibrator,
@@ -876,6 +891,7 @@ def walk_forward_evaluate(
                 "calibrator_strategy": calibrator_strategy,
                 "calibrator_selection": calibrator_selection,
                 "closing_odds_model": closing_odds_model,
+                "closing_odds_selection": closing_odds_selection,
                 "closing_odds_evaluation": closing_odds_evaluation,
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
@@ -962,6 +978,7 @@ def walk_forward_evaluate(
             evaluation_policy_races,
             daily_budget_yen=daily_budget_yen,
         ),
+        "edge_diagnostics": summarize_edge_records(edge_diagnostic_records),
         "calibrated_trifecta_log_loss": aggregate_metrics.get(
             "calibrated_trifecta_log_loss"
         ),
@@ -1053,6 +1070,8 @@ def score_real_odds_races(
     races = []
     skipped_no_odds = skipped_stale_odds = skipped_no_payout = 0
     closing_odds_races = skipped_no_closing_odds = skipped_stale_closing_odds = 0
+    momentum_races = 0
+    momentum_skipped: dict[str, int] = defaultdict(int)
     for feature_rows in iter_artifact_feature_rows(
         conn,
         target_ids=target_ids,
@@ -1081,6 +1100,16 @@ def score_real_odds_races(
         ):
             skipped_stale_odds += 1
             continue
+        momentum_fields, momentum_reason = earlier_market_fields(
+            conn,
+            race_id,
+            current_snapshot=snapshot,
+            max_snapshot_age_seconds=max_snapshot_age_seconds,
+        )
+        if momentum_fields is None:
+            momentum_skipped[momentum_reason] += 1
+        else:
+            momentum_races += 1
         closing_snapshot = latest_trifecta_odds_before_deadline(
             conn,
             race_id,
@@ -1136,6 +1165,7 @@ def score_real_odds_races(
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "captured_at": snapshot.get("captured_at"),
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
+                **(momentum_fields or {}),
             }
         )
     return races, {
@@ -1146,8 +1176,64 @@ def score_real_odds_races(
         "closing_odds_races": closing_odds_races,
         "skipped_no_closing_odds": skipped_no_closing_odds,
         "skipped_stale_closing_odds": skipped_stale_closing_odds,
+        "momentum_races": momentum_races,
+        "skipped_no_earlier_odds": momentum_skipped.get("missing", 0),
+        "skipped_stale_earlier_odds": momentum_skipped.get("stale", 0),
+        "skipped_invalid_momentum_interval": momentum_skipped.get("interval", 0),
+        "skipped_momentum_combination_mismatch": momentum_skipped.get(
+            "mismatch", 0
+        ),
         "skipped_no_payout": skipped_no_payout,
     }
+
+
+def earlier_market_fields(
+    conn,
+    race_id: str,
+    *,
+    current_snapshot: dict[str, Any],
+    max_snapshot_age_seconds: float,
+) -> tuple[dict[str, Any] | None, str]:
+    earlier = latest_trifecta_odds_before_deadline(
+        conn,
+        race_id,
+        min_combinations=120,
+        decision_lead_minutes=10,
+    )
+    if earlier is None or len(earlier.get("odds") or {}) != 120:
+        return None, "missing"
+    age = snapshot_age_seconds(earlier)
+    if age is None or age < 0.0 or age > max_snapshot_age_seconds:
+        return None, "stale"
+    if not snapshot_captured_after(current_snapshot, earlier):
+        return None, "interval"
+    try:
+        current_at = datetime.fromisoformat(str(current_snapshot["captured_at"]))
+        earlier_at = datetime.fromisoformat(str(earlier["captured_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None, "interval"
+    if current_at.tzinfo is None:
+        current_at = current_at.replace(tzinfo=timezone.utc)
+    if earlier_at.tzinfo is None:
+        earlier_at = earlier_at.replace(tzinfo=timezone.utc)
+    gap_seconds = (
+        current_at - earlier_at.astimezone(current_at.tzinfo)
+    ).total_seconds()
+    if gap_seconds <= 0.0 or gap_seconds > 900.0:
+        return None, "interval"
+    earlier_odds = {key: float(value) for key, value in earlier["odds"].items()}
+    earlier_market = normalized_market_probabilities(earlier_odds)
+    current_odds = current_snapshot.get("odds") or {}
+    if set(earlier_market) != set(current_odds):
+        return None, "mismatch"
+    return {
+        "earlier_market_probabilities": earlier_market,
+        "earlier_snapshot_id": earlier.get("snapshot_id"),
+        "earlier_captured_at": earlier.get("captured_at"),
+        "earlier_snapshot_age_seconds": age,
+        "momentum_interval_seconds": gap_seconds,
+        "momentum_scale": 300.0 / gap_seconds,
+    }, "ok"
 
 
 def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:
