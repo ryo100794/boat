@@ -9,7 +9,10 @@ from typing import Any
 
 import joblib
 
-from scripts.analyze_market_momentum import evaluate_momentum_candidate
+try:
+    from scripts.analyze_market_momentum import evaluate_momentum_candidate
+except ModuleNotFoundError:
+    from analyze_market_momentum import evaluate_momentum_candidate
 
 
 def build_parser() -> argparse.ArgumentParser:
