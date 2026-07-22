@@ -131,6 +131,11 @@ def result_summary(path):
         row["error"] = str(exc)
         return row
     row["metrics"] = {key: data.get(key) for key in METRIC_KEYS if key in data}
+    probability_metrics = data.get("probability_metrics") or {}
+    if isinstance(probability_metrics, dict):
+        for key in METRIC_KEYS:
+            if key in probability_metrics:
+                row["metrics"][key] = probability_metrics.get(key)
     row["model"] = data.get("model")
     row["feature_set"] = data.get("feature_set")
     row["comparison_role"] = data.get("comparison_role")
