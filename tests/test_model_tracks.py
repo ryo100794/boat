@@ -198,6 +198,10 @@ def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> N
                 "calibrated_trifecta_log_loss": 4.1323,
                 "trifecta_top5_hit_rate": 0.2581,
                 "evaluation_days": 2,
+                "probability_metrics": {
+                    "model_trifecta_log_loss": 3.9695,
+                    "model_trifecta_top5_hit_rate": 0.3309,
+                },
             }
         ),
         encoding="utf-8",
@@ -207,3 +211,30 @@ def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> N
     assert result["metrics"]["calibrated_trifecta_log_loss"] == 4.1323
     assert result["metrics"]["evaluated_races"] == 279
     assert result["metrics"]["evaluation_days"] == 2
+    assert result["metrics"]["model_trifecta_log_loss"] == 3.9695
+    assert result["metrics"]["model_trifecta_top5_hit_rate"] == 0.3309
+
+
+def test_local_evaluation_result_uses_cutoff_after_refit_metrics(tmp_path) -> None:
+    path = tmp_path / "cutoff.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "cutoff",
+                "evaluation_races": 632,
+                "after_refit": {
+                    "evaluated_races": 632,
+                    "entry_log_loss": 0.3398,
+                    "winner_top1_accuracy": 0.5491,
+                    "trifecta_top5_hit_rate": 0.3180,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _local_evaluation_result(path)
+    assert result is not None
+    assert result["metrics"]["evaluated_races"] == 632
+    assert result["metrics"]["entry_log_loss"] == 0.3398
+    assert result["metrics"]["winner_top1_accuracy"] == 0.5491
+    assert result["metrics"]["trifecta_top5_hit_rate"] == 0.3180

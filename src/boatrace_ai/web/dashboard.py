@@ -3590,6 +3590,10 @@ _LOCAL_EVALUATION_METRICS = (
     "calibrated_trifecta_log_loss",
     "evaluation_races",
     "evaluation_days",
+    "model_trifecta_log_loss",
+    "model_trifecta_top5_hit_rate",
+    "market_trifecta_log_loss",
+    "market_trifecta_top5_hit_rate",
 )
 
 
@@ -3649,7 +3653,21 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
     metrics = {
         key: data.get(key) for key in _LOCAL_EVALUATION_METRICS if key in data
     }
-    holdout = data.get("holdout_after_newton") or data.get("holdout") or {}
+    probability_metrics = data.get("probability_metrics") or {}
+    if isinstance(probability_metrics, dict):
+        metrics.update(
+            {
+                key: probability_metrics.get(key)
+                for key in _LOCAL_EVALUATION_METRICS
+                if key in probability_metrics
+            }
+        )
+    holdout = (
+        data.get("after_refit")
+        or data.get("holdout_after_newton")
+        or data.get("holdout")
+        or {}
+    )
     if isinstance(holdout, dict):
         metrics.update(
             {
