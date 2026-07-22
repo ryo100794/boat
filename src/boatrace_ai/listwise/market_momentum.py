@@ -19,6 +19,7 @@ def momentum_log_pool_probabilities(
     model_coefficient: float,
     market_coefficient: float,
     momentum_coefficient: float,
+    momentum_scale: float = 1.0,
 ) -> dict[str, float]:
     combinations = sorted(set(model) & set(market) & set(earlier_market))
     if not combinations:
@@ -28,6 +29,7 @@ def momentum_log_pool_probabilities(
         model=model,
         market=market,
         earlier_market=earlier_market,
+        momentum_scale=momentum_scale,
     )
     coefficients = np.asarray(
         [model_coefficient, market_coefficient, momentum_coefficient],
@@ -154,6 +156,7 @@ def momentum_probabilities(
         model_coefficient=float(calibrator["model_coefficient"]),
         market_coefficient=float(calibrator["market_coefficient"]),
         momentum_coefficient=float(calibrator["momentum_coefficient"]),
+        momentum_scale=float(race.get("momentum_scale") or 1.0),
     )
 
 
@@ -235,15 +238,19 @@ def _combination_features(
     model: dict[str, float],
     market: dict[str, float],
     earlier_market: dict[str, float],
+    momentum_scale: float = 1.0,
 ) -> np.ndarray:
     return np.asarray(
         [
             [
                 math.log(max(EPSILON, float(model[combination]))),
                 math.log(max(EPSILON, float(market[combination]))),
-                math.log(max(EPSILON, float(market[combination])))
-                - math.log(
-                    max(EPSILON, float(earlier_market[combination]))
+                momentum_scale
+                * (
+                    math.log(max(EPSILON, float(market[combination])))
+                    - math.log(
+                        max(EPSILON, float(earlier_market[combination]))
+                    )
                 ),
             ]
             for combination in combinations
@@ -275,6 +282,7 @@ def _objective_gradient_hessian(
             model=race["model_probabilities"],
             market=race["market_probabilities"],
             earlier_market=race["earlier_market_probabilities"],
+            momentum_scale=float(race.get("momentum_scale") or 1.0),
         )
         logits = features @ coefficients
         maximum = float(np.max(logits))

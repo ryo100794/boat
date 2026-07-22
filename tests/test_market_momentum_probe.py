@@ -61,6 +61,7 @@ def test_earlier_snapshot_must_be_fresh_and_complete(monkeypatch) -> None:
     race = {
         "race_id": "race-1",
         "race_date": "2026-07-22",
+        "captured_at": "2026-07-22T10:05:30+09:00",
         "market_probabilities": _uniform(),
     }
 
@@ -74,4 +75,6 @@ def test_earlier_snapshot_must_be_fresh_and_complete(monkeypatch) -> None:
     assert dataset["eligible_momentum_races"] == 1
     assert dataset["eligible_by_day"] == {"2026-07-22": 1}
     assert augmented[0]["earlier_snapshot_age_seconds"] == 30.0
+    assert augmented[0]["momentum_interval_seconds"] == 300.0
+    assert augmented[0]["momentum_scale"] == 1.0
     assert len(augmented[0]["earlier_market_probabilities"]) == 120

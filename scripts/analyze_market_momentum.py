@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,11 +18,13 @@ from boatrace_ai.listwise.market_calibration import (
     snapshot_age_seconds,
 )
 from boatrace_ai.listwise.market_momentum import (
+    fit_momentum_newton,
     momentum_probabilities,
     momentum_probability_metrics,
     select_momentum_regularization_prequential,
 )
 from boatrace_ai.listwise.market_residual import (
+    fit_log_pool_newton,
     log_pool_probabilities,
     residual_probability_metrics,
     select_regularization_prequential,
@@ -39,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("cache", type=Path)
     parser.add_argument("--db", required=True)
     parser.add_argument("--evaluation-date")
+    parser.add_argument("--fixed-regularization", type=float)
     parser.add_argument("--earlier-decision-lead-minutes", type=int, default=10)
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
     parser.add_argument("--output", type=Path)
@@ -70,6 +74,23 @@ def attach_earlier_market_probabilities(
             skipped["stale_earlier_snapshot"] += 1
             continue
         earlier = normalized_market_probabilities(snapshot["odds"])
+        try:
+            current_captured = datetime.fromisoformat(str(race["captured_at"]))
+            earlier_captured = datetime.fromisoformat(str(snapshot["captured_at"]))
+        except (KeyError, TypeError, ValueError):
+            skipped["invalid_capture_interval"] += 1
+            continue
+        if current_captured.tzinfo is None:
+            current_captured = current_captured.replace(tzinfo=timezone.utc)
+        if earlier_captured.tzinfo is None:
+            earlier_captured = earlier_captured.replace(tzinfo=timezone.utc)
+        gap_seconds = (
+            current_captured
+            - earlier_captured.astimezone(current_captured.tzinfo)
+        ).total_seconds()
+        if gap_seconds <= 0.0 or gap_seconds > 900.0:
+            skipped["invalid_capture_interval"] += 1
+            continue
         if set(earlier) != set(race["market_probabilities"]):
             skipped["combination_mismatch"] += 1
             continue
@@ -79,6 +100,8 @@ def attach_earlier_market_probabilities(
         item["earlier_captured_at"] = snapshot.get("captured_at")
         item["earlier_odds_deadline_at"] = snapshot.get("odds_deadline_at")
         item["earlier_snapshot_age_seconds"] = age
+        item["momentum_interval_seconds"] = gap_seconds
+        item["momentum_scale"] = 300.0 / gap_seconds
         augmented.append(item)
         by_day[str(item["race_date"])] += 1
     return augmented, {
@@ -132,6 +155,7 @@ def evaluate_momentum_candidate(
     races: list[dict[str, Any]],
     *,
     evaluation_date: str | None = None,
+    fixed_regularization: float | None = None,
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in races})
     selected_evaluation_date = evaluation_date or (dates[-1] if dates else None)
@@ -147,13 +171,38 @@ def evaluate_momentum_candidate(
         if str(race["race_date"]) == selected_evaluation_date
     ]
     calibration_dates = sorted({str(race["race_date"]) for race in calibration})
-    if len(calibration_dates) < 2:
-        raise ValueError("at least two complete calibration days are required")
+    if len(calibration_dates) < 2 and fixed_regularization is None:
+        raise ValueError(
+            "at least two complete calibration days are required unless a "
+            "regularization is fixed before evaluation"
+        )
     if not holdout:
         raise ValueError("evaluation date has no eligible momentum races")
 
-    baseline_selection = select_regularization_prequential(calibration)
-    momentum_selection = select_momentum_regularization_prequential(calibration)
+    if fixed_regularization is None:
+        baseline_selection = select_regularization_prequential(calibration)
+        momentum_selection = select_momentum_regularization_prequential(calibration)
+    else:
+        baseline_selection = {
+            "validation_design": "fixed regularization; no holdout selection",
+            "dates": calibration_dates,
+            "selected_regularization": fixed_regularization,
+            "final_calibrator": fit_log_pool_newton(
+                calibration,
+                regularization=fixed_regularization,
+            ),
+            "candidates": [],
+        }
+        momentum_selection = {
+            "validation_design": "fixed regularization; no holdout selection",
+            "dates": calibration_dates,
+            "selected_regularization": fixed_regularization,
+            "final_calibrator": fit_momentum_newton(
+                calibration,
+                regularization=fixed_regularization,
+            ),
+            "candidates": [],
+        }
     baseline_calibrator = baseline_selection["final_calibrator"]
     momentum_calibrator = momentum_selection["final_calibrator"]
     baseline_metrics = residual_probability_metrics(holdout, baseline_calibrator)
@@ -176,6 +225,7 @@ def evaluate_momentum_candidate(
         "evaluation_date": selected_evaluation_date,
         "calibration_races": len(calibration),
         "evaluation_races": len(holdout),
+        "fixed_regularization": fixed_regularization,
         "baseline_newton_residual": {
             "selection": baseline_selection,
             "metrics": baseline_metrics,
@@ -222,6 +272,7 @@ def main() -> int:
         **evaluate_momentum_candidate(
             augmented,
             evaluation_date=args.evaluation_date,
+            fixed_regularization=args.fixed_regularization,
         ),
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
