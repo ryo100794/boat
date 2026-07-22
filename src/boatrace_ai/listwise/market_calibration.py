@@ -27,6 +27,12 @@ from ..features import latest_trifecta_odds_before_deadline
 from ..modeling import trifecta_predictions
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
 from .model import ListwiseLinearModel, stable_softmax
+from .stagewise_blend import (
+    StagewiseBlendModel,
+    blend_probabilities as blend_architecture_probabilities,
+)
+from .stagewise_mlp import classifier_position_scores, stagewise_trifecta_probabilities
+from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
@@ -74,6 +80,52 @@ def iter_artifact_feature_rows(
         include_races=target_ids,
         drop_feature_groups=artifact_drop_feature_groups(artifact),
     )
+
+
+def artifact_model_probabilities(
+    artifact: dict[str, Any],
+    feature_rows: list[dict[str, Any]],
+) -> dict[str, float]:
+    model = artifact.get("model")
+    hasher = artifact.get("hasher")
+    if hasher is None:
+        raise ValueError("model artifact lacks a feature hasher")
+    matrix = _ensure_sparse_index32(
+        hasher.transform([to_hashable(item["features"]) for item in feature_rows])
+    )
+    if isinstance(model, ListwiseLinearModel):
+        scores = np.asarray(model.scaler.transform(matrix).dot(model.weights)).reshape(6)
+        lane_probabilities = stable_softmax(scores)
+        return {
+            row["combination"]: float(row["probability"])
+            for row in trifecta_predictions(
+                {lane: float(lane_probabilities[lane - 1]) for lane in range(1, 7)}
+            )
+        }
+    if isinstance(model, StagewiseBlendModel):
+        listwise = model.listwise_model
+        lane_probabilities = stable_softmax(
+            np.asarray(listwise.scaler.transform(matrix).dot(listwise.weights)).reshape(1, 6)
+        )
+        listwise_probabilities = stagewise_trifecta_probabilities(
+            np.repeat(lane_probabilities[:, :, None], 3, axis=2)
+        )
+        _classes, position_scores = classifier_position_scores(
+            model.stagewise_model, matrix
+        )
+        stagewise_probabilities = stagewise_trifecta_probabilities(
+            position_scores.reshape(1, 6, 3)
+        )
+        probabilities = blend_architecture_probabilities(
+            listwise_probabilities,
+            stagewise_probabilities,
+            stagewise_weight=model.stagewise_weight,
+        )[0]
+        return {
+            "-".join(str(lane) for lane in combination): float(probability)
+            for combination, probability in zip(TRIFECTA_COMBINATIONS, probabilities)
+        }
+    raise ValueError("unsupported model artifact type for market scoring")
 
 
 def normalized_market_probabilities(odds: dict[str, float]) -> dict[str, float]:
@@ -669,8 +721,8 @@ def score_real_odds_races(
     _validate_artifact_before_period(artifact, from_date=from_date)
     model = artifact.get("model")
     hasher = artifact.get("hasher")
-    if not isinstance(model, ListwiseLinearModel) or hasher is None:
-        raise ValueError("model artifact must contain a listwise model and hasher")
+    if not isinstance(model, (ListwiseLinearModel, StagewiseBlendModel)) or hasher is None:
+        raise ValueError("model artifact must contain a supported model and hasher")
     race_keys = load_complete_race_ids(conn)
     target_ids = {
         str(race_id)
@@ -708,17 +760,7 @@ def score_real_odds_races(
         ):
             skipped_stale_odds += 1
             continue
-        matrix = _ensure_sparse_index32(
-            hasher.transform([to_hashable(item["features"]) for item in feature_rows])
-        )
-        scores = np.asarray(model.scaler.transform(matrix).dot(model.weights)).reshape(6)
-        lane_probabilities = stable_softmax(scores)
-        model_probabilities = {
-            row["combination"]: float(row["probability"])
-            for row in trifecta_predictions(
-                {lane: float(lane_probabilities[lane - 1]) for lane in range(1, 7)}
-            )
-        }
+        model_probabilities = artifact_model_probabilities(artifact, feature_rows)
         odds = {key: float(value) for key, value in snapshot["odds"].items()}
         market_probabilities = normalized_market_probabilities(odds)
         if set(model_probabilities) != set(odds) or set(market_probabilities) != set(odds):
@@ -804,7 +846,7 @@ def scored_cache_contract(
     max_snapshot_age_seconds: float,
 ) -> dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "model_sha256": file_sha256(model_path),
         "trained_through": tuple(artifact.get("trained_through") or ()),
         "feature_variant": artifact.get("feature_variant"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .model import ListwiseLinearModel, stable_softmax
+from .newton_refine import dump_joblib_atomic
 from .stagewise_mlp import (
     COMBINATION_LANES,
     EPSILON,
@@ -26,6 +28,13 @@ from .stagewise_mlp import (
 
 
 MODEL_NAME = "pastlog_listwise_stagewise_blend_v1"
+
+
+@dataclass
+class StagewiseBlendModel:
+    listwise_model: ListwiseLinearModel
+    stagewise_model: StagewiseMLPModel
+    stagewise_weight: float
 
 
 def period_boundaries(
@@ -277,10 +286,32 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         weights=(0.0, selected_weight, 1.0),
         batch_races=args.batch_races,
     )
+    model_artifact = {
+        "model": StagewiseBlendModel(
+            listwise_model=evaluation_list,
+            stagewise_model=evaluation_stage,
+            stagewise_weight=selected_weight,
+        ),
+        "hasher": evaluation_stage_artifact["hasher"],
+        "model_name": MODEL_NAME,
+        "feature_variant": evaluation_stage_artifact.get("feature_variant"),
+        "drop_feature_groups": dropped,
+        "n_features": n_features,
+        "trained_races": evaluation_stage_artifact.get("trained_races"),
+        "trained_through": evaluation_stage_artifact.get("trained_through"),
+        "training_cutoff": evaluation_stage_artifact.get("training_cutoff"),
+        "stagewise_weight": selected_weight,
+        "weight_selection_from": args.selection_from,
+        "weight_selection_through": args.selection_through,
+        "final_holdout_from": args.evaluation_from,
+        "final_holdout_through": args.evaluation_through,
+    }
+    dump_joblib_atomic(Path(args.model_output), model_artifact)
     result = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model": MODEL_NAME,
         "comparison_role": "preselected blend weight on untouched final temporal holdout",
+        "model_artifact": args.model_output,
         "selection_period": {
             "from": args.selection_from,
             "through": args.selection_through,
@@ -328,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evaluation-through", required=True)
     parser.add_argument("--batch-races", type=int, default=2_000)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--model-output", required=True)
     return parser
 
 

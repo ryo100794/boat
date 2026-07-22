@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from sklearn.feature_extraction import FeatureHasher
+from sklearn.preprocessing import StandardScaler
+
+from boatrace_ai.listwise.market_calibration import artifact_model_probabilities
+from boatrace_ai.listwise.model import ListwiseLinearModel
 
 from boatrace_ai.listwise.stagewise_blend import (
+    StagewiseBlendModel,
     blend_probabilities,
     period_boundaries,
     select_weight,
     update_metrics,
 )
-from boatrace_ai.listwise.stagewise_mlp import COMBINATION_INDEX
+from boatrace_ai.listwise.stagewise_mlp import (
+    COMBINATION_INDEX,
+    StagewiseMLPModel,
+)
+
+
+class _StaticRankClassifier:
+    classes_ = np.asarray([0, 1, 2, 3])
+
+    def predict_proba(self, matrix):
+        return np.tile(np.asarray([0.5, 0.2, 0.2, 0.1]), (matrix.shape[0], 1))
 
 
 def test_probability_blend_preserves_normalization_and_endpoints() -> None:
@@ -63,6 +79,43 @@ def test_metric_update_scores_actual_order_and_first_marginal() -> None:
     assert accumulator["winner_hits"] == 1
     assert accumulator["trifecta_top1_hits"] == 1
     assert accumulator["trifecta_top5_hits"] == 1
+
+
+def test_market_scorer_accepts_stagewise_blend_artifact() -> None:
+    hasher = FeatureHasher(
+        n_features=16,
+        input_type="dict",
+        alternate_sign=False,
+    )
+    feature_rows = [
+        {"features": {f"lane_{lane}": 1.0}}
+        for lane in range(1, 7)
+    ]
+    matrix = hasher.transform([row["features"] for row in feature_rows])
+    scaler = StandardScaler(with_mean=False).fit(matrix)
+    listwise = ListwiseLinearModel(
+        weights=np.zeros(16),
+        scaler=scaler,
+        target="top3_pl",
+        alpha=0.0001,
+        learning_rate=0.01,
+        epochs=1,
+    )
+    stagewise = StagewiseMLPModel(
+        scaler=scaler,
+        classifier=_StaticRankClassifier(),
+        epochs=1,
+        alpha=0.0001,
+    )
+    artifact = {
+        "hasher": hasher,
+        "model": StagewiseBlendModel(listwise, stagewise, 0.5),
+    }
+
+    probabilities = artifact_model_probabilities(artifact, feature_rows)
+
+    assert len(probabilities) == 120
+    assert sum(probabilities.values()) == pytest.approx(1.0)
 
 
 def test_period_boundaries_select_full_dates() -> None:
