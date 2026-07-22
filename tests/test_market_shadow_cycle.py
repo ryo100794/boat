@@ -29,3 +29,22 @@ def test_evaluation_due_only_for_new_completed_day() -> None:
         through_date="2026-07-21",
         output_exists=True,
     )
+
+
+def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
+    state = {
+        "completed_through_date": "2026-07-21",
+        "model_sha256": "a" * 64,
+    }
+    assert not evaluation_due(
+        state,
+        through_date="2026-07-21",
+        output_exists=True,
+        model_sha256="a" * 64,
+    )
+    assert evaluation_due(
+        state,
+        through_date="2026-07-21",
+        output_exists=True,
+        model_sha256="b" * 64,
+    )

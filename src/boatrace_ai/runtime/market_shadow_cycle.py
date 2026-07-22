@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -23,10 +24,21 @@ def evaluation_due(
     *,
     through_date: str,
     output_exists: bool,
+    model_sha256: str | None = None,
 ) -> bool:
     if not output_exists:
         return True
+    if model_sha256 and state.get("model_sha256") != model_sha256:
+        return True
     return str(state.get("completed_through_date") or "") < through_date
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def write_state(path: Path, payload: dict[str, Any]) -> None:
@@ -76,17 +88,22 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
     through_date = completed_through_date(now)
     state_path = Path(args.state)
     output_path = Path(args.output)
+    model_path = Path(args.model)
+    model_hash = file_sha256(model_path)
     previous = read_state(state_path)
     event: dict[str, Any] = {
         "generated_at": generated_at,
         "target_through_date": through_date,
         "from_date": args.from_date,
         "output": str(output_path),
+        "model": str(model_path),
+        "model_sha256": model_hash,
     }
     if not evaluation_due(
         previous,
         through_date=through_date,
         output_exists=output_path.exists(),
+        model_sha256=model_hash,
     ):
         event.update(
             {
