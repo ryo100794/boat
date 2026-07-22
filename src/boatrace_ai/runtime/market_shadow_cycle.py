@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..listwise.market_calibration import MARKET_EVALUATION_VERSION
+
 
 JST = timezone(timedelta(hours=9))
 
@@ -25,10 +27,16 @@ def evaluation_due(
     through_date: str,
     output_exists: bool,
     model_sha256: str | None = None,
+    evaluation_version: int | None = None,
 ) -> bool:
     if not output_exists:
         return True
     if model_sha256 and state.get("model_sha256") != model_sha256:
+        return True
+    if (
+        evaluation_version is not None
+        and state.get("evaluation_version") != evaluation_version
+    ):
         return True
     return str(state.get("completed_through_date") or "") < through_date
 
@@ -98,12 +106,14 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         "output": str(output_path),
         "model": str(model_path),
         "model_sha256": model_hash,
+        "evaluation_version": MARKET_EVALUATION_VERSION,
     }
     if not evaluation_due(
         previous,
         through_date=through_date,
         output_exists=output_path.exists(),
         model_sha256=model_hash,
+        evaluation_version=MARKET_EVALUATION_VERSION,
     ):
         event.update(
             {

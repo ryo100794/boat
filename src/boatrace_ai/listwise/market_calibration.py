@@ -41,6 +41,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
+MARKET_EVALUATION_VERSION = 5
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -884,7 +885,7 @@ def scored_cache_contract(
     max_snapshot_age_seconds: float,
 ) -> dict[str, Any]:
     return {
-        "version": 4,
+        "version": MARKET_EVALUATION_VERSION,
         "model_sha256": file_sha256(model_path),
         "trained_through": tuple(artifact.get("trained_through") or ()),
         "feature_variant": artifact.get("feature_variant"),
