@@ -678,7 +678,7 @@ async function selectRace(raceId){
   $("raceTitle").innerHTML = `<span class="race-title-line"><span class="race-title-name">${escapeHtml(`${race.venue_name || ""} ${race.rno || ""}R ${race.title || ""}`)}</span><span class="race-title-actions"><button id="raceArchiveBtn" type="button">R</button><button id="venueArchiveBtn" type="button">場</button></span></span>`;
   $("entries").innerHTML = data.entries.map(renderEntryCard).join("");
   renderPredictionMatrix(data.predictions || []);
-  $("combo").innerHTML = data.predictions.slice(0,20).map(p => `<option>${p.combination}</option>`).join("") || `<option>1-2-3</option>`;
+  $("combo").innerHTML = data.predictions.slice(0,5).map((p,index) => `<option value="${escapeHtml(p.combination)}">${index+1}位 ${escapeHtml(p.combination)}</option>`).join("") || `<option>1-2-3</option>`;
   $("raceArchiveBtn").onclick = () => loadArchiveView("today", { race_id: raceId });
   $("venueArchiveBtn").onclick = () => loadArchiveView("history", { kind:"venue", jcd: race.jcd || "" });
   document.querySelectorAll("#entries button[data-archive-kind]").forEach(btn => btn.onclick = ev => {
@@ -714,7 +714,7 @@ function drawTrend(series, selectedCombo){
   const colors=["#9b2c4d","#1769aa","#00897b","#d97706","#6b46a1"];
   ctx.clearRect(0,0,w,h);
   ctx.font="10px ui-monospace,monospace";
-  const normalized=(Array.isArray(series) ? series : []).map((item,index)=>({
+  const normalized=(Array.isArray(series) ? series.slice(0,5) : []).map((item,index)=>({
     ...item,
     color:colors[index%colors.length],
     points:(item.trend || []).map(row=>({
@@ -748,6 +748,9 @@ function drawTrend(series, selectedCombo){
   for(let value=yMin;value<=yMax+step*.01;value+=step){
     const py=y(value);
     ctx.beginPath();ctx.moveTo(plot.l,py);ctx.lineTo(w-plot.r,py);ctx.stroke();
+    ctx.strokeStyle="#7d8b90";
+    ctx.beginPath();ctx.moveTo(plot.l-4,py);ctx.lineTo(plot.l,py);ctx.stroke();
+    ctx.strokeStyle="#dce3e6";
     ctx.fillText(tightNum(value),plot.l-5,py);
   }
   ctx.textAlign="center";
@@ -758,6 +761,8 @@ function drawTrend(series, selectedCombo){
     const px=x(time);
     ctx.strokeStyle="#edf1f2";
     ctx.beginPath();ctx.moveTo(px,plot.t);ctx.lineTo(px,h-plot.b);ctx.stroke();
+    ctx.strokeStyle="#7d8b90";
+    ctx.beginPath();ctx.moveTo(px,h-plot.b);ctx.lineTo(px,h-plot.b+4);ctx.stroke();
     ctx.fillStyle="#4e5d63";
     ctx.fillText(new Date(time).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Tokyo"}),px,h-plot.b+5);
   }
@@ -776,16 +781,18 @@ function drawTrend(series, selectedCombo){
     ctx.beginPath();ctx.moveTo(legendX,13);ctx.lineTo(legendX+14,13);ctx.stroke();
     ctx.fillStyle="#25343a";ctx.textAlign="left";ctx.textBaseline="middle";
     const probability=item.probability==null ? "" : ` ${tightPct(item.probability)}`;
-    ctx.fillText(`${item.combination || "-"}${probability}`,legendX+18,13);
-    if(item.points.length<2) return;
+    ctx.fillText(`${index+1}位 ${item.combination || "-"}${probability}`,legendX+18,13);
+    if(!item.points.length) return;
     ctx.strokeStyle=item.color;
     ctx.lineWidth=item.combination===selectedCombo ? 2.8 : 1.6;
-    ctx.beginPath();
-    item.points.forEach((point,pointIndex)=>{
-      const px=x(point.time),py=y(point.odds);
-      if(pointIndex===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
-    });
-    ctx.stroke();
+    if(item.points.length>=2){
+      ctx.beginPath();
+      item.points.forEach((point,pointIndex)=>{
+        const px=x(point.time),py=y(point.odds);
+        if(pointIndex===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+      });
+      ctx.stroke();
+    }
     const last=item.points[item.points.length-1];
     ctx.fillStyle=item.color;ctx.beginPath();ctx.arc(x(last.time),y(last.odds),2.4,0,Math.PI*2);ctx.fill();
   });
