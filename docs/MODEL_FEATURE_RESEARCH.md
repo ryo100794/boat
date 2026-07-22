@@ -51,3 +51,11 @@ the prior model on the same chronological 365-day test set and the same JPY
 10,000/day bankroll policy. Promote only when calibration/ranking does not
 materially regress and out-of-sample ROI or loss improves across multiple time
 blocks rather than one venue or one month.
+
+
+## 2026-07-22 market-residual structure probes
+
+- Winner-only residual: 260-race daily walk-forward LogLoss 3.84071 versus the retained global Newton residual 3.83357. The winner residual coefficient converged near zero, so the candidate was rejected.
+- Market-entropy-conditioned residual: 260-race daily walk-forward LogLoss 3.83974 versus 3.83357, with Top-5 equal to the market at 33.08%. The entropy interaction did not add stable signal and was rejected.
+- T-10 to T-5 outcome momentum and signed disagreement curvature were also rejected on their untouched comparison folds. T-10 to T-5 movement is retained only for closing-price forecasting, where it reduced 2026-07-22 log-odds MAE from 0.17318 to 0.16537 on the same 126 races.
+- Rejected probe implementations are not kept on the production import path. Their exact code and tests remain recoverable from Git history.
