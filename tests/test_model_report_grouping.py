@@ -48,16 +48,20 @@ def test_unified_summary_and_promotion_display_are_explicit() -> None:
         1
     ].split("function modelKey", 1)[0]
 
-    assert "const unifiedReady=Boolean" in render_source
-    assert "summaryBank=unifiedReady?v2Bank:bank" in render_source
-    assert "summaryTests=unifiedReady?v2Tests:tests" in render_source
-    assert "summaryTests.map" in render_source
-    assert "summaryBank.map" in render_source
+    assert "const v2Ready=Boolean" in render_source
+    assert "comparisonBank=v2Ready?v2Bank:v1Bank" in render_source
+    assert "comparisonTests=v2Ready?v2Tests:v1Tests" in render_source
+    assert "mergeComparisonRows(comparisonTests,comparisonBank)" in render_source
+    assert "comparisonRows.map(comparisonRow)" in render_source
+    assert "summaryTests.map" not in render_source
+    assert "summaryBank.map" not in render_source
+    assert "function mergeComparisonRows" in MODEL_REPORT_HTML
+    assert "function trackLoss" in MODEL_REPORT_HTML
     assert 'status==="retain_incumbent"' in protocol_source
     assert "判定状態不明" in protocol_source
     for text in ("policy odds", "Kelly", "露出", "上限", "単位・最低", "不合格:"):
         assert text in protocol_source
-    for reason in ("ROI<1", "損益<=0", "LogLoss悪化", "1着悪化", "3T5悪化"):
+    for reason in ("ROI<1", "損益<=0", "艇Entry LL悪化", "1着悪化", "3T5悪化"):
         assert reason in protocol_source
 
 

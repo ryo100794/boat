@@ -59,7 +59,9 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
 
 def test_web_templates_identify_the_active_model_track() -> None:
     assert 'id="modelTrackRows"' in MODEL_REPORT_HTML
-    assert "本番とshadowを分離" in MODEL_REPORT_HTML
+    assert "統一365日 共通評価" in MODEL_REPORT_HTML
+    assert "研究・運用モデル" in MODEL_REPORT_HTML
+    assert "T-5実odds / 時系列holdout" in MODEL_REPORT_HTML
     assert "主系予測" in HTML
     assert 'bt.model_label || "過去ログ主系"' in HTML
 
@@ -72,7 +74,10 @@ def test_model_report_separates_cross_model_and_selected_model_aggregates() -> N
     assert MODEL_REPORT_HTML.index('id="summaryRows"') < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
     assert MODEL_REPORT_HTML.index('id="selectedModelGroup"') < MODEL_REPORT_HTML.index('id="modelSelect"')
     assert MODEL_REPORT_HTML.index('id="modelSelect"') < MODEL_REPORT_HTML.index('id="modelDetailRows"')
-    assert "全モデル横断集計" in MODEL_REPORT_HTML
+    assert MODEL_REPORT_HTML.index("統一365日 共通評価") < MODEL_REPORT_HTML.index("研究・運用モデル")
+    assert MODEL_REPORT_HTML.index("研究・運用モデル") < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
+    assert "艇Entry LL" in MODEL_REPORT_HTML
+    assert "3連単 LL" in MODEL_REPORT_HTML
     assert "モデル個別集計" in MODEL_REPORT_HTML
 
 
