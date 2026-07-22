@@ -5,7 +5,9 @@ from itertools import permutations
 import pytest
 
 from boatrace_ai.listwise.market_calibration import (
+    artifact_drop_feature_groups,
     blend_probabilities,
+    iter_artifact_feature_rows,
     normalized_market_probabilities,
     policy_calibration_eligible,
     load_scored_cache,
@@ -175,3 +177,33 @@ def test_snapshot_age_is_measured_against_t5_boundary() -> None:
     }
     assert snapshot_age_seconds(snapshot) == 40.0
     assert snapshot_age_seconds({"captured_at": "bad"}) is None
+
+
+def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
+    observed = {}
+
+    def fake_rows(conn, *, include_races, drop_feature_groups):
+        observed.update(
+            conn=conn,
+            include_races=include_races,
+            drop_feature_groups=drop_feature_groups,
+        )
+        return iter(())
+
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration.iter_race_feature_rows",
+        fake_rows,
+    )
+    assert list(
+        iter_artifact_feature_rows(
+            "connection",
+            target_ids={"race-1"},
+            artifact={"drop_feature_groups": ["base_pastlog"]},
+        )
+    ) == []
+    assert observed == {
+        "conn": "connection",
+        "include_races": {"race-1"},
+        "drop_feature_groups": ("base_pastlog",),
+    }
+    assert artifact_drop_feature_groups({}) == ()

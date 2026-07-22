@@ -20,6 +20,7 @@ from ..feature_tuning import (
     _ensure_sparse_index32,
     iter_race_feature_rows,
     load_complete_race_ids,
+    normalize_drop_feature_groups,
     to_hashable,
 )
 from ..features import latest_trifecta_odds_before_deadline
@@ -53,6 +54,25 @@ STAKING_MODES = {
     },
 }
 EPSILON = 1e-12
+
+
+def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
+    return normalize_drop_feature_groups(
+        artifact.get("drop_feature_groups") or (),
+    )
+
+
+def iter_artifact_feature_rows(
+    conn,
+    *,
+    target_ids: set[str],
+    artifact: dict[str, Any],
+):
+    return iter_race_feature_rows(
+        conn,
+        include_races=target_ids,
+        drop_feature_groups=artifact_drop_feature_groups(artifact),
+    )
 
 
 def normalized_market_probabilities(odds: dict[str, float]) -> dict[str, float]:
@@ -584,7 +604,11 @@ def score_real_odds_races(
     payouts = _load_trifecta_payouts(conn)
     races = []
     skipped_no_odds = skipped_stale_odds = skipped_no_payout = 0
-    for feature_rows in iter_race_feature_rows(conn, include_races=target_ids):
+    for feature_rows in iter_artifact_feature_rows(
+        conn,
+        target_ids=target_ids,
+        artifact=artifact,
+    ):
         meta_rows = [item["meta"] for item in feature_rows]
         race_id = str(meta_rows[0]["race_id"])
         payout = payouts.get(race_id)
@@ -703,9 +727,11 @@ def scored_cache_contract(
     max_snapshot_age_seconds: float,
 ) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "model_sha256": file_sha256(model_path),
         "trained_through": tuple(artifact.get("trained_through") or ()),
+        "feature_variant": artifact.get("feature_variant"),
+        "drop_feature_groups": artifact_drop_feature_groups(artifact),
         "from_date": from_date,
         "through_date": through_date,
         "max_snapshot_age_seconds": max_snapshot_age_seconds,
