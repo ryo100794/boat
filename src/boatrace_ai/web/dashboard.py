@@ -2170,6 +2170,15 @@ def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
 
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
     policy = data.get("policy") or {}
+    tickets = data.get("tickets")
+    if tickets is None:
+        tickets = data.get("selected_tickets")
+    selected_races = data.get("selected_races")
+    if selected_races is None:
+        selected_races = data.get("races_bet")
+    ticket_hit_rate = _float_or_none(data.get("ticket_hit_rate"))
+    if ticket_hit_rate is None and tickets:
+        ticket_hit_rate = float(data.get("hit_tickets") or 0) / float(tickets)
 
     return {
         "name": label,
@@ -2185,8 +2194,8 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "winner_top1_accuracy": _float_or_none(data.get("winner_top1_accuracy")),
         "trifecta_top5_hit_rate": _float_or_none(data.get("trifecta_top5_hit_rate")),
         "race_days": data.get("race_days"),
-        "selected_races": data.get("selected_races"),
-        "tickets": data.get("tickets"),
+        "selected_races": selected_races,
+        "tickets": tickets,
         "candidate_tickets": data.get("candidate_tickets"),
         "stake_yen": data.get("stake_yen"),
         "return_yen": data.get("return_yen"),
@@ -2196,7 +2205,7 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "roi_ci95_upper": _float_or_none(data.get("roi_ci95_upper")),
         "roi_delta_ci95_lower": _float_or_none(data.get("roi_delta_ci95_lower")),
         "roi_delta_ci95_upper": _float_or_none(data.get("roi_delta_ci95_upper")),
-        "ticket_hit_rate": _float_or_none(data.get("ticket_hit_rate")),
+        "ticket_hit_rate": ticket_hit_rate,
         "race_hit_rate": _float_or_none(data.get("race_hit_rate")),
         "winning_days": data.get("winning_days"),
         "losing_days": data.get("losing_days"),

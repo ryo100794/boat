@@ -82,6 +82,9 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
             "promotion_eligible": False,
             "bankroll": {
                 "evaluated_races": 48_437,
+                "selected_tickets": 987,
+                "races_bet": 655,
+                "hit_tickets": 49,
                 "roi": 1.01,
                 "profit_yen": 1_000,
                 "stake_yen": 100_000,
@@ -188,6 +191,9 @@ def test_model_report_separates_conditional_metrics_and_bankroll(tmp_path) -> No
     )
     assert expected_return["roi"] == 1.01
     assert expected_return["roi_ci95_lower"] == 0.94
+    assert expected_return["tickets"] == 987
+    assert expected_return["selected_races"] == 655
+    assert expected_return["ticket_hit_rate"] == 49 / 987
     assert len(
         report["bankroll_daily"][
             "pastlog_conditional_order_expected_return_calibration"
