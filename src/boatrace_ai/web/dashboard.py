@@ -3630,6 +3630,9 @@ _LOCAL_EVALUATION_METRICS = (
     "model_trifecta_top5_hit_rate",
     "market_trifecta_log_loss",
     "market_trifecta_top5_hit_rate",
+    "available_races",
+    "available_days",
+    "required_additional_days",
 )
 
 
@@ -3649,7 +3652,11 @@ def _hydrate_local_evaluation_jobs(
             job["status"] = "差替済み"
             job["running"] = False
         elif result and not result.get("error"):
-            job["status"] = "完了"
+            job["status"] = (
+                "データ待ち"
+                if str(result.get("status") or "").startswith("waiting_")
+                else "完了"
+            )
             job["running"] = False
             job["result"] = result
             local_results += 1
@@ -3725,6 +3732,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
             )
     result["metrics"] = metrics
     result["model"] = data.get("model")
+    result["status"] = data.get("status")
     result["feature_set"] = data.get("feature_set")
     result["daily"] = data.get("daily") or []
     if isinstance(data.get("folds"), list):

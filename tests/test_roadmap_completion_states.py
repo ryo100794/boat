@@ -247,6 +247,36 @@ def test_local_artifacts_override_stale_remote_state(tmp_path) -> None:
     assert hydrated["jobs"][0]["result"]["metrics"]["roi"] == 0.84
 
 
+def test_local_waiting_artifact_is_not_marked_complete(tmp_path) -> None:
+    from boatrace_ai.web.dashboard import _hydrate_local_evaluation_jobs
+
+    status_path = tmp_path / "data" / "remote_eval_status.json"
+    artifact = tmp_path / "data" / "models" / "waiting.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        "{\"status\":\"waiting_for_clean_evaluation_day\",\"available_races\":270,"
+        "\"available_days\":2,\"required_additional_days\":1,\"evaluated_races\":0}",
+        encoding="utf-8",
+    )
+    hydrated = _hydrate_local_evaluation_jobs(
+        {
+            "jobs": [
+                {
+                    "kind": "market_calibrated_blend_shadow",
+                    "output": "data/models/waiting.json",
+                }
+            ]
+        },
+        status_path,
+    )
+
+    job = hydrated["jobs"][0]
+    assert job["status"] == "データ待ち"
+    assert job["result"]["status"] == "waiting_for_clean_evaluation_day"
+    assert job["result"]["metrics"]["available_races"] == 270
+    assert job["result"]["metrics"]["evaluated_races"] == 0
+
+
 def test_collector_deployment_enables_predictions() -> None:
     script = Path("scripts/deployment/run-boatrace-collector-foreground.sh").read_text(
         encoding="utf-8"
