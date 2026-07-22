@@ -1674,8 +1674,12 @@ def _market_calibrated_model_tracks(
         local_result = _local_evaluation_result(model_dir / model_file) if model_dir else None
         result = job.get("result") or local_result or {}
         metrics = result.get("metrics") or {}
-        status = job.get("status") or (
-            "完了" if local_result and not local_result.get("error") else "未登録"
+        local_status = str((local_result or {}).get("status") or "")
+        status = (
+            "データ待ち"
+            if local_status.startswith("waiting_")
+            else job.get("status")
+            or ("完了" if local_result and not local_result.get("error") else "未登録")
         )
         rows.append(
             {

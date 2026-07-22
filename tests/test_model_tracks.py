@@ -268,6 +268,31 @@ def test_model_tracks_reads_blend_artifacts_without_remote_poll(tmp_path) -> Non
     assert tracks["market_calibrated_blend_shadow"]["trifecta_log_loss"] == 3.8953
 
 
+def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> None:
+    (tmp_path / "stagewise_blend_market_shadow.json").write_text(
+        json.dumps(
+            {
+                "status": "waiting_for_clean_evaluation_day",
+                "available_races": 270,
+                "available_days": 2,
+                "evaluated_races": 0,
+                "promotion_eligible": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracks = {
+        row["id"]: row
+        for row in _model_track_summaries(tmp_path, [], {"jobs": []})
+    }
+
+    market = tracks["market_calibrated_blend_shadow"]
+    assert market["status"] == "データ待ち"
+    assert market["eligible_races"] == 0
+    assert market["backtest_available"] is False
+
+
 def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> None:
     path = tmp_path / "market.json"
     path.write_text(
