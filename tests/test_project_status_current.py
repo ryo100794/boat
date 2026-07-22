@@ -12,6 +12,8 @@ def test_project_status_uses_current_evaluation_state() -> None:
     assert "95%CI `[-0.05858, +0.00212]`" in STATUS
     assert "M6 資金運用モデル | 未完了/収益ゲート未達" in STATUS
     assert "M7 ソース整理 | 完了/運用監視" in STATUS
+    assert "M6-11: T-10→T-5モメンタム" in STATUS
+    assert "7月23日まで構造探索を凍結" in STATUS
     assert "PID 196980" not in STATUS
     assert "順番待ち" not in STATUS
 
