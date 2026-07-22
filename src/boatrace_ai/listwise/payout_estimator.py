@@ -161,10 +161,14 @@ def predict_conditional_odds(
     probabilities: Sequence[float],
     combinations: Sequence[str],
     race_keys: Sequence[tuple[str, str, str, int]],
+    *,
+    lognormal_mean_correction: bool = True,
 ) -> np.ndarray:
     matrix = payout_features(probabilities, combinations, race_keys)
-    log_odds = (
-        matrix @ np.asarray(model.weights, dtype=np.float64)
-        + 0.5 * float(model.residual_variance)
+    correction = (
+        0.5 * float(model.residual_variance)
+        if lognormal_mean_correction
+        else 0.0
     )
+    log_odds = matrix @ np.asarray(model.weights, dtype=np.float64) + correction
     return np.clip(np.exp(log_odds), MIN_ODDS, MAX_ODDS)

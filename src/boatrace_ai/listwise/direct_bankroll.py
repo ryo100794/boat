@@ -286,6 +286,7 @@ def simulate_conditional_payout_walk_forward(
                 if independent_market_reference
                 else "candidate probability"
             ),
+            "payout_point_estimate": "conditional median; no Jensen uplift",
             "conditional_payout_ridge": float(ridge),
             "selection": "fixed diagnostic policy; no evaluation-period tuning",
         }
@@ -330,6 +331,7 @@ def simulate_conditional_payout_walk_forward(
             day_market_probabilities.reshape(-1),
             flat_combinations,
             flat_keys,
+            lognormal_mean_correction=False,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
         estimated_ev = day_probabilities * estimated_odds
         max_estimated_ev = max(max_estimated_ev, float(estimated_ev.max()))
