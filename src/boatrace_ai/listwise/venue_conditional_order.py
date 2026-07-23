@@ -743,7 +743,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-dir", default="/tmp/boatrace-venue-context")
     parser.add_argument("--feature-batch-races", type=int, default=1_000)
     parser.add_argument("--baseline-model", required=True)
-    parser.add_argument("--legacy-evaluation", required=True)
+    parser.add_argument(
+        "--legacy-evaluation",
+        default="data/models/conditional_order_365d.json",
+    )
     parser.add_argument("--training-through", required=True)
     parser.add_argument("--evaluation-from", required=True)
     parser.add_argument("--evaluation-through", required=True)
