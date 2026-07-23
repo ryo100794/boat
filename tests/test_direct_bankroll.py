@@ -504,6 +504,60 @@ def test_conditional_policy_tie_break_uses_roi_profit_then_low_exposure(
     assert selected[8] == expected_exposure
 
 
+def test_conditional_policy_selects_mean_correction_from_pre_evaluation_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = []
+
+    def fake_selection_walk_forward(*args: object, **kwargs: object):
+        factor = float(kwargs["mean_correction_factor"])
+        observed.append(factor)
+        diagnostic = _selection_diagnostic(
+            roi={0.0: 1.1, 0.5: 1.4, 1.0: 1.2}[factor],
+            profit_yen={0.0: 100, 0.5: 400, 1.0: 200}[factor],
+            exposure=0.0,
+            tickets=20,
+        )
+        diagnostic["mean_correction_factor"] = factor
+        return (
+            [diagnostic],
+            direct_bankroll.ConditionalPayoutStatistics.empty(),
+            direct_bankroll.ConditionalPayoutTailCalibrator.empty(),
+        )
+
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_selection_walk_forward_for_ridge",
+        fake_selection_walk_forward,
+    )
+    race_keys = [
+        (f"cal-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    probabilities = np.full((4, 120), 1.0 / 120.0)
+
+    selected = direct_bankroll._select_conditional_payout_policy_state(
+        probabilities,
+        probabilities,
+        race_keys,
+        {},
+        selection_days=2,
+        base_policy=standard_direct_policy(),
+        fallback_ridge=10.0,
+        ridge_candidates=(10.0,),
+        correction_candidates=(0.5, 1.0),
+        threshold_candidates=(1.2,),
+        minimum_tickets=0,
+        minimum_hits=0,
+        minimum_winning_days=0,
+        minimum_roi=0.0,
+    )
+
+    assert observed == [0.0, 0.5, 1.0]
+    assert selected[1] == 0.5
+    assert selected[5]["selected_mean_correction_factor"] == 0.5
+
+
 def test_conditional_policy_overrides_legacy_forced_exposure() -> None:
     legacy_policy = standard_direct_policy()
     legacy_policy["min_daily_exposure_fraction"] = 0.4

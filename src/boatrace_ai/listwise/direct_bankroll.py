@@ -294,6 +294,7 @@ def _selection_walk_forward_for_ridge(
     *,
     split: int,
     ridge: float,
+    mean_correction_factor: float,
     threshold_values: tuple[float, ...],
     exposure_values: tuple[float, ...],
     candidate_floor: float,
@@ -344,7 +345,7 @@ def _selection_walk_forward_for_ridge(
             day_market.reshape(-1),
             flat_combinations,
             flat_keys,
-            mean_correction_factor=0.0,
+            mean_correction_factor=mean_correction_factor,
         ).reshape(len(day_keys), len(COMBINATION_LABELS))
         calibrated_flat, tail_eligible_flat = (
             tail_calibrator.calibrate_with_eligibility(
@@ -443,7 +444,7 @@ def _selection_walk_forward_for_ridge(
         diagnostics.append(
             {
                 "ridge": float(ridge),
-                "mean_correction_factor": 0.0,
+                "mean_correction_factor": float(mean_correction_factor),
                 "ev_threshold": float(threshold),
                 "min_daily_exposure_fraction": float(exposure),
                 "tickets": int(totals["tickets"]),
@@ -522,7 +523,16 @@ def _select_conditional_payout_policy_state(
         raise ValueError("calibration probabilities and race keys must align")
     if calibration_market.shape != expected_shape:
         raise ValueError("calibration market probabilities and race keys must align")
-    _ = correction_candidates
+    correction_values = tuple(
+        sorted({0.0, *(float(value) for value in correction_candidates)})
+    )
+    if any(
+        not np.isfinite(value) or value < 0.0 or value > 1.0
+        for value in correction_values
+    ):
+        raise ValueError(
+            "mean correction factors must be between zero and one"
+        )
     split = calibration_policy_split(
         calibration_race_keys, selection_days=selection_days
     )
@@ -569,22 +579,27 @@ def _select_conditional_payout_policy_state(
     for ridge_value in sorted(
         {float(fallback_ridge), *(float(value) for value in ridge_candidates)}
     ):
-        ridge_diagnostics, statistics, tail_calibrator = (
-            _selection_walk_forward_for_ridge(
-                calibration_values,
-                calibration_market,
-                calibration_race_keys,
-                payouts,
-                split=split,
-                ridge=ridge_value,
-                threshold_values=threshold_values,
-                exposure_values=exposure_values,
-                candidate_floor=min(threshold_values),
-                base_policy=base_policy,
+        for correction_value in correction_values:
+            variant_diagnostics, statistics, tail_calibrator = (
+                _selection_walk_forward_for_ridge(
+                    calibration_values,
+                    calibration_market,
+                    calibration_race_keys,
+                    payouts,
+                    split=split,
+                    ridge=ridge_value,
+                    mean_correction_factor=correction_value,
+                    threshold_values=threshold_values,
+                    exposure_values=exposure_values,
+                    candidate_floor=min(threshold_values),
+                    base_policy=base_policy,
+                )
             )
-        )
-        diagnostics.extend(ridge_diagnostics)
-        states[ridge_value] = (statistics, tail_calibrator)
+            diagnostics.extend(variant_diagnostics)
+            states[(ridge_value, correction_value)] = (
+                statistics,
+                tail_calibrator,
+            )
     eligible = [
         row for row in diagnostics
         if int(row["tickets"]) >= minimum_tickets
@@ -602,6 +617,7 @@ def _select_conditional_payout_policy_state(
                 int(row["winning_days"]), int(row["hits"]),
                 -float(row["ev_threshold"]),
                 float(row["ridge"]),
+                -float(row["mean_correction_factor"]),
             ),
         )
         source = "pre_evaluation_adaptive_selection"
@@ -614,8 +630,11 @@ def _select_conditional_payout_policy_state(
         }
         source = "fallback_fixed_policy"
     selected_ridge = float(selected["ridge"])
+    selected_mean_correction = float(selected["mean_correction_factor"])
     selected_exposure = float(selected["min_daily_exposure_fraction"])
-    statistics, tail_calibrator = states[selected_ridge]
+    statistics, tail_calibrator = states[
+        (selected_ridge, selected_mean_correction)
+    ]
     period = {
         "fit_from": str(calibration_race_keys[0][1]),
         "fit_through": str(calibration_race_keys[split - 1][1]),
@@ -627,9 +646,11 @@ def _select_conditional_payout_policy_state(
         "tail_initial_samples": 0,
         "tail_final_samples": int(tail_calibrator.samples),
         "selected_min_daily_exposure_fraction": selected_exposure,
+        "selected_mean_correction_factor": selected_mean_correction,
     }
     return (
-        selected_ridge, 0.0, float(selected["ev_threshold"]), source,
+        selected_ridge, selected_mean_correction,
+        float(selected["ev_threshold"]), source,
         diagnostics, period, statistics, tail_calibrator,
         selected_exposure,
     )
@@ -805,7 +826,7 @@ def simulate_conditional_payout_walk_forward(
             day_market_probabilities.reshape(-1),
             flat_combinations,
             flat_keys,
-            mean_correction_factor=0.0,
+            mean_correction_factor=selected_mean_correction,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
         estimated_odds_flat, tail_eligible_flat = (
             tail_calibrator.calibrate_with_eligibility(
