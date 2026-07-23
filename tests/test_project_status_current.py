@@ -11,9 +11,10 @@ def test_project_status_uses_current_evaluation_state() -> None:
     assert "標準365日v2は7モデル" in STATUS
     assert "完全取得の7月22日136R" in STATUS
     assert "LogLoss 3.85700（市場3.87201）" in STATUS
-    assert "状態: v17稼働中" in STATUS
+    assert "状態: v18稼働中" in STATUS
     assert "レース単位と日clusterの両方" in STATUS
     assert "較正用の過去有効レースと100%完全日の評価母集団を分離" in STATUS
+    assert "レースcluster 95%下限で補正" in STATUS
     assert "M6 資金運用モデル | 未完了/収益ゲート未達" in STATUS
     assert "M7 ソース整理 | 完了/運用監視" in STATUS
     assert "M6-11: T-10→T-5モメンタム" in STATUS
