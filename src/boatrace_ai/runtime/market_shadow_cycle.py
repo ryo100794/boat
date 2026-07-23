@@ -102,6 +102,8 @@ def build_command(args: argparse.Namespace, *, through_date: str) -> list[str]:
         args.calibrator_strategy,
         "--max-snapshot-age-seconds",
         str(args.max_snapshot_age_seconds),
+        "--minimum-day-coverage",
+        str(getattr(args, "minimum_day_coverage", 1.0)),
     ]
     if getattr(args, "scored_cache", None):
         command.extend(["--scored-cache", args.scored_cache])
@@ -202,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--scored-cache")
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
+    parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     parser.add_argument("--interval", type=float, default=3600.0)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--once", action="store_true")

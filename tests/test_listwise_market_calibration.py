@@ -7,6 +7,7 @@ import pytest
 from boatrace_ai.listwise.market_calibration import (
     artifact_drop_feature_groups,
     blend_probabilities,
+    filter_clean_market_days,
     fit_deployment_configuration,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
@@ -275,3 +276,40 @@ def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
         "feature_schema_version": None,
     }
     assert artifact_drop_feature_groups({}) == ()
+
+
+def test_clean_day_gate_excludes_partial_t5_and_missing_payout_days() -> None:
+    races = [
+        {"race_date": "2026-07-20", "race_id": "a"},
+        {"race_date": "2026-07-20", "race_id": "b"},
+        {"race_date": "2026-07-21", "race_id": "c"},
+        {"race_date": "2026-07-22", "race_id": "d"},
+        {"race_date": "2026-07-22", "race_id": "e"},
+    ]
+    targets = {
+        "2026-07-20": {"complete_race_count": 2, "payout_race_count": 2},
+        "2026-07-21": {"complete_race_count": 2, "payout_race_count": 2},
+        "2026-07-22": {"complete_race_count": 2, "payout_race_count": 1},
+    }
+
+    clean, gate = filter_clean_market_days(
+        races,
+        day_targets=targets,
+        minimum_day_coverage=1.0,
+    )
+
+    assert [row["race_id"] for row in clean] == ["a", "b"]
+    assert gate["clean_dates"] == ["2026-07-20"]
+    assert gate["clean_days"] == 1
+    assert gate["excluded_days"] == 2
+    assert gate["days"][1]["coverage"] == 0.5
+    assert gate["days"][2]["payout_complete"] is False
+
+
+def test_clean_day_gate_validates_coverage_threshold() -> None:
+    with pytest.raises(ValueError, match="minimum_day_coverage"):
+        filter_clean_market_days(
+            [],
+            day_targets={},
+            minimum_day_coverage=0.0,
+        )

@@ -62,7 +62,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 14
+MARKET_EVALUATION_VERSION = 15
 SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -1461,6 +1461,100 @@ def odds_data_signature(
     }
 
 
+def complete_race_counts_by_date(
+    conn,
+    *,
+    from_date: str,
+    through_date: str | None,
+) -> dict[str, dict[str, int]]:
+    filters = ["r.race_date >= ?"]
+    params: list[Any] = [from_date]
+    if through_date is not None:
+        filters.append("r.race_date <= ?")
+        params.append(through_date)
+    rows = conn.execute(
+        f"""
+        SELECT
+          r.race_date,
+          COUNT(*) AS complete_race_count,
+          COALESCE(SUM(
+            CASE WHEN EXISTS (
+              SELECT 1
+              FROM payouts p
+              WHERE p.race_id = r.race_id
+                AND p.bet_type = '3連単'
+                AND p.payout_yen IS NOT NULL
+            ) THEN 1 ELSE 0 END
+          ), 0) AS payout_race_count
+        FROM races r
+        WHERE {" AND ".join(filters)}
+          AND r.deadline_at IS NOT NULL
+          AND (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = r.race_id
+              AND rr.rank IS NOT NULL
+          ) = 6
+        GROUP BY r.race_date
+        ORDER BY r.race_date
+        """,
+        params,
+    ).fetchall()
+    return {
+        str(row["race_date"]): {
+            "complete_race_count": int(row["complete_race_count"] or 0),
+            "payout_race_count": int(row["payout_race_count"] or 0),
+        }
+        for row in rows
+    }
+
+
+def filter_clean_market_days(
+    races: list[dict[str, Any]],
+    *,
+    day_targets: dict[str, dict[str, int]],
+    minimum_day_coverage: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    threshold = float(minimum_day_coverage)
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError("minimum_day_coverage must be in (0, 1]")
+    eligible_by_day: dict[str, int] = defaultdict(int)
+    for race in races:
+        eligible_by_day[str(race["race_date"])] += 1
+
+    days = []
+    clean_dates: set[str] = set()
+    for race_date in sorted(day_targets):
+        target = int(day_targets[race_date].get("complete_race_count") or 0)
+        payouts = int(day_targets[race_date].get("payout_race_count") or 0)
+        eligible = int(eligible_by_day.get(race_date) or 0)
+        coverage = eligible / target if target else 0.0
+        payout_complete = target > 0 and payouts == target
+        clean = payout_complete and coverage >= threshold
+        if clean:
+            clean_dates.add(race_date)
+        days.append(
+            {
+                "race_date": race_date,
+                "complete_races": target,
+                "payout_races": payouts,
+                "eligible_t5_races": eligible,
+                "coverage": coverage,
+                "payout_complete": payout_complete,
+                "clean": clean,
+            }
+        )
+    filtered = [race for race in races if str(race["race_date"]) in clean_dates]
+    return filtered, {
+        "minimum_day_coverage": threshold,
+        "requires_complete_payouts": True,
+        "clean_days": len(clean_dates),
+        "excluded_days": len(days) - len(clean_dates),
+        "clean_dates": sorted(clean_dates),
+        "days": days,
+    }
+
+
 def scored_cache_contract(
     *,
     model_path: Path,
@@ -1556,6 +1650,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--scored-cache")
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
+    parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
 
@@ -1572,6 +1667,11 @@ def main(argv: list[str] | None = None) -> int:
     artifact = joblib.load(model_path)
     with connection(args.db) as conn:
         odds_signature = odds_data_signature(
+            conn,
+            from_date=args.from_date,
+            through_date=args.through_date,
+        )
+        day_targets = complete_race_counts_by_date(
             conn,
             from_date=args.from_date,
             through_date=args.through_date,
@@ -1610,8 +1710,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         races, dataset = cached
         cache_source = "disk"
-    result = walk_forward_evaluate(
+    clean_races, coverage_gate = filter_clean_market_days(
         races,
+        day_targets=day_targets,
+        minimum_day_coverage=args.minimum_day_coverage,
+    )
+    result = walk_forward_evaluate(
+        clean_races,
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
@@ -1627,6 +1732,7 @@ def main(argv: list[str] | None = None) -> int:
             "dataset": dataset,
             "evaluation_version": MARKET_EVALUATION_VERSION,
             "odds_data_signature": odds_signature,
+            "coverage_gate": coverage_gate,
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
         }
