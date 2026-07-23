@@ -43,5 +43,6 @@ def test_deployment_cycle_includes_all_production_market_tracks() -> None:
         / "run-boatrace-market-promotion.sh"
     ).read_text(encoding="utf-8")
 
-    assert script.count("--candidate") == 4
+    assert script.count("--candidate") == 5
+    assert "conditional_stagewise_market_shadow.json" in script
     assert "active_market_model.json" in script

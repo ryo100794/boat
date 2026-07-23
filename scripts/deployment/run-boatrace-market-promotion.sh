@@ -19,6 +19,7 @@ exec env \
   --candidate "$APP_ROOT/data/models/listwise_market_calibrated_cutoff_shadow.json" \
   --candidate "$APP_ROOT/data/models/listwise_market_residual_shadow.json" \
   --candidate "$APP_ROOT/data/models/stagewise_blend_market_shadow.json" \
+  --candidate "$APP_ROOT/data/models/conditional_stagewise_market_shadow.json" \
   --output "$APP_ROOT/data/models/active_market_model.json" \
   --state "$APP_ROOT/data/models/market_promotion_cycle_state.json" \
   --interval 3600
