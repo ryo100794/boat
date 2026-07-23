@@ -66,6 +66,16 @@ def test_calibrated_mlp_recency_search_profile() -> None:
     }
 
 
+def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
+    assert TASK_PROFILES["repository_hygiene"] == {
+        "category": "maintenance",
+        "memory_mb": 256,
+        "disk_mb": 256,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+
+
 def test_conditional_payout_tail_profile_and_command_are_fixed(tmp_path) -> None:
     root = tmp_path / "boat"
     python = root / ".venv/bin/python"
@@ -380,6 +390,18 @@ def test_fresh_work_ticket_seed_registers_feature_search_parallelization(
         "workers=1/2で候補順・selected・holdout hash・資金評価が一致し、checkpoint再開可能。Git commit SHAとDBイベントを記録し、リモートが同SHAで稼働する",
     )
     assert expected[6:] == ("in_progress", 35)
+
+
+def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None:
+    keys = {row[0] for row in DEFAULT_WORK_TICKETS}
+    assert {
+        "OPS-GITHUB-SYNC-001",
+        "DOCS-HIERARCHY-001",
+        "MODEL-PAYOUT-001",
+        "MODEL-RECENCY-001",
+        "MODEL-VENUE-001",
+        "MODEL-SEGMENT-001",
+    } <= keys
 
 
 def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:

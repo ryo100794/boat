@@ -49,6 +49,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
 }
 
 
@@ -131,10 +132,20 @@ CREATE TABLE IF NOT EXISTS work_tickets (
   progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
   related_job_id BIGINT REFERENCES model_evaluation_jobs(job_id),
   source TEXT NOT NULL DEFAULT 'user',
+  repository_full_name TEXT NOT NULL DEFAULT '',
+  github_issue_number INTEGER,
+  github_issue_url TEXT NOT NULL DEFAULT '',
+  github_issue_updated_at TIMESTAMPTZ,
+  last_synced_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TIMESTAMPTZ
 );
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS repository_full_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_number INTEGER;
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_updated_at TIMESTAMPTZ;
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS work_ticket_events (
   event_id BIGSERIAL PRIMARY KEY,
   ticket_key TEXT NOT NULL REFERENCES work_tickets(ticket_key),
@@ -147,6 +158,9 @@ CREATE INDEX IF NOT EXISTS idx_model_evaluation_job_runs_job
   ON model_evaluation_job_runs(job_id, attempt DESC);
 CREATE INDEX IF NOT EXISTS idx_work_tickets_status
   ON work_tickets(status, priority DESC, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_tickets_github_issue
+  ON work_tickets(repository_full_name, github_issue_number)
+  WHERE github_issue_number IS NOT NULL AND repository_full_name <> '';
 """
 
 
@@ -756,6 +770,12 @@ def build_command(
             str(python), "-m", "boatrace_ai.maintenance_tasks", "backup-raw",
             "--app-root", str(app_root), "--output", str(output),
         ], output
+    if task_type == "repository_hygiene":
+        return [
+            str(python), "-m", "boatrace_ai.maintenance_tasks",
+            "repository-hygiene", "--app-root", str(app_root),
+            "--output", str(output),
+        ], output
     if task_type == "listwise_newton_refine":
         search_result = app_root / str(params["search_result"])
         if app_root not in search_result.resolve().parents:
@@ -1175,6 +1195,7 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
     schedules = (
         ("gdrive_raw_archive", "raw-data", 600, 90, 1800),
         ("evaluation_aggregate", "all-models", 900, 30, 900),
+        ("repository_hygiene", "repository", 21600, 20, 300),
     )
     epoch = int(now.timestamp())
     for task_type, model_key, interval, priority, timeout in schedules:
@@ -1212,6 +1233,66 @@ DEFAULT_WORK_TICKETS = (
         90,
         "in_progress",
         35,
+    ),
+    (
+        "OPS-GITHUB-SYNC-001",
+        "GitHub IssueとDB懸案事項の同期",
+        "運用基盤",
+        "GitHub Issueとwork_ticketsを安定した対応キーで同期する",
+        "冪等な双方向同期、競合方針、dry-run、監査イベントをテストで確認する",
+        90,
+        "in_progress",
+        40,
+    ),
+    (
+        "DOCS-HIERARCHY-001",
+        "再現可能な文書階層と定期監査",
+        "文書",
+        "READMEを入口に既存文書を粗から詳細へ整理し、話題別文書の乱立を防ぐ",
+        "canonical文書階層を明記し、6時間ごとのhygiene監査結果をDBへ残す",
+        70,
+        "in_progress",
+        20,
+    ),
+    (
+        "MODEL-PAYOUT-001",
+        "条件付き払戻分布の評価",
+        "モデル",
+        "条件付き払戻tail補正を365日holdoutで評価する",
+        "従来モデルと同一母集団でROI・損益・確率指標を比較する",
+        70,
+        "queued",
+        55,
+    ),
+    (
+        "MODEL-RECENCY-001",
+        "時間減衰モデルの評価",
+        "モデル",
+        "過去ログ中心モデルに時間減衰とcalibrationを導入して評価する",
+        "365日holdoutで基準モデルとのpaired比較を記録する",
+        80,
+        "in_progress",
+        50,
+    ),
+    (
+        "MODEL-VENUE-001",
+        "場条件付き着順モデルの評価",
+        "モデル",
+        "場ごとの傾向を過学習させず着順モデルへ反映する",
+        "場別と全体の365日holdout指標および資金評価を記録する",
+        70,
+        "in_progress",
+        30,
+    ),
+    (
+        "MODEL-SEGMENT-001",
+        "弱点セグメントの改善",
+        "モデル",
+        "場・時期・オッズ有無などの弱点区分を抽出して改善候補を評価する",
+        "未使用holdoutで全体性能を損なわず対象区分の改善を確認する",
+        60,
+        "queued",
+        10,
     ),
 )
 
