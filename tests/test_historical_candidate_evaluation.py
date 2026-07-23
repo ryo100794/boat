@@ -383,7 +383,7 @@ def test_historical_queue_command_and_resource_profile(tmp_path: Path) -> None:
     assert output == tmp_path / "data/models/evaluation_queue/job-00000042.json"
     assert TASK_PROFILES["historical_coverage_safe"] == {
         "category": "evaluation",
-        "memory_mb": 16_384,
+        "memory_mb": 4_096,
         "idle_cpu": 15.0,
         "max_parallel": 1,
         "disk_mb": 2_048,
