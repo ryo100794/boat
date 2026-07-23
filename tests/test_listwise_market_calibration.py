@@ -13,6 +13,7 @@ from boatrace_ai.listwise.market_calibration import (
     normalized_market_probabilities,
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
+    registered_evaluation_dates,
     load_scored_cache,
     select_calibrator,
     select_policy,
@@ -342,6 +343,14 @@ def test_partial_t5_days_calibrate_only_clean_evaluation_day() -> None:
     assert result["folds"][0]["evaluation_date"] == "2026-07-22"
     assert result["deployment_configuration"]["training_races"] == 9
     assert max(result["folds"][0]["calibration_dates"]) < "2026-07-22"
+
+
+def test_formal_evaluation_dates_exclude_pre_registration_days() -> None:
+    assert registered_evaluation_dates(
+        ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
+    ) == ["2026-07-24", "2026-07-25"]
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        registered_evaluation_dates(["2026-07-24"], valid_from="bad")
 
 
 def test_clean_day_gate_validates_coverage_threshold() -> None:

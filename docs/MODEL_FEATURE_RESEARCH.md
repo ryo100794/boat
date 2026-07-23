@@ -120,4 +120,17 @@ blocks rather than one venue or one month.
 - The correction can create a wager only when the prior-day policy search also
   passes its ticket-count, profitable-day, ROI, and drawdown gates. The 7/22
   result is development evidence because this correction was specified after
-  that day; 7/23 or later is required for untouched confirmation.
+  that day. Because v18 was fixed during 7/23 racing, 7/24 is the first full day eligible for untouched confirmation.
+
+
+## 2026-07-23 formal release boundary
+
+- Evaluation version 19 sets `2026-07-24` as the first promotion-eligible
+  complete day for the expected-closing-odds policy. The boundary is part of
+  the evaluation output and cannot be inferred from file timestamps later.
+- Clean 7/22 and 7/23 data remain usable for calibration and development
+  diagnostics, but are listed as pre-registration dates and never count toward
+  formal evaluation races, days, confidence intervals, ROI, or profit gates.
+- This intentionally resets formal policy evidence to zero. It prevents a
+  mathematically plausible correction designed after a result from appearing
+  as untouched production evidence.

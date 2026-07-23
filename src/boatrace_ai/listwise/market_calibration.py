@@ -62,7 +62,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 18
+MARKET_EVALUATION_VERSION = 19
+MARKET_FORMAL_EVALUATION_FROM = "2026-07-24"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
@@ -1541,6 +1542,16 @@ def complete_race_counts_by_date(
     }
 
 
+def registered_evaluation_dates(
+    clean_dates: Iterable[str],
+    *,
+    valid_from: str = MARKET_FORMAL_EVALUATION_FROM,
+) -> list[str]:
+    if len(valid_from) != 10:
+        raise ValueError("formal evaluation start must use YYYY-MM-DD")
+    return sorted({str(date) for date in clean_dates if str(date) >= valid_from})
+
+
 def filter_clean_market_days(
     races: list[dict[str, Any]],
     *,
@@ -1751,13 +1762,22 @@ def main(argv: list[str] | None = None) -> int:
         day_targets=day_targets,
         minimum_day_coverage=args.minimum_day_coverage,
     )
+    formal_dates = registered_evaluation_dates(coverage_gate["clean_dates"])
+    formal_races = [
+        race for race in clean_races if str(race["race_date"]) in formal_dates
+    ]
     coverage_gate.update(
         {
             "calibration_eligible_races": len(races),
             "calibration_eligible_days": len(
                 {str(race["race_date"]) for race in races}
             ),
-            "formal_evaluation_eligible_races": len(clean_races),
+            "formal_evaluation_from": MARKET_FORMAL_EVALUATION_FROM,
+            "formal_evaluation_dates": formal_dates,
+            "pre_registration_clean_dates": sorted(
+                set(coverage_gate["clean_dates"]) - set(formal_dates)
+            ),
+            "formal_evaluation_eligible_races": len(formal_races),
         }
     )
     result = walk_forward_evaluate(
@@ -1765,7 +1785,7 @@ def main(argv: list[str] | None = None) -> int:
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
-        evaluation_dates=coverage_gate["clean_dates"],
+        evaluation_dates=formal_dates,
     )
     result.update(
         {
