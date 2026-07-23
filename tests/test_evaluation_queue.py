@@ -841,7 +841,7 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
         "task_type": "listwise_feature_search",
         "category": "evaluation",
         "model_key": "feature-search",
-        "parameters": {"timeout_seconds": 21600},
+        "parameters": {"timeout_seconds": 28800},
         "status": "queued",
         "attempt": 1,
         "max_attempts": 3,

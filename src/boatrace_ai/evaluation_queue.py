@@ -7,6 +7,7 @@ import json
 import math
 import os
 import resource
+import re
 import shutil
 import socket
 import subprocess
@@ -352,6 +353,7 @@ def _timeout_retry_parameters(
     parameters: dict[str, Any],
     *,
     task_type: str,
+    previous_error: str = "",
 ) -> dict[str, Any]:
     updated = dict(parameters)
     default = (
@@ -364,6 +366,12 @@ def _timeout_retry_parameters(
         else 21600
     )
     current = updated.get("timeout_seconds", default)
+    timeout_match = re.search(
+        r"timed out after ([0-9]+(?:\.[0-9]+)?) seconds",
+        previous_error,
+    )
+    if timeout_match is not None:
+        current = float(timeout_match.group(1))
     if isinstance(current, bool) or not isinstance(current, (int, float)):
         return updated
     updated["timeout_seconds"] = min(86400, max(300, int(current)) * 2)
@@ -433,6 +441,7 @@ def claim_job(
         parameters = _timeout_retry_parameters(
             parameters,
             task_type=str(candidate_row["task_type"]),
+            previous_error=previous_error,
         )
     row = conn.execute(
         """
