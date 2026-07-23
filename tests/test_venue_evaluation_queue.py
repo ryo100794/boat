@@ -30,6 +30,10 @@ def test_venue_conditional_order_uses_fixed_model_and_module(tmp_path: Path) -> 
     assert command[baseline_index] == str(
         root / "data/models/standardized_365d_v2/listwise_newton.joblib"
     )
+    legacy_index = command.index("--legacy-evaluation") + 1
+    assert command[legacy_index] == str(
+        root / "data/models/conditional_order_365d.json"
+    )
     assert "--cache-prefix" not in command
     assert command[command.index("--cache-dir") + 1].startswith(
         "/tmp/boatrace-evaluation/job-00000042"

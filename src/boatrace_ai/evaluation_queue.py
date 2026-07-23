@@ -561,11 +561,13 @@ def build_command(
             app_root / "data" / "models" / "standardized_365d_v2"
             / "listwise_newton.joblib"
         )
+        legacy_evaluation = app_root / "data" / "models" / "conditional_order_365d.json"
         cache_dir = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}" / "venue"
         return [
             str(python), "-m", "boatrace_ai.listwise.venue_conditional_order",
             "--db", db,
             "--baseline-model", str(baseline_model),
+            "--legacy-evaluation", str(legacy_evaluation),
             "--cache-dir", str(cache_dir),
             "--training-through", training_through,
             "--evaluation-from", evaluation_from,

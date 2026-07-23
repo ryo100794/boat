@@ -1,15 +1,45 @@
 from __future__ import annotations
 
 import numpy as np
+import json
 
 from boatrace_ai.listwise.conditional_order import conditional_probabilities, identity_model
 from boatrace_ai.listwise.venue_conditional_order import (
+    _load_legacy_bankroll_reference,
     _pack_model,
     objective_gradient,
     venue_conditional_probabilities,
     venue_identity_model,
     venue_indices,
 )
+
+
+def test_legacy_bankroll_reference_requires_identical_daily_period(tmp_path) -> None:
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({
+        "evaluation_from": "2025-07-20",
+        "evaluation_through": "2025-07-21",
+        "conditional_payout_walk_forward": {"bankroll": {
+            "roi": 0.9,
+            "profit_yen": -100,
+            "stake_yen": 1000,
+            "return_yen": 900,
+            "daily": [
+                {"race_date": "2025-07-20", "stake_yen": 500, "return_yen": 400},
+                {"race_date": "2025-07-21", "stake_yen": 500, "return_yen": 500},
+            ],
+        }},
+    }), encoding="utf-8")
+
+    bankroll, daily = _load_legacy_bankroll_reference(
+        path,
+        evaluation_from="2025-07-20",
+        evaluation_through="2025-07-21",
+        expected_dates=["2025-07-20", "2025-07-21"],
+    )
+
+    assert bankroll["roi"] == 0.9
+    assert len(daily) == 2
 
 
 def _sample() -> tuple[np.ndarray, np.ndarray, np.ndarray]:

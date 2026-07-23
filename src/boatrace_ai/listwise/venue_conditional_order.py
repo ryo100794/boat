@@ -50,6 +50,7 @@ MODEL_NAME = "pastlog_venue_conditional_order"
 EPSILON = 1e-15
 VENUE_COUNT = 24
 DEFAULT_VENUE_REGULARIZATIONS = (0.0001, 0.001, 0.01, 0.1)
+LEGACY_PAYOUT_SCHEMA = "conditional_payout_additive_v1"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,33 @@ def venue_indices(race_keys: list[tuple[str, str, str, int]]) -> np.ndarray:
     if np.any(values < 0) or np.any(values >= VENUE_COUNT):
         raise ValueError("venue codes must be between 01 and 24")
     return values
+
+
+def _load_legacy_bankroll_reference(
+    path: Path,
+    *,
+    evaluation_from: str,
+    evaluation_through: str,
+    expected_dates: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        str(payload.get("evaluation_from")) != evaluation_from
+        or str(payload.get("evaluation_through")) != evaluation_through
+    ):
+        raise ValueError("legacy payout reference evaluation period does not match")
+    diagnostic = payload.get("conditional_payout_walk_forward")
+    bankroll = diagnostic.get("bankroll") if isinstance(diagnostic, dict) else None
+    if not isinstance(bankroll, dict) or not isinstance(bankroll.get("daily"), list):
+        raise ValueError("legacy payout reference has no daily bankroll results")
+    daily = bankroll["daily"]
+    dates = [str(row.get("race_date")) for row in daily if isinstance(row, dict)]
+    if dates != expected_dates or len(set(dates)) != len(dates):
+        raise ValueError("legacy payout reference daily dates do not match")
+    for key in ("roi", "profit_yen", "stake_yen", "return_yen"):
+        if not isinstance(bankroll.get(key), (int, float)):
+            raise ValueError(f"legacy payout reference is missing {key}")
+    return bankroll, daily
 
 
 def _pack_model(model: VenueConditionalOrderModel) -> np.ndarray:
@@ -627,6 +655,19 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     bankroll_gate = bankroll_promotion_gate(
         candidate_bankroll, global_bankroll, bankroll_confidence
     )
+    expected_dates = sorted({str(row[1]) for row in evaluation_keys})
+    legacy_bankroll, legacy_daily = _load_legacy_bankroll_reference(
+        Path(args.legacy_evaluation),
+        evaluation_from=args.evaluation_from,
+        evaluation_through=args.evaluation_through,
+        expected_dates=expected_dates,
+    )
+    payout_feature_confidence = bootstrap_daily_bankroll(
+        global_bankroll["daily"], baseline_daily=legacy_daily
+    )
+    payout_feature_gate = bankroll_promotion_gate(
+        global_bankroll, legacy_bankroll, payout_feature_confidence
+    )
     promotion_eligible = bool(structure_gate["pass"] and bankroll_gate["pass"])
     artifact = {
         "model": model,
@@ -667,6 +708,20 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll_confidence": bankroll_confidence,
         "structure_gate": structure_gate,
         "bankroll_gate": bankroll_gate,
+        "payout_feature_comparison": {
+            "candidate_schema": global_bankroll["policy"].get("payout_feature_schema"),
+            "legacy_schema": LEGACY_PAYOUT_SCHEMA,
+            "candidate_bankroll": {
+                key: global_bankroll[key]
+                for key in ("roi", "profit_yen", "stake_yen", "return_yen")
+            },
+            "legacy_bankroll": {
+                key: legacy_bankroll[key]
+                for key in ("roi", "profit_yen", "stake_yen", "return_yen")
+            },
+            "confidence": payout_feature_confidence,
+            "gate": payout_feature_gate,
+        },
         "promotion_eligible": promotion_eligible,
         "roi": candidate_bankroll["roi"],
         "profit_yen": candidate_bankroll["profit_yen"],
@@ -688,6 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-dir", default="/tmp/boatrace-venue-context")
     parser.add_argument("--feature-batch-races", type=int, default=1_000)
     parser.add_argument("--baseline-model", required=True)
+    parser.add_argument("--legacy-evaluation", required=True)
     parser.add_argument("--training-through", required=True)
     parser.add_argument("--evaluation-from", required=True)
     parser.add_argument("--evaluation-through", required=True)
