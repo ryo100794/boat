@@ -1167,9 +1167,12 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         }
     )
     queued_evaluations = _database_evaluation_status(db_path)
-    evaluation_jobs = queued_evaluations["jobs"] + _remote_evaluation_job_summaries(
-        remote_evaluations
-    )
+    legacy_evaluation_jobs = _remote_evaluation_job_summaries(remote_evaluations)
+    if queued_evaluations["jobs"]:
+        legacy_evaluation_jobs = [
+            row for row in legacy_evaluation_jobs if not row.get("running")
+        ]
+    evaluation_jobs = queued_evaluations["jobs"] + legacy_evaluation_jobs
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
