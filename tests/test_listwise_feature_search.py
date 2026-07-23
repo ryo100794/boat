@@ -361,3 +361,41 @@ def test_variant_reuses_dataset_and_scaler_and_parallelizes_only_missing_candida
         ("top3_pl", 0.1),
         ("top3_pl", 0.2),
     ]
+
+
+def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None:
+    args = SimpleNamespace(
+        as_of_date="2026-07-23",
+        n_features=4096,
+        batch_races=1000,
+        epochs=2,
+        learning_rate=0.02,
+    )
+    race_keys = [
+        ("race-a", "2026-07-22", "01", 1),
+        ("race-b", "2026-07-23", "02", 2),
+    ]
+    signature = _checkpoint_signature(
+        args=args,
+        race_keys=race_keys,
+        train_end=1,
+        selection_end=2,
+        targets=("winner", "top3_pl"),
+        alphas=(0.00001, 0.0001),
+    )
+
+    assert json.dumps(signature, separators=(",", ":")) == (
+        '{"checkpoint_version":1,"cache_version":2,'
+        '"feature_schema_version":"pastlog-listwise-hashed-v2-series-missing-safe",'
+        '"as_of_date":"2026-07-23","race_count":2,'
+        '"race_universe_sha256":'
+        '"a5d59ddbba062a4884a2242737fca8bc14d2858a52d64cb1af19dddb3bd6bd23",'
+        '"train_end":1,"selection_end":2,"n_features":4096,"batch_races":1000,'
+        '"epochs":2,"learning_rate":0.02,"targets":["winner","top3_pl"],'
+        '"alphas":[1e-05,0.0001],"feature_variants":[["full",[]],'
+        '["drop_base_pastlog",["base_pastlog"]],'
+        '["drop_research_correlates",["research_correlates"]],'
+        '["drop_series_cached",["series_cached"]],'
+        '["drop_series_relative",["series_relative"]],'
+        '["drop_rolling_history",["rolling_history"]]]}'
+    )

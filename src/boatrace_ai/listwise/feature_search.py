@@ -43,6 +43,9 @@ from .validation import default_policy, evaluate_bankroll_fold
 from ..standard_evaluation import race_set_sha256
 
 
+FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
+
+
 def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -> int:
     index = min(len(race_keys) - 1, max(1, int(approximate)))
     current_date = race_keys[index][1]
@@ -55,6 +58,12 @@ def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -
 
 def feature_variants() -> list[tuple[str, tuple[str, ...]]]:
     return [("full", ())] + [(f"drop_{group}", (group,)) for group in FEATURE_GROUPS]
+
+
+def _resolved_variants(
+    variants: FeatureVariants | None,
+) -> FeatureVariants:
+    return tuple(feature_variants()) if variants is None else variants
 
 
 def load_variant_dataset(
@@ -139,9 +148,14 @@ def load_variant_dataset_with_cache(
     return dataset, source, primary_prefix if write_cache else None
 
 
-def cleanup_selected_cache_family(cache_dir: Path, *, n_features: int) -> None:
+def cleanup_selected_cache_family(
+    cache_dir: Path,
+    *,
+    n_features: int,
+    variants: FeatureVariants | None = None,
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    for variant_name, _dropped in feature_variants():
+    for variant_name, _dropped in _resolved_variants(variants):
         prefix = variant_cache_prefix(
             cache_dir,
             n_features=n_features,
@@ -154,9 +168,14 @@ def cleanup_selected_cache_family(cache_dir: Path, *, n_features: int) -> None:
                 path.unlink()
 
 
-def selected_cache_candidates(cache_dir: Path, *, n_features: int) -> list[Path]:
+def selected_cache_candidates(
+    cache_dir: Path,
+    *,
+    n_features: int,
+    variants: FeatureVariants | None = None,
+) -> list[Path]:
     candidates: list[Path] = []
-    for variant_name, _dropped in feature_variants():
+    for variant_name, _dropped in _resolved_variants(variants):
         prefix = variant_cache_prefix(
             cache_dir,
             n_features=n_features,
@@ -179,6 +198,7 @@ def _checkpoint_signature(
     selection_end: int,
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
+    variants: FeatureVariants | None = None,
 ) -> dict[str, Any]:
     return {
         "checkpoint_version": 1,
@@ -196,7 +216,7 @@ def _checkpoint_signature(
         "targets": list(targets),
         "alphas": list(alphas),
         "feature_variants": [
-            [name, list(dropped)] for name, dropped in feature_variants()
+            [name, list(dropped)] for name, dropped in _resolved_variants(variants)
         ],
     }
 
@@ -275,10 +295,11 @@ def _ordered_rows(
     *,
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
+    variants: FeatureVariants | None = None,
 ) -> list[dict[str, Any]]:
     return [
         completed[_candidate_key(variant_name, target, alpha)]
-        for variant_name, _dropped in feature_variants()
+        for variant_name, _dropped in _resolved_variants(variants)
         for target in targets
         for alpha in alphas
         if _candidate_key(variant_name, target, alpha) in completed
@@ -394,15 +415,27 @@ def _checkpoint_payload(
     *,
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
+    variants: FeatureVariants | None = None,
 ) -> dict[str, Any]:
     return {
         "signature": signature,
-        "search_results": _ordered_rows(completed, targets=targets, alphas=alphas),
+        "search_results": _ordered_rows(
+            completed,
+            targets=targets,
+            alphas=alphas,
+            variants=variants,
+        ),
     }
 
 
-def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
+def search(
+    conn,
+    *,
+    args: argparse.Namespace,
+    variants: FeatureVariants | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
+    run_variants = _resolved_variants(variants)
     race_keys = [
         row
         for row in load_complete_race_ids(conn)
@@ -446,17 +479,24 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         selection_end=selection_end,
         targets=targets,
         alphas=alphas,
+        variants=run_variants,
     )
     completed = _load_checkpoint(checkpoint_path, checkpoint_signature)
     if completed:
         print(json.dumps({"checkpoint_resumed_candidates": len(completed)}), flush=True)
-    resumed_rows = _ordered_rows(completed, targets=targets, alphas=alphas)
+    resumed_rows = _ordered_rows(
+        completed,
+        targets=targets,
+        alphas=alphas,
+        variants=run_variants,
+    )
     resumed_selected = _selected_row(resumed_rows) if resumed_rows else None
     active_cache_variant: str | None = None
     if selected_cache_dir is not None:
         candidates = selected_cache_candidates(
             selected_cache_dir,
             n_features=args.n_features,
+            variants=run_variants,
         )
         expected_prefix = (
             variant_cache_prefix(
@@ -473,10 +513,11 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             cleanup_selected_cache_family(
                 selected_cache_dir,
                 n_features=args.n_features,
+                variants=run_variants,
             )
 
     requests: list[dict[str, Any]] = []
-    for variant_name, dropped in feature_variants():
+    for variant_name, dropped in run_variants:
         candidate_keys = [
             _candidate_key(variant_name, target, alpha)
             for target in targets
@@ -534,6 +575,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                     completed,
                     targets=targets,
                     alphas=alphas,
+                    variants=run_variants,
                 ),
             )
 
@@ -564,10 +606,16 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                     completed,
                     targets=targets,
                     alphas=alphas,
+                    variants=run_variants,
                 ),
             )
             current_selected = _selected_row(
-                _ordered_rows(completed, targets=targets, alphas=alphas)
+                _ordered_rows(
+                    completed,
+                    targets=targets,
+                    alphas=alphas,
+                    variants=run_variants,
+                )
             )
             if (
                 selected_cache_dir is not None
@@ -577,6 +625,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                 cleanup_selected_cache_family(
                     selected_cache_dir,
                     n_features=args.n_features,
+                    variants=run_variants,
                 )
                 save_prefix = variant_cache_prefix(
                     selected_cache_dir,
@@ -594,8 +643,13 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                 del dataset
             gc.collect()
 
-    search_rows = _ordered_rows(completed, targets=targets, alphas=alphas)
-    expected_candidates = len(feature_variants()) * len(targets) * len(alphas)
+    search_rows = _ordered_rows(
+        completed,
+        targets=targets,
+        alphas=alphas,
+        variants=run_variants,
+    )
+    expected_candidates = len(run_variants) * len(targets) * len(alphas)
     if len(search_rows) != expected_candidates:
         raise RuntimeError(
             f"incomplete feature search: {len(search_rows)} of {expected_candidates}"
@@ -611,6 +665,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         candidates = selected_cache_candidates(
             selected_cache_dir,
             n_features=args.n_features,
+            variants=run_variants,
         )
         if candidates != [selected_cache_prefix]:
             raise RuntimeError("selected cache directory must contain exactly one candidate")
@@ -697,7 +752,7 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "n_features": args.n_features,
         "hashed_cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
-        "feature_variants": [name for name, _drops in feature_variants()],
+        "feature_variants": [name for name, _drops in run_variants],
         "teacher_targets": list(targets),
         "alphas": list(alphas),
         "selection_metric": "minimum top3 PL ranking log loss; entry log loss and top5 as tie breaks",
