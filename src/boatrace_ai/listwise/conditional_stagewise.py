@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 
 from ..calibrated_shadow_model import matrix_batch_ranges
 from ..db import connection, init_db
+from ..feature_schema import LEGACY_FEATURE_SCHEMA_VERSION
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .model import ListwiseLinearModel, fit_scaler, stable_softmax
@@ -275,6 +276,10 @@ def _load_dataset(conn, cache_prefix: Path) -> tuple[HashedRaceDataset, dict[str
         n_features=n_features,
         drop_feature_groups=dropped,
         hasher=hasher,
+        feature_schema_version=str(
+            manifest.get("feature_schema_version")
+            or LEGACY_FEATURE_SCHEMA_VERSION
+        ),
     )
     if dataset is None:
         raise ValueError("hashed feature cache failed contract or integrity validation")
