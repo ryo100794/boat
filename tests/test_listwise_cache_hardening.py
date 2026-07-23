@@ -30,6 +30,7 @@ from boatrace_ai.listwise.newton_refine import (
     build_parser,
     dump_joblib_atomic,
     load_resume_model_artifact,
+    search_race_date_through,
     validate_search_race_universe,
 )
 from boatrace_ai.standard_evaluation import race_set_sha256
@@ -144,6 +145,18 @@ def test_checkpoint_requires_exact_signature(tmp_path: Path) -> None:
 
     changed = {**signature, "race_universe_sha256": "0" * 64}
     assert _load_checkpoint(path, changed) == {}
+
+
+def test_newton_recovers_frozen_race_date_from_current_and_legacy_search() -> None:
+    assert search_race_date_through({"race_date_through": "2026-07-22"}) == "2026-07-22"
+    assert search_race_date_through({
+        "daily": [
+            {"race_date": "2026-07-20"},
+            {"race_date": "2026-07-22"},
+            {"race_date": "2026-07-21"},
+        ]
+    }) == "2026-07-22"
+    assert search_race_date_through({}) is None
 
 
 def test_newton_rejects_stale_or_legacy_search_race_universe() -> None:

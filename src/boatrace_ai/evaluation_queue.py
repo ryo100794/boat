@@ -529,6 +529,7 @@ def build_command(
             "0.0001,0.001",
         }:
             raise ValueError("unsupported alphas")
+        evaluation_date = _date(params, "evaluation_date")
         cache_root = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
         search_cache = cache_root / "search"
         selected_cache = (
@@ -542,6 +543,7 @@ def build_command(
             "--cache-dir", str(search_cache),
             "--cache-write-mode", "never",
             "--selected-cache-dir", str(selected_cache),
+            "--as-of-date", evaluation_date,
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),
             "--epochs", str(epochs),

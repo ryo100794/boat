@@ -59,7 +59,10 @@ def test_task_parameters_cannot_select_arbitrary_command(tmp_path) -> None:
 def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
     with pytest.raises(ValueError, match="unsupported targets"):
         build_command(
-            _job("listwise_feature_search", {"targets": "future_result"}),
+            _job(
+                "listwise_feature_search",
+                {"targets": "future_result", "evaluation_date": "2026-07-22"},
+            ),
             app_root=tmp_path,
             python=tmp_path / "python",
             db="postgresql://test",

@@ -209,11 +209,32 @@ def dump_joblib_atomic(path: Path, payload: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def search_race_date_through(search_result: dict[str, Any]) -> str | None:
+    recorded = search_result.get("race_date_through")
+    if recorded:
+        return str(recorded)
+    daily = search_result.get("daily")
+    if isinstance(daily, list):
+        dates = [
+            str(row["race_date"])
+            for row in daily
+            if isinstance(row, dict) and row.get("race_date")
+        ]
+        if dates:
+            return max(dates)
+    return None
+
+
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     search_result = json.loads(Path(args.search_result).read_text(encoding="utf-8"))
     selected = search_result["selected"]
-    race_keys = load_complete_race_ids(conn)
+    race_date_through = search_race_date_through(search_result)
+    race_keys = [
+        row
+        for row in load_complete_race_ids(conn)
+        if race_date_through is None or str(row[1]) <= race_date_through
+    ]
     validate_search_race_universe(
         search_result,
         race_keys,

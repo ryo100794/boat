@@ -9,7 +9,7 @@ def test_feature_search_does_not_persist_each_large_variant_cache(tmp_path: Path
             "job_id": 8,
             "task_type": "listwise_feature_search",
             "model_key": "feature-search",
-            "parameters": {},
+            "parameters": {"evaluation_date": "2026-07-22"},
         },
         app_root=tmp_path,
         python=tmp_path / ".venv/bin/python",
@@ -17,6 +17,7 @@ def test_feature_search_does_not_persist_each_large_variant_cache(tmp_path: Path
     )
 
     assert command[command.index("--cache-write-mode") + 1] == "never"
+    assert command[command.index("--as-of-date") + 1] == "2026-07-22"
     assert "--selected-cache-dir" in command
     selected_cache = Path(command[command.index("--selected-cache-dir") + 1])
     assert selected_cache == (

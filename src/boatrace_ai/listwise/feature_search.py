@@ -183,6 +183,7 @@ def _checkpoint_signature(
         "checkpoint_version": 1,
         "cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "as_of_date": getattr(args, "as_of_date", None),
         "race_count": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
         "train_end": train_end,
@@ -270,7 +271,13 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
 
 def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
-    race_keys = load_complete_race_ids(conn)
+    race_keys = [
+        row
+        for row in load_complete_race_ids(conn)
+        if not args.as_of_date or str(row[1]) <= args.as_of_date
+    ]
+    if not race_keys:
+        raise ValueError("no complete races exist on or before as-of date")
     train_end = day_boundary(race_keys, int(len(race_keys) * args.train_fraction))
     selection_end = day_boundary(race_keys, int(len(race_keys) * args.selection_fraction))
     if selection_end <= train_end:
@@ -454,6 +461,9 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "comparison_role": "feature_teacher_selection_then_untouched_holdout",
         "races": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
+        "as_of_date": args.as_of_date,
+        "race_date_from": str(race_keys[0][1]),
+        "race_date_through": str(race_keys[-1][1]),
         "train_races": train_end,
         "selection_races": selection_end - train_end,
         "holdout_races": len(race_keys) - selection_end,
@@ -522,6 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--selected-cache-dir")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--as-of-date")
     parser.add_argument("--n-features", type=int, default=1 << 12)
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--epochs", type=int, default=2)
