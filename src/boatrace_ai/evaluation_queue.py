@@ -167,8 +167,14 @@ def retry_pending_jobs(
     conn: Any,
     *,
     include_failed: bool = False,
+    include_running: bool = False,
 ) -> int:
-    statuses = "('queued', 'failed')" if include_failed else "('queued')"
+    statuses = ["queued"]
+    if include_failed:
+        statuses.append("failed")
+    if include_running:
+        statuses.append("running")
+    status_sql = "(" + ",".join(f"'{value}'" for value in statuses) + ")"
     reset = "attempt = 0," if include_failed else ""
     attempt_filter = "" if include_failed else "AND attempt < max_attempts"
     rows = conn.execute(
@@ -177,9 +183,24 @@ def retry_pending_jobs(
         SET status = 'queued', {reset}
             available_at = CURRENT_TIMESTAMP, completed_at = NULL,
             updated_at = CURRENT_TIMESTAMP
-        WHERE status IN {statuses} {attempt_filter}
+        WHERE status IN {status_sql} {attempt_filter}
         RETURNING job_id
         """
+    ).fetchall()
+    return len(rows)
+
+
+def recover_worker_job(conn: Any, *, worker_id: str) -> int:
+    rows = conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET status = 'queued', available_at = CURRENT_TIMESTAMP,
+            worker_id = NULL, locked_at = NULL, updated_at = CURRENT_TIMESTAMP,
+            error = COALESCE(error, 'worker restarted before completion update')
+        WHERE status = 'running' AND worker_id = ?
+        RETURNING job_id
+        """,
+        (worker_id,),
     ).fetchall()
     return len(rows)
 
@@ -637,6 +658,7 @@ def run_worker(args: argparse.Namespace) -> int:
     is_leader = args.worker_id is None or str(args.worker_id).endswith("-00")
     with connection(args.db) as conn:
         ensure_schema(conn)
+        recover_worker_job(conn, worker_id=worker_id)
     while True:
         try:
             with connection(args.db) as conn:
@@ -701,6 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--evaluation-date", required=True)
         if name == "retry":
             command.add_argument("--include-failed", action="store_true")
+            command.add_argument("--include-running", action="store_true")
         if name == "run":
             command.add_argument("--app-root", default="/workspace/boat")
             command.add_argument("--python", default="/workspace/boat/.venv/bin/python")
@@ -745,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
                         "requeued": retry_pending_jobs(
                             conn,
                             include_failed=args.include_failed,
+                            include_running=args.include_running,
                         )
                     }
                 )
