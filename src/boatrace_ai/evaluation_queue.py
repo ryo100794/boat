@@ -661,6 +661,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "probability_roi_delta_above_zero",
             ):
                 summary[f"payout_feature_{key}"] = confidence.get(key)
+        gate = payout_comparison.get("gate")
+        if isinstance(gate, dict):
+            summary["payout_feature_promotion_eligible"] = gate.get("pass")
+            for key in (
+                "roi_ci95_lower",
+                "roi_delta_ci95_lower",
+                "roi_pass",
+                "profit_pass",
+                "baseline_improved",
+            ):
+                summary[f"payout_feature_gate_{key}"] = gate.get(key)
         summary["payout_feature_candidate_schema"] = payout_comparison.get(
             "candidate_schema"
         )
@@ -675,6 +686,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     if summary.get("promotion_eligible") is True:
         return "promotion_candidate"
+    if summary.get("payout_feature_promotion_eligible") is True:
+        return "payout_feature_promotion_candidate"
     if summary.get("incremental_confidence_pass") is True:
         return "confirm_on_new_holdout"
     roi = summary.get("roi")

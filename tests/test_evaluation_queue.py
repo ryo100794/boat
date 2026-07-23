@@ -103,6 +103,14 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
                 "roi_delta_ci95_upper": 0.24,
                 "probability_roi_delta_above_zero": 0.99,
             },
+            "gate": {
+                "pass": True,
+                "roi_ci95_lower": 1.01,
+                "roi_delta_ci95_lower": 0.02,
+                "roi_pass": True,
+                "profit_pass": True,
+                "baseline_improved": True,
+            },
         },
     })
 
@@ -110,7 +118,13 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     assert summary["payout_feature_legacy_roi"] == 0.90
     assert summary["payout_feature_roi_delta_ci95_lower"] == 0.02
     assert summary["payout_feature_probability_roi_delta_above_zero"] == 0.99
+    assert summary["payout_feature_promotion_eligible"] is True
+    assert summary["payout_feature_gate_roi_ci95_lower"] == 1.01
     assert summary["payout_feature_candidate_schema"].endswith("v2")
+    assert (
+        result_decision("venue_conditional_order", summary)
+        == "payout_feature_promotion_candidate"
+    )
 
 
 def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
