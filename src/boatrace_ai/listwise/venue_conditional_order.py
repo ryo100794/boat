@@ -827,7 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-races", type=int, default=4_000)
     parser.add_argument("--payout-ridge", type=float, default=10.0)
     parser.add_argument("--payout-ridges", type=float, nargs="+", default=[1.0, 10.0, 100.0])
-    parser.add_argument("--payout-mean-corrections", type=float, nargs="+", default=[0.0, 0.5, 1.0])
+    parser.add_argument("--payout-mean-corrections", type=float, nargs="+", default=[0.0])
     parser.add_argument("--payout-threshold-candidates", type=float, nargs="+", default=[1.05, 1.10, 1.20])
     parser.add_argument("--payout-policy-selection-days", type=int, default=30)
     parser.add_argument("--promote-legacy-cache", action="store_true")

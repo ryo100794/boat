@@ -13,6 +13,12 @@ from boatrace_ai.evaluation_queue import (
     seed_default_jobs,
     summarize_result,
 )
+from boatrace_ai.listwise.conditional_order import (
+    build_parser as conditional_parser,
+)
+from boatrace_ai.listwise.venue_conditional_order import (
+    build_parser as venue_conditional_parser,
+)
 
 
 def _job(task_type: str, parameters: dict, *, job_id: int = 7) -> dict:
@@ -55,6 +61,162 @@ def test_calibrated_mlp_recency_search_profile() -> None:
         "idle_cpu": 15.0,
         "max_parallel": 1,
     }
+
+
+def test_conditional_payout_tail_profile_and_command_are_fixed(tmp_path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job(
+            "conditional_payout_tail",
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2026-07-19",
+                "timeout_seconds": 3600,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    result = root / "data/models/evaluation_queue/job-00000007.json"
+    assert TASK_PROFILES["conditional_payout_tail"] == {
+        "category": "evaluation",
+        "memory_mb": 12288,
+        "disk_mb": 2048,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
+    assert command == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.conditional_order",
+        "--db",
+        "postgresql://test",
+        "--cache-prefix",
+        str(
+            root
+            / "data/models/standardized_365d_v2/listwise_search_cache"
+            / "listwise_search_4096_drop_research_correlates"
+        ),
+        "--baseline-model",
+        str(root / "data/models/standardized_365d_v2/listwise_newton.joblib"),
+        "--training-through",
+        "2025-07-19",
+        "--evaluation-from",
+        "2025-07-20",
+        "--evaluation-through",
+        "2026-07-19",
+        "--model-output",
+        str(result.with_suffix(".joblib")),
+        "--output",
+        str(result),
+        "--validation-days",
+        "90",
+        "--batch-races",
+        "4000",
+        "--payout-mean-corrections",
+        "0.0",
+        "--promote-legacy-cache",
+    ]
+    assert output == result
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-21",
+                "evaluation_through": "2026-07-19",
+            },
+            "adjacent",
+        ),
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2025-07-19",
+            },
+            "chronological",
+        ),
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2026-07-18",
+            },
+            "exactly 365 days",
+        ),
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2026-07-19",
+                "timeout_seconds": 299,
+            },
+            "timeout_seconds",
+        ),
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2026-07-19",
+                "command": "rm -rf /",
+            },
+            "unsupported",
+        ),
+        (
+            {
+                "training_through": "2025-07-19",
+                "evaluation_from": "2025-07-20",
+                "evaluation_through": "2026-07-19",
+                "cache_prefix": "/tmp/untrusted",
+            },
+            "unsupported",
+        ),
+    ],
+)
+def test_conditional_payout_tail_rejects_invalid_parameters(
+    tmp_path, parameters, message
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job("conditional_payout_tail", parameters),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_conditional_payout_mean_correction_defaults_disable_double_correction() -> None:
+    conditional = conditional_parser().parse_args(
+        [
+            "--cache-prefix", "cache",
+            "--baseline-model", "baseline.joblib",
+            "--training-through", "2025-07-19",
+            "--evaluation-from", "2025-07-20",
+            "--evaluation-through", "2026-07-19",
+            "--model-output", "model.joblib",
+            "--output", "result.json",
+        ]
+    )
+    venue = venue_conditional_parser().parse_args(
+        [
+            "--baseline-model", "baseline.joblib",
+            "--training-through", "2025-07-19",
+            "--evaluation-from", "2025-07-20",
+            "--evaluation-through", "2026-07-19",
+            "--model-output", "model.joblib",
+            "--output", "result.json",
+        ]
+    )
+
+    assert conditional.payout_mean_corrections == [0.0]
+    assert venue.payout_mean_corrections == [0.0]
 
 
 def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
@@ -216,6 +378,49 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     assert (
         result_decision("venue_conditional_order", summary)
         == "payout_feature_promotion_candidate"
+    )
+
+
+def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> None:
+    summary = summarize_result({
+        "promotion_eligible": True,
+        "roi": 1.50,
+        "profit_yen": 50_000,
+        "conditional_payout_walk_forward": {
+            "promotion_eligible": False,
+            "bankroll": {
+                "roi": 1.08,
+                "profit_yen": 8_000,
+                "stake_yen": 100_000,
+                "policy": {
+                    "payout_tail_schema": "conditional_payout_tail_v1",
+                    "payout_feature_schema": "conditional_payout_interactions_v2",
+                },
+            },
+            "bankroll_confidence": {
+                "roi_ci95_lower": 1.01,
+                "probability_roi_above_one": 0.98,
+            },
+            "diagnostic_gate": {
+                "pass": True,
+                "roi_pass": True,
+            },
+        },
+    })
+
+    assert summary["payout_feature_candidate_roi"] == 1.08
+    assert summary["payout_feature_candidate_profit_yen"] == 8_000
+    assert summary["payout_feature_candidate_stake_yen"] == 100_000
+    assert (
+        summary["payout_feature_candidate_schema"]
+        == "conditional_payout_tail_v1"
+    )
+    assert summary["payout_feature_roi_ci95_lower"] == 1.01
+    assert summary["payout_feature_gate_pass"] is True
+    assert summary["payout_feature_promotion_eligible"] is False
+    assert (
+        result_decision("conditional_payout_tail", summary)
+        == "reject_or_research_only"
     )
 
 

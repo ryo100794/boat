@@ -782,7 +782,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--payout-mean-corrections",
         type=float,
         nargs="+",
-        default=[0.0, 0.5, 1.0],
+        default=[0.0],
     )
     parser.add_argument(
         "--payout-threshold-candidates",

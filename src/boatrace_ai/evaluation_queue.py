@@ -45,6 +45,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -634,6 +635,67 @@ def build_command(
             "--daily-budget-yen", "10000",
             "--ev-threshold", str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
         ], output
+    if task_type == "conditional_payout_tail":
+        allowed = {
+            "training_through", "evaluation_from", "evaluation_through",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported conditional_payout_tail parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        required = allowed - {"timeout_seconds"}
+        missing = required - set(params)
+        if missing:
+            raise ValueError(
+                "missing conditional_payout_tail parameters: "
+                + ", ".join(sorted(missing))
+            )
+        training_through = _date(params, "training_through")
+        evaluation_from = _date(params, "evaluation_from")
+        evaluation_through = _date(params, "evaluation_through")
+        training_date = datetime.strptime(training_through, "%Y-%m-%d").date()
+        evaluation_start = datetime.strptime(evaluation_from, "%Y-%m-%d").date()
+        evaluation_end = datetime.strptime(evaluation_through, "%Y-%m-%d").date()
+        if training_date + timedelta(days=1) != evaluation_start:
+            raise ValueError(
+                "conditional payout training and evaluation ranges must be adjacent"
+            )
+        if evaluation_start > evaluation_end:
+            raise ValueError(
+                "conditional payout evaluation dates must be chronological"
+            )
+        if evaluation_end - evaluation_start != timedelta(days=364):
+            raise ValueError(
+                "conditional payout evaluation range must be exactly 365 days"
+            )
+        _integer(params, "timeout_seconds", 21600, 300, 86400)
+        cache_prefix = (
+            app_root / "data" / "models" / "standardized_365d_v2"
+            / "listwise_search_cache"
+            / "listwise_search_4096_drop_research_correlates"
+        )
+        baseline_model = (
+            app_root / "data" / "models" / "standardized_365d_v2"
+            / "listwise_newton.joblib"
+        )
+        return [
+            str(python), "-m", "boatrace_ai.listwise.conditional_order",
+            "--db", db,
+            "--cache-prefix", str(cache_prefix),
+            "--baseline-model", str(baseline_model),
+            "--training-through", training_through,
+            "--evaluation-from", evaluation_from,
+            "--evaluation-through", evaluation_through,
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--output", str(output),
+            "--validation-days", "90",
+            "--batch-races", "4000",
+            "--payout-mean-corrections", "0.0",
+            "--promote-legacy-cache",
+        ], output
     if task_type == "venue_conditional_order":
         training_through = _date(params, "training_through")
         evaluation_from = _date(params, "evaluation_from")
@@ -727,6 +789,37 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    payout_walk_forward = payload.get("conditional_payout_walk_forward")
+    if isinstance(payout_walk_forward, dict):
+        bankroll = payout_walk_forward.get("bankroll")
+        if isinstance(bankroll, dict):
+            summary["payout_feature_candidate_roi"] = bankroll.get("roi")
+            summary["payout_feature_candidate_profit_yen"] = bankroll.get(
+                "profit_yen"
+            )
+            summary["payout_feature_candidate_stake_yen"] = bankroll.get(
+                "stake_yen"
+            )
+            policy = bankroll.get("policy")
+            if isinstance(policy, dict):
+                summary["payout_feature_candidate_schema"] = policy.get(
+                    "payout_tail_schema"
+                ) or policy.get(
+                    "payout_feature_schema"
+                )
+        confidence = payout_walk_forward.get("bankroll_confidence")
+        if isinstance(confidence, dict):
+            for key, value in confidence.items():
+                if not isinstance(value, (dict, list)):
+                    summary[f"payout_feature_{key}"] = value
+        gate = payout_walk_forward.get("diagnostic_gate")
+        if isinstance(gate, dict):
+            for key, value in gate.items():
+                if not isinstance(value, (dict, list)):
+                    summary[f"payout_feature_gate_{key}"] = value
+        summary["payout_feature_promotion_eligible"] = (
+            payout_walk_forward.get("promotion_eligible")
+        )
     payout_comparison = payload.get("payout_feature_comparison")
     if isinstance(payout_comparison, dict):
         candidate = payout_comparison.get("candidate_bankroll")
@@ -767,6 +860,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
+    if task_type == "conditional_payout_tail":
+        if summary.get("payout_feature_promotion_eligible") is True:
+            return "payout_feature_promotion_candidate"
+        return "reject_or_research_only"
     if summary.get("promotion_eligible") is True:
         return "promotion_candidate"
     if summary.get("payout_feature_promotion_eligible") is True:
