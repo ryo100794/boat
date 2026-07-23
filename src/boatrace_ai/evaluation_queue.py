@@ -163,12 +163,21 @@ def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
     return len(cursor.fetchall())
 
 
-def retry_pending_jobs(conn: Any) -> int:
+def retry_pending_jobs(
+    conn: Any,
+    *,
+    include_failed: bool = False,
+) -> int:
+    statuses = "('queued', 'failed')" if include_failed else "('queued')"
+    reset = "attempt = 0," if include_failed else ""
+    attempt_filter = "" if include_failed else "AND attempt < max_attempts"
     rows = conn.execute(
-        """
+        f"""
         UPDATE model_evaluation_jobs
-        SET available_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-        WHERE status = 'queued' AND attempt < max_attempts
+        SET status = 'queued', {reset}
+            available_at = CURRENT_TIMESTAMP, completed_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status IN {statuses} {attempt_filter}
         RETURNING job_id
         """
     ).fetchall()
@@ -495,6 +504,8 @@ def execute_job(
             evaluation_date + timedelta(days=1)
         ).isoformat()
         env["BOATRACE_EVAL_RESUME_COMPLETED"] = "1"
+        env["BOATRACE_EVAL_VM_LIMIT_KB"] = "0"
+        env["BOATRACE_DB"] = db
     timeout = _integer(job.get("parameters") or {}, "timeout_seconds", 21600, 300, 86400)
     stop_heartbeat = threading.Event()
     heartbeat = threading.Thread(
@@ -615,7 +626,9 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
 def run_worker(args: argparse.Namespace) -> int:
     worker_id = args.worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     app_root = Path(args.app_root).resolve()
-    python = Path(args.python).resolve()
+    python = Path(args.python)
+    if not python.is_absolute():
+        python = (app_root / python).absolute()
     last_seed = 0.0
     while True:
         try:
@@ -677,6 +690,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
             command.add_argument("--evaluation-date", required=True)
+        if name == "retry":
+            command.add_argument("--include-failed", action="store_true")
         if name == "run":
             command.add_argument("--app-root", default="/workspace/boat")
             command.add_argument("--python", default="/workspace/boat/.venv/bin/python")
@@ -715,7 +730,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "seed":
             print(_json({"inserted": seed_default_jobs(conn, evaluation_date=args.evaluation_date)}))
         elif args.command == "retry":
-            print(_json({"requeued": retry_pending_jobs(conn)}))
+            print(
+                _json(
+                    {
+                        "requeued": retry_pending_jobs(
+                            conn,
+                            include_failed=args.include_failed,
+                        )
+                    }
+                )
+            )
         elif args.command == "status":
             print(json.dumps(status_rows(conn), ensure_ascii=False, indent=2, default=str))
     return 0
