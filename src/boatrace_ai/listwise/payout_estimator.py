@@ -131,12 +131,15 @@ class ConditionalPayoutTailCalibrator:
     fallback_factor: float = 0.5
     confidence_z: float = ONE_SIDED_95_Z
     minimum_factor: float = TAIL_RATIO_MIN
+    minimum_global_samples: int = 20
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.prior_samples) or self.prior_samples <= 0.0:
             raise ValueError("tail calibration prior samples must be finite and positive")
         if self.minimum_bin_samples < 1:
             raise ValueError("tail calibration minimum bin samples must be positive")
+        if self.minimum_global_samples < 1:
+            raise ValueError("tail calibration minimum global samples must be positive")
         if (
             not np.isfinite(self.fallback_factor)
             or self.fallback_factor <= 0.0
@@ -218,6 +221,30 @@ class ConditionalPayoutTailCalibrator:
             )
         return factors
 
+    def eligible_mask(
+        self,
+        market_reference_probabilities: Sequence[float],
+    ) -> np.ndarray:
+        self._validate_statistics()
+        bin_indices = payout_tail_bin_indices(market_reference_probabilities)
+        global_eligible = self.samples >= self.minimum_global_samples
+        return np.logical_or(
+            self.statistics.counts[bin_indices] >= self.minimum_bin_samples,
+            global_eligible,
+        )
+
+    def calibrate_with_eligibility(
+        self,
+        market_reference_probabilities: Sequence[float],
+        raw_predicted_odds: Sequence[float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        calibrated = self.calibrate(
+            market_reference_probabilities,
+            raw_predicted_odds,
+        )
+        eligible = self.eligible_mask(market_reference_probabilities)
+        return calibrated, eligible
+
     def calibrate(
         self,
         market_reference_probabilities: Sequence[float],
@@ -260,6 +287,7 @@ class ConditionalPayoutTailCalibrator:
             "ratio_winsor_limits": [TAIL_RATIO_MIN, TAIL_RATIO_MAX],
             "prior_samples": float(self.prior_samples),
             "minimum_bin_samples": int(self.minimum_bin_samples),
+            "minimum_global_samples": int(self.minimum_global_samples),
             "fallback_factor": float(self.fallback_factor),
             "one_sided_confidence_z": float(self.confidence_z),
         }

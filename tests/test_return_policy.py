@@ -96,9 +96,12 @@ def test_adaptive_threshold_diagnostics_use_operational_allocator() -> None:
         1_000,
     )
 
-    assert diagnostics[0]["tickets"] == 4
+    # A lower-EV ticket must not be forced into the allocation solely to
+    # satisfy a minimum daily exposure target.
+    assert diagnostics[0]["tickets"] == 2
     assert diagnostics[1]["tickets"] == 2
-    assert diagnostics[1]["roi"] > diagnostics[0]["roi"]
+    assert diagnostics[1]["roi"] == diagnostics[0]["roi"]
+    assert diagnostics[1]["profit_yen"] == diagnostics[0]["profit_yen"]
     assert diagnostics[1]["profit_yen"] > 0
 
 

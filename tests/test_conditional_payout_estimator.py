@@ -145,6 +145,8 @@ def test_tail_calibrator_uses_fixed_bins_and_winsorized_sufficient_statistics() 
     )
     diagnostics = calibrator.diagnostics()
     assert diagnostics["samples"] == 5
+    assert diagnostics["minimum_global_samples"] == 20
+    np.testing.assert_array_equal(calibrator.eligible_mask(probabilities), [False] * 5)
     assert diagnostics["ratio_winsor_limits"] == [0.1, 4.0]
 
 
@@ -250,6 +252,81 @@ def test_tail_calibrator_batch_updates_match_single_update() -> None:
     )
     np.testing.assert_array_equal(batched.factors(), single.factors())
     assert batched.diagnostics() == single.diagnostics()
+
+
+def test_tail_calibrator_marks_unsupported_bins_ineligible_without_raw_fallback() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty(
+        minimum_bin_samples=4,
+        minimum_global_samples=8,
+        fallback_factor=0.4,
+    )
+    probabilities = np.asarray([0.02, 0.005, 0.001, 0.000999])
+    raw_odds = np.asarray([10.0, 20.0, 100.0, 1_000.0])
+    calibrator.update(probabilities, raw_odds, raw_odds * 0.8)
+
+    calibrated, eligible = calibrator.calibrate_with_eligibility(
+        probabilities,
+        raw_odds,
+    )
+
+    np.testing.assert_array_equal(eligible, [False, False, False, False])
+    np.testing.assert_allclose(calibrated, raw_odds * 0.4)
+    assert np.all(calibrated < raw_odds)
+
+
+def test_tail_calibrator_uses_global_support_for_sparse_bins() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty(
+        minimum_bin_samples=20,
+        minimum_global_samples=8,
+        fallback_factor=0.9,
+        confidence_z=0.0,
+    )
+    probabilities = np.full(8, 0.03)
+    raw_odds = np.full(8, 10.0)
+    calibrator.update(probabilities, raw_odds, raw_odds * 0.7)
+
+    calibrated, eligible = calibrator.calibrate_with_eligibility(
+        [0.03, 0.007, 0.003, 0.0003],
+        [10.0, 20.0, 100.0, 1_000.0],
+    )
+
+    np.testing.assert_array_equal(eligible, [True, True, True, True])
+    np.testing.assert_allclose(calibrated, [7.0, 14.0, 70.0, 700.0])
+
+
+def test_tail_calibrator_daily_batch_update_is_order_invariant() -> None:
+    rng = np.random.default_rng(20260724)
+    probabilities = 10.0 ** rng.uniform(-4.5, -1.0, 800)
+    raw_odds = rng.uniform(2.0, 1_000.0, 800)
+    actual_odds = raw_odds * rng.lognormal(-0.2, 0.9, 800)
+    shuffled_indices = rng.permutation(len(probabilities))
+    chronological = ConditionalPayoutTailCalibrator.empty()
+    shuffled = ConditionalPayoutTailCalibrator.empty()
+
+    chronological.update(probabilities, raw_odds, actual_odds)
+    shuffled.update(
+        probabilities[shuffled_indices],
+        raw_odds[shuffled_indices],
+        actual_odds[shuffled_indices],
+    )
+
+    np.testing.assert_array_equal(
+        chronological.statistics.counts,
+        shuffled.statistics.counts,
+    )
+    np.testing.assert_allclose(
+        chronological.statistics.ratio_sums,
+        shuffled.statistics.ratio_sums,
+    )
+    np.testing.assert_allclose(
+        chronological.statistics.ratio_square_sums,
+        shuffled.statistics.ratio_square_sums,
+    )
+    np.testing.assert_allclose(chronological.factors(), shuffled.factors())
+    np.testing.assert_array_equal(
+        chronological.eligible_mask(probabilities),
+        shuffled.eligible_mask(probabilities),
+    )
 
 
 def test_prediction_can_apply_tail_calibrator_after_ridge() -> None:

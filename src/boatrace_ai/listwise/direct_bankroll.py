@@ -37,6 +37,7 @@ COMBINATION_INDEX = {
     combination: index for index, combination in enumerate(COMBINATION_LABELS)
 }
 PAYOUT_TAIL_SCHEMA = "conditional_payout_tail_probability_bins_v1"
+MIN_DAILY_EXPOSURE_CANDIDATES = (0.0, 0.1, 0.2, 0.4)
 
 
 def _finite_quantile(values: np.ndarray) -> tuple[float, float]:
@@ -200,7 +201,7 @@ def standard_direct_policy() -> dict[str, Any]:
         "payout_prior_weight": 30.0,
         "fractional_kelly": 0.25,
         "max_daily_exposure_fraction": 0.60,
-        "min_daily_exposure_fraction": 0.40,
+        "min_daily_exposure_fraction": 0.0,
         "race_cap_fraction": 0.10,
         "ticket_cap_fraction": 0.03,
         "max_daily_tickets": 30,
@@ -294,6 +295,7 @@ def _selection_walk_forward_for_ridge(
     split: int,
     ridge: float,
     threshold_values: tuple[float, ...],
+    exposure_values: tuple[float, ...],
     candidate_floor: float,
     base_policy: dict[str, Any],
 ) -> tuple[
@@ -316,8 +318,15 @@ def _selection_walk_forward_for_ridge(
     selection_market = calibration_market_probabilities[split:]
     race_dates = sorted({str(row[1]) for row in selection_keys})
     runs = {
-        threshold: {"totals": zero_totals(), "daily": [], "state": (0, 0, 0)}
+        (threshold, exposure): {
+            "totals": zero_totals(),
+            "daily": [],
+            "state": (0, 0, 0),
+            "tail_eligible_candidates": 0,
+            "tail_ineligible_candidates": 0,
+        }
         for threshold in threshold_values
+        for exposure in exposure_values
     }
     for race_date in race_dates:
         row_indices = [
@@ -337,9 +346,18 @@ def _selection_walk_forward_for_ridge(
             flat_keys,
             mean_correction_factor=0.0,
         ).reshape(len(day_keys), len(COMBINATION_LABELS))
-        calibrated_odds = tail_calibrator.calibrate(
-            day_market.reshape(-1), raw_odds.reshape(-1)
-        ).reshape(raw_odds.shape)
+        calibrated_flat, tail_eligible_flat = (
+            tail_calibrator.calibrate_with_eligibility(
+                day_market.reshape(-1),
+                raw_odds.reshape(-1),
+            )
+        )
+        calibrated_odds = calibrated_flat.reshape(raw_odds.shape)
+        tail_eligible = tail_eligible_flat.reshape(raw_odds.shape)
+        day_tail_eligible_candidates = int(np.count_nonzero(tail_eligible))
+        day_tail_ineligible_candidates = int(tail_eligible.size) - (
+            day_tail_eligible_candidates
+        )
         candidates = []
         evaluated_races = set()
         for local_index, race_key in enumerate(day_keys):
@@ -356,6 +374,7 @@ def _selection_walk_forward_for_ridge(
                     ),
                     "history_count": float(model.training_samples),
                     "odds_source": "conditional_payout_pre_evaluation_tail_calibrated",
+                    "tail_eligible": bool(tail_eligible[local_index, index]),
                 }
                 for index, combination in enumerate(COMBINATION_LABELS)
             }
@@ -369,9 +388,12 @@ def _selection_walk_forward_for_ridge(
                 )
             )
         candidates.sort(key=lambda row: (str(row["race_id"]), row["combination"]))
-        for threshold, run in runs.items():
+        for (threshold, exposure), run in runs.items():
+            run["tail_eligible_candidates"] += day_tail_eligible_candidates
+            run["tail_ineligible_candidates"] += day_tail_ineligible_candidates
             policy = dict(base_policy)
             policy["ev_threshold"] = threshold
+            policy["min_daily_exposure_fraction"] = exposure
             result = allocate_adaptive_day(
                 race_date,
                 [
@@ -395,6 +417,10 @@ def _selection_walk_forward_for_ridge(
                 stake_granularity_yen=int(policy["stake_granularity_yen"]),
                 min_stake_yen=int(policy["min_stake_yen"]),
             )
+            result["tail_eligible_candidates"] = day_tail_eligible_candidates
+            result["tail_ineligible_candidates"] = (
+                day_tail_ineligible_candidates
+            )
             run["state"] = append_day_result(
                 run["daily"],
                 run["totals"],
@@ -410,7 +436,7 @@ def _selection_walk_forward_for_ridge(
 
     tail_final = tail_calibrator.diagnostics()
     diagnostics = []
-    for threshold, run in runs.items():
+    for (threshold, exposure), run in runs.items():
         totals = run["totals"]
         stake_yen = int(totals["stake_yen"])
         return_yen = int(totals["return_yen"])
@@ -419,6 +445,7 @@ def _selection_walk_forward_for_ridge(
                 "ridge": float(ridge),
                 "mean_correction_factor": 0.0,
                 "ev_threshold": float(threshold),
+                "min_daily_exposure_fraction": float(exposure),
                 "tickets": int(totals["tickets"]),
                 "selected_races": int(totals["races_bet"]),
                 "hits": int(totals["hit_tickets"]),
@@ -432,6 +459,24 @@ def _selection_walk_forward_for_ridge(
                 "tail_schema": PAYOUT_TAIL_SCHEMA,
                 "tail_initial": tail_initial,
                 "tail_final": tail_final,
+                "tail_eligible_candidates": int(
+                    run["tail_eligible_candidates"]
+                ),
+                "tail_ineligible_candidates": int(
+                    run["tail_ineligible_candidates"]
+                ),
+                "tail_eligibility_daily": [
+                    {
+                        "race_date": str(row["race_date"]),
+                        "eligible_candidates": int(
+                            row["tail_eligible_candidates"]
+                        ),
+                        "ineligible_candidates": int(
+                            row["tail_ineligible_candidates"]
+                        ),
+                    }
+                    for row in run["daily"]
+                ],
             }
         )
     return diagnostics, statistics, tail_calibrator
@@ -453,6 +498,9 @@ def _select_conditional_payout_policy_state(
     minimum_hits: int,
     minimum_winning_days: int,
     minimum_roi: float,
+    min_daily_exposure_candidates: tuple[float, ...] = (
+        MIN_DAILY_EXPOSURE_CANDIDATES
+    ),
 ) -> tuple[
     float,
     float,
@@ -462,6 +510,7 @@ def _select_conditional_payout_policy_state(
     dict[str, Any] | None,
     ConditionalPayoutStatistics,
     ConditionalPayoutTailCalibrator,
+    float,
 ]:
     _validate_nondecreasing_race_dates(
         calibration_race_keys, name="calibration_race_keys"
@@ -478,6 +527,28 @@ def _select_conditional_payout_policy_state(
         calibration_race_keys, selection_days=selection_days
     )
     fallback_threshold = float(base_policy["ev_threshold"])
+    fallback_exposure = 0.0
+    max_exposure = float(base_policy["max_daily_exposure_fraction"])
+    requested_exposures = tuple(
+        float(value) for value in min_daily_exposure_candidates
+    )
+    if (
+        not np.isfinite(max_exposure)
+        or max_exposure < 0.0
+        or any(
+            not np.isfinite(value) or value < 0.0
+            for value in requested_exposures
+        )
+    ):
+        raise ValueError("daily exposure fractions must be finite and non-negative")
+    exposure_values = tuple(
+        sorted(
+            {
+                fallback_exposure,
+                *(value for value in requested_exposures if value <= max_exposure),
+            }
+        )
+    )
     if split is None:
         statistics = ConditionalPayoutStatistics.empty()
         statistics.update(
@@ -487,6 +558,7 @@ def _select_conditional_payout_policy_state(
             float(fallback_ridge), 0.0, fallback_threshold,
             "fallback_fixed_policy", [], None, statistics,
             ConditionalPayoutTailCalibrator.empty(),
+            fallback_exposure,
         )
 
     threshold_values = tuple(
@@ -506,6 +578,7 @@ def _select_conditional_payout_policy_state(
                 split=split,
                 ridge=ridge_value,
                 threshold_values=threshold_values,
+                exposure_values=exposure_values,
                 candidate_floor=min(threshold_values),
                 base_policy=base_policy,
             )
@@ -524,8 +597,10 @@ def _select_conditional_payout_policy_state(
         selected = max(
             eligible,
             key=lambda row: (
-                int(row["tickets"]), int(row["winning_days"]),
-                int(row["hits"]), -float(row["ev_threshold"]),
+                float(row["roi"]), int(row["profit_yen"]),
+                -float(row["min_daily_exposure_fraction"]),
+                int(row["winning_days"]), int(row["hits"]),
+                -float(row["ev_threshold"]),
                 float(row["ridge"]),
             ),
         )
@@ -535,9 +610,11 @@ def _select_conditional_payout_policy_state(
             "ridge": float(fallback_ridge),
             "mean_correction_factor": 0.0,
             "ev_threshold": fallback_threshold,
+            "min_daily_exposure_fraction": fallback_exposure,
         }
         source = "fallback_fixed_policy"
     selected_ridge = float(selected["ridge"])
+    selected_exposure = float(selected["min_daily_exposure_fraction"])
     statistics, tail_calibrator = states[selected_ridge]
     period = {
         "fit_from": str(calibration_race_keys[0][1]),
@@ -549,10 +626,12 @@ def _select_conditional_payout_policy_state(
         "tail_schema": PAYOUT_TAIL_SCHEMA,
         "tail_initial_samples": 0,
         "tail_final_samples": int(tail_calibrator.samples),
+        "selected_min_daily_exposure_fraction": selected_exposure,
     }
     return (
         selected_ridge, 0.0, float(selected["ev_threshold"]), source,
         diagnostics, period, statistics, tail_calibrator,
+        selected_exposure,
     )
 
 
@@ -594,6 +673,9 @@ def simulate_conditional_payout_walk_forward(
     ridge_candidates: tuple[float, ...] = (1.0, 10.0, 100.0),
     mean_correction_candidates: tuple[float, ...] = (0.0, 0.5, 1.0),
     threshold_candidates: tuple[float, ...] = (1.05, 1.10, 1.20),
+    min_daily_exposure_candidates: tuple[float, ...] = (
+        MIN_DAILY_EXPOSURE_CANDIDATES
+    ),
     policy_selection_days: int = 30,
     minimum_selection_tickets: int = 100,
     minimum_selection_hits: int = 10,
@@ -626,6 +708,7 @@ def simulate_conditional_payout_walk_forward(
         raise ValueError("calibration market probabilities and race keys must align")
     independent_market_reference = market_reference_probabilities is not None
     selected_policy = dict(policy or standard_direct_policy())
+    selected_policy["min_daily_exposure_fraction"] = 0.0
     (
         selected_ridge,
         selected_mean_correction,
@@ -635,6 +718,7 @@ def simulate_conditional_payout_walk_forward(
         selection_period,
         statistics,
         tail_calibrator,
+        selected_min_daily_exposure,
     ) = _select_conditional_payout_policy_state(
         calibration_values,
         calibration_market_values,
@@ -650,8 +734,10 @@ def simulate_conditional_payout_walk_forward(
         minimum_hits=minimum_selection_hits,
         minimum_winning_days=minimum_selection_winning_days,
         minimum_roi=minimum_selection_roi,
+        min_daily_exposure_candidates=min_daily_exposure_candidates,
     )
     selected_policy["ev_threshold"] = selected_threshold
+    selected_policy["min_daily_exposure_fraction"] = selected_min_daily_exposure
     selected_policy.update(
         {
             "payout_estimator": (
@@ -677,7 +763,8 @@ def simulate_conditional_payout_walk_forward(
             "mean_correction_factor": float(selected_mean_correction),
             "selection": (
                 "pre-evaluation adaptive two-stage payout policy selection; "
-                "no evaluation-period tuning"
+                "ridge, EV threshold, and minimum daily exposure are fixed "
+                "before evaluation"
             ),
         }
     )
@@ -700,6 +787,8 @@ def simulate_conditional_payout_walk_forward(
     ev_counts = {f"{threshold:.2f}": 0 for threshold in ev_thresholds}
     max_estimated_ev = 0.0
     max_raw_estimated_ev = 0.0
+    tail_eligible_candidates = 0
+    tail_ineligible_candidates = 0
     residual_variances = []
     for day_index, race_date in enumerate(dates):
         day_tail_initial = tail_calibrator.diagnostics()
@@ -718,10 +807,24 @@ def simulate_conditional_payout_walk_forward(
             flat_keys,
             mean_correction_factor=0.0,
         ).reshape(len(row_indices), len(COMBINATION_LABELS))
-        estimated_odds = tail_calibrator.calibrate(
-            day_market_probabilities.reshape(-1),
-            raw_estimated_odds.reshape(-1),
-        ).reshape(raw_estimated_odds.shape)
+        estimated_odds_flat, tail_eligible_flat = (
+            tail_calibrator.calibrate_with_eligibility(
+                day_market_probabilities.reshape(-1),
+                raw_estimated_odds.reshape(-1),
+            )
+        )
+        estimated_odds = estimated_odds_flat.reshape(raw_estimated_odds.shape)
+        day_tail_eligible = tail_eligible_flat.reshape(
+            raw_estimated_odds.shape
+        )
+        day_tail_eligible_candidates = int(
+            np.count_nonzero(day_tail_eligible)
+        )
+        day_tail_ineligible_candidates = int(day_tail_eligible.size) - (
+            day_tail_eligible_candidates
+        )
+        tail_eligible_candidates += day_tail_eligible_candidates
+        tail_ineligible_candidates += day_tail_ineligible_candidates
         raw_estimated_ev = day_probabilities * raw_estimated_odds
         estimated_ev = day_probabilities * estimated_odds
         max_raw_estimated_ev = max(
@@ -750,6 +853,9 @@ def simulate_conditional_payout_walk_forward(
                     ),
                     "history_count": float(model.training_samples),
                     "odds_source": "conditional_payout_walk_forward_tail_calibrated",
+                    "tail_eligible": bool(
+                        day_tail_eligible[local_index, combo_index]
+                    ),
                 }
                 for combo_index, combination in enumerate(COMBINATION_LABELS)
             }
@@ -790,6 +896,10 @@ def simulate_conditional_payout_walk_forward(
             roi_attribution=fold_attributions[fold_index],
         )
         result["payout_training_samples"] = int(model.training_samples)
+        result["tail_eligible_candidates"] = day_tail_eligible_candidates
+        result["tail_ineligible_candidates"] = (
+            day_tail_ineligible_candidates
+        )
         result["tail_calibration_samples_initial"] = int(
             day_tail_initial["samples"]
         )
@@ -874,6 +984,15 @@ def simulate_conditional_payout_walk_forward(
             "tail_initial": tail_initial,
             "tail_final": tail_calibrator.diagnostics(),
             "selected_ev_threshold": float(selected_threshold),
+            "selected_min_daily_exposure_fraction": float(
+                selected_min_daily_exposure
+            ),
+            "min_daily_exposure_candidates": sorted(
+                {
+                    float(row["min_daily_exposure_fraction"])
+                    for row in selection_diagnostics
+                }
+            ) or [0.0],
             "period": selection_period,
             "diagnostics": selection_diagnostics,
         },
@@ -881,6 +1000,8 @@ def simulate_conditional_payout_walk_forward(
             "feature_schema": PAYOUT_FEATURE_SCHEMA,
             "feature_count": PAYOUT_FEATURE_COUNT,
             "candidate_combinations": int(len(race_keys) * len(COMBINATION_LABELS)),
+            "tail_eligible_candidates": int(tail_eligible_candidates),
+            "tail_ineligible_candidates": int(tail_ineligible_candidates),
             "tail_schema": PAYOUT_TAIL_SCHEMA,
             "tail_initial": tail_initial,
             "tail_final": tail_calibrator.diagnostics(),
@@ -904,7 +1025,7 @@ def direct_candidates(
     *,
     race_key: tuple[str, str, str, int],
     actual: dict[str, Any],
-    payout_model: dict[str, dict[str, float]],
+    payout_model: dict[str, dict[str, Any]],
     ev_threshold: float,
 ) -> list[dict[str, Any]]:
     values = np.asarray(probabilities, dtype=np.float64)
@@ -921,6 +1042,8 @@ def direct_candidates(
     for combination, probability in zip(COMBINATION_LABELS, values):
         estimate = payout_model.get(combination)
         if not estimate:
+            continue
+        if not bool(estimate.get("tail_eligible", True)):
             continue
         estimated_odds = float(estimate["estimated_odds"])
         estimated_ev = float(probability) * estimated_odds
@@ -944,6 +1067,7 @@ def direct_candidates(
                 "estimated_ev": estimated_ev,
                 "payout_history_count": int(estimate["history_count"]),
                 "odds_source": str(estimate.get("odds_source") or "payout_model"),
+                "tail_eligible": bool(estimate.get("tail_eligible", True)),
                 "actual_combination": str(actual["combination"]),
                 "actual_payout_yen": int(actual["payout_yen"]),
                 "hit": combination == str(actual["combination"]),
