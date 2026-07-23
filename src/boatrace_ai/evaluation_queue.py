@@ -597,6 +597,24 @@ def build_command(
             str(output),
         ], output
     if task_type == "listwise_feature_search":
+        allowed = {
+            "evaluation_date",
+            "n_features",
+            "epochs",
+            "batch_races",
+            "learning_rate",
+            "targets",
+            "alphas",
+            "ev_threshold",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported listwise_feature_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        _integer(params, "timeout_seconds", 21600, 300, 86400)
         n_features = _integer(params, "n_features", 4096, 1024, 32768)
         epochs = _integer(params, "epochs", 2, 1, 6)
         batch_races = _integer(params, "batch_races", 1000, 250, 5000)
@@ -625,6 +643,7 @@ def build_command(
             "--cache-dir", str(search_cache),
             "--cache-write-mode", "never",
             "--selected-cache-dir", str(selected_cache),
+            "--variant-workers", "2",
             "--as-of-date", evaluation_date,
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),
@@ -1184,6 +1203,16 @@ DEFAULT_WORK_TICKETS = (
     ("MODEL-OPT-001", "モデル再設計と収益ゲート収束", "モデル", "特徴量・教師・構造を同一評価軸で反復検証する", "未使用holdoutでROI・損益・確率指標の昇格基準を満たす", 100, "in_progress", 55),
     ("UI-MODEL-001", "モデル性能ページの評価表現統一", "WebUI", "評価母集団と指標表現を統一する", "全モデルが同じ列定義と評価群で比較できる", 70, "queued", 20),
     ("UI-PRED-001", "タイムラインとGantt的中判定の統一", "WebUI", "主系予測と購入的中を別指標として表示する", "同一レースで各表示の意味と判定が一致する", 80, "queued", 25),
+    (
+        "OPS-EVAL-PERF-001",
+        "特徴探索の並列化と再現性保証",
+        "モデル基盤",
+        "特徴バリアント生成を資源制約付きで並列化し、評価待ち時間を短縮する。GitHub Issue: https://github.com/ryo100794/boat/issues/1",
+        "workers=1/2で候補順・selected・holdout hash・資金評価が一致し、checkpoint再開可能。Git commit SHAとDBイベントを記録し、リモートが同SHAで稼働する",
+        90,
+        "in_progress",
+        35,
+    ),
 )
 
 

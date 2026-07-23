@@ -217,6 +217,7 @@ run_job standardized_365d_v2_listwise_feature_teacher \
   --output "$raw_dir/listwise_feature_teacher.json" \
   --cache-dir "$eval_dir/listwise_search_cache" \
   --cache-write-mode never --selected-cache-dir "$transient_cache_dir" \
+  --variant-workers 2 \
   --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
   --daily-budget-yen 10000 --ev-threshold 1.20
 

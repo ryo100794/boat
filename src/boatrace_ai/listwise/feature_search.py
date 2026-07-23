@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import multiprocessing
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -269,6 +271,141 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _ordered_rows(
+    completed: dict[str, dict[str, Any]],
+    *,
+    targets: tuple[str, ...],
+    alphas: tuple[float, ...],
+) -> list[dict[str, Any]]:
+    return [
+        completed[_candidate_key(variant_name, target, alpha)]
+        for variant_name, _dropped in feature_variants()
+        for target in targets
+        for alpha in alphas
+        if _candidate_key(variant_name, target, alpha) in completed
+    ]
+
+
+def _selected_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return min(rows, key=lambda row: (
+        float(row["ranking_log_loss"]),
+        float(row["entry_log_loss"]),
+        -float(row["trifecta_top5_hit_rate"]),
+    ))
+
+
+def _evaluate_variant(
+    conn,
+    *,
+    request: dict[str, Any],
+) -> tuple[HashedRaceDataset, dict[str, Any]]:
+    variant_started = time.perf_counter()
+    variant_name = str(request["variant_name"])
+    dropped = tuple(str(value) for value in request["dropped"])
+    targets = tuple(str(value) for value in request["targets"])
+    alphas = tuple(float(value) for value in request["alphas"])
+    completed = {
+        _candidate_key(variant_name, str(row["target"]), float(row["alpha"])): row
+        for row in request["completed_rows"]
+    }
+    dataset, cache_source = load_variant_dataset(
+        conn,
+        race_keys=request["race_keys"],
+        cache_dir=Path(request["cache_dir"]),
+        name=variant_name,
+        dropped=dropped,
+        n_features=int(request["n_features"]),
+        batch_races=int(request["batch_races"]),
+        write_cache=bool(request["write_cache"]),
+    )
+    missing = [
+        (target, alpha)
+        for target in targets
+        for alpha in alphas
+        if _candidate_key(variant_name, target, alpha) not in completed
+    ]
+    scaler = (
+        fit_scaler(
+            dataset,
+            race_end=int(request["train_end"]),
+            batch_rows=int(request["batch_races"]) * 6,
+        )
+        if missing
+        else None
+    )
+    for target, alpha in missing:
+        model, history = train_listwise_model(
+            dataset,
+            train_race_end=int(request["train_end"]),
+            target=target,
+            alpha=alpha,
+            learning_rate=float(request["learning_rate"]),
+            epochs=int(request["epochs"]),
+            batch_races=int(request["batch_races"]),
+            scaler=scaler,
+        )
+        metrics, _ = evaluate_range(
+            dataset,
+            model,
+            race_start=int(request["train_end"]),
+            race_end=int(request["selection_end"]),
+            batch_races=int(request["batch_races"]),
+        )
+        completed[_candidate_key(variant_name, target, alpha)] = {
+            "feature_variant": variant_name,
+            "drop_feature_groups": list(dropped),
+            "target": target,
+            "alpha": alpha,
+            "cache_source": cache_source,
+            "matrix_nnz": int(dataset.matrix.nnz),
+            "training_history": history,
+            **metrics,
+        }
+    rows = [
+        completed[_candidate_key(variant_name, target, alpha)]
+        for target in targets
+        for alpha in alphas
+    ]
+    return dataset, {
+        "feature_variant": variant_name,
+        "rows": rows,
+        "elapsed_seconds": round(time.perf_counter() - variant_started, 3),
+    }
+
+
+def _variant_worker(request: dict[str, Any], control) -> dict[str, Any]:
+    dataset: HashedRaceDataset | None = None
+    try:
+        with connection(str(request["db"])) as conn:
+            dataset, payload = _evaluate_variant(conn, request=request)
+        control.send(payload)
+        selected_cache_prefix = control.recv()
+        if selected_cache_prefix is not None:
+            save_hashed_dataset(Path(selected_cache_prefix), dataset)
+        return {
+            "feature_variant": request["variant_name"],
+            "selected_cache_saved": selected_cache_prefix is not None,
+        }
+    finally:
+        control.close()
+        if dataset is not None:
+            del dataset
+        gc.collect()
+
+
+def _checkpoint_payload(
+    signature: dict[str, Any],
+    completed: dict[str, dict[str, Any]],
+    *,
+    targets: tuple[str, ...],
+    alphas: tuple[float, ...],
+) -> dict[str, Any]:
+    return {
+        "signature": signature,
+        "search_results": _ordered_rows(completed, targets=targets, alphas=alphas),
+    }
+
+
 def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     race_keys = [
@@ -286,13 +423,18 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     alphas = tuple(float(value) for value in args.alphas.split(",") if value.strip())
     if not targets or any(value not in TARGETS for value in targets):
         raise ValueError(f"targets must be selected from {TARGETS}")
+    variant_workers = int(args.variant_workers)
+    if variant_workers not in (1, 2, 3):
+        raise ValueError("variant workers must be between 1 and 3")
+    db = str(args.db)
+    if not db:
+        raise ValueError("database DSN is required for variant workers")
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     selected_cache_dir = Path(args.selected_cache_dir) if args.selected_cache_dir else None
     if selected_cache_dir is not None:
         if selected_cache_dir.resolve() == cache_dir.resolve():
             raise ValueError("selected cache dir must differ from the persistent cache dir")
-        cleanup_selected_cache_family(selected_cache_dir, n_features=args.n_features)
     output = Path(args.output)
     checkpoint_path = (
         Path(args.checkpoint)
@@ -310,110 +452,222 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     completed = _load_checkpoint(checkpoint_path, checkpoint_signature)
     if completed:
         print(json.dumps({"checkpoint_resumed_candidates": len(completed)}), flush=True)
-    search_rows: list[dict[str, Any]] = []
+    resumed_rows = _ordered_rows(completed, targets=targets, alphas=alphas)
+    resumed_selected = _selected_row(resumed_rows) if resumed_rows else None
+    active_cache_variant: str | None = None
+    if selected_cache_dir is not None:
+        candidates = selected_cache_candidates(
+            selected_cache_dir,
+            n_features=args.n_features,
+        )
+        expected_prefix = (
+            variant_cache_prefix(
+                selected_cache_dir,
+                n_features=args.n_features,
+                name=str(resumed_selected["feature_variant"]),
+            )
+            if resumed_selected is not None
+            else None
+        )
+        if expected_prefix is not None and candidates == [expected_prefix]:
+            active_cache_variant = str(resumed_selected["feature_variant"])
+        else:
+            cleanup_selected_cache_family(
+                selected_cache_dir,
+                n_features=args.n_features,
+            )
 
+    requests: list[dict[str, Any]] = []
     for variant_name, dropped in feature_variants():
-        variant_started = time.perf_counter()
         candidate_keys = [
             _candidate_key(variant_name, target, alpha)
             for target in targets
             for alpha in alphas
         ]
-        if all(key in completed for key in candidate_keys):
-            search_rows.extend(completed[key] for key in candidate_keys)
+        checkpoint_complete = all(key in completed for key in candidate_keys)
+        needs_best_cache = (
+            selected_cache_dir is not None
+            and resumed_selected is not None
+            and str(resumed_selected["feature_variant"]) == variant_name
+            and active_cache_variant != variant_name
+        )
+        if checkpoint_complete and not needs_best_cache:
             print(json.dumps({
                 "feature_variant_checkpoint_complete": variant_name,
                 "candidates": len(candidate_keys),
             }), flush=True)
             continue
-        dataset, cache_source = load_variant_dataset(
-            conn,
-            race_keys=race_keys,
-            cache_dir=cache_dir,
-            name=variant_name,
-            dropped=dropped,
-            n_features=args.n_features,
-            batch_races=args.batch_races,
-            write_cache=args.cache_write_mode == "always",
-        )
-        scaler = fit_scaler(dataset, race_end=train_end, batch_rows=args.batch_races * 6)
-        for target in targets:
-            for alpha in alphas:
-                key = _candidate_key(variant_name, target, alpha)
-                if key in completed:
-                    search_rows.append(completed[key])
-                    continue
-                model, history = train_listwise_model(
-                    dataset,
-                    train_race_end=train_end,
-                    target=target,
-                    alpha=alpha,
-                    learning_rate=args.learning_rate,
-                    epochs=args.epochs,
-                    batch_races=args.batch_races,
-                    scaler=scaler,
-                )
-                metrics, _ = evaluate_range(
-                    dataset,
-                    model,
-                    race_start=train_end,
-                    race_end=selection_end,
-                    batch_races=args.batch_races,
-                )
-                row = {
-                    "feature_variant": variant_name,
-                    "drop_feature_groups": list(dropped),
-                    "target": target,
-                    "alpha": alpha,
-                    "cache_source": cache_source,
-                    "matrix_nnz": int(dataset.matrix.nnz),
-                    "training_history": history,
-                    **metrics,
-                }
-                search_rows.append(row)
-                completed[key] = row
-                _write_json_atomic(checkpoint_path, {
-                    "signature": checkpoint_signature,
-                    "search_results": list(completed.values()),
-                })
-                print(json.dumps({key: value for key, value in row.items() if key != "training_history"}, ensure_ascii=False), flush=True)
-        print(json.dumps({
-            "feature_variant_complete": variant_name,
-            "elapsed_seconds": round(time.perf_counter() - variant_started, 3),
-        }), flush=True)
-        del dataset, scaler
-        gc.collect()
+        requests.append({
+            "db": db,
+            "race_keys": race_keys,
+            "cache_dir": str(cache_dir),
+            "variant_name": variant_name,
+            "dropped": dropped,
+            "n_features": int(args.n_features),
+            "batch_races": int(args.batch_races),
+            "write_cache": args.cache_write_mode == "always",
+            "train_end": train_end,
+            "selection_end": selection_end,
+            "targets": targets,
+            "alphas": alphas,
+            "learning_rate": float(args.learning_rate),
+            "epochs": int(args.epochs),
+            "completed_rows": [
+                completed[key] for key in candidate_keys if key in completed
+            ],
+        })
 
-    selected = min(search_rows, key=lambda row: (
-        float(row["ranking_log_loss"]),
-        float(row["entry_log_loss"]),
-        -float(row["trifecta_top5_hit_rate"]),
-    ))
+    context = multiprocessing.get_context("spawn")
+    controls: dict[str, Any] = {}
+    child_controls: list[Any] = []
+    futures: dict[str, Any] = {}
+    handled: set[str] = set()
+    with ProcessPoolExecutor(
+        max_workers=variant_workers,
+        mp_context=context,
+    ) as executor:
+        try:
+            for request in requests:
+                parent_control, child_control = context.Pipe(duplex=True)
+                variant_name = str(request["variant_name"])
+                controls[variant_name] = parent_control
+                child_controls.append(child_control)
+                futures[variant_name] = executor.submit(
+                    _variant_worker,
+                    request,
+                    child_control,
+                )
+            while len(handled) < len(requests):
+                progressed = False
+                for variant_name, future in futures.items():
+                    if variant_name in handled or not future.done():
+                        continue
+                    future.result()
+                    raise RuntimeError(
+                        f"variant worker exited without results: {variant_name}"
+                    )
+                for variant_name, control in controls.items():
+                    if variant_name in handled or not control.poll():
+                        continue
+                    payload = control.recv()
+                    new_rows = []
+                    for row in payload["rows"]:
+                        key = _candidate_key(
+                            variant_name,
+                            str(row["target"]),
+                            float(row["alpha"]),
+                        )
+                        if key not in completed:
+                            new_rows.append(row)
+                        completed[key] = row
+                    _write_json_atomic(
+                        checkpoint_path,
+                        _checkpoint_payload(
+                            checkpoint_signature,
+                            completed,
+                            targets=targets,
+                            alphas=alphas,
+                        ),
+                    )
+                    for row in new_rows:
+                        print(json.dumps({
+                            key: value
+                            for key, value in row.items()
+                            if key != "training_history"
+                        }, ensure_ascii=False), flush=True)
+                    current_rows = _ordered_rows(
+                        completed,
+                        targets=targets,
+                        alphas=alphas,
+                    )
+                    current_selected = _selected_row(current_rows)
+                    save_prefix: Path | None = None
+                    if (
+                        selected_cache_dir is not None
+                        and str(current_selected["feature_variant"]) == variant_name
+                        and active_cache_variant != variant_name
+                    ):
+                        cleanup_selected_cache_family(
+                            selected_cache_dir,
+                            n_features=args.n_features,
+                        )
+                        save_prefix = variant_cache_prefix(
+                            selected_cache_dir,
+                            n_features=args.n_features,
+                            name=variant_name,
+                        )
+                    control.send(str(save_prefix) if save_prefix is not None else None)
+                    handled.add(variant_name)
+                    if save_prefix is not None:
+                        futures[variant_name].result()
+                        active_cache_variant = variant_name
+                    print(json.dumps({
+                        "feature_variant_complete": variant_name,
+                        "elapsed_seconds": payload["elapsed_seconds"],
+                    }), flush=True)
+                    progressed = True
+                    break
+                if not progressed:
+                    time.sleep(0.02)
+            for future in futures.values():
+                future.result()
+        finally:
+            for variant_name, control in controls.items():
+                if variant_name not in handled:
+                    try:
+                        control.send(None)
+                    except (BrokenPipeError, EOFError, OSError):
+                        pass
+                control.close()
+            for child_control in child_controls:
+                child_control.close()
+
+    search_rows = _ordered_rows(completed, targets=targets, alphas=alphas)
+    expected_candidates = len(feature_variants()) * len(targets) * len(alphas)
+    if len(search_rows) != expected_candidates:
+        raise RuntimeError(
+            f"incomplete feature search: {len(search_rows)} of {expected_candidates}"
+        )
+    selected = _selected_row(search_rows)
     selected_drops = tuple(str(value) for value in selected["drop_feature_groups"])
-    dataset, cache_source, selected_cache_prefix = load_variant_dataset_with_cache(
-        conn,
-        race_keys=race_keys,
-        cache_dir=cache_dir,
-        name=str(selected["feature_variant"]),
-        dropped=selected_drops,
-        n_features=args.n_features,
-        batch_races=args.batch_races,
-        write_cache=args.cache_write_mode == "always",
-    )
-    if cache_source == "built" and selected_cache_dir is not None:
+    if selected_cache_dir is not None:
         selected_cache_prefix = variant_cache_prefix(
             selected_cache_dir,
             n_features=args.n_features,
             name=str(selected["feature_variant"]),
         )
-        save_hashed_dataset(selected_cache_prefix, dataset)
         candidates = selected_cache_candidates(
             selected_cache_dir,
             n_features=args.n_features,
         )
         if candidates != [selected_cache_prefix]:
             raise RuntimeError("selected cache directory must contain exactly one candidate")
+        hasher = FeatureHasher(
+            n_features=args.n_features,
+            input_type="dict",
+            alternate_sign=False,
+        )
+        dataset = load_hashed_dataset(
+            selected_cache_prefix,
+            race_keys=race_keys,
+            n_features=args.n_features,
+            drop_feature_groups=selected_drops,
+            hasher=hasher,
+        )
+        if dataset is None:
+            raise RuntimeError("selected cache is missing or invalid")
         cache_source = "selected_cache"
+    else:
+        dataset, cache_source, selected_cache_prefix = load_variant_dataset_with_cache(
+            conn,
+            race_keys=race_keys,
+            cache_dir=cache_dir,
+            name=str(selected["feature_variant"]),
+            dropped=selected_drops,
+            n_features=args.n_features,
+            batch_races=args.batch_races,
+            write_cache=args.cache_write_mode == "always",
+        )
     scaler = fit_scaler(dataset, race_end=selection_end, batch_rows=args.batch_races * 6)
     final_model, final_history = train_listwise_model(
         dataset,
@@ -532,6 +786,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--selected-cache-dir")
     parser.add_argument("--checkpoint")
+    parser.add_argument(
+        "--variant-workers",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="Number of feature variants evaluated concurrently (1-3).",
+    )
     parser.add_argument("--as-of-date")
     parser.add_argument("--n-features", type=int, default=1 << 12)
     parser.add_argument("--batch-races", type=int, default=1_000)

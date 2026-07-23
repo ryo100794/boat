@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from boatrace_ai.evaluation_queue import (
+    DEFAULT_WORK_TICKETS,
     TASK_PROFILES,
     build_command,
     dedupe_key,
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
+    seed_work_tickets,
     summarize_result,
 )
 from boatrace_ai.listwise.conditional_order import (
@@ -315,6 +318,68 @@ def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
             python=tmp_path / "python",
             db="postgresql://test",
         )
+
+
+@pytest.mark.parametrize("parameter", ["variant_workers", "cache_dir"])
+def test_feature_search_rejects_injected_worker_or_path(tmp_path, parameter) -> None:
+    with pytest.raises(
+        ValueError,
+        match="unsupported listwise_feature_search parameters",
+    ):
+        build_command(
+            _job(
+                "listwise_feature_search",
+                {"evaluation_date": "2026-07-22", parameter: 3},
+            ),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_fresh_work_ticket_seed_registers_feature_search_parallelization(
+    tmp_path: Path,
+) -> None:
+    expected = next(
+        row for row in DEFAULT_WORK_TICKETS if row[0] == "OPS-EVAL-PERF-001"
+    )
+    conn = sqlite3.connect(tmp_path / "fresh.sqlite")
+    conn.execute(
+        """
+        CREATE TABLE work_tickets (
+          ticket_key TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          area TEXT NOT NULL,
+          description TEXT NOT NULL,
+          acceptance_criteria TEXT NOT NULL,
+          priority INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          progress INTEGER NOT NULL,
+          source TEXT NOT NULL
+        )
+        """
+    )
+    try:
+        assert seed_work_tickets(conn) == len(DEFAULT_WORK_TICKETS)
+        assert seed_work_tickets(conn) == 0
+        actual = conn.execute(
+            """
+            SELECT ticket_key, title, area, description, acceptance_criteria,
+                   priority, status, progress
+            FROM work_tickets
+            WHERE ticket_key = 'OPS-EVAL-PERF-001'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert actual == expected
+    assert expected[1:5] == (
+        "特徴探索の並列化と再現性保証",
+        "モデル基盤",
+        "特徴バリアント生成を資源制約付きで並列化し、評価待ち時間を短縮する。GitHub Issue: https://github.com/ryo100794/boat/issues/1",
+        "workers=1/2で候補順・selected・holdout hash・資金評価が一致し、checkpoint再開可能。Git commit SHAとDBイベントを記録し、リモートが同SHAで稼働する",
+    )
+    assert expected[6:] == ("in_progress", 35)
 
 
 def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
