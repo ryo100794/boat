@@ -1680,7 +1680,7 @@ def run_worker(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PostgreSQL-backed model evaluation queue")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "seed", "retry", "status", "run"):
+    for name in ("init", "seed", "retry", "reprioritize", "status", "run"):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
@@ -1688,6 +1688,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "retry":
             command.add_argument("--include-failed", action="store_true")
             command.add_argument("--include-running", action="store_true")
+        if name == "reprioritize":
+            command.add_argument("--job-id", type=int, required=True)
+            command.add_argument("--priority", type=int, required=True)
+            command.add_argument("--reason", required=True)
+            command.add_argument("--ticket-key")
         if name == "run":
             command.add_argument("--app-root", default="/workspace/boat")
             command.add_argument("--python", default="/workspace/boat/.venv/bin/python")
@@ -1720,6 +1725,56 @@ def status_rows(conn: Any) -> list[dict[str, Any]]:
     return [{key: row[key] for key in row.keys()} for row in rows]
 
 
+def reprioritize_job(
+    conn: Any,
+    *,
+    job_id: int,
+    priority: int,
+    reason: str,
+    ticket_key: str | None = None,
+) -> dict[str, Any]:
+    if job_id < 1:
+        raise ValueError("job_id must be positive")
+    if not 0 <= priority <= 1000:
+        raise ValueError("priority must be between 0 and 1000")
+    note = str(reason).strip()
+    if not note or len(note) > 500:
+        raise ValueError("reason must contain between 1 and 500 characters")
+    row = conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET priority = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE job_id = ? AND status = 'queued'
+        RETURNING job_id, priority, status
+        """,
+        (int(priority), int(job_id)),
+    ).fetchone()
+    if row is None:
+        raise ValueError("job must exist and be queued")
+    if ticket_key:
+        ticket = conn.execute(
+            """
+            UPDATE work_tickets
+            SET status = 'in_progress',
+                progress = GREATEST(progress, 70),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE ticket_key = ?
+            RETURNING ticket_key, progress
+            """,
+            (ticket_key,),
+        ).fetchone()
+        if ticket is None:
+            raise ValueError(f"unknown ticket: {ticket_key}")
+        conn.execute(
+            """
+            INSERT INTO work_ticket_events(ticket_key, status, progress, note)
+            VALUES (?, 'in_progress', ?, ?)
+            """,
+            (ticket_key, int(ticket["progress"]), note),
+        )
+    return {key: row[key] for key in row.keys()}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
@@ -1738,6 +1793,18 @@ def main(argv: list[str] | None = None) -> int:
                             include_running=args.include_running,
                         )
                     }
+                )
+            )
+        elif args.command == "reprioritize":
+            print(
+                _json(
+                    reprioritize_job(
+                        conn,
+                        job_id=args.job_id,
+                        priority=args.priority,
+                        reason=args.reason,
+                        ticket_key=args.ticket_key,
+                    )
                 )
             )
         elif args.command == "status":

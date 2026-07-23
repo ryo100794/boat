@@ -918,3 +918,101 @@ def test_invalid_artifact_uses_normal_terminal_failure() -> None:
     assert conn.parent["max_attempts"] == 2
     assert conn.run["status"] == "failed"
     assert conn.parent["error"].startswith("ValueError:")
+
+
+class _ReprioritizeConnection:
+    def __init__(self, *, job_status: str = "queued", ticket_exists: bool = True):
+        self.job = {"job_id": 1069, "priority": 70, "status": job_status}
+        self.ticket = (
+            {"ticket_key": "MODEL-PAYOUT-001", "progress": 65}
+            if ticket_exists
+            else None
+        )
+        self.events = []
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        if "UPDATE model_evaluation_jobs" in sql:
+            priority, job_id = parameters
+            if int(job_id) != self.job["job_id"] or self.job["status"] != "queued":
+                return _QueryResult()
+            self.job["priority"] = int(priority)
+            return _QueryResult(dict(self.job))
+        if "UPDATE work_tickets" in sql:
+            if self.ticket is None or parameters[0] != self.ticket["ticket_key"]:
+                return _QueryResult()
+            self.ticket["progress"] = max(int(self.ticket["progress"]), 70)
+            return _QueryResult(dict(self.ticket))
+        if "INSERT INTO work_ticket_events" in sql:
+            self.events.append(parameters)
+            return _QueryResult()
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+def test_reprioritize_job_is_bounded_audited_and_parser_exposed() -> None:
+    args = evaluation_queue.build_parser().parse_args([
+        "reprioritize",
+        "--job-id", "1069",
+        "--priority", "90",
+        "--reason", "Run payout policy before recency search",
+        "--ticket-key", "MODEL-PAYOUT-001",
+    ])
+    conn = _ReprioritizeConnection()
+
+    result = evaluation_queue.reprioritize_job(
+        conn,
+        job_id=args.job_id,
+        priority=args.priority,
+        reason=args.reason,
+        ticket_key=args.ticket_key,
+    )
+
+    assert result == {"job_id": 1069, "priority": 90, "status": "queued"}
+    assert conn.ticket["progress"] == 70
+    assert conn.events == [
+        (
+            "MODEL-PAYOUT-001",
+            70,
+            "Run payout policy before recency search",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("job_id", "priority", "reason", "message"),
+    [
+        (0, 90, "reason", "job_id"),
+        (1069, -1, "reason", "priority"),
+        (1069, 1001, "reason", "priority"),
+        (1069, 90, " ", "reason"),
+        (1069, 90, "x" * 501, "reason"),
+    ],
+)
+def test_reprioritize_job_rejects_unbounded_input(
+    job_id, priority, reason, message
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        evaluation_queue.reprioritize_job(
+            _ReprioritizeConnection(),
+            job_id=job_id,
+            priority=priority,
+            reason=reason,
+        )
+
+
+def test_reprioritize_job_requires_queued_job_and_known_ticket() -> None:
+    with pytest.raises(ValueError, match="queued"):
+        evaluation_queue.reprioritize_job(
+            _ReprioritizeConnection(job_status="running"),
+            job_id=1069,
+            priority=90,
+            reason="reason",
+        )
+    with pytest.raises(ValueError, match="unknown ticket"):
+        evaluation_queue.reprioritize_job(
+            _ReprioritizeConnection(ticket_exists=False),
+            job_id=1069,
+            priority=90,
+            reason="reason",
+            ticket_key="MODEL-PAYOUT-001",
+        )
