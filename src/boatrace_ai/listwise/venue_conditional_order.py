@@ -17,7 +17,12 @@ from sklearn.feature_extraction import FeatureHasher
 
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
-from ..feature_tuning import load_complete_race_ids
+from ..feature_tuning import (
+    _ensure_sparse_index32,
+    iter_race_feature_rows,
+    load_complete_race_ids,
+    to_hashable,
+)
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .conditional_order import (
@@ -39,7 +44,6 @@ from .direct_bankroll import (
     bootstrap_daily_bankroll,
     simulate_conditional_payout_walk_forward,
 )
-from .feature_search import load_variant_dataset_with_cache
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -67,6 +71,58 @@ def venue_indices(race_keys: list[tuple[str, str, str, int]]) -> np.ndarray:
     if np.any(values < 0) or np.any(values >= VENUE_COUNT):
         raise ValueError("venue codes must be between 01 and 24")
     return values
+
+
+def score_feature_rows_streaming(
+    race_rows,
+    *,
+    race_keys: list[tuple[str, str, str, int]],
+    model: ListwiseLinearModel,
+    batch_races: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if batch_races < 1:
+        raise ValueError("batch_races must be positive")
+    hasher = FeatureHasher(
+        n_features=len(model.weights),
+        input_type="dict",
+        alternate_sign=False,
+    )
+    scores = np.empty((len(race_keys), 6), dtype=np.float64)
+    ranks = np.empty((len(race_keys), 6), dtype=np.int8)
+    features: list[dict[str, float]] = []
+    batch_start = 0
+    observed = 0
+
+    def flush() -> None:
+        nonlocal batch_start
+        if not features:
+            return
+        matrix = _ensure_sparse_index32(hasher.transform(features))
+        transformed = model.scaler.transform(matrix)
+        race_count = len(features) // 6
+        scores[batch_start : batch_start + race_count] = np.asarray(
+            transformed.dot(model.weights)
+        ).reshape(race_count, 6)
+        batch_start += race_count
+        features.clear()
+
+    for rows in race_rows:
+        ordered = sorted(rows, key=lambda item: int(item["meta"]["lane"]))
+        if len(ordered) != 6 or observed >= len(race_keys):
+            raise ValueError("streamed feature rows do not align with race universe")
+        expected_race_id = str(race_keys[observed][0])
+        actual_race_id = str(ordered[0]["meta"]["race_id"])
+        if actual_race_id != expected_race_id:
+            raise ValueError("streamed feature race order does not match race universe")
+        ranks[observed] = [int(item["meta"]["rank"]) for item in ordered]
+        features.extend(to_hashable(item["features"]) for item in ordered)
+        observed += 1
+        if len(features) >= batch_races * 6:
+            flush()
+    flush()
+    if observed != len(race_keys) or batch_start != len(race_keys):
+        raise ValueError("streamed feature race count does not match race universe")
+    return scores, ranks
 
 
 def _load_legacy_bankroll_reference(
@@ -481,24 +537,31 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             drop_feature_groups=dropped,
             hasher=hasher,
         )
-    if dataset is None:
-        dataset, _source, _prefix = load_variant_dataset_with_cache(
-            conn,
-            race_keys=race_keys,
-            cache_dir=Path(args.cache_dir),
-            name="venue_context",
-            dropped=dropped,
-            n_features=n_features,
-            batch_races=args.feature_batch_races,
-            write_cache=False,
-        )
     train_end = _date_boundary(race_keys, args.training_through, inclusive=True)
     evaluation_start = _date_boundary(race_keys, args.evaluation_from, inclusive=False)
     evaluation_end = _date_boundary(race_keys, args.evaluation_through, inclusive=True)
     if train_end <= 0 or train_end != evaluation_start or evaluation_end <= evaluation_start:
         raise ValueError("training and evaluation must be adjacent non-empty full-day ranges")
-    scores = _score_dataset(dataset, baseline_model, race_end=evaluation_end, batch_races=args.batch_races)
-    orders = np.argsort(dataset.ranks[:evaluation_end], axis=1)[:, :3]
+    if dataset is None:
+        scores, ranks = score_feature_rows_streaming(
+            iter_race_feature_rows(
+                conn,
+                include_races={str(row[0]) for row in race_keys[:evaluation_end]},
+                drop_feature_groups=dropped,
+            ),
+            race_keys=race_keys[:evaluation_end],
+            model=baseline_model,
+            batch_races=args.feature_batch_races,
+        )
+    else:
+        scores = _score_dataset(
+            dataset,
+            baseline_model,
+            race_end=evaluation_end,
+            batch_races=args.batch_races,
+        )
+        ranks = np.asarray(dataset.ranks[:evaluation_end], dtype=np.int8)
+    orders = np.argsort(ranks, axis=1)[:, :3]
     venues = venue_indices(race_keys[:evaluation_end])
     validation_start_date = (
         datetime.fromisoformat(args.training_through).date()
@@ -519,7 +582,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         )
         metrics = evaluate_venue_model(
             scores[validation_start:train_end],
-            dataset.ranks[validation_start:train_end],
+            ranks[validation_start:train_end],
             venues[validation_start:train_end],
             model,
             batch_races=args.batch_races,
@@ -557,14 +620,14 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     evaluation_slice = slice(evaluation_start, evaluation_end)
     candidate_metrics = evaluate_venue_model(
         scores[evaluation_slice],
-        dataset.ranks[evaluation_slice],
+        ranks[evaluation_slice],
         venues[evaluation_slice],
         model,
         batch_races=args.batch_races,
     )
     global_metrics = _evaluate_global(
         scores[evaluation_slice],
-        dataset.ranks[evaluation_slice],
+        ranks[evaluation_slice],
         global_model,
         batch_races=args.batch_races,
     )

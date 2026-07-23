@@ -2,16 +2,62 @@ from __future__ import annotations
 
 import numpy as np
 import json
+from sklearn.feature_extraction import FeatureHasher
+from sklearn.preprocessing import StandardScaler
 
 from boatrace_ai.listwise.conditional_order import conditional_probabilities, identity_model
+from boatrace_ai.listwise.model import ListwiseLinearModel
 from boatrace_ai.listwise.venue_conditional_order import (
     _load_legacy_bankroll_reference,
     _pack_model,
     objective_gradient,
+    score_feature_rows_streaming,
     venue_conditional_probabilities,
     venue_identity_model,
     venue_indices,
 )
+
+
+def test_streaming_scores_match_direct_hashed_matrix() -> None:
+    keys = [
+        ("r1", "2026-07-01", "01", 1),
+        ("r2", "2026-07-01", "01", 2),
+    ]
+    rows = []
+    flat = []
+    for race_index, key in enumerate(keys):
+        race = []
+        for lane in range(1, 7):
+            features = {"lane": lane, "race_bias": race_index + 1}
+            flat.append(features)
+            race.append({
+                "features": features,
+                "meta": {
+                    "race_id": key[0],
+                    "lane": lane,
+                    "rank": 7 - lane,
+                },
+            })
+        rows.append(race)
+    hasher = FeatureHasher(n_features=64, input_type="dict", alternate_sign=False)
+    matrix = hasher.transform(flat)
+    scaler = StandardScaler(with_mean=False).fit(matrix)
+    model = ListwiseLinearModel(
+        weights=np.linspace(-0.5, 0.5, 64),
+        scaler=scaler,
+        target="top3_pl",
+        alpha=0.001,
+        learning_rate=0.02,
+        epochs=1,
+    )
+
+    scores, ranks = score_feature_rows_streaming(
+        iter(rows), race_keys=keys, model=model, batch_races=1
+    )
+    expected = np.asarray(scaler.transform(matrix).dot(model.weights)).reshape(2, 6)
+
+    np.testing.assert_allclose(scores, expected)
+    np.testing.assert_array_equal(ranks, np.tile([6, 5, 4, 3, 2, 1], (2, 1)))
 
 
 def test_legacy_bankroll_reference_requires_identical_daily_period(tmp_path) -> None:
