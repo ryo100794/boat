@@ -7,12 +7,14 @@ remote="${BOATRACE_RAW_ARCHIVE_REMOTE:-gdrive:workspace/boat/raw/archives}"
 config="${RCLONE_CONFIG:-/workspace/google-drive/rclone.conf}"
 min_age_minutes="${BOATRACE_RAW_ARCHIVE_MIN_AGE_MINUTES:-30}"
 batch_files="${BOATRACE_RAW_ARCHIVE_BATCH_FILES:-5000}"
+max_batches="${BOATRACE_RAW_ARCHIVE_MAX_BATCHES:-0}"
 interval="${BOATRACE_RAW_ARCHIVE_INTERVAL:-600}"
 rclone_bin="${RCLONE_BIN:-rclone}"
 
 [[ -f "$config" ]] || { echo "rclone config not found: $config" >&2; exit 2; }
 [[ "$min_age_minutes" =~ ^[0-9]+$ ]] || { echo "invalid minimum age: $min_age_minutes" >&2; exit 2; }
 [[ "$batch_files" =~ ^[1-9][0-9]*$ ]] || { echo "invalid batch size: $batch_files" >&2; exit 2; }
+[[ "$max_batches" =~ ^[0-9]+$ ]] || { echo "invalid max batches: $max_batches" >&2; exit 2; }
 mkdir -p "$raw_dir" "$staging_dir"
 lock_dir="$(dirname "$staging_dir")"
 mkdir -p "$lock_dir"
@@ -77,7 +79,7 @@ archive_batch() {
 }
 
 run_cycle() {
-  local archive orphan
+  local archive orphan batches=0
 
   # A finalized archive is a durable retry point after interruption.
   shopt -s nullglob
@@ -91,7 +93,10 @@ run_cycle() {
   shopt -u nullglob
 
   while archive_batch; do
-    :
+    batches=$((batches + 1))
+    if [[ "$max_batches" -gt 0 && "$batches" -ge "$max_batches" ]]; then
+      break
+    fi
   done
 }
 

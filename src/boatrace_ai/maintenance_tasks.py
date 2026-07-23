@@ -66,6 +66,7 @@ def backup_raw(app_root: Path, output: Path) -> dict[str, Any]:
     command = app_root / "scripts" / "deployment" / "run-boatrace-raw-archive.sh"
     env = dict(os.environ)
     env["BOATRACE_RAW_ARCHIVE_ONCE"] = "1"
+    env["BOATRACE_RAW_ARCHIVE_MAX_BATCHES"] = "1"
     completed = subprocess.run(
         [str(command)],
         cwd=app_root,
