@@ -23,6 +23,7 @@ from .db import connection
 
 JST = ZoneInfo("Asia/Tokyo")
 DEFAULT_DSN = "host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app"
+STANDARDIZED_SELECTED_CACHE_DIR = Path("/tmp/boatrace-standardized-365d-v2")
 SCHEMA_LOCK_ID = 71234001
 CLAIM_LOCK_ID = 71234002
 
@@ -532,6 +533,51 @@ def _half_lives(params: dict[str, Any]) -> str:
     return ",".join(candidates)
 
 
+def _selected_standard_cache_prefix(app_root: Path) -> Path:
+    artifact = (
+        app_root / "data" / "models" / "standardized_365d_v2"
+        / "raw" / "listwise_feature_teacher.json"
+    )
+    try:
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+        selected = payload["selected"]
+        variant = selected["feature_variant"]
+        selected_cache_dir = payload["selected_cache_dir"]
+        n_features = payload["n_features"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(
+            "standardized feature artifact is missing, incomplete, or invalid"
+        ) from exc
+    if not isinstance(variant, str):
+        raise ValueError("standardized feature artifact has an invalid feature variant")
+    from .listwise.feature_search import feature_variants
+
+    known_variants = {name for name, _dropped in feature_variants()}
+    if variant not in known_variants:
+        raise ValueError("standardized feature artifact has an unknown feature variant")
+    if isinstance(n_features, bool) or not isinstance(n_features, int):
+        raise ValueError("standardized feature artifact has invalid n_features")
+    if not 1024 <= n_features <= 32768:
+        raise ValueError("standardized feature artifact n_features is out of range")
+    expected_cache_dir = STANDARDIZED_SELECTED_CACHE_DIR
+    if selected_cache_dir != str(expected_cache_dir):
+        raise ValueError(
+            "standardized feature artifact selected_cache_dir must exactly match "
+            "/tmp/boatrace-standardized-365d-v2"
+        )
+    cache_prefix = expected_cache_dir / (
+        f"listwise_search_{n_features}_{variant}"
+    )
+    if cache_prefix.parent != expected_cache_dir:
+        raise ValueError("standardized feature cache prefix escapes the allowed directory")
+    manifest = Path(str(cache_prefix) + ".manifest.json")
+    if not manifest.is_file():
+        raise ValueError(
+            f"selected standardized feature cache manifest is missing: {manifest}"
+        )
+    return cache_prefix
+
+
 def build_command(
     job: dict[str, Any],
     *,
@@ -657,7 +703,8 @@ def build_command(
             "--cache-dir", str(search_cache),
             "--cache-write-mode", "never",
             "--selected-cache-dir", str(selected_cache),
-            "--variant-workers", "2",
+            "--variant-workers", "1",
+            "--candidate-workers", "2",
             "--as-of-date", evaluation_date,
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),
@@ -705,11 +752,7 @@ def build_command(
                 "conditional payout evaluation range must be exactly 365 days"
             )
         _integer(params, "timeout_seconds", 21600, 300, 86400)
-        cache_prefix = (
-            app_root / "data" / "models" / "standardized_365d_v2"
-            / "listwise_search_cache"
-            / "listwise_search_4096_drop_research_correlates"
-        )
+        cache_prefix = _selected_standard_cache_prefix(app_root)
         baseline_model = (
             app_root / "data" / "models" / "standardized_365d_v2"
             / "listwise_newton.joblib"
@@ -1233,6 +1276,16 @@ DEFAULT_WORK_TICKETS = (
         90,
         "in_progress",
         35,
+    ),
+    (
+        "OPS-EVAL-MEM-001",
+        "Memory-safe feature-search parallelism for 32GB runtime",
+        "Model infrastructure",
+        "Process feature variants sequentially and parallelize only candidates sharing one dataset",
+        "variant_workers=1 and candidate_workers=1/2 produce identical results while sharing the dataset and scaler",
+        98,
+        "in_progress",
+        15,
     ),
     (
         "OPS-GITHUB-SYNC-001",

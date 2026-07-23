@@ -3,13 +3,12 @@ from __future__ import annotations
 import argparse
 import gc
 import json
-import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sklearn.feature_extraction import FeatureHasher
 
@@ -298,6 +297,8 @@ def _evaluate_variant(
     conn,
     *,
     request: dict[str, Any],
+    candidate_workers: int,
+    on_candidate_complete: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[HashedRaceDataset, dict[str, Any]]:
     variant_started = time.perf_counter()
     variant_name = str(request["variant_name"])
@@ -333,7 +334,8 @@ def _evaluate_variant(
         if missing
         else None
     )
-    for target, alpha in missing:
+
+    def evaluate_candidate(target: str, alpha: float) -> dict[str, Any]:
         model, history = train_listwise_model(
             dataset,
             train_race_end=int(request["train_end"]),
@@ -351,7 +353,7 @@ def _evaluate_variant(
             race_end=int(request["selection_end"]),
             batch_races=int(request["batch_races"]),
         )
-        completed[_candidate_key(variant_name, target, alpha)] = {
+        return {
             "feature_variant": variant_name,
             "drop_feature_groups": list(dropped),
             "target": target,
@@ -361,6 +363,19 @@ def _evaluate_variant(
             "training_history": history,
             **metrics,
         }
+
+    if missing:
+        with ThreadPoolExecutor(max_workers=candidate_workers) as executor:
+            futures = {
+                executor.submit(evaluate_candidate, target, alpha): (target, alpha)
+                for target, alpha in missing
+            }
+            for future in as_completed(futures):
+                target, alpha = futures[future]
+                row = future.result()
+                completed[_candidate_key(variant_name, target, alpha)] = row
+                if on_candidate_complete is not None:
+                    on_candidate_complete(row)
     rows = [
         completed[_candidate_key(variant_name, target, alpha)]
         for target in targets
@@ -371,26 +386,6 @@ def _evaluate_variant(
         "rows": rows,
         "elapsed_seconds": round(time.perf_counter() - variant_started, 3),
     }
-
-
-def _variant_worker(request: dict[str, Any], control) -> dict[str, Any]:
-    dataset: HashedRaceDataset | None = None
-    try:
-        with connection(str(request["db"])) as conn:
-            dataset, payload = _evaluate_variant(conn, request=request)
-        control.send(payload)
-        selected_cache_prefix = control.recv()
-        if selected_cache_prefix is not None:
-            save_hashed_dataset(Path(selected_cache_prefix), dataset)
-        return {
-            "feature_variant": request["variant_name"],
-            "selected_cache_saved": selected_cache_prefix is not None,
-        }
-    finally:
-        control.close()
-        if dataset is not None:
-            del dataset
-        gc.collect()
 
 
 def _checkpoint_payload(
@@ -424,11 +419,14 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     if not targets or any(value not in TARGETS for value in targets):
         raise ValueError(f"targets must be selected from {TARGETS}")
     variant_workers = int(args.variant_workers)
-    if variant_workers not in (1, 2, 3):
-        raise ValueError("variant workers must be between 1 and 3")
+    if variant_workers != 1:
+        raise ValueError("variant workers must be 1 to avoid dataset matrix duplication")
+    candidate_workers = int(args.candidate_workers)
+    if candidate_workers not in (1, 2, 3, 4):
+        raise ValueError("candidate workers must be between 1 and 4")
     db = str(args.db)
     if not db:
-        raise ValueError("database DSN is required for variant workers")
+        raise ValueError("database DSN is required for feature search")
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     selected_cache_dir = Path(args.selected_cache_dir) if args.selected_cache_dir else None
@@ -517,110 +515,84 @@ def search(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             ],
         })
 
-    context = multiprocessing.get_context("spawn")
-    controls: dict[str, Any] = {}
-    child_controls: list[Any] = []
-    futures: dict[str, Any] = {}
-    handled: set[str] = set()
-    with ProcessPoolExecutor(
-        max_workers=variant_workers,
-        mp_context=context,
-    ) as executor:
+    for request in requests:
+        dataset: HashedRaceDataset | None = None
+        variant_name = str(request["variant_name"])
+        existing_keys = set(completed)
+
+        def record_candidate(row: dict[str, Any]) -> None:
+            key = _candidate_key(
+                variant_name,
+                str(row["target"]),
+                float(row["alpha"]),
+            )
+            completed[key] = row
+            _write_json_atomic(
+                checkpoint_path,
+                _checkpoint_payload(
+                    checkpoint_signature,
+                    completed,
+                    targets=targets,
+                    alphas=alphas,
+                ),
+            )
+
         try:
-            for request in requests:
-                parent_control, child_control = context.Pipe(duplex=True)
-                variant_name = str(request["variant_name"])
-                controls[variant_name] = parent_control
-                child_controls.append(child_control)
-                futures[variant_name] = executor.submit(
-                    _variant_worker,
-                    request,
-                    child_control,
+            dataset, payload = _evaluate_variant(
+                conn,
+                request=request,
+                candidate_workers=candidate_workers,
+                on_candidate_complete=record_candidate,
+            )
+            for row in payload["rows"]:
+                key = _candidate_key(
+                    variant_name,
+                    str(row["target"]),
+                    float(row["alpha"]),
                 )
-            while len(handled) < len(requests):
-                progressed = False
-                for variant_name, future in futures.items():
-                    if variant_name in handled or not future.done():
-                        continue
-                    future.result()
-                    raise RuntimeError(
-                        f"variant worker exited without results: {variant_name}"
-                    )
-                for variant_name, control in controls.items():
-                    if variant_name in handled or not control.poll():
-                        continue
-                    payload = control.recv()
-                    new_rows = []
-                    for row in payload["rows"]:
-                        key = _candidate_key(
-                            variant_name,
-                            str(row["target"]),
-                            float(row["alpha"]),
-                        )
-                        if key not in completed:
-                            new_rows.append(row)
-                        completed[key] = row
-                    _write_json_atomic(
-                        checkpoint_path,
-                        _checkpoint_payload(
-                            checkpoint_signature,
-                            completed,
-                            targets=targets,
-                            alphas=alphas,
-                        ),
-                    )
-                    for row in new_rows:
-                        print(json.dumps({
-                            key: value
-                            for key, value in row.items()
-                            if key != "training_history"
-                        }, ensure_ascii=False), flush=True)
-                    current_rows = _ordered_rows(
-                        completed,
-                        targets=targets,
-                        alphas=alphas,
-                    )
-                    current_selected = _selected_row(current_rows)
-                    save_prefix: Path | None = None
-                    if (
-                        selected_cache_dir is not None
-                        and str(current_selected["feature_variant"]) == variant_name
-                        and active_cache_variant != variant_name
-                    ):
-                        cleanup_selected_cache_family(
-                            selected_cache_dir,
-                            n_features=args.n_features,
-                        )
-                        save_prefix = variant_cache_prefix(
-                            selected_cache_dir,
-                            n_features=args.n_features,
-                            name=variant_name,
-                        )
-                    control.send(str(save_prefix) if save_prefix is not None else None)
-                    handled.add(variant_name)
-                    if save_prefix is not None:
-                        futures[variant_name].result()
-                        active_cache_variant = variant_name
+                completed[key] = row
+                if key not in existing_keys:
                     print(json.dumps({
-                        "feature_variant_complete": variant_name,
-                        "elapsed_seconds": payload["elapsed_seconds"],
-                    }), flush=True)
-                    progressed = True
-                    break
-                if not progressed:
-                    time.sleep(0.02)
-            for future in futures.values():
-                future.result()
+                        name: value
+                        for name, value in row.items()
+                        if name != "training_history"
+                    }, ensure_ascii=False), flush=True)
+            _write_json_atomic(
+                checkpoint_path,
+                _checkpoint_payload(
+                    checkpoint_signature,
+                    completed,
+                    targets=targets,
+                    alphas=alphas,
+                ),
+            )
+            current_selected = _selected_row(
+                _ordered_rows(completed, targets=targets, alphas=alphas)
+            )
+            if (
+                selected_cache_dir is not None
+                and str(current_selected["feature_variant"]) == variant_name
+                and active_cache_variant != variant_name
+            ):
+                cleanup_selected_cache_family(
+                    selected_cache_dir,
+                    n_features=args.n_features,
+                )
+                save_prefix = variant_cache_prefix(
+                    selected_cache_dir,
+                    n_features=args.n_features,
+                    name=variant_name,
+                )
+                save_hashed_dataset(save_prefix, dataset)
+                active_cache_variant = variant_name
+            print(json.dumps({
+                "feature_variant_complete": variant_name,
+                "elapsed_seconds": payload["elapsed_seconds"],
+            }), flush=True)
         finally:
-            for variant_name, control in controls.items():
-                if variant_name not in handled:
-                    try:
-                        control.send(None)
-                    except (BrokenPipeError, EOFError, OSError):
-                        pass
-                control.close()
-            for child_control in child_controls:
-                child_control.close()
+            if dataset is not None:
+                del dataset
+            gc.collect()
 
     search_rows = _ordered_rows(completed, targets=targets, alphas=alphas)
     expected_candidates = len(feature_variants()) * len(targets) * len(alphas)
@@ -789,9 +761,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--variant-workers",
         type=int,
-        choices=(1, 2, 3),
+        choices=(1,),
         default=1,
-        help="Number of feature variants evaluated concurrently (1-3).",
+        help="Feature variants are sequential to avoid dataset duplication (fixed at 1).",
+    )
+    parser.add_argument(
+        "--candidate-workers",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=1,
+        help="Candidates sharing one read-only variant dataset (1-4).",
     )
     parser.add_argument("--as-of-date")
     parser.add_argument("--n-features", type=int, default=1 << 12)

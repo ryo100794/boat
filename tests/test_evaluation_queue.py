@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
+
+import boatrace_ai.evaluation_queue as evaluation_queue
 
 from boatrace_ai.evaluation_queue import (
     DEFAULT_WORK_TICKETS,
@@ -27,6 +30,7 @@ from boatrace_ai.listwise.venue_conditional_order import (
 def _job(task_type: str, parameters: dict, *, job_id: int = 7) -> dict:
     return {
         "job_id": job_id,
+        "status": "running",
         "task_type": task_type,
         "model_key": "candidate",
         "parameters": parameters,
@@ -76,9 +80,52 @@ def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
     }
 
 
-def test_conditional_payout_tail_profile_and_command_are_fixed(tmp_path) -> None:
+def _write_standard_feature_artifact(
+    root: Path,
+    cache_dir: Path,
+    *,
+    variant: str = "drop_research_correlates",
+    n_features: int = 4096,
+    create_manifest: bool = True,
+) -> Path:
+    artifact = (
+        root / "data/models/standardized_365d_v2/raw"
+        / "listwise_feature_teacher.json"
+    )
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps({
+        "selected": {"feature_variant": variant},
+        "selected_cache_dir": str(cache_dir),
+        "n_features": n_features,
+    }), encoding="utf-8")
+    cache_prefix = cache_dir / f"listwise_search_{n_features}_{variant}"
+    if create_manifest:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        Path(str(cache_prefix) + ".manifest.json").write_text(
+            "{}", encoding="utf-8"
+        )
+    return cache_prefix
+
+
+def test_standardized_selected_cache_root_is_fixed() -> None:
+    assert evaluation_queue.STANDARDIZED_SELECTED_CACHE_DIR == Path(
+        "/tmp/boatrace-standardized-365d-v2"
+    )
+
+
+def test_conditional_payout_tail_profile_and_command_are_fixed(
+    tmp_path,
+    monkeypatch,
+) -> None:
     root = tmp_path / "boat"
     python = root / ".venv/bin/python"
+    cache_dir = tmp_path / "selected-standard-cache"
+    monkeypatch.setattr(
+        evaluation_queue,
+        "STANDARDIZED_SELECTED_CACHE_DIR",
+        cache_dir,
+    )
+    cache_prefix = _write_standard_feature_artifact(root, cache_dir)
     command, output = build_command(
         _job(
             "conditional_payout_tail",
@@ -109,11 +156,7 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(tmp_path) -> None
         "--db",
         "postgresql://test",
         "--cache-prefix",
-        str(
-            root
-            / "data/models/standardized_365d_v2/listwise_search_cache"
-            / "listwise_search_4096_drop_research_correlates"
-        ),
+        str(cache_prefix),
         "--baseline-model",
         str(root / "data/models/standardized_365d_v2/listwise_newton.joblib"),
         "--training-through",
@@ -135,6 +178,77 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(tmp_path) -> None
         "--promote-legacy-cache",
     ]
     assert output == result
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing", "missing, incomplete, or invalid"),
+        ("malformed", "missing, incomplete, or invalid"),
+        ("incomplete", "missing, incomplete, or invalid"),
+        ("unknown_variant", "unknown feature variant"),
+        ("feature_range", "out of range"),
+        ("cache_traversal", "must exactly match"),
+        ("missing_manifest", "manifest is missing"),
+    ],
+)
+def test_claimed_conditional_payout_fails_on_invalid_standard_artifact(
+    tmp_path,
+    monkeypatch,
+    case,
+    message,
+) -> None:
+    root = tmp_path / "boat"
+    cache_dir = tmp_path / "selected-standard-cache"
+    monkeypatch.setattr(
+        evaluation_queue,
+        "STANDARDIZED_SELECTED_CACHE_DIR",
+        cache_dir,
+    )
+    artifact = (
+        root / "data/models/standardized_365d_v2/raw"
+        / "listwise_feature_teacher.json"
+    )
+    if case != "missing":
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        if case == "malformed":
+            artifact.write_text("{", encoding="utf-8")
+        else:
+            payload = {
+                "selected": {"feature_variant": "full"},
+                "selected_cache_dir": str(cache_dir),
+                "n_features": 4096,
+            }
+            if case == "incomplete":
+                payload.pop("selected")
+            elif case == "unknown_variant":
+                payload["selected"]["feature_variant"] = "../full"
+            elif case == "feature_range":
+                payload["n_features"] = 999
+            elif case == "cache_traversal":
+                payload["selected_cache_dir"] = str(cache_dir / ".." / "escape")
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            if case != "missing_manifest":
+                prefix = cache_dir / "listwise_search_4096_full"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                Path(str(prefix) + ".manifest.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job(
+                "conditional_payout_tail",
+                {
+                    "training_through": "2025-07-19",
+                    "evaluation_from": "2025-07-20",
+                    "evaluation_through": "2026-07-19",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 @pytest.mark.parametrize(
@@ -330,7 +444,7 @@ def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
         )
 
 
-@pytest.mark.parametrize("parameter", ["variant_workers", "cache_dir"])
+@pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
 def test_feature_search_rejects_injected_worker_or_path(tmp_path, parameter) -> None:
     with pytest.raises(
         ValueError,
@@ -395,6 +509,7 @@ def test_fresh_work_ticket_seed_registers_feature_search_parallelization(
 def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None:
     keys = {row[0] for row in DEFAULT_WORK_TICKETS}
     assert {
+        "OPS-EVAL-MEM-001",
         "OPS-GITHUB-SYNC-001",
         "DOCS-HIERARCHY-001",
         "MODEL-PAYOUT-001",
@@ -403,6 +518,11 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-SEGMENT-001",
         "UI-MODEL-DAILY-001",
     } <= keys
+    memory_ticket = next(
+        row for row in DEFAULT_WORK_TICKETS
+        if row[0] == "OPS-EVAL-MEM-001"
+    )
+    assert memory_ticket[5:] == (98, "in_progress", 15)
 
 
 def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
