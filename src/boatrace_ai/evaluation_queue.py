@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 import resource
 import shutil
@@ -43,6 +44,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
+    "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -484,6 +486,37 @@ def _date(params: dict[str, Any], key: str) -> str:
     return value
 
 
+def _half_lives(params: dict[str, Any]) -> str:
+    raw = params.get("half_lives", "none,180,365,730")
+    if not isinstance(raw, str):
+        raise ValueError("half_lives must be a comma-separated string")
+    candidates: list[str] = []
+    seen: set[float | None] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if token == "none":
+            value = None
+            normalized = token
+        else:
+            try:
+                value = float(token)
+            except ValueError as exc:
+                raise ValueError(
+                    "half_lives entries must be none or finite numbers in [30, 3650]"
+                ) from exc
+            if not math.isfinite(value) or not 30 <= value <= 3650:
+                raise ValueError(
+                    "half_lives entries must be none or finite numbers in [30, 3650]"
+                )
+            normalized = str(int(value)) if value.is_integer() else format(value, ".15g")
+        if value not in seen:
+            seen.add(value)
+            candidates.append(normalized)
+    if len(candidates) < 2:
+        raise ValueError("half_lives must contain at least 2 distinct candidates")
+    return ",".join(candidates)
+
+
 def build_command(
     job: dict[str, Any],
     *,
@@ -520,6 +553,33 @@ def build_command(
             "--output", str(output),
             "--model-input", str(model_input),
             "--evaluation-date", evaluation_date,
+        ], output
+    if task_type == "calibrated_mlp_recency_search":
+        unsupported = set(params) - {
+            "evaluation_date", "timeout_seconds", "half_lives", "calibration_days",
+        }
+        if unsupported:
+            raise ValueError(
+                "unsupported calibrated_mlp_recency_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "evaluation_date" not in params:
+            raise ValueError("evaluation_date is required")
+        evaluation_date = _date(params, "evaluation_date")
+        _integer(params, "timeout_seconds", 28800, 300, 86400)
+        half_lives = _half_lives(params)
+        calibration_days = _integer(params, "calibration_days", 180, 30, 730)
+        feature_cache = (
+            app_root / "data" / "models" / "calibrated_shadow_features_16384"
+        )
+        return [
+            str(python), "-m", "boatrace_ai.recency_mlp_evaluation",
+            "--db", db,
+            "--output", str(output),
+            "--evaluation-date", evaluation_date,
+            "--feature-cache", str(feature_cache),
+            "--half-lives", half_lives,
+            "--calibration-days", str(calibration_days),
         ], output
     if task_type == "market_curvature":
         cache = app_root / "data" / "models" / "stagewise_blend_market_shadow.races.joblib"
@@ -906,7 +966,11 @@ def execute_job(
         env["BOATRACE_DB"] = db
     timeout_default = (
         28800
-        if job["task_type"] in {"standardized_365d", "historical_coverage_safe"}
+        if job["task_type"] in {
+            "standardized_365d",
+            "historical_coverage_safe",
+            "calibrated_mlp_recency_search",
+        }
         else 21600
     )
     timeout = _integer(job.get("parameters") or {}, "timeout_seconds", timeout_default, 300, 86400)

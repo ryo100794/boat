@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from boatrace_ai.evaluation_queue import (
+    TASK_PROFILES,
     build_command,
     dedupe_key,
     prepare_standardized_workspace,
@@ -44,6 +45,91 @@ def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None
     assert command[1] == str(root / "scripts/analyze_market_curvature.py")
     assert command[-1] == str(root / "data/models/evaluation_queue/job-00000007.json")
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_calibrated_mlp_recency_search_profile() -> None:
+    assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
+        "category": "evaluation",
+        "memory_mb": 16384,
+        "disk_mb": 4096,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
+
+
+def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "half_lives": "none,180,180.0,365",
+                "calibration_days": 120,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command == [
+        str(python),
+        "-m",
+        "boatrace_ai.recency_mlp_evaluation",
+        "--db",
+        "postgresql://test",
+        "--output",
+        str(root / "data/models/evaluation_queue/job-00000007.json"),
+        "--evaluation-date",
+        "2026-07-22",
+        "--feature-cache",
+        str(root / "data/models/calibrated_shadow_features_16384"),
+        "--half-lives",
+        "none,180,365",
+        "--calibration-days",
+        "120",
+    ]
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+    default_command, _ = build_command(
+        _job("calibrated_mlp_recency_search", {"evaluation_date": "2026-07-22"}),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert default_command[-4:] == [
+        "--half-lives",
+        "none,180,365,730",
+        "--calibration-days",
+        "180",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({}, "evaluation_date is required"),
+        ({"evaluation_date": "2026-07-22", "half_lives": "none"}, "at least 2"),
+        ({"evaluation_date": "2026-07-22", "half_lives": "none,29"}, "finite numbers"),
+        ({"evaluation_date": "2026-07-22", "half_lives": "none,nan"}, "finite numbers"),
+        ({"evaluation_date": "2026-07-22", "calibration_days": 29}, "calibration_days"),
+        ({"evaluation_date": "2026-07-22", "timeout_seconds": 299}, "timeout_seconds"),
+        ({"evaluation_date": "2026-07-22", "command": "rm -rf /"}, "unsupported"),
+        ({"evaluation_date": "2026-07-22", "feature_cache": "/tmp/cache"}, "unsupported"),
+    ],
+)
+def test_calibrated_mlp_recency_search_rejects_invalid_parameters(
+    tmp_path, parameters, message
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job("calibrated_mlp_recency_search", parameters),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
 
 
 def test_task_parameters_cannot_select_arbitrary_command(tmp_path) -> None:
@@ -147,6 +233,9 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     assert len(inserted) == 11
     assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
     assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
+    assert not any(
+        row["task_type"] == "calibrated_mlp_recency_search" for row in calls
+    )
     assert all(
         row["parameters"]["evaluation_date"] == "2026-07-22" for row in calls
     )

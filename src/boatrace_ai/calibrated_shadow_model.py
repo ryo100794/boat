@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -51,6 +51,7 @@ def train_bundle_from_dataset(
     batch_size: int = 12_000,
     epochs: int = 2,
     alpha: float = 0.0001,
+    recency_half_life_days: float | None = None,
 ) -> dict[str, Any]:
     model_kind = normalize_model_kind(model_kind)
     train_count = min(dataset.race_count, int(train_race_count))
@@ -60,9 +61,20 @@ def train_bundle_from_dataset(
     labels = (dataset.ranks[:train_count].reshape(-1) == 1).astype(np.int64)
     if len(labels) != train_end:
         raise ValueError("cached label shape mismatch")
+    sample_weights = recency_sample_weights(
+        dataset,
+        train_race_count=train_count,
+        recency_half_life_days=recency_half_life_days,
+    )
     scaler = StandardScaler(with_mean=False)
     for start, end in matrix_batch_ranges(train_end, batch_size):
-        scaler.partial_fit(dataset.matrix[start:end])
+        if sample_weights is None:
+            scaler.partial_fit(dataset.matrix[start:end])
+        else:
+            scaler.partial_fit(
+                dataset.matrix[start:end],
+                sample_weight=sample_weights[start:end],
+            )
 
     classifier = make_classifier(model_kind, alpha=alpha, batch_size=batch_size)
     first = True
@@ -70,6 +82,8 @@ def train_bundle_from_dataset(
         for start, end in matrix_batch_ranges(train_end, batch_size):
             matrix = scaler.transform(dataset.matrix[start:end])
             kwargs = {"classes": np.asarray([0, 1], dtype=np.int64)} if first else {}
+            if sample_weights is not None:
+                kwargs["sample_weight"] = sample_weights[start:end]
             classifier.partial_fit(matrix, labels[start:end], **kwargs)
             first = False
     if first:
@@ -84,7 +98,44 @@ def train_bundle_from_dataset(
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
         "matrix_cached": True,
+        "recency_half_life_days": (
+            None
+            if recency_half_life_days is None
+            else float(recency_half_life_days)
+        ),
     }
+
+
+def recency_sample_weights(
+    dataset: HashedRaceDataset,
+    *,
+    train_race_count: int,
+    recency_half_life_days: float | None,
+) -> np.ndarray | None:
+    if recency_half_life_days is None:
+        return None
+    half_life = float(recency_half_life_days)
+    if not np.isfinite(half_life) or half_life <= 0.0:
+        raise ValueError("recency_half_life_days must be positive and finite")
+    train_count = min(dataset.race_count, int(train_race_count))
+    if train_count <= 0:
+        raise ValueError("no cached training races")
+    try:
+        reference_date = date.fromisoformat(str(dataset.race_keys[train_count - 1][1]))
+        race_dates = [
+            date.fromisoformat(str(race_date))
+            for _race_id, race_date, _jcd, _rno in dataset.race_keys[:train_count]
+        ]
+    except ValueError as exc:
+        raise ValueError("cached race date must use YYYY-MM-DD") from exc
+    ages = np.asarray(
+        [(reference_date - race_date).days for race_date in race_dates],
+        dtype=np.float64,
+    )
+    if np.any(ages < 0):
+        raise ValueError("cached training races are not in chronological order")
+    race_weights = np.power(0.5, ages / half_life)
+    return np.repeat(race_weights, 6)
 
 
 def score_dataset_fold(
