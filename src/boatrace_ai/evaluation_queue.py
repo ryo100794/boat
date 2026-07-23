@@ -348,6 +348,28 @@ def enqueue_job(
     return int(row["job_id"]) if row else None
 
 
+def _timeout_retry_parameters(
+    parameters: dict[str, Any],
+    *,
+    task_type: str,
+) -> dict[str, Any]:
+    updated = dict(parameters)
+    default = (
+        28800
+        if task_type in {
+            "standardized_365d",
+            "historical_coverage_safe",
+            "calibrated_mlp_recency_search",
+        }
+        else 21600
+    )
+    current = updated.get("timeout_seconds", default)
+    if isinstance(current, bool) or not isinstance(current, (int, float)):
+        return updated
+    updated["timeout_seconds"] = min(86400, max(300, int(current)) * 2)
+    return updated
+
+
 def claim_job(
     conn: Any,
     *,
@@ -356,58 +378,87 @@ def claim_job(
 ) -> dict[str, Any] | None:
     snapshot = _json(resource_snapshot_dict(resources))
     conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
+    candidate = conn.execute(
+        """
+        SELECT jobs.*
+        FROM model_evaluation_jobs AS jobs
+        WHERE jobs.status = 'queued'
+          AND jobs.available_at <= CURRENT_TIMESTAMP
+          AND jobs.attempt < jobs.max_attempts
+          AND jobs.min_free_memory_mb <= ?
+          AND jobs.min_free_disk_mb <= ?
+          AND jobs.min_idle_cpu_percent <= ?
+          AND (
+            SELECT COUNT(*) FROM model_evaluation_jobs running
+            WHERE running.status = 'running'
+              AND running.task_type = jobs.task_type
+          ) < jobs.max_parallel
+          AND (
+            jobs.category <> 'evaluation'
+            OR jobs.min_free_memory_mb < 8192
+            OR (
+              CASE WHEN jobs.min_free_memory_mb >= 14336 THEN 2 ELSE 1 END
+              + COALESCE((
+                SELECT SUM(
+                  CASE WHEN running.min_free_memory_mb >= 14336 THEN 2 ELSE 1 END
+                )
+                FROM model_evaluation_jobs running
+                WHERE running.status = 'running'
+                  AND running.category = 'evaluation'
+                  AND running.min_free_memory_mb >= 8192
+              ), 0)
+            ) <= 2
+          )
+        ORDER BY jobs.priority DESC, jobs.job_id
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+        """,
+        (
+            resources.available_memory_mb,
+            resources.available_disk_mb,
+            resources.idle_cpu_percent,
+        ),
+    ).fetchone()
+    if candidate is None:
+        return None
+    candidate_row = {key: candidate[key] for key in candidate.keys()}
+    parameters = candidate_row.get("parameters")
+    parameters = (
+        parameters
+        if isinstance(parameters, dict)
+        else json.loads(parameters or "{}")
+    )
+    previous_error = str(candidate_row.get("error") or "")
+    if previous_error.startswith("TimeoutExpired:"):
+        parameters = _timeout_retry_parameters(
+            parameters,
+            task_type=str(candidate_row["task_type"]),
+        )
     row = conn.execute(
         """
-        WITH candidate AS (
-          SELECT job_id
-          FROM model_evaluation_jobs
-          WHERE status = 'queued'
-            AND available_at <= CURRENT_TIMESTAMP
-            AND attempt < max_attempts
-            AND min_free_memory_mb <= ?
-            AND min_free_disk_mb <= ?
-            AND min_idle_cpu_percent <= ?
-            AND (
-              SELECT COUNT(*) FROM model_evaluation_jobs running
-              WHERE running.status = 'running'
-                AND running.task_type = model_evaluation_jobs.task_type
-            ) < max_parallel
-            AND (
-              category <> 'evaluation'
-              OR min_free_memory_mb < 8192
-              OR (
-                CASE WHEN min_free_memory_mb >= 16384 THEN 2 ELSE 1 END
-                + COALESCE((
-                  SELECT SUM(
-                    CASE WHEN running.min_free_memory_mb >= 16384 THEN 2 ELSE 1 END
-                  )
-                  FROM model_evaluation_jobs running
-                  WHERE running.status = 'running'
-                    AND running.category = 'evaluation'
-                    AND running.min_free_memory_mb >= 8192
-                ), 0)
-              ) <= 2
-            )
-          ORDER BY priority DESC, job_id
-          FOR UPDATE SKIP LOCKED
-          LIMIT 1
-        )
-        UPDATE model_evaluation_jobs AS jobs
+        UPDATE model_evaluation_jobs
         SET status = 'running', worker_id = ?, locked_at = CURRENT_TIMESTAMP,
             started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
             attempt = attempt + 1, updated_at = CURRENT_TIMESTAMP,
-            error = NULL, last_resource_snapshot = CAST(? AS JSONB)
-        FROM candidate
-        WHERE jobs.job_id = candidate.job_id
-        RETURNING jobs.*
+            parameters = CAST(? AS JSONB), error = NULL,
+            last_resource_snapshot = CAST(? AS JSONB)
+        WHERE job_id = ? AND status = 'queued'
+        RETURNING *
         """,
-        (resources.available_memory_mb, resources.available_disk_mb, resources.idle_cpu_percent, worker_id, snapshot),
+        (
+            worker_id,
+            _json(parameters),
+            snapshot,
+            int(candidate_row["job_id"]),
+        ),
     ).fetchone()
     if row is None:
         return None
     result = {key: row[key] for key in row.keys()}
     params = result.get("parameters")
-    result["parameters"] = params if isinstance(params, dict) else json.loads(params or "{}")
+    result["parameters"] = (
+        params if isinstance(params, dict) else json.loads(params or "{}")
+    )
     conn.execute(
         """
         INSERT INTO model_evaluation_job_runs(
@@ -549,20 +600,34 @@ def _half_lives(params: dict[str, Any]) -> str:
     return ",".join(candidates)
 
 
+class JobDependencyUnavailable(RuntimeError):
+    """A required upstream artifact has not been generated yet."""
+
+
 def _selected_standard_cache_prefix(app_root: Path) -> Path:
     artifact = (
         app_root / "data" / "models" / "standardized_365d_v2"
         / "raw" / "listwise_feature_teacher.json"
     )
     try:
-        payload = json.loads(artifact.read_text(encoding="utf-8"))
+        text = artifact.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise JobDependencyUnavailable(
+            f"standardized feature artifact is not available yet: {artifact}"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "standardized feature artifact cannot be read"
+        ) from exc
+    try:
+        payload = json.loads(text)
         selected = payload["selected"]
         variant = selected["feature_variant"]
         selected_cache_dir = payload["selected_cache_dir"]
         n_features = payload["n_features"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ValueError(
-            "standardized feature artifact is missing, incomplete, or invalid"
+            "standardized feature artifact is incomplete or invalid"
         ) from exc
     if not isinstance(variant, str):
         raise ValueError("standardized feature artifact has an invalid feature variant")
@@ -587,9 +652,13 @@ def _selected_standard_cache_prefix(app_root: Path) -> Path:
     if cache_prefix.parent != expected_cache_dir:
         raise ValueError("standardized feature cache prefix escapes the allowed directory")
     manifest = Path(str(cache_prefix) + ".manifest.json")
+    if not manifest.exists():
+        raise JobDependencyUnavailable(
+            f"selected standardized feature cache is not available yet: {manifest}"
+        )
     if not manifest.is_file():
         raise ValueError(
-            f"selected standardized feature cache manifest is missing: {manifest}"
+            f"selected standardized feature cache manifest is invalid: {manifest}"
         )
     return cache_prefix
 
@@ -1054,6 +1123,40 @@ def fail_job(conn: Any, *, job: dict[str, Any], error: str) -> None:
         WHERE job_id = ? AND attempt = ?
         """,
         (error[-8000:], int(job["job_id"]), int(job["attempt"])),
+    )
+
+
+def defer_job(
+    conn: Any,
+    *,
+    job: dict[str, Any],
+    reason: str,
+) -> None:
+    audit_error = f"dependency deferred: {reason}"[-8000:]
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET status = 'queued',
+            available_at = CURRENT_TIMESTAMP + INTERVAL '15 minutes',
+            max_attempts = max_attempts + 1,
+            worker_id = NULL, locked_at = NULL,
+            updated_at = CURRENT_TIMESTAMP, completed_at = NULL,
+            error = ?
+        WHERE job_id = ?
+        """,
+        (audit_error, int(job["job_id"])),
+    )
+    conn.execute(
+        """
+        UPDATE model_evaluation_job_runs
+        SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error = ?
+        WHERE job_id = ? AND attempt = ?
+        """,
+        (
+            audit_error,
+            int(job["job_id"]),
+            int(job["attempt"]),
+        ),
     )
 
 
@@ -1544,9 +1647,16 @@ def run_worker(args: argparse.Namespace) -> int:
                         decision,
                         app_root=app_root,
                     )
+            except JobDependencyUnavailable as exc:
+                with connection(args.db) as conn:
+                    defer_job(conn, job=job, reason=str(exc))
             except Exception as exc:
                 with connection(args.db) as conn:
-                    fail_job(conn, job=job, error=f"{type(exc).__name__}: {exc}")
+                    fail_job(
+                        conn,
+                        job=job,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             if args.once:
                 return 0
         except KeyboardInterrupt:

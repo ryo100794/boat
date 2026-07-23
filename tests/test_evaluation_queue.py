@@ -10,10 +10,15 @@ import boatrace_ai.evaluation_queue as evaluation_queue
 
 from boatrace_ai.evaluation_queue import (
     DEFAULT_WORK_TICKETS,
+    JobDependencyUnavailable,
+    ResourceSnapshot,
     TASK_PROFILES,
     build_command,
+    claim_job,
     dedupe_key,
+    defer_job,
     ensure_schema,
+    fail_job,
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
@@ -184,13 +189,11 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("missing", "missing, incomplete, or invalid"),
-        ("malformed", "missing, incomplete, or invalid"),
-        ("incomplete", "missing, incomplete, or invalid"),
+        ("malformed", "incomplete or invalid"),
+        ("incomplete", "incomplete or invalid"),
         ("unknown_variant", "unknown feature variant"),
         ("feature_range", "out of range"),
         ("cache_traversal", "must exactly match"),
-        ("missing_manifest", "manifest is missing"),
     ],
 )
 def test_claimed_conditional_payout_fails_on_invalid_standard_artifact(
@@ -237,6 +240,42 @@ def test_claimed_conditional_payout_fails_on_invalid_standard_artifact(
                 )
 
     with pytest.raises(ValueError, match=message):
+        build_command(
+            _job(
+                "conditional_payout_tail",
+                {
+                    "training_through": "2025-07-19",
+                    "evaluation_from": "2025-07-20",
+                    "evaluation_through": "2026-07-19",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
+@pytest.mark.parametrize("missing", ["artifact", "manifest"])
+def test_conditional_payout_defers_until_selected_cache_exists(
+    tmp_path,
+    monkeypatch,
+    missing,
+) -> None:
+    root = tmp_path / "boat"
+    cache_dir = tmp_path / "selected-standard-cache"
+    monkeypatch.setattr(
+        evaluation_queue,
+        "STANDARDIZED_SELECTED_CACHE_DIR",
+        cache_dir,
+    )
+    if missing == "manifest":
+        _write_standard_feature_artifact(
+            root,
+            cache_dir,
+            create_manifest=False,
+        )
+
+    with pytest.raises(JobDependencyUnavailable, match="not available yet"):
         build_command(
             _job(
                 "conditional_payout_tail",
@@ -728,3 +767,154 @@ def test_feature_search_profiles_fit_the_32gb_quota_and_migrate_old_defaults() -
         "listwise_feature_search",
         16384,
     )
+
+class _QueryResult:
+    def __init__(self, row=None):
+        self.row = row
+
+    def fetchone(self):
+        return self.row
+
+
+class _ClaimConnection:
+    def __init__(self, state):
+        self.state = state
+        self.saved_timeouts = []
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        if "pg_advisory_xact_lock" in sql:
+            return _QueryResult()
+        if "SELECT jobs.*" in sql:
+            return _QueryResult(dict(self.state))
+        if "UPDATE model_evaluation_jobs" in sql and "RETURNING *" in sql:
+            saved = json.loads(parameters[1])
+            self.saved_timeouts.append(saved["timeout_seconds"])
+            self.state.update({
+                "status": "running",
+                "worker_id": parameters[0],
+                "attempt": int(self.state["attempt"]) + 1,
+                "parameters": saved,
+                "error": None,
+            })
+            return _QueryResult(dict(self.state))
+        if "INSERT INTO model_evaluation_job_runs" in sql:
+            return _QueryResult()
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class _LifecycleConnection:
+    def __init__(self, parent):
+        self.parent = dict(parent)
+        self.run = {
+            "status": "running",
+            "error": None,
+        }
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        if "UPDATE model_evaluation_jobs" in sql:
+            if "max_attempts = max_attempts + 1" in sql:
+                self.parent.update({
+                    "status": "queued",
+                    "max_attempts": int(self.parent["max_attempts"]) + 1,
+                    "error": parameters[0],
+                })
+            else:
+                self.parent.update({
+                    "status": parameters[0],
+                    "error": parameters[2],
+                })
+            return _QueryResult()
+        if "UPDATE model_evaluation_job_runs" in sql:
+            self.run.update({
+                "status": "failed",
+                "error": parameters[0],
+            })
+            return _QueryResult()
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
+    state = {
+        "job_id": 387,
+        "task_type": "listwise_feature_search",
+        "category": "evaluation",
+        "model_key": "feature-search",
+        "parameters": {"timeout_seconds": 21600},
+        "status": "queued",
+        "attempt": 1,
+        "max_attempts": 3,
+        "error": "TimeoutExpired: command timed out after 21600 seconds",
+    }
+    conn = _ClaimConnection(state)
+    resources = ResourceSnapshot(
+        available_memory_mb=32000,
+        available_disk_mb=10000,
+        idle_cpu_percent=100.0,
+        cpu_count=16,
+        load_1m=0.0,
+    )
+
+    claimed = claim_job(conn, worker_id="evaluator-00", resources=resources)
+
+    assert claimed is not None
+    assert claimed["parameters"]["timeout_seconds"] == 43200
+    assert conn.saved_timeouts == [43200]
+
+    state.update({
+        "status": "queued",
+        "max_attempts": 4,
+        "error": None,
+    })
+    claimed_again = claim_job(
+        conn,
+        worker_id="evaluator-00",
+        resources=resources,
+    )
+
+    assert claimed_again is not None
+    assert claimed_again["parameters"]["timeout_seconds"] == 43200
+    assert conn.saved_timeouts == [43200, 43200]
+
+
+def test_dependency_defer_preserves_job_1069_remaining_attempt() -> None:
+    job = {
+        "job_id": 1069,
+        "attempt": 2,
+        "max_attempts": 2,
+    }
+    conn = _LifecycleConnection(job)
+
+    defer_job(
+        conn,
+        job=job,
+        reason="selected standardized feature cache is not available yet",
+    )
+
+    assert conn.parent["status"] == "queued"
+    assert conn.parent["max_attempts"] == 3
+    assert conn.parent["max_attempts"] - job["attempt"] == 1
+    assert conn.run["status"] == "failed"
+    assert conn.parent["error"].startswith("dependency deferred:")
+    assert conn.run["error"] == conn.parent["error"]
+
+
+def test_invalid_artifact_uses_normal_terminal_failure() -> None:
+    job = {
+        "job_id": 1069,
+        "attempt": 2,
+        "max_attempts": 2,
+    }
+    conn = _LifecycleConnection(job)
+
+    fail_job(
+        conn,
+        job=job,
+        error="ValueError: standardized feature artifact is incomplete or invalid",
+    )
+
+    assert conn.parent["status"] == "failed"
+    assert conn.parent["max_attempts"] == 2
+    assert conn.run["status"] == "failed"
+    assert conn.parent["error"].startswith("ValueError:")
