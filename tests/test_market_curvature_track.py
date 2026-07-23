@@ -42,7 +42,8 @@ def test_model_report_records_rejected_market_curvature_probe(tmp_path) -> None:
     assert curvature["role"] == "開発診断のみ・増分なしで棄却"
     assert "乖離符号付き二乗" in curvature["training"]
     assert curvature["eligible_races"] == 113
-    assert curvature["entry_log_loss"] == 3.787799
+    assert curvature["entry_log_loss"] is None
+    assert curvature["trifecta_log_loss"] == 3.787799
     assert curvature["trifecta_top5_hit_rate"] == 0.318584
     assert curvature["market_log_loss_delta_ci95_upper"] == 0.007380
     assert curvature["promotion_eligible"] is False

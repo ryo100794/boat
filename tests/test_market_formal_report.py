@@ -61,7 +61,8 @@ def test_model_report_prefers_formal_fold_confidence_over_intraday_probe(
     }
     residual = tracks["market_residual_shadow"]
 
-    assert residual["entry_log_loss"] == 3.70
+    assert residual["entry_log_loss"] is None
+    assert residual["trifecta_log_loss"] == 3.70
     assert residual["trifecta_top5_hit_rate"] == 0.33
     assert residual["market_comparison_races"] == 120
     assert residual["market_log_loss_delta"] == -0.04

@@ -156,6 +156,7 @@ def test_model_tracks_exposes_market_calibrated_shadow(tmp_path) -> None:
     tracks = _model_track_summaries(tmp_path, [], remote)
     market = next(row for row in tracks if row["id"] == "market_calibrated_shadow")
     assert market["include_odds"] is True
+    assert market["entry_log_loss"] is None
     assert market["eligible_races"] == 279
     assert market["trifecta_log_loss"] == 4.1323
     assert market["trifecta_top5_hit_rate"] == 0.2581
@@ -388,6 +389,7 @@ def test_model_tracks_exposes_conditional_stagewise_holdout_and_market(tmp_path)
     assert pastlog["backtest_available"] is True
     assert market["status"] == "完了"
     assert market["role"] == "開発診断のみ・2日暫定（収益未達）"
+    assert market["entry_log_loss"] is None
     assert market["eligible_races"] == 260
     assert market["trifecta_log_loss"] == 3.829282
     assert market["trifecta_top5_hit_rate"] == 0.330769

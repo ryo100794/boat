@@ -2077,7 +2077,7 @@ def _market_calibrated_model_tracks(
                 "eligible_races": metrics.get("evaluated_races"),
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),
-                "entry_log_loss": displayed_log_loss,
+                "entry_log_loss": None,
                 "trifecta_log_loss": displayed_log_loss,
                 "model_trifecta_log_loss": _float_or_none(
                     metrics.get("model_trifecta_log_loss")
