@@ -33,6 +33,8 @@ class ResourceSnapshot:
     idle_cpu_percent: float
     cpu_count: int
     load_1m: float
+    memory_limit_mb: int | None = None
+    memory_usage_mb: int | None = None
 
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
@@ -40,6 +42,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
+    "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
 }
@@ -171,22 +174,55 @@ def _read_cpu_times() -> tuple[int, int]:
     return idle, sum(values)
 
 
+def _cgroup_memory(root: Path = Path("/sys/fs/cgroup")) -> tuple[int, int] | None:
+    candidates = (
+        (root / "memory.max", root / "memory.current"),
+        (
+            root / "memory" / "memory.limit_in_bytes",
+            root / "memory" / "memory.usage_in_bytes",
+        ),
+    )
+    for limit_path, usage_path in candidates:
+        try:
+            limit_text = limit_path.read_text(encoding="utf-8").strip()
+            usage = int(usage_path.read_text(encoding="utf-8").strip())
+            if limit_text == "max":
+                continue
+            limit = int(limit_text)
+        except (OSError, ValueError):
+            continue
+        if 0 < limit < 1 << 60 and usage >= 0:
+            return limit, usage
+    return None
+
+
 def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
     meminfo = {}
     for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
         key, value = line.split(":", 1)
         meminfo[key] = int(value.strip().split()[0])
+    host_available_mb = int(meminfo.get("MemAvailable", 0) // 1024)
+    memory_limit_mb = None
+    memory_usage_mb = None
+    cgroup = _cgroup_memory()
+    if cgroup is not None:
+        memory_limit_mb = int(cgroup[0] // 1024**2)
+        memory_usage_mb = int(cgroup[1] // 1024**2)
+        quota_available_mb = max(0, memory_limit_mb - memory_usage_mb - 4096)
+        host_available_mb = min(host_available_mb, quota_available_mb)
     idle_before, total_before = _read_cpu_times()
     time.sleep(max(0.0, sample_seconds))
     idle_after, total_after = _read_cpu_times()
     total_delta = max(1, total_after - total_before)
     idle_percent = max(0.0, min(100.0, (idle_after - idle_before) * 100.0 / total_delta))
     return ResourceSnapshot(
-        available_memory_mb=int(meminfo.get("MemAvailable", 0) // 1024),
+        available_memory_mb=host_available_mb,
         available_disk_mb=int(shutil.disk_usage("/tmp").free // 1024**2),
         idle_cpu_percent=idle_percent,
         cpu_count=os.cpu_count() or 1,
         load_1m=float(os.getloadavg()[0]),
+        memory_limit_mb=memory_limit_mb,
+        memory_usage_mb=memory_usage_mb,
     )
 
 
@@ -197,6 +233,8 @@ def resource_snapshot_dict(snapshot: ResourceSnapshot) -> dict[str, Any]:
         "idle_cpu_percent": round(snapshot.idle_cpu_percent, 3),
         "cpu_count": snapshot.cpu_count,
         "load_1m": round(snapshot.load_1m, 3),
+        "memory_limit_mb": snapshot.memory_limit_mb,
+        "memory_usage_mb": snapshot.memory_usage_mb,
     }
 
 
@@ -299,6 +337,22 @@ def claim_job(
               WHERE running.status = 'running'
                 AND running.task_type = model_evaluation_jobs.task_type
             ) < max_parallel
+            AND (
+              category <> 'evaluation'
+              OR min_free_memory_mb < 8192
+              OR (
+                CASE WHEN min_free_memory_mb >= 16384 THEN 2 ELSE 1 END
+                + COALESCE((
+                  SELECT SUM(
+                    CASE WHEN running.min_free_memory_mb >= 16384 THEN 2 ELSE 1 END
+                  )
+                  FROM model_evaluation_jobs running
+                  WHERE running.status = 'running'
+                    AND running.category = 'evaluation'
+                    AND running.min_free_memory_mb >= 8192
+                ), 0)
+              ) <= 2
+            )
           ORDER BY priority DESC, job_id
           FOR UPDATE SKIP LOCKED
           LIMIT 1
@@ -492,6 +546,35 @@ def build_command(
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
             "--ev-threshold", str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
+        ], output
+    if task_type == "venue_conditional_order":
+        training_through = _date(params, "training_through")
+        evaluation_from = _date(params, "evaluation_from")
+        evaluation_through = _date(params, "evaluation_through")
+        if not training_through < evaluation_from <= evaluation_through:
+            raise ValueError("venue evaluation dates must be adjacent chronological ranges")
+        baseline_model = (
+            app_root / "data" / "models" / "standardized_365d_v2"
+            / "listwise_newton.joblib"
+        )
+        cache_dir = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}" / "venue"
+        return [
+            str(python), "-m", "boatrace_ai.listwise.venue_conditional_order",
+            "--db", db,
+            "--baseline-model", str(baseline_model),
+            "--cache-dir", str(cache_dir),
+            "--training-through", training_through,
+            "--evaluation-from", evaluation_from,
+            "--evaluation-through", evaluation_through,
+            "--global-regularization", str(
+                _number(params, "global_regularization", 0.0001, 0.000001, 1.0)
+            ),
+            "--venue-regularizations", "0.0001", "0.001", "0.01", "0.1",
+            "--max-iterations", str(
+                _integer(params, "max_iterations", 100, 20, 300)
+            ),
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--output", str(output),
         ], output
     if task_type == "evaluation_aggregate":
         return [
