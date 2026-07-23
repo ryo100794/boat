@@ -537,6 +537,7 @@ def build_command(
             "--db", db,
             "--output", str(output),
             "--cache-dir", str(search_cache),
+            "--cache-write-mode", "never",
             "--selected-cache-dir", str(selected_cache),
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),
