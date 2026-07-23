@@ -401,6 +401,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-RECENCY-001",
         "MODEL-VENUE-001",
         "MODEL-SEGMENT-001",
+        "UI-MODEL-DAILY-001",
     } <= keys
 
 
