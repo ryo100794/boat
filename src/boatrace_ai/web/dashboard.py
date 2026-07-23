@@ -1166,6 +1166,10 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             if label not in standardized_labels
         }
     )
+    queued_evaluations = _database_evaluation_status(db_path)
+    evaluation_jobs = queued_evaluations["jobs"] + _remote_evaluation_job_summaries(
+        remote_evaluations
+    )
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
@@ -1185,7 +1189,9 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "bankroll_daily": bankroll_daily,
         "sweeps": sweeps,
         "feature_diagnostics": feature_diagnostics,
-        "evaluation_jobs": _remote_evaluation_job_summaries(remote_evaluations),
+        "evaluation_jobs": evaluation_jobs,
+        "evaluation_candidates": queued_evaluations["candidates"],
+        "evaluation_queue_generated_at": queued_evaluations["generated_at"],
         "remote_generated_at": remote_evaluations.get("generated_at"),
         "standardized_evaluation": _standardized_v2_public_status(standardized),
         "errors": errors,
@@ -2266,6 +2272,151 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
             "error": (job.get("log_tail") or [])[-1] if job.get("status") == "失敗" else None,
         })
     return rows
+
+
+def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
+    """Read the live evaluation queue without making report artifacts authoritative."""
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    try:
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT j.job_id, j.task_type, j.model_key, j.status,
+                       j.attempt, j.max_attempts, j.started_at, j.completed_at,
+                       j.decision, j.result_summary, j.result_path, j.error,
+                       c.metrics AS candidate_metrics,
+                       c.parameters AS candidate_parameters,
+                       c.created_at AS candidate_created_at
+                FROM model_evaluation_jobs j
+                LEFT JOIN model_improvement_candidates c ON c.job_id = j.job_id
+                WHERE j.category = 'evaluation'
+                ORDER BY j.job_id DESC
+                LIMIT 100
+                """
+            ).fetchall()
+    except Exception:
+        return {"generated_at": generated_at, "jobs": [], "candidates": []}
+
+    jobs: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    status_labels = {
+        "queued": "待機中",
+        "running": "実行中",
+        "completed": "完了",
+        "failed": "失敗",
+        "cancelled": "取消",
+    }
+    for source in rows:
+        row = {key: source[key] for key in source.keys()}
+        metrics = _json_mapping(row.get("result_summary"))
+        status = str(row.get("status") or "")
+        jobs.append(
+            {
+                "db_job_id": row.get("job_id"),
+                "name": row.get("model_key"),
+                "milestone": row.get("task_type"),
+                "kind": row.get("task_type"),
+                "status": status_labels.get(status, status or "-"),
+                "running": status == "running",
+                "elapsed": _database_job_elapsed(row.get("started_at"), status),
+                "completed_folds": None,
+                "expected_folds": None,
+                "roi": _float_or_none(metrics.get("roi")),
+                "profit_yen": metrics.get("profit_yen"),
+                "evaluated_races": metrics.get("evaluated_races")
+                or metrics.get("evaluation_races"),
+                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_top1_accuracy": _float_or_none(
+                    metrics.get("winner_top1_accuracy")
+                ),
+                "trifecta_top5_hit_rate": _float_or_none(
+                    metrics.get("trifecta_top5_hit_rate")
+                ),
+                "error": row.get("error") if status == "failed" else None,
+            }
+        )
+        candidate_metrics = _json_mapping(row.get("candidate_metrics"))
+        if not candidate_metrics:
+            continue
+        candidates.append(
+            {
+                "job_id": row.get("job_id"),
+                "model_key": row.get("model_key"),
+                "task_type": row.get("task_type"),
+                "decision": row.get("decision"),
+                "created_at": row.get("candidate_created_at"),
+                "result_path": row.get("result_path"),
+                "roi": _float_or_none(candidate_metrics.get("roi")),
+                "profit_yen": candidate_metrics.get("profit_yen"),
+                "trifecta_log_loss": _float_or_none(
+                    candidate_metrics.get("trifecta_log_loss")
+                ),
+                "trifecta_top5_hit_rate": _float_or_none(
+                    candidate_metrics.get("trifecta_top5_hit_rate")
+                ),
+                "payout_feature_candidate_schema": candidate_metrics.get(
+                    "payout_feature_candidate_schema"
+                ),
+                "payout_feature_legacy_schema": candidate_metrics.get(
+                    "payout_feature_legacy_schema"
+                ),
+                "payout_feature_candidate_roi": _float_or_none(
+                    candidate_metrics.get("payout_feature_candidate_roi")
+                ),
+                "payout_feature_legacy_roi": _float_or_none(
+                    candidate_metrics.get("payout_feature_legacy_roi")
+                ),
+                "payout_feature_roi_delta": _float_or_none(
+                    candidate_metrics.get("payout_feature_roi_delta")
+                ),
+                "payout_feature_roi_delta_ci95_lower": _float_or_none(
+                    candidate_metrics.get("payout_feature_roi_delta_ci95_lower")
+                ),
+                "payout_feature_roi_delta_ci95_upper": _float_or_none(
+                    candidate_metrics.get("payout_feature_roi_delta_ci95_upper")
+                ),
+                "payout_feature_probability_roi_delta_above_zero": _float_or_none(
+                    candidate_metrics.get(
+                        "payout_feature_probability_roi_delta_above_zero"
+                    )
+                ),
+            }
+        )
+    return {
+        "generated_at": generated_at,
+        "jobs": jobs,
+        "candidates": candidates,
+    }
+
+
+def _json_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _database_job_elapsed(started_at: Any, status: str) -> str | None:
+    if status != "running" or not started_at:
+        return None
+    if isinstance(started_at, datetime):
+        started = started_at
+    else:
+        try:
+            started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def _is_backtest_result(data: dict[str, Any]) -> bool:
     return "entry_log_loss" in data or "winner_top1_accuracy" in data or "trifecta_top5_hit_rate" in data
