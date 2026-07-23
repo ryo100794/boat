@@ -512,6 +512,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "OPS-EVAL-MEM-001",
         "OPS-GITHUB-SYNC-001",
         "DOCS-HIERARCHY-001",
+        "MODEL-FEATURE-COMBINE-001",
         "MODEL-PAYOUT-001",
         "MODEL-RECENCY-001",
         "MODEL-VENUE-001",
@@ -523,6 +524,21 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         if row[0] == "OPS-EVAL-MEM-001"
     )
     assert memory_ticket[5:] == (98, "in_progress", 15)
+
+    combined_ticket = next(
+        row for row in DEFAULT_WORK_TICKETS
+        if row[0] == "MODEL-FEATURE-COMBINE-001"
+    )
+    assert combined_ticket == (
+        "MODEL-FEATURE-COMBINE-001",
+        "Combined feature ablation and retraining",
+        "Model",
+        "Run selection-only search combining base_pastlog+research_correlates with inert series_cached/series_relative ablations",
+        "Compare against single ablations on the same fixed 365-day holdout and evaluation axes without holdout leakage",
+        88,
+        "queued",
+        10,
+    )
 
 
 def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:

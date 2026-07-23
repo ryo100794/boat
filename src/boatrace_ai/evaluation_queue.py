@@ -1308,6 +1308,16 @@ DEFAULT_WORK_TICKETS = (
         20,
     ),
     (
+        "MODEL-FEATURE-COMBINE-001",
+        "Combined feature ablation and retraining",
+        "Model",
+        "Run selection-only search combining base_pastlog+research_correlates with inert series_cached/series_relative ablations",
+        "Compare against single ablations on the same fixed 365-day holdout and evaluation axes without holdout leakage",
+        88,
+        "queued",
+        10,
+    ),
+    (
         "MODEL-PAYOUT-001",
         "条件付き払戻分布の評価",
         "モデル",
