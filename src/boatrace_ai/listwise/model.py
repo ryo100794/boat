@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -66,22 +65,22 @@ def pl_loss_and_score_gradient(
     if values.ndim != 2 or values.shape[1] != 6 or rank_values.shape != values.shape:
         raise ValueError("scores and ranks must both have shape (races, 6)")
     gradient = np.zeros_like(values)
-    total_loss = 0.0
     stages = 1 if target == "winner" else 3
-    for race_index in range(values.shape[0]):
-        order = np.argsort(rank_values[race_index])
-        remaining = np.ones(6, dtype=bool)
-        for stage in range(stages):
-            actual = int(order[stage])
-            lane_indices = np.flatnonzero(remaining)
-            probabilities = stable_softmax(values[race_index, lane_indices])
-            actual_position = int(np.flatnonzero(lane_indices == actual)[0])
-            total_loss -= math.log(max(1e-15, float(probabilities[actual_position])))
-            gradient[race_index, lane_indices] += probabilities
-            gradient[race_index, actual] -= 1.0
-            remaining[actual] = False
+    order = np.argsort(rank_values, axis=1)
+    remaining = np.ones_like(values, dtype=bool)
+    race_indices = np.arange(values.shape[0])
+    stage_losses = np.empty((values.shape[0], stages), dtype=np.float64)
+    for stage in range(stages):
+        actual = order[:, stage]
+        probabilities = stable_softmax(np.where(remaining, values, -np.inf))
+        stage_losses[:, stage] = -np.log(
+            np.maximum(1e-15, probabilities[race_indices, actual])
+        )
+        gradient += probabilities
+        gradient[race_indices, actual] -= 1.0
+        remaining[race_indices, actual] = False
     denominator = max(1, values.shape[0] * stages)
-    return total_loss / denominator, gradient / denominator
+    return float(stage_losses.sum() / denominator), gradient / denominator
 
 
 def fit_scaler(dataset: HashedRaceDataset, *, race_end: int, batch_rows: int) -> StandardScaler:

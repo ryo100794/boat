@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pytest
 from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
@@ -11,6 +14,46 @@ from boatrace_ai.listwise.model import (
     train_listwise_model,
 )
 from boatrace_ai.listwise.validation import full_day_fold_boundaries, nested_select_candidate
+
+
+def reference_pl_loss_and_score_gradient(
+    scores: np.ndarray,
+    ranks: np.ndarray,
+    *,
+    target: str,
+) -> tuple[float, np.ndarray]:
+    values = np.asarray(scores, dtype=np.float64)
+    rank_values = np.asarray(ranks)
+    gradient = np.zeros_like(values)
+    total_loss = 0.0
+    stages = 1 if target == "winner" else 3
+    for race_index in range(values.shape[0]):
+        order = np.argsort(rank_values[race_index])
+        remaining = np.ones(6, dtype=bool)
+        for stage in range(stages):
+            actual = int(order[stage])
+            lane_indices = np.flatnonzero(remaining)
+            probabilities = stable_softmax(values[race_index, lane_indices])
+            actual_position = int(np.flatnonzero(lane_indices == actual)[0])
+            total_loss -= math.log(max(1e-15, float(probabilities[actual_position])))
+            gradient[race_index, lane_indices] += probabilities
+            gradient[race_index, actual] -= 1.0
+            remaining[actual] = False
+    denominator = max(1, values.shape[0] * stages)
+    return total_loss / denominator, gradient / denominator
+
+
+def assert_matches_reference(
+    scores: np.ndarray,
+    ranks: np.ndarray,
+    target: str,
+) -> None:
+    expected_loss, expected_gradient = reference_pl_loss_and_score_gradient(
+        scores, ranks, target=target
+    )
+    loss, gradient = pl_loss_and_score_gradient(scores, ranks, target=target)
+    np.testing.assert_allclose(loss, expected_loss, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-14, atol=1e-14)
 
 
 def synthetic_dataset(races: int = 90) -> HashedRaceDataset:
@@ -40,6 +83,58 @@ def test_softmax_is_stable_and_sums_to_one() -> None:
     assert np.isfinite(probabilities).all()
     assert np.allclose(probabilities.sum(axis=1), 1.0)
     assert probabilities[0, 0] > probabilities[0, 1]
+
+
+@pytest.mark.parametrize("target", ("winner", "top3_pl"))
+def test_pl_loss_and_gradient_match_reference_for_random_batch(target: str) -> None:
+    random = np.random.default_rng(20260723)
+    scores = random.normal(loc=0.0, scale=4.0, size=(257, 6))
+    ranks = np.asarray(
+        [random.permutation(np.arange(1, 7)) for _ in range(scores.shape[0])]
+    )
+    assert_matches_reference(scores, ranks, target)
+
+
+@pytest.mark.parametrize("target", ("winner", "top3_pl"))
+def test_pl_loss_and_gradient_match_reference_for_extreme_scores(target: str) -> None:
+    scores = np.asarray(
+        [
+            [1_000.0, -1_000.0, 999.0, -999.0, 0.0, 500.0],
+            [-1_000.0, 1_000.0, -999.0, 999.0, -500.0, 0.0],
+            [700.0, 700.0, -700.0, -700.0, 1e-12, -1e-12],
+        ]
+    )
+    ranks = np.asarray(
+        [[6, 1, 5, 2, 4, 3], [1, 6, 2, 5, 3, 4], [3, 2, 6, 5, 1, 4]]
+    )
+    assert_matches_reference(scores, ranks, target)
+
+
+@pytest.mark.parametrize("target", ("winner", "top3_pl"))
+def test_pl_loss_and_gradient_match_reference_for_single_race_batch(target: str) -> None:
+    scores = np.asarray([[0.4, -0.1, 0.2, 0.0, -0.3, 0.1]])
+    ranks = np.asarray([[2, 4, 1, 3, 6, 5]], dtype=np.int8)
+    assert_matches_reference(scores, ranks, target)
+
+
+@pytest.mark.parametrize(
+    ("scores", "ranks"),
+    (
+        (np.zeros(6), np.zeros(6)),
+        (np.zeros((2, 5)), np.zeros((2, 5))),
+        (np.zeros((2, 6)), np.zeros((1, 6))),
+    ),
+)
+def test_pl_loss_and_gradient_reject_invalid_shapes(
+    scores: np.ndarray, ranks: np.ndarray
+) -> None:
+    with pytest.raises(ValueError, match="shape \\(races, 6\\)"):
+        pl_loss_and_score_gradient(scores, ranks, target="winner")
+
+
+def test_pl_loss_and_gradient_reject_unknown_target() -> None:
+    with pytest.raises(ValueError, match="unknown target: invalid"):
+        pl_loss_and_score_gradient(np.zeros((1, 6)), np.ones((1, 6)), target="invalid")
 
 
 def test_pl_gradient_matches_finite_difference() -> None:
