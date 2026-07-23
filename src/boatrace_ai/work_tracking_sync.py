@@ -7,9 +7,9 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .db import connection
@@ -61,6 +61,10 @@ class HttpTransport(Protocol):
 
 
 class GitHubApiError(RuntimeError):
+    pass
+
+
+class IssueMatchConflict(RuntimeError):
     pass
 
 
@@ -290,6 +294,10 @@ def _validate_pull(
         return None, "invalid_status_or_progress"
     if desired == ticket.status and progress == ticket.progress:
         return None, "unchanged"
+    base_revision = _parse_time(metadata.get("db_updated_at"))
+    current_revision = _parse_time(ticket.updated_at)
+    if base_revision is None or current_revision is None or base_revision != current_revision:
+        return None, "stale_db_revision"
     if ticket.status in {"completed", "cancelled"}:
         return None, "db_terminal_state"
     if progress < ticket.progress:
@@ -409,19 +417,17 @@ def _list_repository_issues(transport: HttpTransport, repository: str) -> list[d
 
 
 def _find_existing_issue(ticket: Ticket, issues: list[dict[str, Any]]) -> dict[str, Any] | None:
-    expected_title = issue_title(ticket)
-    managed_matches = []
-    title_matches = []
+    title_prefix = f"[{ticket.ticket_key}]"
+    candidates: dict[int, dict[str, Any]] = {}
     for issue in issues:
         metadata = parse_managed_metadata(issue.get("body"))
-        if metadata and metadata.get("ticket_key") == ticket.ticket_key:
-            managed_matches.append(issue)
-        elif issue.get("title") == expected_title:
-            title_matches.append(issue)
-    candidates = managed_matches or title_matches
+        managed_match = metadata and metadata.get("ticket_key") == ticket.ticket_key
+        title_match = str(issue.get("title") or "").startswith(title_prefix)
+        if managed_match or title_match:
+            candidates[int(issue["number"])] = issue
     if len(candidates) > 1:
-        raise RuntimeError(f"multiple GitHub issues match {ticket.ticket_key}")
-    return candidates[0] if candidates else None
+        raise IssueMatchConflict(f"multiple GitHub issues match {ticket.ticket_key}")
+    return next(iter(candidates.values()), None)
 
 
 def _fresh_ticket(ticket: Ticket, *, status: str, progress: int) -> Ticket:
@@ -468,7 +474,17 @@ def sync_work_tickets(
         else:
             if repository_issues is None:
                 repository_issues = _list_repository_issues(transport, repository)
-            issue = _find_existing_issue(ticket, repository_issues)
+            try:
+                issue = _find_existing_issue(ticket, repository_issues)
+            except IssueMatchConflict:
+                actions.append(
+                    {
+                        "ticket_key": ticket.ticket_key,
+                        "action": "conflict",
+                        "reason": "multiple_matching_issues",
+                    }
+                )
+                continue
             if issue is not None:
                 actions.append(
                     {
@@ -608,30 +624,91 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apply GitHub and database changes; the default only reports them",
     )
+    parser.add_argument(
+        "--interval-seconds",
+        type=_interval_seconds,
+        default=0,
+        help="0 runs once; values of 60 or more keep synchronizing periodically",
+    )
     return parser
+
+
+def _interval_seconds(raw: str) -> int:
+    value = int(raw)
+    if value != 0 and value < 60:
+        raise argparse.ArgumentTypeError("interval must be 0 or at least 60 seconds")
+    return value
+
+
+def run_periodic(
+    args: argparse.Namespace,
+    *,
+    sleep: Any = time.sleep,
+    max_cycles: int | None = None,
+) -> int:
+    """Run cycles with fresh credentials, HTTP transport, and DB connection."""
+    validate_repository(args.repo)
+    cycles = 0
+    while max_cycles is None or cycles < max_cycles:
+        cycles += 1
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            print(
+                json.dumps(
+                    {
+                        "repository": args.repo,
+                        "status": "skipped_no_token",
+                        "mode": "apply" if args.apply else "dry-run",
+                        "cycle": cycles,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        else:
+            try:
+                transport = GitHubTransport(args.repo, token=token)
+                with connection(args.db) as conn:
+                    result = sync_work_tickets(
+                        conn,
+                        repository=args.repo,
+                        transport=transport,
+                        apply=args.apply,
+                        direction=args.direction,
+                    )
+                result["status"] = "synchronized"
+                result["cycle"] = cycles
+                print(
+                    json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                    flush=True,
+                )
+            except (GitHubApiError, RuntimeError, ValueError) as exc:
+                print(
+                    json.dumps(
+                        {"status": "error", "cycle": cycles, "error": str(exc)},
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if args.interval_seconds == 0:
+                    return 2
+
+        if args.interval_seconds == 0:
+            return 0
+        if max_cycles is not None and cycles >= max_cycles:
+            break
+        sleep(args.interval_seconds)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        validate_repository(args.repo)
-        token = os.environ.get("GITHUB_TOKEN", "")
-        if args.apply and not token:
-            raise RuntimeError("GITHUB_TOKEN is required with --apply")
-        transport = GitHubTransport(args.repo, token=token)
-        with connection(args.db) as conn:
-            result = sync_work_tickets(
-                conn,
-                repository=args.repo,
-                transport=transport,
-                apply=args.apply,
-                direction=args.direction,
-            )
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    except (GitHubApiError, RuntimeError, ValueError) as exc:
+        return run_periodic(args)
+    except (RuntimeError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    return 0
 
 
 if __name__ == "__main__":
