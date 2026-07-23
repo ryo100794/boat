@@ -630,13 +630,20 @@ def run_worker(args: argparse.Namespace) -> int:
     if not python.is_absolute():
         python = (app_root / python).absolute()
     last_seed = 0.0
+    is_leader = args.worker_id is None or str(args.worker_id).endswith("-00")
+    with connection(args.db) as conn:
+        ensure_schema(conn)
     while True:
         try:
             with connection(args.db) as conn:
-                ensure_schema(conn)
-                requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
                 now = time.monotonic()
-                if args.seed_defaults and now - last_seed >= args.seed_interval:
+                if is_leader:
+                    requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                if (
+                    is_leader
+                    and args.seed_defaults
+                    and now - last_seed >= args.seed_interval
+                ):
                     evaluation_date = (
                         datetime.now(JST).date() - timedelta(days=1)
                     ).isoformat()
@@ -658,7 +665,6 @@ def run_worker(args: argparse.Namespace) -> int:
                     nice=args.nice,
                 )
                 with connection(args.db) as conn:
-                    ensure_schema(conn)
                     complete_job(
                         conn,
                         job=job,
@@ -669,7 +675,6 @@ def run_worker(args: argparse.Namespace) -> int:
                     enqueue_refinement(conn, job, decision)
             except Exception as exc:
                 with connection(args.db) as conn:
-                    ensure_schema(conn)
                     fail_job(conn, job=job, error=f"{type(exc).__name__}: {exc}")
             if args.once:
                 return 0
