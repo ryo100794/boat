@@ -2970,14 +2970,23 @@ def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     cumulative_profit = 0
+    cumulative_stake = 0
+    cumulative_return = 0
     for race_date in sorted(by_date):
         row = by_date[race_date]
         cumulative_profit += row["profit_yen"]
         stake = row["stake_yen"]
+        cumulative_stake += stake
+        cumulative_return += row["return_yen"]
         roi = (
             float(row["return_yen"]) / float(stake)
             if stake
             else row["_roi"]
+        )
+        cumulative_roi = (
+            float(cumulative_return) / float(cumulative_stake)
+            if cumulative_stake
+            else None
         )
         budget_used = (
             row["budget_used_fraction"]
@@ -2995,6 +3004,14 @@ def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "return_yen": row["return_yen"],
                 "profit_yen": row["profit_yen"],
                 "cumulative_profit_yen": cumulative_profit,
+                "cumulative_stake_yen": cumulative_stake,
+                "cumulative_return_yen": cumulative_return,
+                "cumulative_roi": cumulative_roi,
+                "cumulative_roi_delta": (
+                    float(cumulative_profit) / float(cumulative_stake)
+                    if cumulative_stake
+                    else None
+                ),
                 "roi": roi,
                 "budget_used_fraction": budget_used,
                 "ticket_hit_rate": (

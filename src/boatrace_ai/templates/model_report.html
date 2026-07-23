@@ -53,10 +53,10 @@
     <div class="panel"><h2><span>選択モデル 統合性能</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table comparison-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>購入R</th><th>点数</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th><th>収益状態</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
     <div class="grid three">
       <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
-      <div class="panel"><h2><span>日次ROI推移</span><span class="muted">選択モデル</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>累積ROI差</span><span class="muted">累積ROI - 1 / 0%が損益分岐</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>日次購入密度</span><span class="muted">点数 / 使用率</span></h2><canvas id="ticketsChart" width="900" height="330"></canvas></div>
     </div>
-    <div class="panel"><h2><span>選択モデル日次表</span><span class="muted">日別資金運用</span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>日付</th><th>ROI</th><th>日次損益</th><th>累積損益</th><th>投資</th><th>払戻</th><th>点数</th><th>対象R</th><th>資金使用率</th></tr></thead><tbody id="dailyRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>選択モデル日次表</span><span class="muted">日別資金運用</span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>日付</th><th>日次ROI</th><th>累積ROI差</th><th>日次損益</th><th>累積損益</th><th>投資</th><th>払戻</th><th>点数</th><th>対象R</th><th>資金使用率</th></tr></thead><tbody id="dailyRows"></tbody></table></div></div>
     <div class="panel"><h2><span>特徴量相関診断</span><span class="muted">選択モデル・ファミリー別</span></h2><table><thead><tr><th>診断</th><th>特徴群</th><th>数</th><th>max相関</th><th>平均相関</th><th>係数量</th><th>低充足</th><th>主な特徴</th></tr></thead><tbody id="featureFamilyRows"></tbody></table></div>
     <div class="panel"><h2><span>疑似相関/要確認特徴</span><span class="muted">選択モデル・欠損・ID・係数ズレ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
     <div class="panel"><h2><span>購入券ROI帰属</span><span class="muted">選択モデルの投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
@@ -251,9 +251,9 @@ function renderDaily(data,key){
   const rows=daily.rows||[], reason=daily.unavailable_reason||"";
   $("profitTitle").textContent=daily.source?shortName(daily.source):(reason||"日次データなし");
   drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0});
-  drawLines($("dailyRoiChart"), [{label:"日次ROI", rows:rows.map(r=>({x:r.date, y:r.roi}))}], {baseline:1});
+  drawLines($("dailyRoiChart"), [{label:"累積ROI差", rows:rows.map(r=>({x:r.date, y:r.cumulative_roi_delta}))}], {percent:true, baseline:0});
   drawGroupedBars($("ticketsChart"), rows.slice(-90).map(r=>({label:String(r.date||"").slice(5), a:r.tickets, b:(r.budget_used_fraction||0)*100})), {a:"点数", b:"使用率%"});
-  $("dailyRows").innerHTML=rows.map(r=>'<tr><td>'+esc(r.date||"-")+'</td><td>'+ratio(r.roi)+'</td><td class="'+(Number(r.profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.profit_yen)+'</td><td class="'+(Number(r.cumulative_profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.cumulative_profit_yen)+'</td><td>'+yen(r.stake_yen)+'</td><td>'+yen(r.return_yen)+'</td><td>'+fmt(r.tickets)+'</td><td>'+fmt(r.evaluated_races)+'</td><td>'+pct(r.budget_used_fraction)+'</td></tr>').join("") || '<tr><td colspan="9" class="muted">'+esc(reason||"選択モデルの日次資金運用データなし")+'</td></tr>';
+  $("dailyRows").innerHTML=rows.map(r=>'<tr><td>'+esc(r.date||"-")+'</td><td>'+ratio(r.roi)+'</td><td class="'+(Number(r.cumulative_roi_delta||0)>=0?"pos":"neg")+'">'+pct(r.cumulative_roi_delta)+'</td><td class="'+(Number(r.profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.profit_yen)+'</td><td class="'+(Number(r.cumulative_profit_yen||0)>=0?"pos":"neg")+'">'+yen(r.cumulative_profit_yen)+'</td><td>'+yen(r.stake_yen)+'</td><td>'+yen(r.return_yen)+'</td><td>'+fmt(r.tickets)+'</td><td>'+fmt(r.evaluated_races)+'</td><td>'+pct(r.budget_used_fraction)+'</td></tr>').join("") || '<tr><td colspan="10" class="muted">'+esc(reason||"選択モデルの日次資金運用データなし")+'</td></tr>';
 }
 function groupFoldSeries(folds, key){ const by=new Map(); for(const f of folds){ if(f[key]==null) continue; const k=shortName(f.model); if(!by.has(k)) by.set(k, []); by.get(k).push({x:f.fold, y:f[key]}); } return [...by.entries()].slice(-8).map(([label, rows])=>({label, rows:rows.sort((a,b)=>Number(a.x)-Number(b.x))})); }
 const AX={l:54,t:12,b:30,r:8};

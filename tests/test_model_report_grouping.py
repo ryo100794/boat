@@ -32,6 +32,8 @@ def test_daily_series_uses_canonical_backend_data_and_reason() -> None:
     assert "(data.model_daily||{})[key]" in source
     assert "daily.unavailable_reason" in source
     assert "r.cumulative_profit_yen" in source
+    assert "r.cumulative_roi_delta" in source
+    assert "percent:true, baseline:0" in source
     assert "fmt(r.evaluated_races)" in source
     assert "data.bankroll_daily" not in source
 

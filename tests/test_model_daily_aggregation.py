@@ -52,11 +52,32 @@ def test_daily_rows_normalize_dates_merge_duplicates_and_recompute_totals() -> N
     assert first["return_yen"] == 600
     assert first["profit_yen"] == 100
     assert first["cumulative_profit_yen"] == 100
+    assert first["cumulative_stake_yen"] == 500
+    assert first["cumulative_return_yen"] == 600
+    assert first["cumulative_roi"] == 1.2
+    assert first["cumulative_roi_delta"] == 0.2
     assert first["roi"] == 1.2
     assert first["budget_used_fraction"] == 0.05
     assert first["ticket_hit_rate"] == 0.2
     assert rows[1]["cumulative_profit_yen"] == 0
+    assert rows[1]["cumulative_stake_yen"] == 600
+    assert rows[1]["cumulative_return_yen"] == 600
+    assert rows[1]["cumulative_roi"] == 1.0
+    assert rows[1]["cumulative_roi_delta"] == 0.0
     assert _daily_report_rows(rows) == rows
+
+
+def test_cumulative_roi_delta_stays_negative_during_losing_streak() -> None:
+    rows = _daily_report_rows(
+        [
+            {"race_date": "2026-07-19", "stake_yen": 100, "return_yen": 0},
+            {"race_date": "2026-07-20", "stake_yen": 200, "return_yen": 0},
+            {"race_date": "2026-07-21", "stake_yen": 100, "return_yen": 50},
+        ]
+    )
+
+    assert [row["cumulative_profit_yen"] for row in rows] == [-100, -300, -350]
+    assert [row["cumulative_roi_delta"] for row in rows] == [-1.0, -1.0, -0.875]
 
 
 def test_catalog_assigns_stable_keys_and_prefers_standard_365d_daily() -> None:
@@ -117,6 +138,10 @@ def test_catalog_assigns_stable_keys_and_prefers_standard_365d_daily() -> None:
         "return_yen": 600,
         "profit_yen": 200,
         "cumulative_profit_yen": 200,
+        "cumulative_stake_yen": 400,
+        "cumulative_return_yen": 600,
+        "cumulative_roi": 1.5,
+        "cumulative_roi_delta": 0.5,
         "roi": 1.5,
         "budget_used_fraction": 0.04,
         "ticket_hit_rate": 0.0,
