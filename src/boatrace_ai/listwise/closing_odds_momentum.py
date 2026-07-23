@@ -8,6 +8,7 @@ import numpy as np
 from .closing_odds import (
     MAX_ODDS,
     MIN_ODDS,
+    expected_odds_correction,
     fit_closing_odds_model,
     forecast_closing_odds,
 )
@@ -34,6 +35,7 @@ def fit_momentum_closing_odds_model(
         raise ValueError("regularization must be finite and non-negative")
     features = []
     targets = []
+    race_offsets: list[tuple[int, int]] = []
     race_count = 0
     for race in races:
         current = race.get("odds") or {}
@@ -45,7 +47,7 @@ def fit_momentum_closing_odds_model(
         )
         if len(combinations) != 120:
             continue
-        race_count += 1
+        race_start = len(targets)
         for combination in combinations:
             if min(
                 float(current[combination]),
@@ -56,6 +58,9 @@ def fit_momentum_closing_odds_model(
                 continue
             features.append(_momentum_features(race, combination))
             targets.append(math.log(float(closing[combination])))
+        if len(targets) > race_start:
+            race_offsets.append((race_start, len(targets)))
+            race_count += 1
     if not targets:
         raise ValueError("momentum closing-odds calibration requires complete snapshots")
     matrix = np.asarray(features, dtype=np.float64)
@@ -69,6 +74,7 @@ def fit_momentum_closing_odds_model(
     )
     predicted = matrix @ coefficients
     baseline = matrix @ prior
+    correction = expected_odds_correction(target, predicted, race_offsets)
     return {
         "intercept": float(coefficients[0]),
         "log_odds_coefficient": float(coefficients[1]),
@@ -82,11 +88,15 @@ def fit_momentum_closing_odds_model(
         "baseline_mean_absolute_log_error": float(
             np.mean(np.abs(target - baseline))
         ),
+        **correction,
     }
 
 
 def forecast_momentum_closing_odds(
-    race: dict[str, Any], model: dict[str, Any]
+    race: dict[str, Any],
+    model: dict[str, Any],
+    *,
+    expected_value: bool = False,
 ) -> dict[str, float]:
     coefficients = np.asarray(
         [
@@ -101,12 +111,18 @@ def forecast_momentum_closing_odds(
         & set(race["market_probabilities"])
         & set(race["earlier_market_probabilities"])
     )
+    multiplier = (
+        float(model.get("expected_odds_multiplier") or 1.0)
+        if expected_value
+        else 1.0
+    )
     return {
         combination: min(
             MAX_ODDS,
             max(
                 MIN_ODDS,
-                math.exp(
+                multiplier
+                * math.exp(
                     float(
                         np.asarray(_momentum_features(race, combination))
                         @ coefficients
@@ -119,12 +135,20 @@ def forecast_momentum_closing_odds(
 
 
 def attach_momentum_closing_odds(
-    races: list[dict[str, Any]], model: dict[str, Any]
+    races: list[dict[str, Any]],
+    model: dict[str, Any],
+    *,
+    expected_value: bool = True,
 ) -> list[dict[str, Any]]:
     result = []
     for race in races:
         item = dict(race)
-        item["estimated_final_odds"] = forecast_momentum_closing_odds(race, model)
+        item["estimated_final_odds"] = forecast_momentum_closing_odds(
+            race, model, expected_value=expected_value
+        )
+        item["closing_odds_forecast_target"] = (
+            "conservative_expected_odds" if expected_value else "median_log_odds"
+        )
         result.append(item)
     return result
 
@@ -265,13 +289,18 @@ def attach_selected_closing_odds(
     for race in races:
         item = dict(race)
         if use_momentum and momentum_model and momentum_price_eligible(race):
-            forecast = forecast_momentum_closing_odds(race, momentum_model)
+            forecast = forecast_momentum_closing_odds(
+                race, momentum_model, expected_value=True
+            )
             source = "momentum"
         else:
-            forecast = forecast_closing_odds(race["odds"], baseline_model)
+            forecast = forecast_closing_odds(
+                race["odds"], baseline_model, expected_value=True
+            )
             source = "baseline"
         item["estimated_final_odds"] = forecast
         item["closing_odds_forecast_source"] = source
+        item["closing_odds_forecast_target"] = "conservative_expected_odds"
         result.append(item)
     return result
 
@@ -305,6 +334,7 @@ def selected_closing_odds_metrics(
         "evaluation_races": evaluated_races,
         "evaluation_tickets": len(forecast_errors),
         "forecast_sources": sources,
+        "forecast_target": "conservative_expected_odds",
         "baseline_mean_absolute_log_error": (
             sum(baseline_errors) / len(baseline_errors) if baseline_errors else None
         ),

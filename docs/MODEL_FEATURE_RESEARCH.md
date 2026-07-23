@@ -104,3 +104,20 @@ blocks rather than one venue or one month.
   evaluation races, paired market-confidence gates, positive profit, ROI above
   one, and fold stability. Calibration-only races do not count toward those
   promotion sample gates.
+
+
+## 2026-07-23 conservative expected closing-odds correction
+
+- The previous price model minimized absolute log error and used
+  `exp(E[log closing odds])` directly for bankroll expected value. That quantity
+  estimates a conditional median, not `E[closing odds]`, and therefore
+  systematically omits the Jensen correction needed for expected payout.
+- Evaluation version 18 keeps median log-odds forecasts for price-accuracy model
+  selection, but bankroll decisions use a separate expected-odds multiplier.
+  The multiplier is the 95% lower confidence bound of per-race mean
+  `closing_odds / predicted_median_odds`, estimated only on prior dates and
+  bounded to prevent unstable tail extrapolation.
+- The correction can create a wager only when the prior-day policy search also
+  passes its ticket-count, profitable-day, ROI, and drawdown gates. The 7/22
+  result is development evidence because this correction was specified after
+  that day; 7/23 or later is required for untouched confirmation.

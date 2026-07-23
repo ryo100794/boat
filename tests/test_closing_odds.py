@@ -61,3 +61,28 @@ def test_incomplete_closing_snapshot_is_not_used_for_fitting() -> None:
     else:
         raise AssertionError("incomplete closing snapshot must be rejected")
 
+
+
+def test_expected_value_forecast_uses_conservative_race_cluster_correction() -> None:
+    races = []
+    for race_index in range(4):
+        race = _race(1.0)
+        race["race_id"] = f"cluster-{race_index}"
+        race["closing_odds"] = {
+            combination: value * (0.8 if index % 2 == 0 else 1.2)
+            for index, (combination, value) in enumerate(race["closing_odds"].items())
+        }
+        races.append(race)
+
+    model = fit_closing_odds_model(races)
+    median = forecast_closing_odds(races[0]["odds"], model)
+    expected = forecast_closing_odds(
+        races[0]["odds"], model, expected_value=True
+    )
+    attached = attach_forecast_closing_odds([races[0]], model)[0]
+
+    assert model["expected_odds_race_clusters"] == 4
+    assert model["expected_odds_multiplier"] > 1.0
+    assert expected["c0"] > median["c0"]
+    assert attached["closing_odds_forecast_target"] == "conservative_expected_odds"
+    assert decision_odds(attached)["c0"] == expected["c0"]
