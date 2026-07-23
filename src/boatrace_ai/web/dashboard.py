@@ -2098,6 +2098,12 @@ def _market_calibrated_model_tracks(
                 "training": training,
                 "eligible_races": metrics.get("evaluated_races"),
                 "evaluation_days": metrics.get("evaluation_days"),
+                "calibration_eligible_races": coverage_gate.get(
+                    "calibration_eligible_races"
+                ),
+                "calibration_eligible_days": coverage_gate.get(
+                    "calibration_eligible_days"
+                ),
                 "coverage_clean_days": coverage_gate.get("clean_days"),
                 "coverage_excluded_days": coverage_gate.get("excluded_days"),
                 "coverage_minimum": coverage_gate.get("minimum_day_coverage"),
@@ -2113,8 +2119,13 @@ def _market_calibrated_model_tracks(
                 "model_trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("model_trifecta_top5_hit_rate")
                 ),
+                "stake_yen": _float_or_none(metrics.get("stake_yen")),
                 "roi": None
                 if waiting_for_clean_data
+                or (
+                    _float_or_none(metrics.get("stake_yen")) is not None
+                    and float(metrics.get("stake_yen")) <= 0.0
+                )
                 else _float_or_none(metrics.get("roi")),
                 "profit_yen": None
                 if waiting_for_clean_data

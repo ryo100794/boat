@@ -454,6 +454,43 @@ def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> 
     assert market["coverage_latest_rate"] == 0.98
 
 
+def test_market_track_separates_calibration_volume_and_no_bet_roi(tmp_path) -> None:
+    (tmp_path / "stagewise_blend_market_shadow.json").write_text(
+        json.dumps(
+            {
+                "evaluated_races": 136,
+                "evaluation_days": 1,
+                "stake_yen": 0,
+                "roi": 0.0,
+                "profit_yen": 0,
+                "calibrated_trifecta_log_loss": 3.857,
+                "coverage_gate": {
+                    "minimum_day_coverage": 1.0,
+                    "clean_days": 1,
+                    "excluded_days": 4,
+                    "calibration_eligible_races": 401,
+                    "calibration_eligible_days": 3,
+                    "days": [{"race_date": "2026-07-22", "coverage": 1.0}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracks = {
+        row["id"]: row
+        for row in _model_track_summaries(tmp_path, [], {"jobs": []})
+    }
+    market = tracks["market_calibrated_blend_shadow"]
+
+    assert market["eligible_races"] == 136
+    assert market["calibration_eligible_races"] == 401
+    assert market["calibration_eligible_days"] == 3
+    assert market["stake_yen"] == 0.0
+    assert market["roi"] is None
+    assert market["profit_yen"] == 0
+
+
 def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> None:
     path = tmp_path / "market.json"
     path.write_text(
