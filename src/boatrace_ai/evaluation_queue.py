@@ -163,6 +163,18 @@ def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
     return len(cursor.fetchall())
 
 
+def retry_pending_jobs(conn: Any) -> int:
+    rows = conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET available_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'queued' AND attempt < max_attempts
+        RETURNING job_id
+        """
+    ).fetchall()
+    return len(rows)
+
+
 def _number(
     params: dict[str, Any],
     key: str,
@@ -660,7 +672,7 @@ def run_worker(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PostgreSQL-backed model evaluation queue")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "seed", "status", "run"):
+    for name in ("init", "seed", "retry", "status", "run"):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
@@ -702,6 +714,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_schema(conn)
         if args.command == "seed":
             print(_json({"inserted": seed_default_jobs(conn, evaluation_date=args.evaluation_date)}))
+        elif args.command == "retry":
+            print(_json({"requeued": retry_pending_jobs(conn)}))
         elif args.command == "status":
             print(json.dumps(status_rows(conn), ensure_ascii=False, indent=2, default=str))
     return 0
