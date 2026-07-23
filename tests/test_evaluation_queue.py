@@ -699,9 +699,13 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
 
     inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
 
-    assert len(inserted) == 11
+    assert len(inserted) == 12
     assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
     assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
+    combined = [row for row in calls if row["task_type"] == "combined_feature_search"]
+    assert len(combined) == 1
+    assert combined[0]["priority"] == 85
+    assert combined[0]["parameters"]["n_features"] == 4096
     assert not any(
         row["task_type"] == "calibrated_mlp_recency_search" for row in calls
     )
@@ -740,6 +744,13 @@ def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> Non
 def test_feature_search_profiles_fit_the_32gb_quota_and_migrate_old_defaults() -> None:
     assert TASK_PROFILES["standardized_365d"]["memory_mb"] == 14336
     assert TASK_PROFILES["listwise_feature_search"]["memory_mb"] == 14336
+    assert TASK_PROFILES["combined_feature_search"] == {
+        "category": "evaluation",
+        "memory_mb": 14336,
+        "disk_mb": 4096,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
 
     class RecordingPostgres:
         dialect = "postgresql"
@@ -1015,4 +1026,63 @@ def test_reprioritize_job_requires_queued_job_and_known_ticket() -> None:
             priority=90,
             reason="reason",
             ticket_key="MODEL-PAYOUT-001",
+        )
+
+
+def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job(
+            "combined_feature_search",
+            {
+                "evaluation_date": "2026-07-23",
+                "n_features": 4096,
+                "targets": "winner,top3_pl",
+                "alphas": "0.00001,0.0001",
+                "timeout_seconds": 21600,
+            },
+            job_id=77,
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[0:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.combined_feature_search",
+    ]
+    assert command[command.index("--cache-dir") + 1] == (
+        "/tmp/boatrace-evaluation/job-00000077/combined"
+    )
+    assert command[command.index("--selected-cache-dir") + 1] == str(
+        root / "data/models/evaluation_cache/job-00000077-combined"
+    )
+    assert command[command.index("--variant-workers") + 1] == "1"
+    assert command[command.index("--candidate-workers") + 1] == "2"
+    assert command[command.index("--as-of-date") + 1] == "2026-07-23"
+    assert output == root / "data/models/evaluation_queue/job-00000077.json"
+    assert result_decision("combined_feature_search", {"roi": 0.8}) == (
+        "refine_selected_candidate"
+    )
+
+
+@pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
+def test_combined_feature_search_rejects_injected_worker_or_path(
+    tmp_path, parameter
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="unsupported combined_feature_search parameters",
+    ):
+        build_command(
+            _job(
+                "combined_feature_search",
+                {"evaluation_date": "2026-07-23", parameter: 2},
+            ),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
         )

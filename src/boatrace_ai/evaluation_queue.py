@@ -45,6 +45,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "historical_coverage_safe": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
@@ -750,7 +751,7 @@ def build_command(
             "--output",
             str(output),
         ], output
-    if task_type == "listwise_feature_search":
+    if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",
             "n_features",
@@ -765,7 +766,7 @@ def build_command(
         unsupported = set(params) - allowed
         if unsupported:
             raise ValueError(
-                "unsupported listwise_feature_search parameters: "
+                f"unsupported {task_type} parameters: "
                 + ", ".join(sorted(unsupported))
             )
         _integer(params, "timeout_seconds", 21600, 300, 86400)
@@ -785,13 +786,20 @@ def build_command(
             raise ValueError("unsupported alphas")
         evaluation_date = _date(params, "evaluation_date")
         cache_root = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
-        search_cache = cache_root / "search"
+        combined = task_type == "combined_feature_search"
+        search_cache = cache_root / ("combined" if combined else "search")
+        selected_suffix = "-combined" if combined else ""
         selected_cache = (
             app_root / "data" / "models" / "evaluation_cache"
-            / f"job-{job_id:08d}"
+            / f"job-{job_id:08d}{selected_suffix}"
+        )
+        module = (
+            "boatrace_ai.listwise.combined_feature_search"
+            if combined
+            else "boatrace_ai.listwise.feature_search"
         )
         return [
-            str(python), "-m", "boatrace_ai.listwise.feature_search",
+            str(python), "-m", module,
             "--db", db,
             "--output", str(output),
             "--cache-dir", str(search_cache),
@@ -1050,7 +1058,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     profit = summary.get("profit_yen")
     if roi is not None and float(roi) >= 1.0 and float(profit or 0) > 0:
         return "bankroll_gate_pass"
-    if task_type == "listwise_feature_search":
+    if task_type in {"listwise_feature_search", "combined_feature_search"}:
         return "refine_selected_candidate"
     if task_type == "evaluation_aggregate":
         return "aggregation_complete"
@@ -1325,12 +1333,18 @@ def enqueue_refinement(
     *,
     app_root: Path,
 ) -> int | None:
-    if job["task_type"] != "listwise_feature_search" or decision != "refine_selected_candidate":
+    if (
+        job["task_type"] not in {"listwise_feature_search", "combined_feature_search"}
+        or decision != "refine_selected_candidate"
+    ):
         return None
     relative = f"data/models/evaluation_queue/job-{int(job['job_id']):08d}.json"
+    selected_suffix = (
+        "-combined" if job["task_type"] == "combined_feature_search" else ""
+    )
     parent_cache = str(
         app_root / "data" / "models" / "evaluation_cache"
-        / f"job-{int(job['job_id']):08d}"
+        / f"job-{int(job['job_id']):08d}{selected_suffix}"
     )
     params = {
         "search_result": relative,
@@ -1590,6 +1604,23 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
             priority=40,
             max_attempts=2,
         )
+    add(
+        task_type="combined_feature_search",
+        model_key="listwise_combined_4096",
+        parameters={
+            "evaluation_date": evaluation_date,
+            "n_features": 4096,
+            "targets": "winner,top3_pl",
+            "alphas": "0.00001,0.0001",
+            "learning_rate": 0.02,
+            "epochs": 2,
+            "batch_races": 1000,
+            "ev_threshold": 1.2,
+            "timeout_seconds": 21600,
+        },
+        priority=85,
+        max_attempts=2,
+    )
     return inserted
 
 
