@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
             "t5_priority_targets": 0,
             "t5_priority_ok": 0,
             "t5_priority_failed": 0,
+            "t5_guard_targets": 0,
+            "t5_guard_until_seconds": None,
             "beforeinfo_targets": 0,
             "beforeinfo_ok": 0,
             "beforeinfo_failed": 0,
@@ -123,6 +125,24 @@ def main(argv: list[str] | None = None) -> int:
                     counters=counters,
                 )
                 time.sleep(args.sleep_page)
+            guard_now = now_jst()
+            guarded_rows = t5_guard_rows(
+                rows,
+                now=guard_now,
+                satisfied_race_ids=priority_odds_ids,
+            )
+            if guarded_rows:
+                counters["t5_guard_targets"] = len(guarded_rows)
+                counters["t5_guard_until_seconds"] = round(
+                    guarded_rows[0][0], 1
+                )
+                counters["now_jst"] = guard_now.isoformat(timespec="seconds")
+                print(json.dumps(counters, ensure_ascii=False), flush=True)
+                loop += 1
+                if args.max_loops is not None and loop >= args.max_loops:
+                    return 0
+                time.sleep(min(args.sleep_loop, 5.0))
+                continue
             if args.collect_results:
                 for result_row in due_result_rows(rows, now=now):
                     counters["result_targets"] += 1
@@ -413,6 +433,17 @@ def refresh_prediction(
         conn.rollback()
 
 
+def t5_snapshot_is_fresh(
+    *, start_at: datetime | None, latest_odds: datetime | None
+) -> bool:
+    cutoff_at = estimated_deadline_from_start(start_at)
+    if cutoff_at is None or latest_odds is None:
+        return False
+    model_cutoff_at = cutoff_at - timedelta(minutes=MODEL_DECISION_LEAD_MINUTES)
+    latest_gap = (model_cutoff_at - latest_odds).total_seconds()
+    return 0.0 <= latest_gap <= 60.0
+
+
 def t5_priority_due(
     *,
     start_at: datetime | None,
@@ -426,10 +457,44 @@ def t5_priority_due(
     seconds_to_model_cutoff = (model_cutoff_at - now).total_seconds()
     if seconds_to_model_cutoff < 0.0 or seconds_to_model_cutoff > 60.0:
         return False
-    if latest_odds is None:
-        return True
-    latest_gap = (model_cutoff_at - latest_odds).total_seconds()
-    return not 0.0 <= latest_gap <= 60.0
+    return not t5_snapshot_is_fresh(
+        start_at=start_at, latest_odds=latest_odds
+    )
+
+
+def t5_guard_rows(
+    rows: list[Any],
+    *,
+    now: datetime,
+    satisfied_race_ids: set[str] | None = None,
+    guard_seconds: float = 90.0,
+) -> list[tuple[float, Any]]:
+    """Reserve the collector for an imminent T-5 capture window."""
+    satisfied = satisfied_race_ids or set()
+    candidates: list[tuple[float, Any]] = []
+    for row in rows:
+        race_id = str(row["race_id"])
+        if race_id in satisfied:
+            continue
+        start_at = stored_start_time(row["deadline_at"])
+        cutoff_at = estimated_deadline_from_start(start_at)
+        if cutoff_at is None:
+            continue
+        model_cutoff_at = cutoff_at - timedelta(
+            minutes=MODEL_DECISION_LEAD_MINUTES
+        )
+        seconds = (model_cutoff_at - now).total_seconds()
+        if not 0.0 <= seconds <= guard_seconds:
+            continue
+        latest_odds = parse_time(
+            row["latest_odds_at"], default_tz=timezone.utc
+        )
+        if t5_snapshot_is_fresh(
+            start_at=start_at, latest_odds=latest_odds
+        ):
+            continue
+        candidates.append((seconds, row))
+    return sorted(candidates, key=lambda item: item[0])
 
 
 def t5_priority_rows(rows: list[Any], *, now: datetime) -> list[Any]:
