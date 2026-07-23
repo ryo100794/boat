@@ -13,6 +13,7 @@ from boatrace_ai.evaluation_queue import (
     TASK_PROFILES,
     build_command,
     dedupe_key,
+    ensure_schema,
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
@@ -695,3 +696,35 @@ def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> Non
     archive = tmp_path / "data/models/evaluation_queue/standardized_history/2026-07-20"
     assert (archive / "protocol.json").is_file()
     assert (archive / "manifest.json").is_file()
+
+
+def test_feature_search_profiles_fit_the_32gb_quota_and_migrate_old_defaults() -> None:
+    assert TASK_PROFILES["standardized_365d"]["memory_mb"] == 14336
+    assert TASK_PROFILES["listwise_feature_search"]["memory_mb"] == 14336
+
+    class RecordingPostgres:
+        dialect = "postgresql"
+
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=()):
+            self.calls.append((statement, params))
+
+        def executescript(self, statement):
+            self.calls.append((statement, ()))
+
+    conn = RecordingPostgres()
+    ensure_schema(conn)
+    migration = next(
+        (statement, params)
+        for statement, params in conn.calls
+        if "status = 'queued'" in statement
+        and "min_free_memory_mb = ?" in statement
+    )
+    assert migration[1] == (
+        14336,
+        "standardized_365d",
+        "listwise_feature_search",
+        16384,
+    )
