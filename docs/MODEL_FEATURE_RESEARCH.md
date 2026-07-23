@@ -85,3 +85,22 @@ blocks rather than one venue or one month.
 - The freshness ceiling is 65 seconds before the cutoff instead of 60. This is a five-second scheduler-jitter tolerance: the three previously excluded 2026-07-22 races had complete 120-combination snapshots 62, 63, and 63 seconds before the cutoff.
 - The collector continues to target a snapshot within 60 seconds and now reserves the process 90 seconds before an imminent T-5 window. The 65-second evaluation ceiling does not relax collection frequency.
 - Evaluation version 16 and the scored-cache contract prevent mixing the new tolerance with earlier reports. Daily coverage must still be 100%.
+
+
+## 2026-07-23 calibration/evaluation population separation
+
+- Evaluation version 17 keeps the formal evaluation population unchanged: a
+  scored day is eligible only when every completed race has a pre-cutoff T-5
+  snapshot within 65 seconds and every payout is complete.
+- Earlier races with valid pre-cutoff T-5 snapshots are now retained for
+  calibration and policy selection even when another race on the same earlier
+  day is missing a snapshot. Discarding those valid rows reduced calibration
+  data without making the later complete-day holdout safer.
+- Every fold still fits the calibrator, closing-odds model, and bankroll policy
+  exclusively on dates strictly earlier than its complete evaluation day. A
+  regression test fixes this temporal boundary and verifies that partial prior
+  days can never enter the evaluation metrics.
+- Promotion still requires 30 complete evaluation days, at least 1,000
+  evaluation races, paired market-confidence gates, positive profit, ROI above
+  one, and fold stability. Calibration-only races do not count toward those
+  promotion sample gates.

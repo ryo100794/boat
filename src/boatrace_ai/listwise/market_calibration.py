@@ -62,7 +62,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 16
+MARKET_EVALUATION_VERSION = 17
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
@@ -692,10 +692,25 @@ def waiting_walk_forward_result(
     races: list[dict[str, Any]],
     *,
     dates: list[str],
+    evaluation_dates: list[str] | None = None,
     daily_budget_yen: int,
     min_calibration_days: int,
     calibrator_strategy: str = "grid",
 ) -> dict[str, Any]:
+    candidate_dates = dates if evaluation_dates is None else evaluation_dates
+    if candidate_dates:
+        required_additional_days = min(
+            max(
+                0,
+                min_calibration_days
+                - sum(candidate_date > date for date in dates),
+            )
+            for candidate_date in candidate_dates
+        )
+        if required_additional_days == 0:
+            required_additional_days = 1
+    else:
+        required_additional_days = 1
     probability_metrics = {
         "evaluated_races": 0,
         "model_trifecta_log_loss": None,
@@ -723,13 +738,16 @@ def waiting_walk_forward_result(
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
         "validation_design": (
-            "Each evaluation day is untouched; calibration and policy selection use only earlier full days"
+            "Each evaluation day has complete T-5 coverage and is untouched; calibration "
+            "and policy selection use only earlier eligible T-5 races"
         ),
         "daily_budget_yen": daily_budget_yen,
         "available_races": len(races),
         "available_days": len(dates),
+        "evaluation_candidate_days": len(candidate_dates),
+        "evaluation_candidate_dates": candidate_dates,
         "minimum_calibration_days": min_calibration_days,
-        "required_additional_days": max(0, min_calibration_days + 1 - len(dates)),
+        "required_additional_days": required_additional_days,
         "evaluated_races": 0,
         "evaluation_races": 0,
         "evaluation_days": 0,
@@ -844,15 +862,27 @@ def walk_forward_evaluate(
     daily_budget_yen: int = 10_000,
     min_calibration_days: int = 2,
     calibrator_strategy: str = "grid",
+    evaluation_dates: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         by_day[str(race["race_date"])].append(race)
     dates = sorted(by_day)
-    if len(dates) <= min_calibration_days:
+    candidate_dates = (
+        dates
+        if evaluation_dates is None
+        else sorted({str(date) for date in evaluation_dates if str(date) in by_day})
+    )
+    fold_dates = []
+    for evaluation_date in candidate_dates:
+        calibration_dates = [date for date in dates if date < evaluation_date]
+        if len(calibration_dates) >= min_calibration_days:
+            fold_dates.append((calibration_dates, evaluation_date))
+    if not fold_dates:
         return waiting_walk_forward_result(
             races,
             dates=dates,
+            evaluation_dates=candidate_dates,
             daily_budget_yen=daily_budget_yen,
             min_calibration_days=min_calibration_days,
             calibrator_strategy=calibrator_strategy,
@@ -867,9 +897,7 @@ def walk_forward_evaluate(
     daily_rows = []
     flat_daily_rows = []
     edge_diagnostic_records = []
-    for index in range(min_calibration_days, len(dates)):
-        calibration_dates = dates[:index]
-        evaluation_date = dates[index]
+    for calibration_dates, evaluation_date in fold_dates:
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
         holdout = by_day[evaluation_date]
         calibrator_selection = None
@@ -1045,11 +1073,14 @@ def walk_forward_evaluate(
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
         "calibrator_strategy": calibrator_strategy,
         "validation_design": (
-            "Each evaluation day is untouched; calibration and policy selection use only earlier full days"
+            "Each evaluation day has complete T-5 coverage and is untouched; calibration "
+            "and policy selection use only earlier eligible T-5 races"
         ),
         "daily_budget_yen": daily_budget_yen,
         "available_races": len(races),
         "available_days": len(dates),
+        "evaluation_candidate_days": len(candidate_dates),
+        "evaluation_candidate_dates": candidate_dates,
         "evaluated_races": len(evaluation_races),
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
@@ -1720,11 +1751,21 @@ def main(argv: list[str] | None = None) -> int:
         day_targets=day_targets,
         minimum_day_coverage=args.minimum_day_coverage,
     )
+    coverage_gate.update(
+        {
+            "calibration_eligible_races": len(races),
+            "calibration_eligible_days": len(
+                {str(race["race_date"]) for race in races}
+            ),
+            "formal_evaluation_eligible_races": len(clean_races),
+        }
+    )
     result = walk_forward_evaluate(
-        clean_races,
+        races,
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
+        evaluation_dates=coverage_gate["clean_dates"],
     )
     result.update(
         {

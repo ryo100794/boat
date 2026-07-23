@@ -306,6 +306,44 @@ def test_clean_day_gate_excludes_partial_t5_and_missing_payout_days() -> None:
     assert gate["days"][2]["payout_complete"] is False
 
 
+def test_partial_t5_days_calibrate_only_clean_evaluation_day() -> None:
+    races = [
+        *[_race("2026-07-20", rno) for rno in range(1, 3)],
+        *[_race("2026-07-21", rno) for rno in range(1, 4)],
+        *[_race("2026-07-22", rno) for rno in range(1, 5)],
+    ]
+    targets = {
+        race_date: {"complete_race_count": 4, "payout_race_count": 4}
+        for race_date in ("2026-07-20", "2026-07-21", "2026-07-22")
+    }
+
+    clean, gate = filter_clean_market_days(
+        races,
+        day_targets=targets,
+        minimum_day_coverage=1.0,
+    )
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=gate["clean_dates"],
+    )
+
+    assert len(clean) == 4
+    assert gate["clean_dates"] == ["2026-07-22"]
+    assert result["evaluation_candidate_dates"] == ["2026-07-22"]
+    assert result["evaluation_days"] == 1
+    assert result["evaluation_races"] == 4
+    assert result["available_races"] == 9
+    assert result["folds"][0]["calibration_dates"] == [
+        "2026-07-20",
+        "2026-07-21",
+    ]
+    assert result["folds"][0]["calibration_races"] == 5
+    assert result["folds"][0]["evaluation_date"] == "2026-07-22"
+    assert result["deployment_configuration"]["training_races"] == 9
+    assert max(result["folds"][0]["calibration_dates"]) < "2026-07-22"
+
+
 def test_clean_day_gate_validates_coverage_threshold() -> None:
     with pytest.raises(ValueError, match="minimum_day_coverage"):
         filter_clean_market_days(
