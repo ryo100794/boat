@@ -51,7 +51,9 @@ JOBS: list[dict[str, Any]] = [
     {"pid": 0, "name": "conditional_order_365d", "milestone": "M4-3/M6", "kind": "conditional_order_365d", "output": "data/models/conditional_order_365d.json", "log": "logs/runtime/conditional-order-evaluation.log"},
     {"pid": 0, "name": "stagewise_mlp_365d", "milestone": "M4-4", "kind": "stagewise_mlp_365d", "output": "data/models/stagewise_mlp_365d.json", "log": "logs/stagewise_mlp_365d.log"},
     {"pid": 0, "name": "stagewise_blend_preselected_20260717", "milestone": "M4-4", "kind": "stagewise_blend_preselected", "output": "data/models/stagewise_blend_preselected_20260717.json", "log": "logs/stagewise_blend_preselected_20260717.log"},
+    {"pid": 0, "name": "conditional_stagewise_holdout", "milestone": "M4-4", "kind": "conditional_stagewise_pl", "output": "data/models/conditional_stagewise_holdout.json", "log": "logs/conditional-stagewise-holdout.log"},
     {"pid": 0, "name": "stagewise_blend_market_shadow", "milestone": "M5/M6", "kind": "market_calibrated_blend_shadow", "output": "data/models/stagewise_blend_market_shadow.json", "log": "logs/runtime/market-calibrated-blend-shadow.log"},
+    {"pid": 0, "name": "conditional_stagewise_market_shadow", "milestone": "M5/M6", "kind": "conditional_stagewise_market_shadow", "output": "data/models/conditional_stagewise_market_shadow.json", "log": "logs/runtime/conditional-market-shadow.log"},
     {"pid": 0, "name": "listwise_market_residual_shadow", "milestone": "M5/M6", "kind": "market_residual_shadow", "output": "data/models/listwise_market_residual_shadow.json", "log": "logs/runtime/market-residual-shadow.log"},
 ]
 

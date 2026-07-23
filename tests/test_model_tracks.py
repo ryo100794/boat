@@ -358,7 +358,7 @@ def test_model_tracks_exposes_conditional_stagewise_holdout_and_market(tmp_path)
         ),
         encoding="utf-8",
     )
-    (tmp_path / "conditional_stagewise_market_residual_provisional.json").write_text(
+    (tmp_path / "conditional_stagewise_market_shadow.json").write_text(
         json.dumps(
             {
                 "model": "conditional_market",
@@ -380,7 +380,7 @@ def test_model_tracks_exposes_conditional_stagewise_holdout_and_market(tmp_path)
     }
 
     pastlog = tracks["conditional_stagewise_pl"]
-    market = tracks["conditional_stagewise_market_provisional"]
+    market = tracks["conditional_stagewise_market_shadow"]
     assert pastlog["status"] == "完了"
     assert pastlog["entry_log_loss"] is None
     assert pastlog["trifecta_log_loss"] == 3.933334
@@ -388,7 +388,7 @@ def test_model_tracks_exposes_conditional_stagewise_holdout_and_market(tmp_path)
     assert pastlog["trifecta_top5_hit_rate"] == 0.325949
     assert pastlog["backtest_available"] is True
     assert market["status"] == "完了"
-    assert market["role"] == "開発診断のみ・2日暫定（収益未達）"
+    assert market["role"] == "challenger shadow・本番判定対象外"
     assert market["entry_log_loss"] is None
     assert market["eligible_races"] == 260
     assert market["trifecta_log_loss"] == 3.829282

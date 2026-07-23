@@ -78,3 +78,27 @@ def test_stagewise_shadow_uses_newton_residual_calibration() -> None:
     ).read_text(encoding="utf-8")
 
     assert "--calibrator-strategy newton_residual" in script
+
+
+def test_conditional_stagewise_shadow_is_isolated_and_strict_t5() -> None:
+    root = Path(__file__).parents[1]
+    script = (
+        root
+        / "scripts"
+        / "deployment"
+        / "run-boatrace-conditional-market-shadow.sh"
+    ).read_text(encoding="utf-8")
+    supervisor = (
+        root
+        / "scripts"
+        / "deployment"
+        / "supervisor-boatrace-conditional-market-shadow.ini"
+    ).read_text(encoding="utf-8")
+
+    assert "conditional_stagewise_holdout.joblib" in script
+    assert "conditional_stagewise_market_shadow.json" in script
+    assert "conditional_stagewise_market_residual.races.joblib" in script
+    assert "--calibrator-strategy newton_residual" in script
+    assert "--max-snapshot-age-seconds 60" in script
+    assert "[program:boatrace-conditional-market-shadow]" in supervisor
+    assert "autostart=true" in supervisor

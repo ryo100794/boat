@@ -1951,11 +1951,11 @@ def _market_calibrated_model_tracks(
             None,
         ),
         (
-            "conditional_stagewise_market_provisional",
-            "conditional_stagewise_market_provisional",
-            "条件付き3段階PL+Newton残差 2日暫定",
-            "conditional_stagewise_market_residual_provisional.json",
-            "7/17以前固定条件付きPL / T-5実オッズ / 7/21-22前進評価（短期診断）",
+            "conditional_stagewise_market_shadow",
+            "conditional_stagewise_market_shadow",
+            "条件付き3段階PL+Newton残差 shadow",
+            "conditional_stagewise_market_shadow.json",
+            "7/17以前固定条件付きPL / T-5実オッズ / 前日までの完全日walk-forward",
             None,
         ),
         (
@@ -2038,7 +2038,7 @@ def _market_calibrated_model_tracks(
         elif track_id in {
             "market_calibrated_blend_shadow",
             "market_calibrated_blend_provisional",
-            "conditional_stagewise_market_provisional",
+            "conditional_stagewise_market_shadow",
             "market_residual_shadow",
             "market_cutoff_residual_probe",
         }:
@@ -2063,8 +2063,8 @@ def _market_calibrated_model_tracks(
                     }
                     else "開発診断のみ・7/23以降で再確認"
                     if track_id == "market_cutoff_residual_probe"
-                    else "開発診断のみ・2日暫定（収益未達）"
-                    if track_id == "conditional_stagewise_market_provisional"
+                    else "challenger shadow・本番判定対象外"
+                    if track_id == "conditional_stagewise_market_shadow"
                     else "開発診断のみ・2日暫定（本番判定対象外）"
                     if track_id == "market_calibrated_blend_provisional"
                     else "比較評価・no-bet判定のみ"
