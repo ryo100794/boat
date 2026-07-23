@@ -62,7 +62,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 15
+MARKET_EVALUATION_VERSION = 16
+MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 10
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -1133,7 +1134,7 @@ def score_real_odds_races(
     artifact: dict[str, Any],
     from_date: str,
     through_date: str | None = None,
-    max_snapshot_age_seconds: float = 60.0,
+    max_snapshot_age_seconds: float = MARKET_MAX_SNAPSHOT_AGE_SECONDS,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     _validate_artifact_before_period(artifact, from_date=from_date)
     model = artifact.get("model")
@@ -1649,7 +1650,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="grid",
     )
     parser.add_argument("--scored-cache")
-    parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--max-snapshot-age-seconds",
+        type=float,
+        default=MARKET_MAX_SNAPSHOT_AGE_SECONDS,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 

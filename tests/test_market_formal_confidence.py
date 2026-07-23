@@ -4,6 +4,7 @@ from itertools import permutations
 
 from boatrace_ai.listwise.market_calibration import (
     MARKET_EVALUATION_VERSION,
+    MARKET_MAX_SNAPSHOT_AGE_SECONDS,
     SCORED_CACHE_VERSION,
     market_comparison_confidence,
     scored_cache_contract,
@@ -105,5 +106,6 @@ def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> N
         odds_signature={"snapshot_count": 10},
     )
 
-    assert MARKET_EVALUATION_VERSION == 15
+    assert MARKET_EVALUATION_VERSION == 16
+    assert MARKET_MAX_SNAPSHOT_AGE_SECONDS == 65.0
     assert contract["version"] == SCORED_CACHE_VERSION == 10

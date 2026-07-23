@@ -99,6 +99,6 @@ def test_conditional_stagewise_shadow_is_isolated_and_strict_t5() -> None:
     assert "conditional_stagewise_market_shadow.json" in script
     assert "conditional_stagewise_market_residual.races.joblib" in script
     assert "--calibrator-strategy newton_residual" in script
-    assert "--max-snapshot-age-seconds 60" in script
+    assert "--max-snapshot-age-seconds 65" in script
     assert "[program:boatrace-conditional-market-shadow]" in supervisor
     assert "autostart=true" in supervisor

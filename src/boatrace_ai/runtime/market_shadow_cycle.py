@@ -13,6 +13,7 @@ from typing import Any
 from ..db import connection
 from ..listwise.market_calibration import (
     MARKET_EVALUATION_VERSION,
+    MARKET_MAX_SNAPSHOT_AGE_SECONDS,
     odds_data_signature,
 )
 
@@ -203,7 +204,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="grid",
     )
     parser.add_argument("--scored-cache")
-    parser.add_argument("--max-snapshot-age-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--max-snapshot-age-seconds",
+        type=float,
+        default=MARKET_MAX_SNAPSHOT_AGE_SECONDS,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     parser.add_argument("--interval", type=float, default=3600.0)
     parser.add_argument("--timeout", type=int, default=3600)

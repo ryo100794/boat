@@ -42,6 +42,6 @@ exec env \
   --daily-budget-yen 10000 \
   --min-calibration-days 2 \
   --calibrator-strategy newton_residual \
-  --max-snapshot-age-seconds 60 \
+  --max-snapshot-age-seconds 65 \
   --interval 3600 \
   --timeout 3600

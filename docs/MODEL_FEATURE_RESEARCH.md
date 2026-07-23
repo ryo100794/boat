@@ -78,3 +78,10 @@ blocks rather than one venue or one month.
 - The earlier intraday ensemble result covered only 113 races, so it was rerun on the same final 133-race fold used by every v14 candidate. Source subset and regularization selection still used only 2026-07-20 and 2026-07-21.
 - The selected market, fixed-cutoff listwise, and stagewise ensemble produced LogLoss 3.90027 and 3T5 29.32%. This was worse than both the T-5 market at 3.86070/30.08% and stagewise plus global Newton residual at 3.84268/30.83%.
 - The ensemble is rejected as an unstable two-day source-weight fit. It is not registered for 2026-07-23 and will not be reconsidered until enough full-day strict T-5 folds support source-weight stability.
+
+## 2026-07-23 formal T-5 timestamp tolerance
+
+- Formal market evaluation still rejects every snapshot captured after the T-5 decision cutoff, so the change cannot introduce lookahead.
+- The freshness ceiling is 65 seconds before the cutoff instead of 60. This is a five-second scheduler-jitter tolerance: the three previously excluded 2026-07-22 races had complete 120-combination snapshots 62, 63, and 63 seconds before the cutoff.
+- The collector continues to target a snapshot within 60 seconds and now reserves the process 90 seconds before an imminent T-5 window. The 65-second evaluation ceiling does not relax collection frequency.
+- Evaluation version 16 and the scored-cache contract prevent mixing the new tolerance with earlier reports. Daily coverage must still be 100%.
