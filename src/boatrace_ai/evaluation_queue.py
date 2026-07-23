@@ -262,13 +262,15 @@ def build_command(
             "0.0001,0.001",
         }:
             raise ValueError("unsupported alphas")
-        cache = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
+        cache_root = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
+        search_cache = cache_root / "search"
+        selected_cache = cache_root / "selected"
         return [
             str(python), "-m", "boatrace_ai.listwise.feature_search",
             "--db", db,
             "--output", str(output),
-            "--cache-dir", str(cache),
-            "--selected-cache-dir", str(cache),
+            "--cache-dir", str(search_cache),
+            "--selected-cache-dir", str(selected_cache),
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),
             "--epochs", str(epochs),
@@ -548,7 +550,9 @@ def enqueue_refinement(conn: Any, job: dict[str, Any], decision: str) -> int | N
     if job["task_type"] != "listwise_feature_search" or decision != "refine_selected_candidate":
         return None
     relative = f"data/models/evaluation_queue/job-{int(job['job_id']):08d}.json"
-    parent_cache = f"/tmp/boatrace-evaluation/job-{int(job['job_id']):08d}"
+    parent_cache = (
+        f"/tmp/boatrace-evaluation/job-{int(job['job_id']):08d}/selected"
+    )
     params = {
         "search_result": relative,
         "cache_dir": parent_cache,
