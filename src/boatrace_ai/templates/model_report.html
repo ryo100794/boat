@@ -15,7 +15,7 @@
     .report-group { margin-top:7px; padding-top:4px; border-top:2px solid var(--ink); } .report-group.research { border-top-color:var(--accent2); } .group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px; } .group-heading h2 { margin:0; font-size:12px; } .group-heading .scope-note { max-width:68%; color:var(--muted); text-align:right; } .group-controls { display:flex; align-items:center; gap:4px; } .group-controls label { color:var(--muted); } .group-controls select { min-width:270px; max-width:52vw; }
     .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } canvas { width:100%; height:170px; border:1px solid var(--line); background:#fff; }
     table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:3px; } th,td { border-bottom:1px solid var(--line); padding:1px 3px; line-height:1.12; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } th { color:var(--muted); background:#fafbfb; } th:first-child,td:first-child { text-align:left; }
-    .table-scroll { overflow-x:auto; } .model-table { table-layout:auto; min-width:1720px; } .model-table .name-cell { min-width:145px; max-width:220px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .model-table .model-file { min-width:190px; } .model-table .detail-cell { min-width:220px; max-width:300px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .wide-name-table { table-layout:auto; min-width:850px; } .wide-name-table .name-cell { min-width:190px; max-width:320px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .comparison-table { min-width:1280px; } .comparison-table .name-cell { min-width:210px; max-width:310px; } .axis-cell { min-width:150px; white-space:normal; text-align:left; }
+    .table-scroll { overflow-x:auto; } .model-track-groups { display:grid; gap:7px; } .model-table { table-layout:auto; min-width:1780px; } .model-table .name-cell { min-width:145px; max-width:220px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .model-table .model-file { min-width:190px; } .model-table .detail-cell { min-width:220px; max-width:300px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .wide-name-table { table-layout:auto; min-width:850px; } .wide-name-table .name-cell { min-width:190px; max-width:320px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .comparison-table { min-width:1280px; } .comparison-table .name-cell { min-width:210px; max-width:310px; } .axis-cell { min-width:150px; white-space:normal; text-align:left; }
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
     @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-heading .scope-note{max-width:none;text-align:left;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;} }
   </style>
@@ -36,7 +36,11 @@
   </section>
   <section class="report-group research">
     <div class="group-heading"><h2>研究・運用モデル</h2><span class="scope-note">評価期間や損失定義が異なるため、共通365日表とは分離して個別に判定</span></div>
-    <div class="panel"><h2><span>モデル系統・評価条件</span><span class="muted">教師・特徴量・本番/Shadow・評価軸を明示</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>実odds</th><th>評価R</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="modelTrackRows"></tbody></table></div></div>
+    <div class="model-track-groups">
+      <div class="panel"><h2><span>過去ログモデル</span><span class="muted">実oddsなし / 各行のholdout条件で評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="pastModelTrackRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>完全日 T-5実odds walk-forward</span><span class="muted">全レースT-5取得100%の日だけを正式評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="marketModelTrackRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>開発・暫定診断</span><span class="muted">期間・標本・評価目的が異なり本番昇格比較には使用しない</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="diagnosticModelTrackRows"></tbody></table></div></div>
+    </div>
     <div class="grid">
       <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>fold</th><th>経過</th><th>ROI</th><th>損益</th><th>評価R/実od</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
       <div class="panel"><h2><span>候補スイープ</span><span class="muted">同一探索内のみ比較</span></h2><div class="table-scroll"><table><thead><tr><th>variant</th><th>艇Entry LL</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div></div>
@@ -185,13 +189,31 @@ function trackLoss(x){
 }
 function trackAxis(x){
   const id=String(x.id||"").toLowerCase();
-  if(x.include_odds) return "T-5実odds / 時系列holdout";
+  if(x.evaluation_group==="t5_formal") return "完全日T-5実odds / 日次前進";
+  if(x.include_odds) return "実odds / 個別holdout";
   if(id.includes("365d")) return "直近365日 / 時系列holdout";
   if(id.includes("cutoff")||id.includes("blend")) return "固定cutoff / 以降holdout";
   return "個別時系列評価";
 }
+function trackVolume(x){
+  const races=x.eligible_races==null?"-":fmt(x.eligible_races)+"R";
+  return x.evaluation_days==null?races:races+" / "+fmt(x.evaluation_days)+"日";
+}
+function trackCoverage(x){
+  if(x.coverage_minimum==null) return "-";
+  const clean=Number(x.coverage_clean_days||0), excluded=Number(x.coverage_excluded_days||0);
+  return `${fmt(clean)}/${fmt(clean+excluded)}日 / 最新 ${pct(x.coverage_latest_rate)} / 必須 ${pct(x.coverage_minimum)}`;
+}
+function trackRows(rows,emptyText){
+  return rows.map(x=>{ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":status.includes("失敗")?"failed":""; const marketTitle=x.market_comparison_date?`${x.market_comparison_date} / ${fmt(x.market_comparison_races)}R / 負値は市場より改善 / 改善確率 ${pct(x.market_improvement_probability)}`:"市場比較未実施"; const loss=trackLoss(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr><td class="name-cell">${esc(x.label)}</td><td class="name-cell model-file">${esc(x.model_file||"-")}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td class="detail-cell">${esc(x.teacher||"-")}</td><td class="detail-cell">${esc(x.training||"-")}</td><td>${esc(x.role||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td class="mono">${esc(trackCoverage(x))}</td><td title="${esc(marketTitle)}">${esc(loss.label)} ${ratio(loss.value)}</td><td class="mono" title="${esc(marketTitle)}">${marketCi(x)}</td><td>${pct(x.winner_top1_accuracy)}</td><td title="${esc(marketTitle)}">${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td></tr>`; }).join("") || `<tr><td colspan="15" class="muted">${esc(emptyText)}</td></tr>`;
+}
 function renderModelTracks(tracks){
-  $("modelTrackRows").innerHTML=tracks.map(x=>{ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":status.includes("失敗")?"failed":""; const volume=x.target_races?`${fmt(x.eligible_races)}/${fmt(x.target_races)}`:fmt(x.eligible_races); const marketTitle=x.market_comparison_date?`${x.market_comparison_date} / ${fmt(x.market_comparison_races)}R / 負値は市場より改善 / 改善確率 ${pct(x.market_improvement_probability)}`:"市場比較未実施"; const loss=trackLoss(x), odds=x.include_odds===true?"有":x.include_odds===false?"無":"-"; const profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr><td class="name-cell">${esc(x.label)}</td><td class="name-cell model-file">${esc(x.model_file||"-")}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td class="detail-cell">${esc(x.teacher||"-")}</td><td class="detail-cell">${esc(x.training||"-")}</td><td>${esc(x.role||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td>${odds}</td><td>${volume}</td><td title="${esc(marketTitle)}">${esc(loss.label)} ${ratio(loss.value)}</td><td class="mono" title="${esc(marketTitle)}">${marketCi(x)}</td><td>${pct(x.winner_top1_accuracy)}</td><td title="${esc(marketTitle)}">${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td></tr>`; }).join("") || `<tr><td colspan="15" class="muted">モデル系統情報なし</td></tr>`;
+  const past=tracks.filter(x=>x.include_odds!==true);
+  const market=tracks.filter(x=>x.evaluation_group==="t5_formal");
+  const diagnostic=tracks.filter(x=>x.include_odds===true&&x.evaluation_group!=="t5_formal");
+  $("pastModelTrackRows").innerHTML=trackRows(past,"過去ログモデル情報なし");
+  $("marketModelTrackRows").innerHTML=trackRows(market,"完全日T-5評価情報なし");
+  $("diagnosticModelTrackRows").innerHTML=trackRows(diagnostic,"開発診断情報なし");
 }
 function renderEvaluationJobs(jobs,generatedAt){
   $("remoteMeta").textContent=`更新 ${String(generatedAt||"").replace("T"," ").slice(0,19)} / 実行中 ${jobs.filter(x=>x.running).length}`;

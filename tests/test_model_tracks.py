@@ -58,10 +58,13 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
 
 
 def test_web_templates_identify_the_active_model_track() -> None:
-    assert 'id="modelTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="pastModelTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="marketModelTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="diagnosticModelTrackRows"' in MODEL_REPORT_HTML
     assert "統一365日 共通評価" in MODEL_REPORT_HTML
     assert "研究・運用モデル" in MODEL_REPORT_HTML
-    assert "T-5実odds / 時系列holdout" in MODEL_REPORT_HTML
+    assert "完全日T-5実odds / 日次前進" in MODEL_REPORT_HTML
+    assert "全レースT-5取得100%の日だけを正式評価" in MODEL_REPORT_HTML
     assert "主系予測" in HTML
     assert 'bt.model_label || "過去ログ主系"' in HTML
 
@@ -405,6 +408,27 @@ def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> 
                 "available_races": 270,
                 "available_days": 2,
                 "evaluated_races": 0,
+                "roi": 0.0,
+                "profit_yen": 0,
+                "calibrated_trifecta_log_loss": 3.81,
+                "trifecta_top5_hit_rate": 0.33,
+                "market_comparison": {
+                    "log_loss_difference_calibrated_minus_market": {
+                        "observations": 100,
+                        "mean_difference": -0.01,
+                        "ci95_lower": -0.02,
+                        "ci95_upper": 0.0,
+                    }
+                },
+                "coverage_gate": {
+                    "minimum_day_coverage": 1.0,
+                    "clean_days": 0,
+                    "excluded_days": 2,
+                    "days": [
+                        {"race_date": "2026-07-21", "coverage": 0.93},
+                        {"race_date": "2026-07-22", "coverage": 0.98},
+                    ],
+                },
                 "promotion_eligible": False,
             }
         ),
@@ -418,8 +442,16 @@ def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> 
 
     market = tracks["market_calibrated_blend_shadow"]
     assert market["status"] == "データ待ち"
+    assert market.get("market_log_loss_delta") is None
     assert market["eligible_races"] == 0
     assert market["backtest_available"] is False
+    assert market["trifecta_log_loss"] is None
+    assert market["roi"] is None
+    assert market["profit_yen"] is None
+    assert market["coverage_clean_days"] == 0
+    assert market["coverage_excluded_days"] == 2
+    assert market["coverage_minimum"] == 1.0
+    assert market["coverage_latest_rate"] == 0.98
 
 
 def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> None:
@@ -432,6 +464,12 @@ def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> N
                 "calibrated_trifecta_log_loss": 4.1323,
                 "trifecta_top5_hit_rate": 0.2581,
                 "evaluation_days": 2,
+                "coverage_gate": {
+                    "minimum_day_coverage": 1.0,
+                    "clean_days": 2,
+                    "excluded_days": 1,
+                    "days": [{"race_date": "2026-07-22", "coverage": 1.0}],
+                },
                 "probability_metrics": {
                     "model_trifecta_log_loss": 3.9695,
                     "model_trifecta_top5_hit_rate": 0.3309,
@@ -447,6 +485,7 @@ def test_local_evaluation_result_keeps_market_calibration_metrics(tmp_path) -> N
     assert result["metrics"]["evaluation_days"] == 2
     assert result["metrics"]["model_trifecta_log_loss"] == 3.9695
     assert result["metrics"]["model_trifecta_top5_hit_rate"] == 0.3309
+    assert result["coverage_gate"]["clean_days"] == 2
 
 
 def test_local_evaluation_result_uses_cutoff_after_refit_metrics(tmp_path) -> None:

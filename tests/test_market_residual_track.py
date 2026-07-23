@@ -49,10 +49,10 @@ def test_model_report_exposes_newton_market_residual_shadow(tmp_path) -> None:
     assert residual["eligible_races"] == 0
     assert "Newton法" in residual["training"]
     assert residual["promotion_eligible"] is False
-    assert residual["market_comparison_races"] == 113
+    assert residual.get("market_comparison_races") is None
     assert residual["entry_log_loss"] is None
-    assert residual["trifecta_log_loss"] == 3.78665
-    assert residual["trifecta_top5_hit_rate"] == 0.31858
-    assert residual["market_log_loss_delta"] == -0.02843
-    assert residual["market_log_loss_delta_ci95_upper"] == 0.00212
-    assert residual["market_improvement_probability"] == 0.966
+    assert residual["trifecta_log_loss"] is None
+    assert residual["trifecta_top5_hit_rate"] is None
+    assert residual.get("market_log_loss_delta") is None
+    assert residual.get("market_log_loss_delta_ci95_upper") is None
+    assert residual.get("market_improvement_probability") is None

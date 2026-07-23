@@ -1998,9 +1998,10 @@ def _market_calibrated_model_tracks(
         result = job.get("result") or local_result or {}
         metrics = result.get("metrics") or {}
         local_status = str((local_result or {}).get("status") or "")
+        waiting_for_clean_data = local_status.startswith("waiting_")
         status = (
             "データ待ち"
-            if local_status.startswith("waiting_")
+            if waiting_for_clean_data
             else job.get("status")
             or ("完了" if local_result and not local_result.get("error") else "未登録")
         )
@@ -2010,21 +2011,30 @@ def _market_calibrated_model_tracks(
         formal_comparison = _market_comparison_summary(
             result.get("market_comparison")
         )
-        comparison = formal_comparison or bootstrap
+        comparison = (
+            {} if waiting_for_clean_data else formal_comparison or bootstrap
+        )
         calibrated_log_loss = _float_or_none(
             metrics.get("calibrated_trifecta_log_loss")
         )
-        displayed_log_loss = (
+        displayed_log_loss = None if waiting_for_clean_data else (
             calibrated_log_loss
             if calibrated_log_loss is not None
             else bootstrap.get("market_probe_log_loss")
         )
         formal_top5 = _float_or_none(metrics.get("trifecta_top5_hit_rate"))
-        displayed_top5 = (
+        displayed_top5 = None if waiting_for_clean_data else (
             formal_top5
             if formal_top5 is not None
             else bootstrap.get("market_probe_top5_hit_rate")
         )
+        coverage_gate = (
+            (local_result or {}).get("coverage_gate")
+            or result.get("coverage_gate")
+            or {}
+        )
+        coverage_days = coverage_gate.get("days") or []
+        latest_coverage = coverage_days[-1].get("coverage") if coverage_days else None
         if track_id == "market_momentum_probe":
             training = (
                 "3係数log-pool Newton法 / T-10→T-5を5分換算 / "
@@ -2070,11 +2080,28 @@ def _market_calibrated_model_tracks(
                     else "比較評価・no-bet判定のみ"
                 ),
                 "status": status,
+                "evaluation_group": (
+                    "t5_formal"
+                    if track_id
+                    in {
+                        "market_calibrated_shadow",
+                        "market_calibrated_cutoff_shadow",
+                        "market_calibrated_blend_shadow",
+                        "conditional_stagewise_market_shadow",
+                        "market_residual_shadow",
+                    }
+                    else "diagnostic"
+                ),
                 "include_odds": True,
                 "model_file": model_file,
                 "teacher": teacher,
                 "training": training,
                 "eligible_races": metrics.get("evaluated_races"),
+                "evaluation_days": metrics.get("evaluation_days"),
+                "coverage_clean_days": coverage_gate.get("clean_days"),
+                "coverage_excluded_days": coverage_gate.get("excluded_days"),
+                "coverage_minimum": coverage_gate.get("minimum_day_coverage"),
+                "coverage_latest_rate": latest_coverage,
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),
                 "entry_log_loss": None,
@@ -2086,8 +2113,12 @@ def _market_calibrated_model_tracks(
                 "model_trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("model_trifecta_top5_hit_rate")
                 ),
-                "roi": _float_or_none(metrics.get("roi")),
-                "profit_yen": metrics.get("profit_yen"),
+                "roi": None
+                if waiting_for_clean_data
+                else _float_or_none(metrics.get("roi")),
+                "profit_yen": None
+                if waiting_for_clean_data
+                else metrics.get("profit_yen"),
                 "promotion_eligible": bool(metrics.get("promotion_eligible")),
                 **comparison,
             }
@@ -4247,6 +4278,8 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
     result["status"] = data.get("status")
     result["feature_set"] = data.get("feature_set")
     result["market_comparison"] = data.get("market_comparison")
+    result["coverage_gate"] = data.get("coverage_gate")
+    result["evaluation_version"] = data.get("evaluation_version")
     result["daily"] = (data.get("bankroll") or {}).get("daily") or data.get("daily") or []
     result["promotion_eligible"] = data.get("promotion_eligible")
     result["structure_gate"] = data.get("structure_gate")
