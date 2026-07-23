@@ -92,6 +92,10 @@ def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
 def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     summary = summarize_result({
         "model": "venue",
+        "venue_conditional_order": {
+            "trifecta_log_loss": 3.79,
+            "trifecta_top5_hit_rate": 0.35,
+        },
         "payout_feature_comparison": {
             "candidate_schema": "conditional_payout_interactions_v2",
             "legacy_schema": "conditional_payout_additive_v1",
@@ -115,6 +119,8 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     })
 
     assert summary["payout_feature_candidate_roi"] == 1.03
+    assert summary["trifecta_log_loss"] == 3.79
+    assert summary["trifecta_top5_hit_rate"] == 0.35
     assert summary["payout_feature_legacy_roi"] == 0.90
     assert summary["payout_feature_roi_delta_ci95_lower"] == 0.02
     assert summary["payout_feature_probability_roi_delta_above_zero"] == 0.99

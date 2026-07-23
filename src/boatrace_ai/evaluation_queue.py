@@ -638,7 +638,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[key] = value[key]
         for key in (
             "metrics", "holdout", "holdout_after_newton", "bankroll",
-            "conditional_order", "momentum_newton_residual",
+            "conditional_order", "venue_conditional_order",
+            "momentum_newton_residual",
         ):
             if key in value:
                 visit(value[key], depth + 1)
