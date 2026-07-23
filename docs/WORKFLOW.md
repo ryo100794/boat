@@ -74,3 +74,19 @@ http://127.0.0.1:10001
 公式サイトへの大量アクセスは避けてください。10年分のバックフィルは日次ファイル単位でも数千リクエストになります。`--sleep` を大きめにし、途中停止しても既取得ファイルをスキップして再開できる設計にしています。
 
 予測値は統計モデルの推定値であり、的中や利益を保証しません。オッズを使う場合、期待値は控除率、市場歪み、締切直前変動、購入制限、欠場・返還を別途考慮する必要があります。
+
+## 6. 開発・リリース運用
+
+開発作業の記録、レビュー、リリースは [CONTRIBUTING.md](../CONTRIBUTING.md) の規約に従います。要点は次の通りです。
+
+- PostgreSQLの `work_tickets` と `work_ticket_events` を実行進捗の一次記録とし、GitHub Issueはレビューと外部追跡に使います。
+- 実装前に `ticket_key` を確定し、Issueタイトルと本文に記載します。DBの `source` またはevent noteにはIssue URLを、Issue本文にはDB ticketの識別情報を記載して相互参照可能にします。
+- 1作業単位のcode、test、config、schema/seed、docsは、該当するものを意味的に一つのcommitへまとめます。
+- `test -> commit -> push -> remote fast-forward -> health check -> DB event / Issue comment` の順序を守り、各段階の証拠を残します。
+- 作業完了、評価完了、性能gate通過は別々に判定します。いずれか一つを他の代用にしてはいけません。
+- 大規模なdata、model、cache、secretはGitへ入れません。ローカル作業領域は2GB以内、リモート実行領域は `/workspace` とします。
+- rollbackはrevert commitまたは検証済みprevious SHAで行い、履歴の書き換えやforce pushは行いません。
+
+収集コマンドや利用者向けの手順は本書の1〜5章を正とし、開発作業の詳細なチェックリストと証拠形式は `CONTRIBUTING.md` を正とします。
+
+文書は [README.md](../README.md) を粗い入口とし、`WORKFLOW.md`、[ARCHITECTURE.md](ARCHITECTURE.md)、[PROJECT_STATUS.md](PROJECT_STATUS.md) を詳細層とします。新しい話題別Markdownは作らず、既存canonical文書の担当箇所を更新してください。canonical一覧、重複禁止、repository hygiene auditの規約も `CONTRIBUTING.md` を参照してください。

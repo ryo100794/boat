@@ -1,0 +1,113 @@
+name: Work ticket
+description: DB work ticketに対応する実装、評価、運用作業を追跡します
+title: "[TICKET_KEY] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        タイトルの `TICKET_KEY` を実際の値へ置換してください。DB `work_tickets` が進捗の一次記録です。秘密情報は記載しないでください。
+  - type: input
+    id: ticket_key
+    attributes:
+      label: ticket_key
+      description: タイトルと同一の、一意かつ不変なDB ticket key
+      placeholder: MODEL-OPT-001
+    validations:
+      required: true
+  - type: input
+    id: db_ticket
+    attributes:
+      label: DB ticket fields
+      description: 秘密を含まないDB環境識別子、status、progress、owner、related_job_id、source
+      placeholder: env=production; status=queued; progress=0; owner=codex; related_job_id=none; source=this issue URL
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: 目的、変更対象、非対象を記載してください
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: 観測可能で判定可能な受入条件を列挙してください
+      placeholder: |
+        - [ ] 条件1
+        - [ ] 条件2
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: 現象の再現手順、または変更後の検証手順と期待結果
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence plan
+      description: commit SHA、commands、test count、data universe hash、period、policy、artifact path、runtime SHAの取得方法
+      placeholder: |
+        commit_sha:
+        commands:
+        tests: passed=, failed=, skipped=, total=
+        data_universe_hash:
+        period:
+        policy:
+        artifact_path:
+        runtime_sha:
+    validations:
+      required: true
+  - type: textarea
+    id: deployment
+    attributes:
+      label: Deployment and health check
+      description: "`/workspace` へのfast-forward手順、health check、失敗時のrevertまたはprevious SHA"
+      placeholder: |
+        deploy:
+        health_check:
+        rollback:
+    validations:
+      required: true
+  - type: dropdown
+    id: evaluation_required
+    attributes:
+      label: Evaluation
+      description: 作業完了とは別に評価完了の追跡が必要か
+      options:
+        - Required
+        - Not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: performance_gate_required
+    attributes:
+      label: Performance gate
+      description: 作業完了・評価完了とは別に性能gate通過が必要か
+      options:
+        - Required
+        - Not applicable
+    validations:
+      required: true
+  - type: checkboxes
+    id: policy_acknowledgement
+    attributes:
+      label: Operational checks
+      options:
+        - label: Issueタイトルの `TICKET_KEY` を実際のticket_keyへ置換し、本文と一致させました
+          required: true
+        - label: DB ticketを作成し、このIssue URLをDBのsourceまたはevent noteから参照できるようにします
+          required: true
+        - label: code/test/config/schema/seed/docsの必要な変更を意味的に一つのcommitへ含めます
+          required: true
+        - label: 大規模data/model/cache/secretsをGitへ追加せず、ローカル作業領域を2GB以内に保ちます
+          required: true
+        - label: PG/rcloneの資格情報をIssue、commit、ログ、artifactへ掲載しません
+          required: true
+        - label: 新しい話題別Markdownを作らず、canonical文書を更新します
+          required: true

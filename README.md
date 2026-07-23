@@ -15,6 +15,22 @@
 
 このリポジトリは予測システムであり、的中や利益を保証しません。BOAT RACE公式サイトのサイトポリシーでは、大量アクセスなどサイト運営に支障を与える行為が禁止されています。実運用では取得間隔、同時接続、再取得を抑え、公開情報の利用条件を確認してください。舟券の購入は日本国内では20歳以上が対象です。
 
+## ドキュメント
+
+このREADMEはプロジェクトの粗い入口です。実装・運用の中核詳細層は次のcanonical文書です。
+
+- [運用ワークフロー](docs/WORKFLOW.md): データ収集、学習、監視、Webサーバー、開発・リリース運用
+- [アーキテクチャ](docs/ARCHITECTURE.md): package責務、安定した実行入口、ソース構成
+- [プロジェクト状況](docs/PROJECT_STATUS.md): 現在状態、評価結果、未完了項目、マイルストーン
+
+標準ガバナンスは [コントリビューションガイド](CONTRIBUTING.md) にまとめています。DB ticket、GitHub Issue、commit、検証、deploy、証拠、rollback、文書管理はこの規約に従います。
+
+特化した既存仕様・監査記録は [GPU workspace](docs/GPU_WORKSPACE.md)、[model feature research](docs/MODEL_FEATURE_RESEARCH.md)、[Teleboat agent audit](docs/TELEBOAT_AGENT_AUDIT.md)、[投票API](docs/TELEBOAT_API.md) です。詳細層と内容が重複する文書は作らず、変更は担当するcanonical文書へ統合します。
+
+## 文書管理
+
+標準ガバナンスファイルを除き、新しい話題別Markdownを追加しません。少なくともリリース前と月1回、リンク切れ、重複、陳腐化、孤立文書を確認するrepository hygiene auditを実施します。詳細な判定基準と記録方法は [CONTRIBUTING.md](CONTRIBUTING.md) に従います。
+
 ## 投票API
 
 監査済み内部投票APIの入力形式、安全ゲート、全勝式、BOX/フォーメーション、ジャーナル仕様は [docs/TELEBOAT_API.md](docs/TELEBOAT_API.md) を参照してください。既定はdry-runで、実投票は明示的な多重ゲートなしには動作しません。
