@@ -95,7 +95,7 @@ def enqueue_job(
         INSERT INTO model_evaluation_jobs(
           task_type, model_key, parameters, dedupe_key, priority,
           max_attempts, parent_job_id
-        ) VALUES (?, ?, ?::jsonb, ?, ?, ?, ?)
+        ) VALUES (?, ?, CAST(? AS JSONB), ?, ?, ?, ?)
         ON CONFLICT(dedupe_key) DO NOTHING
         RETURNING job_id
         """,
@@ -346,7 +346,7 @@ def complete_job(
         UPDATE model_evaluation_jobs
         SET status = 'completed', completed_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP, result_path = ?,
-            result_summary = ?::jsonb, decision = ?, worker_id = NULL,
+            result_summary = CAST(? AS JSONB), decision = ?, worker_id = NULL,
             locked_at = NULL, error = NULL
         WHERE job_id = ?
         """,
@@ -356,7 +356,7 @@ def complete_job(
         """
         INSERT INTO model_improvement_candidates(
           job_id, model_key, task_type, decision, metrics, parameters, result_path
-        ) VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+        ) VALUES (?, ?, ?, ?, CAST(? AS JSONB), CAST(? AS JSONB), ?)
         ON CONFLICT(job_id) DO UPDATE SET
           decision = excluded.decision, metrics = excluded.metrics,
           result_path = excluded.result_path
