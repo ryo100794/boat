@@ -72,32 +72,27 @@ def test_web_templates_identify_the_active_model_track() -> None:
 def test_model_report_separates_cross_model_and_selected_model_aggregates() -> None:
     header = MODEL_REPORT_HTML.split("</header>", 1)[0]
 
-    assert 'id="modelSelect"' not in header
+    assert 'id="modelSelect"' not in MODEL_REPORT_HTML
     assert MODEL_REPORT_HTML.index('id="allModelsGroup"') < MODEL_REPORT_HTML.index('id="summaryRows"')
     assert MODEL_REPORT_HTML.index('id="summaryRows"') < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
-    assert MODEL_REPORT_HTML.index('id="selectedModelGroup"') < MODEL_REPORT_HTML.index('id="modelSelect"')
-    assert MODEL_REPORT_HTML.index('id="modelSelect"') < MODEL_REPORT_HTML.index('id="modelDetailRows"')
     assert MODEL_REPORT_HTML.index("統一365日 共通評価") < MODEL_REPORT_HTML.index("研究・運用モデル")
     assert MODEL_REPORT_HTML.index("研究・運用モデル") < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
+    assert 'id="selectedModelName"' in MODEL_REPORT_HTML
+    assert 'data-model-key=' in MODEL_REPORT_HTML
     assert "艇Entry LL" in MODEL_REPORT_HTML
     assert "3連単 LL" in MODEL_REPORT_HTML
     assert "モデル個別集計" in MODEL_REPORT_HTML
+    assert 'id="modelSelect"' not in header
 
 
-def test_model_selector_catalog_includes_every_report_data_group() -> None:
-    catalog_source = MODEL_REPORT_HTML.split("function modelCatalog(data){", 1)[1].split("function configureModelSelect", 1)[0]
+def test_model_catalog_is_supplied_by_backend() -> None:
+    selection_source = MODEL_REPORT_HTML.split(
+        "function configureModelSelection(data,comparisonRows){", 1
+    )[1].split("function selectedCatalogEntry", 1)[0]
 
-    for group in (
-        "model_tracks",
-        "backtests",
-        "bankroll",
-        "fold_metrics",
-        "evaluation_jobs",
-        "feature_diagnostics",
-        "sweeps",
-        "bankroll_daily",
-    ):
-        assert group in catalog_source
+    assert "data.model_catalog||[]" in selection_source
+    assert "model_key" in selection_source
+    assert "bankroll_daily" not in selection_source
 
 
 def test_model_tracks_exposes_t5_safe_provisional_metrics(tmp_path) -> None:

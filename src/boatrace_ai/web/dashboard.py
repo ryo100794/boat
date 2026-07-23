@@ -1178,6 +1178,16 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
     feature_diagnostics.sort(key=lambda item: (item.get("generated_at") or "", item["file"]))
     model_tracks = _model_track_summaries(model_dir, backtests, remote_evaluations)
+    model_catalog, model_daily = _model_report_catalog(
+        model_tracks=model_tracks,
+        backtests=backtests,
+        bankroll=bankroll,
+        fold_metrics=fold_metrics,
+        evaluation_jobs=evaluation_jobs,
+        feature_diagnostics=feature_diagnostics,
+        sweeps=sweeps,
+        bankroll_daily=bankroll_daily,
+    )
     payload = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model_dir": str(model_dir),
@@ -1190,6 +1200,8 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
+        "model_catalog": model_catalog,
+        "model_daily": model_daily,
         "sweeps": sweeps,
         "feature_diagnostics": feature_diagnostics,
         "evaluation_jobs": evaluation_jobs,
@@ -2688,6 +2700,177 @@ def _remote_backtest_report_summaries(
     return rows
 
 
+_REPORT_MODEL_PREFIXES = re.compile(
+    r"^(?:(?:win_model_|bankroll_backtest_|backtest_|standardized_365d_v2[_-]*))+"
+)
+_REPORT_MODEL_SUFFIXES = re.compile(r"(?:(?:_backtest|_10000))+$")
+
+
+def _report_model_key(value: Any) -> str:
+    raw = Path(str(value or "")).name.lower()
+    raw = re.sub(r"\.(?:json|joblib)$", "", raw)
+    raw = _REPORT_MODEL_PREFIXES.sub("", raw)
+    raw = _REPORT_MODEL_SUFFIXES.sub("", raw)
+    return re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+
+
+def _model_report_catalog(
+    *,
+    model_tracks: list[dict[str, Any]],
+    backtests: list[dict[str, Any]],
+    bankroll: list[dict[str, Any]],
+    fold_metrics: list[dict[str, Any]],
+    evaluation_jobs: list[dict[str, Any]],
+    feature_diagnostics: list[dict[str, Any]],
+    sweeps: list[dict[str, Any]],
+    bankroll_daily: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    sources = (
+        ("model_tracks", "モデル系統", model_tracks, ("model_file", "id", "label")),
+        ("backtests", "予測評価", backtests, ("name", "file", "model")),
+        ("bankroll", "資金運用", bankroll, ("name", "file", "model")),
+        ("fold_metrics", "fold評価", fold_metrics, ("model", "name")),
+        ("evaluation_jobs", "実行ジョブ", evaluation_jobs, ("model_key", "name")),
+        (
+            "feature_diagnostics",
+            "特徴量診断",
+            feature_diagnostics,
+            ("name", "file"),
+        ),
+        ("sweeps", "候補スイープ", sweeps, ("variant", "name", "file")),
+    )
+    catalog: dict[str, dict[str, Any]] = {}
+
+    for source_name, group, rows, identity_fields in sources:
+        for row in rows:
+            identity = next(
+                (row.get(field) for field in identity_fields if row.get(field)), ""
+            )
+            key = _report_model_key(row.get("model_key") or identity)
+            if not key:
+                continue
+            row["model_key"] = key
+            label = str(
+                row.get("label")
+                or row.get("name")
+                or row.get("variant")
+                or identity
+                or key
+            )
+            entry = catalog.setdefault(
+                key,
+                {
+                    "model_key": key,
+                    "label": label,
+                    "groups": [],
+                    "selection_rank": 50,
+                },
+            )
+            if group not in entry["groups"]:
+                entry["groups"].append(group)
+            scope = str(row.get("evaluation_scope") or "")
+            rank = (
+                0
+                if scope == "standard_365d_v2"
+                else 1
+                if scope == "standard_365d"
+                else 10
+                if source_name in {"backtests", "bankroll"}
+                else 20
+            )
+            entry["selection_rank"] = min(entry["selection_rank"], rank)
+            if rank <= 1:
+                entry["label"] = label
+
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    matched_daily_labels: set[str] = set()
+    for row in bankroll:
+        label = str(row.get("name") or "")
+        daily_rows = bankroll_daily.get(label)
+        if daily_rows is None:
+            continue
+        matched_daily_labels.add(label)
+        key = str(row.get("model_key") or _report_model_key(label))
+        candidates.setdefault(key, []).append(
+            {
+                "model_key": key,
+                "label": label,
+                "source": row.get("file") or label,
+                "evaluation_scope": row.get("evaluation_scope") or "legacy:unknown",
+                "generated_at": row.get("generated_at"),
+                "rows": _daily_report_rows(daily_rows),
+            }
+        )
+
+    for label, daily_rows in bankroll_daily.items():
+        if label in matched_daily_labels:
+            continue
+        key = _report_model_key(label)
+        if not key:
+            continue
+        candidates.setdefault(key, []).append(
+            {
+                "model_key": key,
+                "label": label,
+                "source": label,
+                "evaluation_scope": "legacy:unknown",
+                "generated_at": None,
+                "rows": _daily_report_rows(daily_rows),
+            }
+        )
+        catalog.setdefault(
+            key,
+            {
+                "model_key": key,
+                "label": label,
+                "groups": ["日次資金運用"],
+                "selection_rank": 10,
+            },
+        )
+
+    model_daily: dict[str, dict[str, Any]] = {}
+    for key, entry in catalog.items():
+        available = [row for row in candidates.get(key, []) if row["rows"]]
+        if not available:
+            model_daily[key] = {
+                "model_key": key,
+                "label": entry["label"],
+                "source": None,
+                "evaluation_scope": None,
+                "rows": [],
+                "unavailable_reason": (
+                    "日次資金運用を含む評価artifact/jobがありません"
+                ),
+            }
+            continue
+        selected = max(
+            available,
+            key=lambda row: (
+                3
+                if row["evaluation_scope"] == "standard_365d_v2"
+                else 2
+                if row["evaluation_scope"] == "standard_365d"
+                else 1,
+                len(row["rows"]),
+                str(row.get("generated_at") or ""),
+                str(row.get("source") or ""),
+            ),
+        )
+        model_daily[key] = {
+            **selected,
+            "unavailable_reason": None,
+        }
+
+    ordered_catalog = sorted(
+        catalog.values(),
+        key=lambda row: (
+            row["selection_rank"],
+            str(row["label"]).lower(),
+            row["model_key"],
+        ),
+    )
+    return ordered_catalog, model_daily
+
 def _remote_bankroll_daily(
     remote_evaluations: dict[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -2709,23 +2892,107 @@ def _remote_bankroll_daily(
     return rows
 
 
+def _canonical_daily_date(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{8}", raw):
+        raw = f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    try:
+        return date.fromisoformat(raw[:10]).isoformat()
+    except ValueError:
+        return None
+
+
 def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+    by_date: dict[str, dict[str, Any]] = {}
     for row in rows:
-        tickets = int(row.get("tickets") or 0)
+        race_date = _canonical_daily_date(
+            row.get("race_date") or row.get("date") or row.get("day")
+        )
+        if not race_date:
+            continue
+        target = by_date.setdefault(
+            race_date,
+            {
+                "date": race_date,
+                "evaluated_races": 0,
+                "tickets": 0,
+                "races_bet": 0,
+                "stake_yen": 0,
+                "return_yen": 0,
+                "profit_yen": 0,
+                "budget_used_fraction": 0.0,
+                "_budget_values": 0,
+                "_roi": None,
+                "_hit_tickets": 0,
+            },
+        )
+        tickets = int(row.get("tickets") or row.get("selected_tickets") or 0)
+        stake = int(row.get("stake_yen") or 0)
+        returned = int(row.get("return_yen") or 0)
+        profit = row.get("profit_yen")
+        target["evaluated_races"] += int(
+            row.get("evaluated_races") or row.get("races") or 0
+        )
+        target["tickets"] += tickets
+        target["races_bet"] += int(
+            row.get("races_bet") or row.get("selected_races") or 0
+        )
+        target["stake_yen"] += stake
+        target["return_yen"] += returned
+        target["profit_yen"] += int(
+            profit if profit is not None else returned - stake
+        )
+        budget_used = _float_or_none(row.get("budget_used_fraction"))
+        if budget_used is not None:
+            target["budget_used_fraction"] += budget_used
+            target["_budget_values"] += 1
+        target["_roi"] = _float_or_none(row.get("roi"))
+        hit_tickets = row.get("hit_tickets")
+        if hit_tickets is None:
+            hit_rate = _float_or_none(row.get("ticket_hit_rate"))
+            hit_tickets = (hit_rate * tickets) if hit_rate is not None else 0
+        target["_hit_tickets"] += float(hit_tickets)
+
+    out: list[dict[str, Any]] = []
+    cumulative_profit = 0
+    for race_date in sorted(by_date):
+        row = by_date[race_date]
+        cumulative_profit += row["profit_yen"]
+        stake = row["stake_yen"]
+        roi = (
+            float(row["return_yen"]) / float(stake)
+            if stake
+            else row["_roi"]
+        )
+        budget_used = (
+            row["budget_used_fraction"]
+            if row["_budget_values"]
+            else None
+        )
+        tickets = row["tickets"]
         out.append(
             {
-                "date": row.get("race_date"),
-                "evaluated_races": row.get("evaluated_races"),
+                "date": race_date,
+                "evaluated_races": row["evaluated_races"],
                 "tickets": tickets,
-                "races_bet": row.get("races_bet"),
-                "stake_yen": row.get("stake_yen"),
-                "return_yen": row.get("return_yen"),
-                "profit_yen": row.get("profit_yen"),
-                "cumulative_profit_yen": row.get("cumulative_profit_yen"),
-                "roi": _float_or_none(row.get("roi")),
-                "budget_used_fraction": _float_or_none(row.get("budget_used_fraction")),
-                "ticket_hit_rate": (float(row.get("hit_tickets") or 0) / tickets) if tickets else None,
+                "races_bet": row["races_bet"],
+                "stake_yen": stake,
+                "return_yen": row["return_yen"],
+                "profit_yen": row["profit_yen"],
+                "cumulative_profit_yen": cumulative_profit,
+                "roi": roi,
+                "budget_used_fraction": budget_used,
+                "ticket_hit_rate": (
+                    float(row["_hit_tickets"]) / float(tickets)
+                    if tickets
+                    else None
+                ),
             }
         )
     return out

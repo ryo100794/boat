@@ -3,41 +3,37 @@ from __future__ import annotations
 from boatrace_ai.web.dashboard import MODEL_REPORT_HTML, _model_track_summaries
 
 
-def test_model_selector_groups_all_sources() -> None:
-    assert '<optgroup label="' in MODEL_REPORT_HTML
-    for label in (
-        "モデル系統",
-        "予測評価",
-        "資金運用",
-        "実行ジョブ",
-        "特徴量診断",
-        "候補スイープ",
-    ):
-        assert label in MODEL_REPORT_HTML
-    assert "seenLabels" in MODEL_REPORT_HTML
+def test_model_tables_are_the_selector_and_dropdown_is_removed() -> None:
+    assert 'id="modelSelect"' not in MODEL_REPORT_HTML
+    assert "<optgroup" not in MODEL_REPORT_HTML
+    assert 'class="model-select-row"' in MODEL_REPORT_HTML
+    assert 'role="button"' in MODEL_REPORT_HTML
+    assert 'aria-selected="false"' in MODEL_REPORT_HTML
+    assert 'event.key!=="Enter"&&event.key!==" "' in MODEL_REPORT_HTML
+    assert "activateModel(row.dataset.modelKey)" in MODEL_REPORT_HTML
 
 
-def test_model_selector_normalizes_unified_keys_and_uses_file_identity() -> None:
-    key_source = MODEL_REPORT_HTML.split("function modelKey(value){", 1)[1].split(
-        "function modelValues", 1
-    )[0]
-    catalog_source = MODEL_REPORT_HTML.split("function modelCatalog(data){", 1)[1].split(
-        "function configureModelSelect", 1
-    )[0]
+def test_model_selection_uses_backend_catalog_and_stable_key() -> None:
+    source = MODEL_REPORT_HTML.split(
+        "function configureModelSelection(data,comparisonRows){", 1
+    )[1].split("function selectedCatalogEntry", 1)[0]
 
-    assert "standardized_365d_v2" in key_source
-    assert 'group==="bankroll"?(x.file||x.name||x.model)' in catalog_source
+    assert "data.model_catalog||[]" in source
+    assert "row.model_key" in source
+    assert "comparisonRows||[]" in source
+    assert "modelSelect" not in source
 
 
-def test_daily_series_matches_normalized_key_and_uses_evaluated_races() -> None:
+def test_daily_series_uses_canonical_backend_data_and_reason() -> None:
     source = MODEL_REPORT_HTML.split("function renderDaily(data,key){", 1)[1].split(
         "function groupFoldSeries", 1
     )[0]
 
-    assert "filter(value=>modelKey(value)===key)" in source
-    assert 'includes("standardized_365d_v2")' in source
+    assert "(data.model_daily||{})[key]" in source
+    assert "daily.unavailable_reason" in source
+    assert "r.cumulative_profit_yen" in source
     assert "fmt(r.evaluated_races)" in source
-    assert "fmt(r.races)" not in source
+    assert "data.bankroll_daily" not in source
 
 
 def test_unified_summary_and_promotion_display_are_explicit() -> None:
