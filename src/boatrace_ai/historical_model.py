@@ -24,7 +24,10 @@ from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
 
 
-FEATURE_SET = "no_odds_v8_relative_weather_sparse32_scaled_logreg_C0.20_unweighted"
+FEATURE_SET = (
+    "no_odds_v8_historical_only_beforeinfo_excluded_"
+    "sparse32_scaled_logreg_C0.20_unweighted"
+)
 
 
 SparseIndex32 = base.SparseIndex32
@@ -94,6 +97,7 @@ def fit_streaming_pipeline(
             conn,
             include_odds=False,
             include_research=False,
+            include_beforeinfo=False,
             include_races=train_races,
         )
     )
@@ -115,6 +119,7 @@ def fit_streaming_pipeline(
         "examples": int(labels.size),
         "races": len(train_races),
         "include_odds": False,
+        "include_beforeinfo": False,
         "target": "lane_win_probability",
         "vectorizer": "DictVectorizer(sparse=True, streamed vocabulary and CSR batches)",
         "scaler": "MaxAbsScaler",
@@ -141,6 +146,7 @@ def _training_matrix(
         conn,
         include_odds=False,
         include_research=False,
+        include_beforeinfo=False,
         include_races=train_races,
     ):
         batch.append(item)
@@ -179,6 +185,7 @@ def iter_scored_entries(
         conn,
         include_odds=False,
         include_research=False,
+        include_beforeinfo=False,
         include_races=include_races,
     ):
         batch.append(item)
@@ -275,6 +282,7 @@ def backtest_model(
         "examples": len(races) * 6,
         "races": len(races),
         "include_odds": False,
+        "include_beforeinfo": False,
         "feature_set": FEATURE_SET,
         "evaluation_race_set_sha256": race_set_sha256(race_predictions),
         "entry_log_loss": base._safe_log_loss(all_labels, all_probs),
@@ -290,11 +298,23 @@ def backtest_model(
 
 
 def predict_race(conn, **kwargs):
-    return base.predict_race(conn, include_research=False, **kwargs)
+    kwargs.pop("include_beforeinfo", None)
+    return base.predict_race(
+        conn,
+        include_research=False,
+        include_beforeinfo=False,
+        **kwargs,
+    )
 
 
 def predict_open_races(conn, **kwargs):
-    return base.predict_open_races(conn, include_research=False, **kwargs)
+    kwargs.pop("include_beforeinfo", None)
+    return base.predict_open_races(
+        conn,
+        include_research=False,
+        include_beforeinfo=False,
+        **kwargs,
+    )
 
 
 positive_probs = base.positive_probs

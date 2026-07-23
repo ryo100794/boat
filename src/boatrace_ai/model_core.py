@@ -172,6 +172,7 @@ def predict_race(
     top_n: int = 30,
     store: bool = True,
     include_research: bool = True,
+    include_beforeinfo: bool = True,
 ) -> list[dict[str, Any]]:
     bundle = load_model_bundle(model_path)
     pipeline = bundle["pipeline"]
@@ -180,6 +181,7 @@ def predict_race(
         race_id=race_id_value,
         include_odds=False,
         include_research=include_research,
+        include_beforeinfo=include_beforeinfo,
     )
     if len(X) != 6:
         raise ValueError(f"race needs six entries before prediction: {race_id_value}")
@@ -199,6 +201,7 @@ def predict_open_races(
     jcd: str | None = None,
     rno: int | None = None,
     include_research: bool = True,
+    include_beforeinfo: bool = True,
 ) -> dict[str, int]:
     params: list[Any] = [race_date.isoformat()]
     filters = ["r.race_date = ?"]
@@ -228,6 +231,7 @@ def predict_open_races(
                 model_path=model_path,
                 race_id_value=row["race_id"],
                 include_research=include_research,
+                include_beforeinfo=include_beforeinfo,
             )
             ok += 1
         except Exception:

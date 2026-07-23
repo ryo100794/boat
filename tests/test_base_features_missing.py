@@ -5,6 +5,8 @@ import sqlite3
 from boatrace_ai.base_features import (
     _ranks,
     iter_training_examples,
+    load_training_examples,
+    prediction_features,
     race_relative_features,
 )
 
@@ -145,3 +147,27 @@ def test_training_example_stream_filters_races_and_uses_latest_beforeinfo() -> N
         for item, _label, _meta in rows
         for key in item
     )
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    features, _labels, _meta = load_training_examples(
+        conn,
+        include_odds=False,
+        include_research=False,
+        include_beforeinfo=False,
+        from_date="2026-01-02",
+    )
+    predicted = prediction_features(
+        conn,
+        race_id=race_ids[1],
+        include_odds=False,
+        include_research=False,
+        include_beforeinfo=False,
+    )
+    conn.set_trace_callback(None)
+
+    assert len(features) == len(predicted) == 6
+    assert all(item["has_beforeinfo"] == 0 for item in features + predicted)
+    assert all(item["before_weight_kg"] == -1.0 for item in features + predicted)
+    assert all(item["weather"] == "" for item in features + predicted)
+    assert not any("from beforeinfo" in statement.lower() for statement in statements)

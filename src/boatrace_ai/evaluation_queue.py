@@ -39,6 +39,7 @@ class ResourceSnapshot:
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
     "standardized_365d": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 8192},
+    "historical_coverage_safe": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
@@ -500,6 +501,21 @@ def build_command(
         return [str(app_root / "scripts" / "run_standardized_365d_evaluations.sh")], (
             app_root / "data" / "models" / "standardized_365d_v2" / "manifest.json"
         )
+    if task_type == "historical_coverage_safe":
+        evaluation_date = _date(params, "evaluation_date")
+        _integer(params, "timeout_seconds", 28800, 300, 86400)
+        unsupported = set(params) - {"evaluation_date", "timeout_seconds"}
+        if unsupported:
+            raise ValueError(
+                "unsupported historical_coverage_safe parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        return [
+            str(python), "-m", "boatrace_ai.historical_candidate_evaluation",
+            "--db", db,
+            "--output", str(output),
+            "--evaluation-date", evaluation_date,
+        ], output
     if task_type == "market_curvature":
         cache = app_root / "data" / "models" / "stagewise_blend_market_shadow.races.joblib"
         clip = _number(params, "disagreement_clip", 4.0, 0.1, 12.0)
@@ -620,8 +636,9 @@ def build_command(
 
 METRIC_KEYS = (
     "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
-    "trifecta_log_loss", "calibrated_trifecta_log_loss", "winner_top1_accuracy",
-    "trifecta_top5_hit_rate", "roi", "profit_yen", "stake_yen",
+    "entry_brier", "trifecta_log_loss", "calibrated_trifecta_log_loss",
+    "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
+    "roi", "profit_yen", "stake_yen",
     "promotion_eligible", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds",
 )
@@ -882,7 +899,12 @@ def execute_job(
         env["BOATRACE_EVAL_RESUME_COMPLETED"] = "1"
         env["BOATRACE_EVAL_VM_LIMIT_KB"] = "0"
         env["BOATRACE_DB"] = db
-    timeout = _integer(job.get("parameters") or {}, "timeout_seconds", 21600, 300, 86400)
+    timeout_default = (
+        28800
+        if job["task_type"] in {"standardized_365d", "historical_coverage_safe"}
+        else 21600
+    )
+    timeout = _integer(job.get("parameters") or {}, "timeout_seconds", timeout_default, 300, 86400)
     stop_heartbeat = threading.Event()
     heartbeat = threading.Thread(
         target=_heartbeat_loop,
@@ -1051,7 +1073,7 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
     add(
         task_type="standardized_365d",
         model_key="all_registered_models",
-        parameters={"evaluation_date": evaluation_date, "timeout_seconds": 21600},
+        parameters={"evaluation_date": evaluation_date, "timeout_seconds": 28800},
         priority=100,
         max_attempts=2,
     )

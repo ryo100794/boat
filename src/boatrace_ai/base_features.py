@@ -73,6 +73,7 @@ def load_training_examples(
     from_date: str | None = None,
     include_odds: bool = False,
     include_research: bool = True,
+    include_beforeinfo: bool = True,
     min_odds_snapshots: int = 0,
     complete_results_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[int], list[dict[str, Any]]]:
@@ -85,6 +86,7 @@ def load_training_examples(
         from_date=from_date,
         include_odds=include_odds,
         include_research=include_research,
+        include_beforeinfo=include_beforeinfo,
         min_odds_snapshots=min_odds_snapshots,
         complete_results_only=complete_results_only,
     ):
@@ -101,6 +103,7 @@ def iter_training_examples(
     from_date: str | None = None,
     include_odds: bool = False,
     include_research: bool = True,
+    include_beforeinfo: bool = True,
     include_races: set[str] | None = None,
     min_odds_snapshots: int = 0,
     complete_results_only: bool = False,
@@ -159,10 +162,14 @@ def iter_training_examples(
             """,
             (date_chunk[0], date_chunk[-1]),
         )
-        beforeinfo = _latest_beforeinfo_between(
-            conn,
-            from_date=date_chunk[0],
-            through_date=date_chunk[-1],
+        beforeinfo = (
+            _latest_beforeinfo_between(
+                conn,
+                from_date=date_chunk[0],
+                through_date=date_chunk[-1],
+            )
+            if include_beforeinfo
+            else {}
         )
         for race_rows in _iter_complete_race_rows(rows):
             race_id_value = str(race_rows[0]["race_id"])
@@ -265,9 +272,12 @@ def prediction_features(
     race_id: str,
     include_odds: bool = False,
     include_research: bool = True,
+    include_beforeinfo: bool = True,
 ) -> list[dict[str, Any]]:
     rows = load_race_entries(conn, race_id=race_id)
-    before_rows = _latest_beforeinfo(conn, race_id=race_id)
+    before_rows = (
+        _latest_beforeinfo(conn, race_id=race_id) if include_beforeinfo else {}
+    )
     by_lane = {lane: before_rows.get((race_id, lane), {}) for lane in range(1, 7)}
     relatives = race_relative_features(
         rows,
