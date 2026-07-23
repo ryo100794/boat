@@ -1790,6 +1790,13 @@ def _listwise_model_tracks(
             "365日48,259Rのみで50:50比率を固定 / 7/18-21の632Rは最終未使用評価",
             "listwise PLと着順別MLPの確率平均 / 最終期間で比率再選択なし",
         ),
+        (
+            "conditional_stagewise_pl",
+            "条件付き3段階PL 事前固定候補",
+            "conditional_stagewise_holdout.json",
+            "1着→2着→3着で選択済み艇を除外する条件付き教師 / 7/18-21の632Rは最終未使用評価",
+            "FeatureHasher 4,096・base_pastlog除外 / 365日でlr・L2・epoch固定 / 3本のPL係数",
+        ),
     )
     rows = []
     for kind, label, model_file, teacher, training in specs:
@@ -1808,11 +1815,6 @@ def _listwise_model_tracks(
                 status = "要改善/収益ゲート未達"
             else:
                 status = "資金運用評価待ち"
-        log_loss = (
-            metrics.get("trifecta_log_loss")
-            if conditional
-            else metrics.get("entry_log_loss")
-        )
         rows.append({
             "id": kind,
             "label": label,
@@ -1825,7 +1827,8 @@ def _listwise_model_tracks(
             "eligible_races": metrics.get("evaluated_races") or metrics.get("holdout_races"),
             "target_races": None,
             "backtest_available": bool(result) and (status == "完了" or conditional),
-            "entry_log_loss": _float_or_none(log_loss),
+            "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+            "trifecta_log_loss": _float_or_none(metrics.get("trifecta_log_loss")),
             "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
             "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
             "roi": _float_or_none(metrics.get("roi")),
@@ -1948,6 +1951,14 @@ def _market_calibrated_model_tracks(
             None,
         ),
         (
+            "conditional_stagewise_market_provisional",
+            "conditional_stagewise_market_provisional",
+            "条件付き3段階PL+Newton残差 2日暫定",
+            "conditional_stagewise_market_residual_provisional.json",
+            "7/17以前固定条件付きPL / T-5実オッズ / 7/21-22前進評価（短期診断）",
+            None,
+        ),
+        (
             "market_residual_shadow",
             "market_residual_shadow",
             "Newton市場残差 T-5 shadow",
@@ -2027,6 +2038,7 @@ def _market_calibrated_model_tracks(
         elif track_id in {
             "market_calibrated_blend_shadow",
             "market_calibrated_blend_provisional",
+            "conditional_stagewise_market_provisional",
             "market_residual_shadow",
             "market_cutoff_residual_probe",
         }:
@@ -2051,6 +2063,8 @@ def _market_calibrated_model_tracks(
                     }
                     else "開発診断のみ・7/23以降で再確認"
                     if track_id == "market_cutoff_residual_probe"
+                    else "開発診断のみ・2日暫定（収益未達）"
+                    if track_id == "conditional_stagewise_market_provisional"
                     else "開発診断のみ・2日暫定（本番判定対象外）"
                     if track_id == "market_calibrated_blend_provisional"
                     else "比較評価・no-bet判定のみ"
@@ -4206,6 +4220,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
         or data.get("holdout_after_newton")
         or data.get("holdout")
         or data.get("conditional_order")
+        or data.get("conditional_stagewise")
         or data.get("stagewise")
         or (data.get("final_evaluation") or {}).get("selected_blend")
         or {}

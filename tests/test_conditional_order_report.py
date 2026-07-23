@@ -165,7 +165,8 @@ def test_conditional_order_track_keeps_revenue_gate_open(tmp_path) -> None:
     candidate = tracks["conditional_order_365d"]
 
     assert candidate["status"] == "要改善/収益ゲート未達"
-    assert candidate["entry_log_loss"] == 3.8099
+    assert candidate["entry_log_loss"] is None
+    assert candidate["trifecta_log_loss"] == 3.8099
     assert candidate["trifecta_top5_hit_rate"] == 0.3447
     assert candidate["roi"] == 0.91
     assert candidate["profit_yen"] == -9_000

@@ -280,6 +280,7 @@ def test_model_tracks_reads_blend_artifacts_without_remote_poll(tmp_path) -> Non
     tracks = {row["id"]: row for row in _model_track_summaries(tmp_path, [], {"jobs": []})}
 
     assert tracks["stagewise_blend_preselected"]["status"] == "完了"
+    assert tracks["stagewise_blend_preselected"]["trifecta_log_loss"] == 3.9465
     assert tracks["stagewise_blend_preselected"]["trifecta_top5_hit_rate"] == 0.3307
     assert tracks["market_calibrated_blend_shadow"]["status"] == "完了"
     assert tracks["market_calibrated_blend_shadow"]["trifecta_log_loss"] == 3.8953
@@ -339,6 +340,59 @@ def test_model_tracks_marks_two_day_residual_as_provisional(tmp_path) -> None:
     assert candidate["market_day_confidence_pass"] is False
     assert candidate["market_confidence_pass"] is False
     assert "完全日walk-forward" in candidate["training"]
+
+
+def test_model_tracks_exposes_conditional_stagewise_holdout_and_market(tmp_path) -> None:
+    (tmp_path / "conditional_stagewise_holdout.json").write_text(
+        json.dumps(
+            {
+                "model": "pastlog_conditional_stagewise_pl_v1",
+                "conditional_stagewise": {
+                    "evaluated_races": 632,
+                    "trifecta_log_loss": 3.933334,
+                    "winner_top1_accuracy": 0.55538,
+                    "trifecta_top5_hit_rate": 0.325949,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "conditional_stagewise_market_residual_provisional.json").write_text(
+        json.dumps(
+            {
+                "model": "conditional_market",
+                "evaluated_races": 260,
+                "evaluation_days": 2,
+                "calibrated_trifecta_log_loss": 3.829282,
+                "trifecta_top5_hit_rate": 0.330769,
+                "roi": 0.0,
+                "profit_yen": 0,
+                "promotion_eligible": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracks = {
+        row["id"]: row
+        for row in _model_track_summaries(tmp_path, [], {"jobs": []})
+    }
+
+    pastlog = tracks["conditional_stagewise_pl"]
+    market = tracks["conditional_stagewise_market_provisional"]
+    assert pastlog["status"] == "完了"
+    assert pastlog["entry_log_loss"] is None
+    assert pastlog["trifecta_log_loss"] == 3.933334
+    assert pastlog["winner_top1_accuracy"] == 0.55538
+    assert pastlog["trifecta_top5_hit_rate"] == 0.325949
+    assert pastlog["backtest_available"] is True
+    assert market["status"] == "完了"
+    assert market["role"] == "開発診断のみ・2日暫定（収益未達）"
+    assert market["eligible_races"] == 260
+    assert market["trifecta_log_loss"] == 3.829282
+    assert market["trifecta_top5_hit_rate"] == 0.330769
+    assert market["roi"] == 0.0
+    assert market["promotion_eligible"] is False
 
 
 def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> None:
