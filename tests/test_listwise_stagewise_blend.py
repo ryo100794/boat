@@ -5,6 +5,7 @@ import pytest
 from sklearn.feature_extraction import FeatureHasher
 from sklearn.preprocessing import StandardScaler
 
+from boatrace_ai.listwise.conditional_stagewise import ConditionalStagewiseModel
 from boatrace_ai.listwise.market_calibration import artifact_model_probabilities
 from boatrace_ai.listwise.model import ListwiseLinearModel
 
@@ -116,6 +117,38 @@ def test_market_scorer_accepts_stagewise_blend_artifact() -> None:
 
     assert len(probabilities) == 120
     assert sum(probabilities.values()) == pytest.approx(1.0)
+
+
+def test_market_scorer_accepts_conditional_stagewise_artifact() -> None:
+    hasher = FeatureHasher(
+        n_features=16,
+        input_type="dict",
+        alternate_sign=False,
+    )
+    feature_rows = [
+        {"features": {f"lane_{lane}": 1.0}}
+        for lane in range(1, 7)
+    ]
+    matrix = hasher.transform([row["features"] for row in feature_rows])
+    scaler = StandardScaler(with_mean=False).fit(matrix)
+    weights = np.zeros((3, 16))
+    weights[0, :] = 0.1
+    artifact = {
+        "hasher": hasher,
+        "model": ConditionalStagewiseModel(
+            weights=weights,
+            scaler=scaler,
+            alpha=0.0001,
+            learning_rate=0.01,
+            epochs=3,
+        ),
+    }
+
+    probabilities = artifact_model_probabilities(artifact, feature_rows)
+
+    assert len(probabilities) == 120
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+    assert all(value > 0.0 for value in probabilities.values())
 
 
 def test_period_boundaries_select_full_dates() -> None:

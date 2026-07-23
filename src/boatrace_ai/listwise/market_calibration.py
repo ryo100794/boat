@@ -47,6 +47,10 @@ from .closing_odds_momentum import (
     select_closing_odds_model,
     selected_closing_odds_metrics,
 )
+from .conditional_stagewise import (
+    ConditionalStagewiseModel,
+    conditional_position_utilities,
+)
 from .model import ListwiseLinearModel, stable_softmax
 from .paired_bootstrap import paired_mean_bootstrap
 from .stagewise_blend import (
@@ -145,6 +149,14 @@ def artifact_model_probabilities(
             listwise_probabilities,
             stagewise_probabilities,
             stagewise_weight=model.stagewise_weight,
+        )[0]
+        return {
+            "-".join(str(lane) for lane in combination): float(probability)
+            for combination, probability in zip(TRIFECTA_COMBINATIONS, probabilities)
+        }
+    if isinstance(model, ConditionalStagewiseModel):
+        probabilities = stagewise_trifecta_probabilities(
+            conditional_position_utilities(model, matrix)
         )[0]
         return {
             "-".join(str(lane) for lane in combination): float(probability)
@@ -1126,7 +1138,10 @@ def score_real_odds_races(
     _validate_artifact_before_period(artifact, from_date=from_date)
     model = artifact.get("model")
     hasher = artifact.get("hasher")
-    if not isinstance(model, (ListwiseLinearModel, StagewiseBlendModel)) or hasher is None:
+    if not isinstance(
+        model,
+        (ListwiseLinearModel, StagewiseBlendModel, ConditionalStagewiseModel),
+    ) or hasher is None:
         raise ValueError("model artifact must contain a supported model and hasher")
     race_keys = load_complete_race_ids(conn)
     target_ids = {
