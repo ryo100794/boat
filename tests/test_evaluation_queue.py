@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from boatrace_ai.evaluation_queue import (
+    build_command,
+    dedupe_key,
+    result_decision,
+    seed_default_jobs,
+    summarize_result,
+)
+
+
+def _job(task_type: str, parameters: dict, *, job_id: int = 7) -> dict:
+    return {
+        "job_id": job_id,
+        "task_type": task_type,
+        "model_key": "candidate",
+        "parameters": parameters,
+    }
+
+
+def test_dedupe_key_is_parameter_order_independent() -> None:
+    assert dedupe_key("probe", "model", {"a": 1, "b": 2}) == dedupe_key(
+        "probe", "model", {"b": 2, "a": 1}
+    )
+
+
+def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "market_curvature",
+            {"evaluation_date": "2026-07-22", "disagreement_clip": 2.0},
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1] == str(root / "scripts/analyze_market_curvature.py")
+    assert command[-1] == str(root / "data/models/evaluation_queue/job-00000007.json")
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_task_parameters_cannot_select_arbitrary_command(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unsupported task_type"):
+        build_command(
+            _job("shell", {"command": "rm -rf /"}),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unsupported targets"):
+        build_command(
+            _job("listwise_feature_search", {"targets": "future_result"}),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
+    payload = {
+        "status": "candidate_requires_new_day_confirmation",
+        "incremental_confidence_pass": True,
+        "momentum_newton_residual": {
+            "metrics": {
+                "evaluated_races": 136,
+                "trifecta_log_loss": 3.84,
+                "trifecta_top5_hit_rate": 0.31,
+            }
+        },
+    }
+
+    summary = summarize_result(payload)
+
+    assert summary["evaluated_races"] == 136
+    assert summary["trifecta_log_loss"] == 3.84
+    assert result_decision("market_curvature", summary) == "confirm_on_new_holdout"
+
+
+def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+
+    inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
+
+    assert len(inserted) == 11
+    assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
+    assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
+    assert all(
+        row["parameters"]["evaluation_date"] == "2026-07-22" for row in calls
+    )
+
+
+def test_supervisor_runs_four_postgresql_queue_workers() -> None:
+    config = Path(
+        "scripts/deployment/supervisor-boatrace-evaluation-runner.ini"
+    ).read_text(encoding="utf-8")
+
+    assert "boatrace_ai.evaluation_queue run" in config
+    assert "numprocs=4" in config
+    assert "--seed-defaults" in config
+    assert "--vm-limit-gib 20" in config
