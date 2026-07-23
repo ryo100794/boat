@@ -517,11 +517,10 @@ def simulate_conditional_payout_walk_forward(
         {
             "payout_estimator": (
                 "daily walk-forward log-payout ridge using fixed baseline market "
-                "reference with ordered finish-lane, venue, race-number, and "
-                "surprise interactions"
+                "reference, finish lanes, venue, and race number"
                 if independent_market_reference
                 else "daily walk-forward log-payout ridge using model probability, "
-                "ordered finish-lane, venue, race-number, and surprise interactions"
+                "finish lanes, venue, and race number"
             ),
             "payout_feature_schema": PAYOUT_FEATURE_SCHEMA,
             "payout_feature_count": PAYOUT_FEATURE_COUNT,

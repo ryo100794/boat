@@ -8,21 +8,8 @@ import numpy as np
 
 MIN_ODDS = 1.1
 MAX_ODDS = 2_000.0
-FEATURE_COUNT = 171
-FEATURE_SCHEMA = "conditional_payout_interactions_v2"
-
-FIRST_SECOND_OFFSET = 54
-SECOND_THIRD_OFFSET = 84
-VENUE_SURPRISE_OFFSET = 114
-RACE_SURPRISE_OFFSET = 138
-FIRST_SECOND_SURPRISE_OFFSET = 141
-
-
-def _ordered_lane_pair_index(first: int, second: int) -> int:
-    if first == second or not 1 <= first <= 6 or not 1 <= second <= 6:
-        raise ValueError("ordered lane pair must contain distinct lanes from 1 to 6")
-    second_slot = second - 1 if second < first else second - 2
-    return (first - 1) * 5 + second_slot
+FEATURE_COUNT = 54
+FEATURE_SCHEMA = "conditional_payout_additive_v1"
 
 
 @dataclass(frozen=True)
@@ -105,17 +92,6 @@ def payout_features(
         race_bucket = 0 if rno <= 4 else 1 if rno <= 8 else 2
         matrix[row_index, 45 + race_bucket] = 1.0
         matrix[row_index, 48 + lanes[0] - 1] = surprise[row_index]
-        first_second = _ordered_lane_pair_index(lanes[0], lanes[1])
-        second_third = _ordered_lane_pair_index(lanes[1], lanes[2])
-        matrix[row_index, FIRST_SECOND_OFFSET + first_second] = 1.0
-        matrix[row_index, SECOND_THIRD_OFFSET + second_third] = 1.0
-        if 1 <= jcd <= 24:
-            matrix[row_index, VENUE_SURPRISE_OFFSET + jcd - 1] = surprise[row_index]
-        matrix[row_index, RACE_SURPRISE_OFFSET + race_bucket] = surprise[row_index]
-        matrix[
-            row_index,
-            FIRST_SECOND_SURPRISE_OFFSET + first_second,
-        ] = surprise[row_index]
     return matrix
 
 

@@ -258,8 +258,8 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert result["policy"]["market_reference"] == "fixed baseline probability"
     assert result["policy_selection"]["source"] == "fallback_fixed_policy"
     diagnostics = result["payout_diagnostics"]
-    assert diagnostics["feature_schema"] == "conditional_payout_interactions_v2"
-    assert diagnostics["feature_count"] == 171
+    assert diagnostics["feature_schema"] == "conditional_payout_additive_v1"
+    assert diagnostics["feature_count"] == 54
     assert diagnostics["candidate_combinations"] == 240
     assert np.isfinite(diagnostics["max_estimated_ev"])
     assert diagnostics["max_estimated_ev"] > 1.2
