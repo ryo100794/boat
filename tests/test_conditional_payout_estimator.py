@@ -3,6 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 from boatrace_ai.listwise.payout_estimator import (
+    FEATURE_COUNT,
+    FIRST_SECOND_OFFSET,
+    FIRST_SECOND_SURPRISE_OFFSET,
+    RACE_SURPRISE_OFFSET,
+    SECOND_THIRD_OFFSET,
+    VENUE_SURPRISE_OFFSET,
     ConditionalPayoutRegressor,
     ConditionalPayoutStatistics,
     fit_conditional_payout,
@@ -14,7 +20,7 @@ from boatrace_ai.listwise.payout_estimator import (
 
 def test_prediction_uses_lognormal_mean_correction() -> None:
     model = ConditionalPayoutRegressor(
-        weights=np.zeros(54),
+        weights=np.zeros(FEATURE_COUNT),
         residual_variance=2.0,
         ridge=10.0,
         training_samples=100,
@@ -58,7 +64,7 @@ def test_payout_features_encode_probability_order_venue_and_race_number() -> Non
         ],
     )
 
-    assert matrix.shape == (2, 54)
+    assert matrix.shape == (2, FEATURE_COUNT)
     assert matrix[0, 3] == 1.0
     assert matrix[1, 8] == 1.0
     assert matrix[0, 21] == 1.0
@@ -66,6 +72,17 @@ def test_payout_features_encode_probability_order_venue_and_race_number() -> Non
     assert matrix[0, 45] == 1.0
     assert matrix[1, 47] == 1.0
     assert matrix[1, 53] > matrix[0, 48]
+    assert matrix[0, FIRST_SECOND_OFFSET] == 1.0
+    assert matrix[1, FIRST_SECOND_OFFSET + 29] == 1.0
+    assert matrix[0, SECOND_THIRD_OFFSET + 6] == 1.0
+    assert matrix[0, VENUE_SURPRISE_OFFSET] > 0.0
+    assert matrix[1, VENUE_SURPRISE_OFFSET + 23] > matrix[0, VENUE_SURPRISE_OFFSET]
+    assert matrix[0, RACE_SURPRISE_OFFSET] > 0.0
+    assert matrix[1, RACE_SURPRISE_OFFSET + 2] > matrix[0, RACE_SURPRISE_OFFSET]
+    assert matrix[0, FIRST_SECOND_SURPRISE_OFFSET] > 0.0
+    assert matrix[1, FIRST_SECOND_SURPRISE_OFFSET + 29] > matrix[0, FIRST_SECOND_SURPRISE_OFFSET]
+    assert np.count_nonzero(matrix[0]) == 14
+    assert np.count_nonzero(matrix[1]) == 14
 
 
 def test_conditional_payout_regression_learns_probability_payout_relation() -> None:

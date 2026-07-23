@@ -20,6 +20,8 @@ from ..roi_attribution import (
 )
 from .return_policy import calibration_policy_split
 from .payout_estimator import (
+    FEATURE_COUNT as PAYOUT_FEATURE_COUNT,
+    FEATURE_SCHEMA as PAYOUT_FEATURE_SCHEMA,
     ConditionalPayoutStatistics,
     fit_conditional_payout_statistics,
     predict_conditional_odds,
@@ -515,11 +517,14 @@ def simulate_conditional_payout_walk_forward(
         {
             "payout_estimator": (
                 "daily walk-forward log-payout ridge using fixed baseline market "
-                "reference, finish lanes, venue, and race number"
+                "reference with ordered finish-lane, venue, race-number, and "
+                "surprise interactions"
                 if independent_market_reference
                 else "daily walk-forward log-payout ridge using model probability, "
-                "finish lanes, venue, and race number"
+                "ordered finish-lane, venue, race-number, and surprise interactions"
             ),
+            "payout_feature_schema": PAYOUT_FEATURE_SCHEMA,
+            "payout_feature_count": PAYOUT_FEATURE_COUNT,
             "market_reference": (
                 "fixed baseline probability"
                 if independent_market_reference
@@ -691,6 +696,8 @@ def simulate_conditional_payout_walk_forward(
             "diagnostics": selection_diagnostics,
         },
         "payout_diagnostics": {
+            "feature_schema": PAYOUT_FEATURE_SCHEMA,
+            "feature_count": PAYOUT_FEATURE_COUNT,
             "candidate_combinations": int(len(race_keys) * len(COMBINATION_LABELS)),
             "max_estimated_ev": max_estimated_ev,
             "estimated_ev_at_least": ev_counts,
