@@ -125,6 +125,44 @@ def test_catalog_assigns_stable_keys_and_prefers_standard_365d_daily() -> None:
     assert "artifact/job" in daily["beta"]["unavailable_reason"]
 
 
+def test_catalog_links_model_track_aliases_to_daily_artifacts() -> None:
+    track = {
+        "id": "historical_main",
+        "label": "過去ログ主系",
+        "model_file": "win_model_no_odds_v8.joblib",
+    }
+    bankroll = {
+        "name": "no_odds_v8_relative_weather_sparse32_scaled_logreg_C0.20_unweighted",
+        "file": "standardized_365d_no_odds_v8_backtest.json",
+        "evaluation_scope": "standard_365d",
+    }
+
+    catalog, daily = _model_report_catalog(
+        model_tracks=[track],
+        backtests=[],
+        bankroll=[bankroll],
+        fold_metrics=[],
+        evaluation_jobs=[],
+        feature_diagnostics=[],
+        sweeps=[],
+        bankroll_daily={
+            bankroll["name"]: [
+                {
+                    "race_date": "2026-07-22",
+                    "stake_yen": 100,
+                    "return_yen": 200,
+                }
+            ]
+        },
+    )
+
+    assert _report_model_key("standardized_365d_no_odds_v8_backtest.json") == "no_odds_v8"
+    assert _report_model_key("calibrated_mlp_shadow_2fold.json") == "calibrated_mlp_shadow"
+    assert track["model_key"] == bankroll["model_key"] == "no_odds_v8"
+    assert [row["model_key"] for row in catalog] == ["no_odds_v8"]
+    assert daily["no_odds_v8"]["rows"][0]["date"] == "2026-07-22"
+
+
 def test_catalog_adds_model_key_to_every_source_row() -> None:
     groups = {
         "model_tracks": [{"id": "track-a", "label": "Track A"}],

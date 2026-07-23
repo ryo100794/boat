@@ -2701,9 +2701,13 @@ def _remote_backtest_report_summaries(
 
 
 _REPORT_MODEL_PREFIXES = re.compile(
-    r"^(?:(?:win_model_|bankroll_backtest_|backtest_|standardized_365d_v2[_-]*))+"
+    r"^(?:(?:win_model_|bankroll_backtest_|backtest_|standardized_365d(?:_v2)?[_-]*))+"
 )
-_REPORT_MODEL_SUFFIXES = re.compile(r"(?:(?:_backtest|_10000))+$")
+_REPORT_MODEL_SUFFIXES = re.compile(r"(?:(?:_backtest|_10000|_2fold))+$")
+_REPORT_MODEL_FAMILY_ALIASES = (
+    re.compile(r"^(no_odds_v\d+)(?:_|$)"),
+    re.compile(r"^(calibrated_(?:linear|mlp)_shadow)(?:_|$)"),
+)
 
 
 def _report_model_key(value: Any) -> str:
@@ -2711,7 +2715,12 @@ def _report_model_key(value: Any) -> str:
     raw = re.sub(r"\.(?:json|joblib)$", "", raw)
     raw = _REPORT_MODEL_PREFIXES.sub("", raw)
     raw = _REPORT_MODEL_SUFFIXES.sub("", raw)
-    return re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+    key = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+    for pattern in _REPORT_MODEL_FAMILY_ALIASES:
+        match = pattern.match(key)
+        if match:
+            return match.group(1)
+    return key
 
 
 def _model_report_catalog(
