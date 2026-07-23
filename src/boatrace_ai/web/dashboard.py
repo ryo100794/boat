@@ -1940,6 +1940,14 @@ def _market_calibrated_model_tracks(
             "stagewise_blend_market_intraday_bootstrap.json",
         ),
         (
+            "market_calibrated_blend_provisional",
+            "market_calibrated_blend_provisional",
+            "stagewise+Newton残差 2日暫定",
+            "stagewise_blend_market_residual_provisional.json",
+            "固定stagewise / T-5実オッズ / 7/21-22前進評価（短期診断）",
+            None,
+        ),
+        (
             "market_residual_shadow",
             "market_residual_shadow",
             "Newton市場残差 T-5 shadow",
@@ -2018,6 +2026,7 @@ def _market_calibrated_model_tracks(
             )
         elif track_id in {
             "market_calibrated_blend_shadow",
+            "market_calibrated_blend_provisional",
             "market_residual_shadow",
             "market_cutoff_residual_probe",
         }:
@@ -2042,6 +2051,8 @@ def _market_calibrated_model_tracks(
                     }
                     else "開発診断のみ・7/23以降で再確認"
                     if track_id == "market_cutoff_residual_probe"
+                    else "開発診断のみ・2日暫定（本番判定対象外）"
+                    if track_id == "market_calibrated_blend_provisional"
                     else "比較評価・no-bet判定のみ"
                 ),
                 "status": status,

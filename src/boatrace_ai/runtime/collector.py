@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from ..constants import RACES_PER_DAY, VENUES
 from ..ingestion.program import load_daily_program
 from ..db import connection, init_db
+from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
 from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
@@ -52,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
             "odds_targets": 0,
             "odds_ok": 0,
             "odds_failed": 0,
+            "t5_priority_targets": 0,
+            "t5_priority_ok": 0,
+            "t5_priority_failed": 0,
             "beforeinfo_targets": 0,
             "beforeinfo_ok": 0,
             "beforeinfo_failed": 0,
@@ -89,6 +93,36 @@ def main(argv: list[str] | None = None) -> int:
                 schedule_date = target_date
                 next_schedule_refresh = time.monotonic() + 15 * 60
             rows = scheduled_races(conn, target_date)
+            priority_odds_ids: set[str] = set()
+            for priority_row in t5_priority_rows(rows, now=now):
+                race_id = str(priority_row["race_id"])
+                counters["t5_priority_targets"] += 1
+                counters["odds_targets"] += 1
+                ok = collect_odds(
+                    conn,
+                    race_date=target_date,
+                    jcd=priority_row["jcd"],
+                    rno=int(priority_row["rno"]),
+                    raw_dir=raw_dir,
+                )
+                conn.commit()
+                if ok:
+                    priority_odds_ids.add(race_id)
+                    counters["t5_priority_ok"] += 1
+                    counters["odds_ok"] += 1
+                else:
+                    counters["t5_priority_failed"] += 1
+                    counters["odds_failed"] += 1
+                refresh_prediction(
+                    conn,
+                    enabled=args.predict,
+                    model_path=model_path,
+                    race_date=target_date,
+                    row=priority_row,
+                    odds_collected=bool(ok),
+                    counters=counters,
+                )
+                time.sleep(args.sleep_page)
             if args.collect_results:
                 for result_row in due_result_rows(rows, now=now):
                     counters["result_targets"] += 1
@@ -144,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         counters["beforeinfo_failed"] += 1
                     time.sleep(args.sleep_page)
+                if str(row["race_id"]) in priority_odds_ids:
+                    continue
 
                 interval = odds_interval(seconds_to_cutoff)
                 if interval is None:
@@ -165,28 +201,15 @@ def main(argv: list[str] | None = None) -> int:
                     counters["odds_ok"] += 1
                 else:
                     counters["odds_failed"] += 1
-                if (
-                    args.predict
-                    and model_path.exists()
-                    and prediction_due(
-                        odds_collected=odds_collected,
-                        latest_prediction_at=row["latest_prediction_at"],
-                    )
-                ):
-                    try:
-                        result = predict_open_races(
-                            conn,
-                            model_path=model_path,
-                            race_date=target_date,
-                            jcd=row["jcd"],
-                            rno=int(row["rno"]),
-                        )
-                        counters["predicted"] += result["predicted"]
-                        counters["prediction_failed"] += result["failed"]
-                        conn.commit()
-                    except Exception:
-                        counters["prediction_failed"] += 1
-                        conn.rollback()
+                refresh_prediction(
+                    conn,
+                    enabled=args.predict,
+                    model_path=model_path,
+                    race_date=target_date,
+                    row=row,
+                    odds_collected=odds_collected,
+                    counters=counters,
+                )
                 time.sleep(args.sleep_page)
         counters["now_jst"] = now.isoformat(timespec="seconds")
         print(json.dumps(counters, ensure_ascii=False), flush=True)
@@ -353,6 +376,80 @@ def scheduled_races(conn, race_date: date) -> list[Any]:
 def prediction_due(*, odds_collected: bool, latest_prediction_at: Any) -> bool:
     """Generate a history-only prediction once, then refresh it with each valid odds capture."""
     return bool(odds_collected or not latest_prediction_at)
+
+
+def refresh_prediction(
+    conn,
+    *,
+    enabled: bool,
+    model_path: Path,
+    race_date: date,
+    row: Any,
+    odds_collected: bool,
+    counters: dict[str, Any],
+) -> None:
+    if not (
+        enabled
+        and model_path.exists()
+        and prediction_due(
+            odds_collected=odds_collected,
+            latest_prediction_at=row["latest_prediction_at"],
+        )
+    ):
+        return
+    try:
+        result = predict_open_races(
+            conn,
+            model_path=model_path,
+            race_date=race_date,
+            jcd=row["jcd"],
+            rno=int(row["rno"]),
+        )
+        counters["predicted"] += result["predicted"]
+        counters["prediction_failed"] += result["failed"]
+        conn.commit()
+    except Exception:
+        counters["prediction_failed"] += 1
+        conn.rollback()
+
+
+def t5_priority_due(
+    *,
+    start_at: datetime | None,
+    now: datetime,
+    latest_odds: datetime | None,
+) -> bool:
+    cutoff_at = estimated_deadline_from_start(start_at)
+    if cutoff_at is None:
+        return False
+    model_cutoff_at = cutoff_at - timedelta(minutes=MODEL_DECISION_LEAD_MINUTES)
+    seconds_to_model_cutoff = (model_cutoff_at - now).total_seconds()
+    if seconds_to_model_cutoff < 0.0 or seconds_to_model_cutoff > 60.0:
+        return False
+    if latest_odds is None:
+        return True
+    latest_gap = (model_cutoff_at - latest_odds).total_seconds()
+    return not 0.0 <= latest_gap <= 60.0
+
+
+def t5_priority_rows(rows: list[Any], *, now: datetime) -> list[Any]:
+    candidates = []
+    for row in rows:
+        start_at = stored_start_time(row["deadline_at"])
+        latest_odds = parse_time(
+            row["latest_odds_at"],
+            default_tz=timezone.utc,
+        )
+        if not t5_priority_due(
+            start_at=start_at,
+            now=now,
+            latest_odds=latest_odds,
+        ):
+            continue
+        cutoff_at = estimated_deadline_from_start(start_at)
+        model_cutoff_at = cutoff_at - timedelta(minutes=MODEL_DECISION_LEAD_MINUTES)
+        candidates.append(((model_cutoff_at - now).total_seconds(), row))
+    return [row for _seconds, row in sorted(candidates, key=lambda item: item[0])]
 
 
 def beforeinfo_interval(seconds_to_start: float, *, has_rows: bool) -> float | None:

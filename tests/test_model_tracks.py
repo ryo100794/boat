@@ -285,6 +285,62 @@ def test_model_tracks_reads_blend_artifacts_without_remote_poll(tmp_path) -> Non
     assert tracks["market_calibrated_blend_shadow"]["trifecta_log_loss"] == 3.8953
 
 
+def test_model_tracks_marks_two_day_residual_as_provisional(tmp_path) -> None:
+    (tmp_path / "stagewise_blend_market_residual_provisional.json").write_text(
+        json.dumps(
+            {
+                "model": "stagewise_blend_market_residual",
+                "evaluated_races": 260,
+                "evaluation_days": 2,
+                "calibrated_trifecta_log_loss": 3.829515,
+                "trifecta_top5_hit_rate": 0.334615,
+                "roi": 0.0,
+                "profit_yen": 0,
+                "promotion_eligible": False,
+                "market_comparison": {
+                    "log_loss_difference_calibrated_minus_market": {
+                        "observations": 260,
+                        "mean_difference": -0.023622,
+                        "ci95_lower": -0.046235,
+                        "ci95_upper": -0.000888,
+                    },
+                    "top5_hit_difference_calibrated_minus_market": {
+                        "observations": 260,
+                        "mean_difference": 0.003846,
+                    },
+                    "day_cluster_log_loss_difference_calibrated_minus_market": {
+                        "clusters": 2,
+                        "ci95_lower": -0.029494,
+                        "ci95_upper": -0.018015,
+                    },
+                    "race_level_confidence_pass": True,
+                    "day_cluster_confidence_pass": False,
+                    "confidence_pass": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracks = {
+        row["id"]: row
+        for row in _model_track_summaries(tmp_path, [], {"jobs": []})
+    }
+
+    candidate = tracks["market_calibrated_blend_provisional"]
+    assert candidate["status"] == "完了"
+    assert candidate["role"] == "開発診断のみ・2日暫定（本番判定対象外）"
+    assert candidate["eligible_races"] == 260
+    assert candidate["trifecta_log_loss"] == 3.829515
+    assert candidate["trifecta_top5_hit_rate"] == 0.334615
+    assert candidate["roi"] == 0.0
+    assert candidate["promotion_eligible"] is False
+    assert candidate["market_race_confidence_pass"] is True
+    assert candidate["market_day_confidence_pass"] is False
+    assert candidate["market_confidence_pass"] is False
+    assert "完全日walk-forward" in candidate["training"]
+
+
 def test_market_track_uses_local_waiting_status_without_remote_job(tmp_path) -> None:
     (tmp_path / "stagewise_blend_market_shadow.json").write_text(
         json.dumps(
