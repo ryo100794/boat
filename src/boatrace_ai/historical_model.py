@@ -177,12 +177,16 @@ def iter_scored_entries(
     *,
     pipeline: Pipeline,
     include_races: set[str],
+    from_date: str | None = None,
+    through_date: str | None = None,
     batch_size: int = 24_000,
 ) -> Iterable[tuple[float, dict[str, Any]]]:
     batch: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
     for item, _label, meta in iter_training_examples(
         conn,
+        from_date=from_date,
+        through_date=through_date,
         include_odds=False,
         include_research=False,
         include_beforeinfo=False,

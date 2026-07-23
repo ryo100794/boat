@@ -186,7 +186,7 @@ def test_operational_backtest_runs_end_to_end_on_time_folds(
     assert "selected_candidate_policy" in adaptive["folds"][0]
 
 
-def test_operational_backtest_reuses_validated_pretrained_model(
+def test_operational_backtest_reuses_validated_pretrained_model_for_holdout_dates(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -231,9 +231,18 @@ def test_operational_backtest_reuses_validated_pretrained_model(
         if len({first, second, third}) == 3
     }
 
-    def score_entries(conn, *, pipeline, include_races):
+    def score_entries(
+        conn,
+        *,
+        pipeline,
+        include_races,
+        from_date,
+        through_date,
+    ):
         assert pipeline is bundle["pipeline"]
         assert include_races == test_races
+        assert from_date == "2026-01-03"
+        assert through_date == "2026-01-04"
         for race_id, race_date, jcd, rno in race_keys:
             if race_id not in include_races:
                 continue

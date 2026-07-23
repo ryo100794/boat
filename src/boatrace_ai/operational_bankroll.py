@@ -196,6 +196,8 @@ def operational_adaptive_bankroll(
                 conn,
                 pipeline=pipeline,
                 include_races=test_races,
+                from_date=min(test_dates),
+                through_date=max(test_dates),
             )
             for probability, row in scored_rows:
                 rows_by_race[str(row["race_id"])].append(

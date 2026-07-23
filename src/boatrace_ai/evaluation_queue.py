@@ -510,10 +510,15 @@ def build_command(
                 "unsupported historical_coverage_safe parameters: "
                 + ", ".join(sorted(unsupported))
             )
+        model_input = (
+            app_root / "data" / "models" / "standardized_365d_v2"
+            / "no_odds_v8.joblib"
+        )
         return [
             str(python), "-m", "boatrace_ai.historical_candidate_evaluation",
             "--db", db,
             "--output", str(output),
+            "--model-input", str(model_input),
             "--evaluation-date", evaluation_date,
         ], output
     if task_type == "market_curvature":
