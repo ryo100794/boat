@@ -7,6 +7,7 @@ import pytest
 from boatrace_ai.evaluation_queue import (
     build_command,
     dedupe_key,
+    prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
     summarize_result,
@@ -112,4 +113,20 @@ def test_supervisor_runs_four_postgresql_queue_workers() -> None:
     assert "boatrace_ai.evaluation_queue run" in config
     assert "numprocs=4" in config
     assert "--seed-defaults" in config
-    assert "--vm-limit-gib 20" in config
+    assert "--vm-limit-gib 0" in config
+
+
+def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> None:
+    current = tmp_path / "data/models/standardized_365d_v2"
+    current.mkdir(parents=True)
+    (current / "protocol.json").write_text(
+        '{"as_of_date_jst":"2026-07-20"}', encoding="utf-8"
+    )
+    (current / "manifest.json").write_text('{"ready":true}', encoding="utf-8")
+
+    prepare_standardized_workspace(tmp_path, evaluation_date="2026-07-22")
+
+    assert not (current / "protocol.json").exists()
+    archive = tmp_path / "data/models/evaluation_queue/standardized_history/2026-07-20"
+    assert (archive / "protocol.json").is_file()
+    assert (archive / "manifest.json").is_file()

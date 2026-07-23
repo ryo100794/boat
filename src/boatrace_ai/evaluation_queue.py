@@ -421,6 +421,38 @@ def _heartbeat_loop(
             )
 
 
+def prepare_standardized_workspace(
+    app_root: Path,
+    *,
+    evaluation_date: str,
+) -> None:
+    evaluation_dir = app_root / "data" / "models" / "standardized_365d_v2"
+    protocol_path = evaluation_dir / "protocol.json"
+    if not protocol_path.is_file():
+        return
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    requested_as_of = (
+        datetime.strptime(evaluation_date, "%Y-%m-%d").date()
+        + timedelta(days=1)
+    ).isoformat()
+    existing_as_of = str(protocol.get("as_of_date_jst") or "")
+    if existing_as_of == requested_as_of:
+        return
+    archive = (
+        app_root
+        / "data"
+        / "models"
+        / "evaluation_queue"
+        / "standardized_history"
+        / (existing_as_of or "unknown")
+    )
+    archive.mkdir(parents=True, exist_ok=True)
+    for source in evaluation_dir.glob("*.json"):
+        target = archive / source.name
+        target.write_bytes(source.read_bytes())
+    protocol_path.unlink()
+
+
 def execute_job(
     job: dict[str, Any],
     *,
@@ -430,6 +462,11 @@ def execute_job(
     vm_limit_gib: int,
     nice: int,
 ) -> tuple[Path, dict[str, Any], str]:
+    if job["task_type"] == "standardized_365d":
+        prepare_standardized_workspace(
+            app_root,
+            evaluation_date=str((job.get("parameters") or {})["evaluation_date"]),
+        )
     command, result_path = build_command(
         job, app_root=app_root, python=python, db=db
     )
