@@ -642,6 +642,29 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    payout_comparison = payload.get("payout_feature_comparison")
+    if isinstance(payout_comparison, dict):
+        candidate = payout_comparison.get("candidate_bankroll")
+        legacy = payout_comparison.get("legacy_bankroll")
+        confidence = payout_comparison.get("confidence")
+        if isinstance(candidate, dict):
+            summary["payout_feature_candidate_roi"] = candidate.get("roi")
+        if isinstance(legacy, dict):
+            summary["payout_feature_legacy_roi"] = legacy.get("roi")
+        if isinstance(confidence, dict):
+            for key in (
+                "roi_delta",
+                "roi_delta_ci95_lower",
+                "roi_delta_ci95_upper",
+                "probability_roi_delta_above_zero",
+            ):
+                summary[f"payout_feature_{key}"] = confidence.get(key)
+        summary["payout_feature_candidate_schema"] = payout_comparison.get(
+            "candidate_schema"
+        )
+        summary["payout_feature_legacy_schema"] = payout_comparison.get(
+            "legacy_schema"
+        )
     summary["model"] = payload.get("model")
     summary["status"] = payload.get("status")
     return {key: value for key, value in summary.items() if value is not None}

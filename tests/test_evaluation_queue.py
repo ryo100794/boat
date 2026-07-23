@@ -86,6 +86,30 @@ def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
     assert result_decision("market_curvature", summary) == "confirm_on_new_holdout"
 
 
+def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
+    summary = summarize_result({
+        "model": "venue",
+        "payout_feature_comparison": {
+            "candidate_schema": "conditional_payout_interactions_v2",
+            "legacy_schema": "conditional_payout_additive_v1",
+            "candidate_bankroll": {"roi": 1.03},
+            "legacy_bankroll": {"roi": 0.90},
+            "confidence": {
+                "roi_delta": 0.13,
+                "roi_delta_ci95_lower": 0.02,
+                "roi_delta_ci95_upper": 0.24,
+                "probability_roi_delta_above_zero": 0.99,
+            },
+        },
+    })
+
+    assert summary["payout_feature_candidate_roi"] == 1.03
+    assert summary["payout_feature_legacy_roi"] == 0.90
+    assert summary["payout_feature_roi_delta_ci95_lower"] == 0.02
+    assert summary["payout_feature_probability_roi_delta_above_zero"] == 0.99
+    assert summary["payout_feature_candidate_schema"].endswith("v2")
+
+
 def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     calls = []
 
