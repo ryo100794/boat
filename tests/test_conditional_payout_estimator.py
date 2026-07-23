@@ -274,7 +274,7 @@ def test_tail_calibrator_marks_unsupported_bins_ineligible_without_raw_fallback(
     assert np.all(calibrated < raw_odds)
 
 
-def test_tail_calibrator_uses_global_support_for_sparse_bins() -> None:
+def test_tail_calibrator_does_not_use_global_support_for_sparse_bins() -> None:
     calibrator = ConditionalPayoutTailCalibrator.empty(
         minimum_bin_samples=20,
         minimum_global_samples=8,
@@ -290,8 +290,38 @@ def test_tail_calibrator_uses_global_support_for_sparse_bins() -> None:
         [10.0, 20.0, 100.0, 1_000.0],
     )
 
-    np.testing.assert_array_equal(eligible, [True, True, True, True])
+    np.testing.assert_array_equal(eligible, [False, False, False, False])
     np.testing.assert_allclose(calibrated, [7.0, 14.0, 70.0, 700.0])
+
+
+def test_tail_calibrator_requires_support_in_each_probability_bin() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty(
+        minimum_bin_samples=4,
+        minimum_global_samples=8,
+        confidence_z=0.0,
+    )
+    probabilities = np.asarray([0.03] * 4 + [0.007] * 4)
+    raw_odds = np.full(8, 10.0)
+    calibrator.update(probabilities, raw_odds, raw_odds * 0.7)
+
+    eligible = calibrator.eligible_mask([0.03, 0.007, 0.003, 0.0003])
+
+    np.testing.assert_array_equal(eligible, [True, True, False, False])
+
+
+def test_tail_calibrator_bin_support_boundary_is_inclusive() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty()
+    calibrator.update(
+        np.full(19, 0.003),
+        np.full(19, 100.0),
+        np.full(19, 80.0),
+    )
+    np.testing.assert_array_equal(calibrator.eligible_mask([0.003]), [False])
+
+    calibrator.update([0.003], [100.0], [80.0])
+
+    np.testing.assert_array_equal(calibrator.eligible_mask([0.003]), [True])
+    np.testing.assert_array_equal(calibrator.eligible_mask([0.0003]), [False])
 
 
 def test_tail_calibrator_daily_batch_update_is_order_invariant() -> None:

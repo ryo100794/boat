@@ -228,7 +228,7 @@ class ConditionalPayoutTailCalibrator:
         self._validate_statistics()
         bin_indices = payout_tail_bin_indices(market_reference_probabilities)
         global_eligible = self.samples >= self.minimum_global_samples
-        return np.logical_or(
+        return np.logical_and(
             self.statistics.counts[bin_indices] >= self.minimum_bin_samples,
             global_eligible,
         )

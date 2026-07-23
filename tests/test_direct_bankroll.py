@@ -202,8 +202,8 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
     } == {0.0, 0.1, 0.2, 0.4}
     assert diagnostics[0]["tickets"] >= 10
     assert diagnostics[0]["roi"] > 1.0
-    assert diagnostics[0]["tail_eligible_candidates"] == 3_600
-    assert diagnostics[0]["tail_ineligible_candidates"] == 3_600
+    assert diagnostics[0]["tail_eligible_candidates"] == 30
+    assert diagnostics[0]["tail_ineligible_candidates"] == 7_170
     assert diagnostics[0]["tail_eligibility_daily"] == [
         {
             "race_date": "2026-06-03",
@@ -212,8 +212,8 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
         },
         {
             "race_date": "2026-06-04",
-            "eligible_candidates": 3_600,
-            "ineligible_candidates": 0,
+            "eligible_candidates": 30,
+            "ineligible_candidates": 3_570,
         },
     ]
     assert period["fit_through"] == "2026-06-02"
@@ -732,7 +732,8 @@ def test_tail_result_changes_eligibility_only_on_following_day(
     assert with_day["tail_eligible_candidates"] == 0
     assert with_day["tail_ineligible_candidates"] == 120
     assert with_day["tickets"] == 0
-    assert with_next["tail_eligible_candidates"] == 120
+    assert with_next["tail_eligible_candidates"] == 1
+    assert with_next["tail_ineligible_candidates"] == 119
     assert without_next["tail_eligible_candidates"] == 0
     assert with_next["tickets"] > 0
     assert without_next["tickets"] == 0
@@ -753,7 +754,7 @@ def test_tail_insufficient_support_produces_no_purchase(
     assert result["payout_diagnostics"]["tail_ineligible_candidates"] == 240
 
 
-def test_tail_global_support_allows_sparse_bin_purchase(
+def test_tail_global_support_does_not_allow_sparse_bin_purchase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = _tail_eligibility_walk_forward_case(
@@ -771,8 +772,8 @@ def test_tail_global_support_allows_sparse_bin_purchase(
         0,
         0,
     ]
-    assert first_day["tail_eligible_candidates"] == 120
-    assert first_day["tail_ineligible_candidates"] == 0
-    assert first_day["tickets"] > 0
-    assert result["payout_diagnostics"]["tail_eligible_candidates"] == 240
-    assert result["payout_diagnostics"]["tail_ineligible_candidates"] == 0
+    assert first_day["tail_eligible_candidates"] == 0
+    assert first_day["tail_ineligible_candidates"] == 120
+    assert first_day["tickets"] == 0
+    assert result["payout_diagnostics"]["tail_eligible_candidates"] == 0
+    assert result["payout_diagnostics"]["tail_ineligible_candidates"] == 240
