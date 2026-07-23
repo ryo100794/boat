@@ -1370,31 +1370,40 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
     now = now or datetime.now(timezone.utc)
     inserted: list[int] = []
 
-    def active(task_type: str) -> bool:
+    def already_scheduled(task_type: str, key: str) -> bool:
         row = conn.execute(
-            "SELECT COUNT(*) AS count FROM model_evaluation_jobs WHERE task_type = ? AND status IN ('queued','running')",
-            (task_type,),
+            """
+            SELECT COUNT(*) AS count
+            FROM model_evaluation_jobs
+            WHERE dedupe_key = ?
+               OR (task_type = ? AND status IN ('queued','running'))
+            """,
+            (key, task_type),
         ).fetchone()
         return bool(row and int(row["count"]))
 
     schedules = (
-        ("gdrive_raw_archive", "raw-data", 600, 90, 1800),
+        ("gdrive_raw_archive", "raw-data", 600, 10, 1800),
         ("evaluation_aggregate", "all-models", 900, 30, 900),
         ("repository_hygiene", "repository", 21600, 20, 300),
     )
     epoch = int(now.timestamp())
     for task_type, model_key, interval, priority, timeout in schedules:
-        if active(task_type):
-            continue
         bucket = epoch - epoch % interval
+        parameters = {
+            "schedule_bucket": datetime.fromtimestamp(
+                bucket, timezone.utc
+            ).isoformat(),
+            "timeout_seconds": timeout,
+        }
+        key = dedupe_key(task_type, model_key, parameters)
+        if already_scheduled(task_type, key):
+            continue
         job_id = enqueue_job(
             conn,
             task_type=task_type,
             model_key=model_key,
-            parameters={
-                "schedule_bucket": datetime.fromtimestamp(bucket, timezone.utc).isoformat(),
-                "timeout_seconds": timeout,
-            },
+            parameters=parameters,
             priority=priority,
             max_attempts=3,
         )
@@ -1640,24 +1649,33 @@ def run_worker(args: argparse.Namespace) -> int:
             seed_work_tickets(conn)
     while True:
         try:
-            with connection(args.db) as conn:
-                now = time.monotonic()
-                if is_leader:
+            now = time.monotonic()
+            if is_leader:
+                seeded_defaults = False
+                scheduled_periodic = False
+                with connection(args.db) as conn:
                     requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
-                if (
-                    is_leader
-                    and args.seed_defaults
-                    and now - last_seed >= args.seed_interval
-                ):
-                    evaluation_date = (
-                        datetime.now(JST).date() - timedelta(days=1)
-                    ).isoformat()
-                    seed_default_jobs(conn, evaluation_date=evaluation_date)
+                    if (
+                        args.seed_defaults
+                        and now - last_seed >= args.seed_interval
+                    ):
+                        evaluation_date = (
+                            datetime.now(JST).date() - timedelta(days=1)
+                        ).isoformat()
+                        seed_default_jobs(conn, evaluation_date=evaluation_date)
+                        seeded_defaults = True
+                    if (
+                        args.schedule_periodic
+                        and now - last_schedule >= 60.0
+                    ):
+                        seed_periodic_jobs(conn)
+                        scheduled_periodic = True
+                if seeded_defaults:
                     last_seed = now
-                if is_leader and args.schedule_periodic and now - last_schedule >= 60.0:
-                    seed_periodic_jobs(conn)
+                if scheduled_periodic:
                     last_schedule = now
-                resources = system_resources()
+            resources = system_resources()
+            with connection(args.db) as conn:
                 job = claim_job(conn, worker_id=worker_id, resources=resources)
             if job is None:
                 if args.once:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,11 +18,13 @@ from boatrace_ai.evaluation_queue import (
     claim_job,
     dedupe_key,
     defer_job,
+    enqueue_job,
     ensure_schema,
     fail_job,
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
+    seed_periodic_jobs,
     seed_work_tickets,
     summarize_result,
 )
@@ -712,6 +715,126 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     assert all(
         row["parameters"]["evaluation_date"] == "2026-07-22" for row in calls
     )
+
+
+class _PeriodicScheduleConnection:
+    def __init__(self):
+        self.keys: set[str] = set()
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        assert "dedupe_key = ?" in sql
+        key, _task_type = parameters
+        return _QueryResult({"count": int(key in self.keys)})
+
+
+def test_periodic_seed_uses_low_backup_priority_and_skips_completed_bucket(
+    monkeypatch,
+) -> None:
+    conn = _PeriodicScheduleConnection()
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        conn.keys.add(dedupe_key(
+            kwargs["task_type"], kwargs["model_key"], kwargs["parameters"]
+        ))
+        return len(calls)
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+    now = datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
+
+    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3]
+    assert seed_periodic_jobs(conn, now=now) == []
+    assert len(calls) == 3
+    backup = next(row for row in calls if row["task_type"] == "gdrive_raw_archive")
+    assert backup["priority"] == 10
+
+
+def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:
+    class RecordingConnection:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, statement, parameters=()):
+            self.sql = " ".join(statement.split())
+            return _QueryResult()
+
+    conn = RecordingConnection()
+
+    assert enqueue_job(
+        conn,
+        task_type="gdrive_raw_archive",
+        model_key="raw-data",
+        parameters={"schedule_bucket": "2026-07-23T12:30:00+00:00"},
+    ) is None
+    assert "ON CONFLICT(dedupe_key) DO NOTHING" in conn.sql
+
+
+def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
+    events = []
+    connection_count = 0
+
+    class Scope:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append(f"enter:{self.name}")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"commit:{self.name}")
+
+    def fake_connection(_db):
+        nonlocal connection_count
+        names = ("startup", "maintenance", "claim")
+        name = names[connection_count]
+        connection_count += 1
+        return Scope(name)
+
+    monkeypatch.setattr(evaluation_queue, "connection", fake_connection)
+    monkeypatch.setattr(evaluation_queue, "ensure_schema", lambda _conn: None)
+    monkeypatch.setattr(evaluation_queue, "recover_worker_job", lambda *_a, **_k: 0)
+    monkeypatch.setattr(evaluation_queue, "seed_work_tickets", lambda _conn: 0)
+    monkeypatch.setattr(
+        evaluation_queue,
+        "requeue_stale_jobs",
+        lambda *_a, **_k: events.append("requeue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_default_jobs",
+        lambda *_a, **_k: events.append("seed-defaults"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_periodic_jobs",
+        lambda *_a, **_k: events.append("seed-periodic"),
+    )
+    resources = ResourceSnapshot(32000, 10000, 100.0, 16, 0.0)
+    monkeypatch.setattr(evaluation_queue, "system_resources", lambda: resources)
+    monkeypatch.setattr(
+        evaluation_queue,
+        "claim_job",
+        lambda *_a, **_k: events.append("claim") or None,
+    )
+    monkeypatch.setattr(evaluation_queue.time, "monotonic", lambda: 10000.0)
+    args = evaluation_queue.build_parser().parse_args([
+        "run",
+        "--db", "postgresql://test",
+        "--app-root", str(tmp_path),
+        "--python", "python",
+        "--worker-id", "evaluator-00",
+        "--seed-defaults",
+        "--schedule-periodic",
+        "--once",
+    ])
+
+    assert evaluation_queue.run_worker(args) == 0
+    assert events.index("commit:maintenance") < events.index("enter:claim")
+    assert events.index("seed-periodic") < events.index("commit:maintenance")
+    assert events.index("enter:claim") < events.index("claim")
 
 
 def test_supervisor_runs_four_postgresql_queue_workers() -> None:
