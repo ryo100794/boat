@@ -531,7 +531,10 @@ def build_command(
             raise ValueError("unsupported alphas")
         cache_root = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
         search_cache = cache_root / "search"
-        selected_cache = cache_root / "selected"
+        selected_cache = (
+            app_root / "data" / "models" / "evaluation_cache"
+            / f"job-{job_id:08d}"
+        )
         return [
             str(python), "-m", "boatrace_ai.listwise.feature_search",
             "--db", db,
@@ -876,12 +879,19 @@ def execute_job(
     return result_path, summary, decision
 
 
-def enqueue_refinement(conn: Any, job: dict[str, Any], decision: str) -> int | None:
+def enqueue_refinement(
+    conn: Any,
+    job: dict[str, Any],
+    decision: str,
+    *,
+    app_root: Path,
+) -> int | None:
     if job["task_type"] != "listwise_feature_search" or decision != "refine_selected_candidate":
         return None
     relative = f"data/models/evaluation_queue/job-{int(job['job_id']):08d}.json"
-    parent_cache = (
-        f"/tmp/boatrace-evaluation/job-{int(job['job_id']):08d}/selected"
+    parent_cache = str(
+        app_root / "data" / "models" / "evaluation_cache"
+        / f"job-{int(job['job_id']):08d}"
     )
     params = {
         "search_result": relative,
@@ -1100,7 +1110,12 @@ def run_worker(args: argparse.Namespace) -> int:
                         summary=summary,
                         decision=decision,
                     )
-                    enqueue_refinement(conn, job, decision)
+                    enqueue_refinement(
+                        conn,
+                        job,
+                        decision,
+                        app_root=app_root,
+                    )
             except Exception as exc:
                 with connection(args.db) as conn:
                     fail_job(conn, job=job, error=f"{type(exc).__name__}: {exc}")
