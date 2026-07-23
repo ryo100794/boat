@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -10,6 +10,12 @@ MIN_ODDS = 1.1
 MAX_ODDS = 2_000.0
 FEATURE_COUNT = 54
 FEATURE_SCHEMA = "conditional_payout_additive_v1"
+TAIL_PROBABILITY_THRESHOLDS = (0.02, 0.005, 0.001)
+TAIL_BIN_LABELS = ("ge_0.02", "ge_0.005", "ge_0.001", "lt_0.001")
+TAIL_BIN_COUNT = len(TAIL_BIN_LABELS)
+TAIL_RATIO_MIN = 0.1
+TAIL_RATIO_MAX = 4.0
+ONE_SIDED_95_Z = 1.6448536269514722
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,231 @@ class ConditionalPayoutStatistics:
         self.target_cross += matrix.T @ targets
         self.target_square_sum += float(targets @ targets)
         self.samples += len(matrix)
+
+
+def payout_tail_bin_indices(
+    market_reference_probabilities: Sequence[float],
+) -> np.ndarray:
+    probabilities = np.asarray(market_reference_probabilities, dtype=np.float64)
+    if probabilities.ndim != 1:
+        raise ValueError("market reference probabilities must be one-dimensional")
+    if not np.all(np.isfinite(probabilities)) or np.any(probabilities < 0.0):
+        raise ValueError("market reference probabilities must be finite and non-negative")
+    return np.select(
+        (
+            probabilities >= TAIL_PROBABILITY_THRESHOLDS[0],
+            probabilities >= TAIL_PROBABILITY_THRESHOLDS[1],
+            probabilities >= TAIL_PROBABILITY_THRESHOLDS[2],
+        ),
+        (0, 1, 2),
+        default=3,
+    ).astype(np.int64)
+
+
+@dataclass
+class ConditionalPayoutTailStatistics:
+    counts: np.ndarray
+    ratio_sums: np.ndarray
+    ratio_square_sums: np.ndarray
+
+    @classmethod
+    def empty(cls) -> "ConditionalPayoutTailStatistics":
+        return cls(
+            counts=np.zeros(TAIL_BIN_COUNT, dtype=np.int64),
+            ratio_sums=np.zeros(TAIL_BIN_COUNT, dtype=np.float64),
+            ratio_square_sums=np.zeros(TAIL_BIN_COUNT, dtype=np.float64),
+        )
+
+    @property
+    def samples(self) -> int:
+        return int(np.sum(self.counts, dtype=np.int64))
+
+    def update(
+        self,
+        market_reference_probabilities: Sequence[float],
+        raw_predicted_odds: Sequence[float],
+        actual_odds: Sequence[float],
+    ) -> None:
+        probabilities = np.asarray(market_reference_probabilities, dtype=np.float64)
+        predicted = np.asarray(raw_predicted_odds, dtype=np.float64)
+        actual = np.asarray(actual_odds, dtype=np.float64)
+        if actual.ndim != 1 or predicted.ndim != 1:
+            raise ValueError("tail calibration odds must be one-dimensional")
+        if actual.shape != probabilities.shape or predicted.shape != probabilities.shape:
+            raise ValueError("tail calibration inputs must have matching lengths")
+        if (
+            not np.all(np.isfinite(actual))
+            or not np.all(np.isfinite(predicted))
+            or np.any(actual <= 0.0)
+            or np.any(predicted <= 0.0)
+        ):
+            raise ValueError("tail calibration odds must be finite and positive")
+        bin_indices = payout_tail_bin_indices(probabilities)
+        ratios = np.clip(actual / predicted, TAIL_RATIO_MIN, TAIL_RATIO_MAX)
+        np.add.at(self.counts, bin_indices, 1)
+        np.add.at(self.ratio_sums, bin_indices, ratios)
+        np.add.at(self.ratio_square_sums, bin_indices, ratios * ratios)
+
+
+@dataclass
+class ConditionalPayoutTailCalibrator:
+    statistics: ConditionalPayoutTailStatistics = field(
+        default_factory=ConditionalPayoutTailStatistics.empty
+    )
+    prior_samples: float = 20.0
+    minimum_bin_samples: int = 20
+    fallback_factor: float = 0.5
+    confidence_z: float = ONE_SIDED_95_Z
+    minimum_factor: float = TAIL_RATIO_MIN
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.prior_samples) or self.prior_samples <= 0.0:
+            raise ValueError("tail calibration prior samples must be finite and positive")
+        if self.minimum_bin_samples < 1:
+            raise ValueError("tail calibration minimum bin samples must be positive")
+        if (
+            not np.isfinite(self.fallback_factor)
+            or self.fallback_factor <= 0.0
+            or self.fallback_factor > 1.0
+        ):
+            raise ValueError("tail calibration fallback factor must be in (0, 1]")
+        if not np.isfinite(self.confidence_z) or self.confidence_z < 0.0:
+            raise ValueError("tail calibration confidence z must be finite and non-negative")
+        if (
+            not np.isfinite(self.minimum_factor)
+            or self.minimum_factor <= 0.0
+            or self.minimum_factor > self.fallback_factor
+        ):
+            raise ValueError(
+                "tail calibration minimum factor must be in (0, fallback factor]"
+            )
+        self._validate_statistics()
+
+    @classmethod
+    def empty(cls, **kwargs: float | int) -> "ConditionalPayoutTailCalibrator":
+        return cls(statistics=ConditionalPayoutTailStatistics.empty(), **kwargs)
+
+    @property
+    def samples(self) -> int:
+        return self.statistics.samples
+
+    def update(
+        self,
+        market_reference_probabilities: Sequence[float],
+        raw_predicted_odds: Sequence[float],
+        actual_odds: Sequence[float],
+    ) -> None:
+        self.statistics.update(
+            market_reference_probabilities,
+            raw_predicted_odds,
+            actual_odds,
+        )
+
+    def factors(self) -> np.ndarray:
+        self._validate_statistics()
+        counts = self.statistics.counts.astype(np.float64)
+        total_count = float(np.sum(counts))
+        if total_count <= 0.0:
+            return np.full(TAIL_BIN_COUNT, self.fallback_factor, dtype=np.float64)
+
+        total_sum = float(np.sum(self.statistics.ratio_sums))
+        total_square_sum = float(np.sum(self.statistics.ratio_square_sums))
+        global_mean = total_sum / total_count
+        global_second_moment = total_square_sum / total_count
+        global_variance = max(0.0, global_second_moment - global_mean * global_mean)
+        global_lower = global_mean - self.confidence_z * np.sqrt(
+            global_variance / total_count
+        )
+
+        factors = np.empty(TAIL_BIN_COUNT, dtype=np.float64)
+        for bin_index in range(TAIL_BIN_COUNT):
+            effective_count = counts[bin_index] + self.prior_samples
+            posterior_mean = (
+                self.statistics.ratio_sums[bin_index]
+                + self.prior_samples * global_mean
+            ) / effective_count
+            posterior_second_moment = (
+                self.statistics.ratio_square_sums[bin_index]
+                + self.prior_samples * global_second_moment
+            ) / effective_count
+            posterior_variance = max(
+                0.0,
+                posterior_second_moment - posterior_mean * posterior_mean,
+            )
+            lower = posterior_mean - self.confidence_z * np.sqrt(
+                posterior_variance / effective_count
+            )
+            if counts[bin_index] < self.minimum_bin_samples:
+                lower = min(lower, global_lower, self.fallback_factor)
+            factors[bin_index] = np.clip(
+                lower,
+                self.minimum_factor,
+                1.0,
+            )
+        return factors
+
+    def calibrate(
+        self,
+        market_reference_probabilities: Sequence[float],
+        raw_predicted_odds: Sequence[float],
+    ) -> np.ndarray:
+        probabilities = np.asarray(market_reference_probabilities, dtype=np.float64)
+        predicted = np.asarray(raw_predicted_odds, dtype=np.float64)
+        if predicted.ndim != 1 or predicted.shape != probabilities.shape:
+            raise ValueError("tail calibration inputs must have matching lengths")
+        if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
+            raise ValueError("raw predicted odds must be finite and positive")
+        bin_indices = payout_tail_bin_indices(probabilities)
+        calibrated = predicted * self.factors()[bin_indices]
+        return np.minimum(predicted, calibrated)
+
+    def apply(
+        self,
+        market_reference_probabilities: Sequence[float],
+        raw_predicted_odds: Sequence[float],
+    ) -> np.ndarray:
+        return self.calibrate(
+            market_reference_probabilities,
+            raw_predicted_odds,
+        )
+
+    def diagnostics(self) -> dict[str, object]:
+        self._validate_statistics()
+        samples = self.samples
+        ratio_mean = (
+            float(np.sum(self.statistics.ratio_sums) / samples)
+            if samples
+            else None
+        )
+        return {
+            "samples": samples,
+            "probability_bins": list(TAIL_BIN_LABELS),
+            "bin_counts": self.statistics.counts.astype(int).tolist(),
+            "bin_factors": self.factors().tolist(),
+            "global_ratio_mean": ratio_mean,
+            "ratio_winsor_limits": [TAIL_RATIO_MIN, TAIL_RATIO_MAX],
+            "prior_samples": float(self.prior_samples),
+            "minimum_bin_samples": int(self.minimum_bin_samples),
+            "fallback_factor": float(self.fallback_factor),
+            "one_sided_confidence_z": float(self.confidence_z),
+        }
+
+    def _validate_statistics(self) -> None:
+        statistics = self.statistics
+        if (
+            statistics.counts.shape != (TAIL_BIN_COUNT,)
+            or statistics.ratio_sums.shape != (TAIL_BIN_COUNT,)
+            or statistics.ratio_square_sums.shape != (TAIL_BIN_COUNT,)
+        ):
+            raise ValueError("tail calibration statistics have invalid shapes")
+        if (
+            np.any(statistics.counts < 0)
+            or not np.all(np.isfinite(statistics.ratio_sums))
+            or not np.all(np.isfinite(statistics.ratio_square_sums))
+            or np.any(statistics.ratio_sums < 0.0)
+            or np.any(statistics.ratio_square_sums < 0.0)
+        ):
+            raise ValueError("tail calibration statistics must be finite and non-negative")
 
 
 def payout_features(
@@ -165,6 +396,7 @@ def predict_conditional_odds(
     *,
     lognormal_mean_correction: bool = True,
     mean_correction_factor: float | None = None,
+    tail_calibrator: ConditionalPayoutTailCalibrator | None = None,
 ) -> np.ndarray:
     matrix = payout_features(probabilities, combinations, race_keys)
     factor = (
@@ -176,4 +408,7 @@ def predict_conditional_odds(
         raise ValueError("mean correction factor must be between zero and one")
     correction = 0.5 * float(model.residual_variance) * factor
     log_odds = matrix @ np.asarray(model.weights, dtype=np.float64) + correction
-    return np.clip(np.exp(log_odds), MIN_ODDS, MAX_ODDS)
+    raw_odds = np.clip(np.exp(log_odds), MIN_ODDS, MAX_ODDS)
+    if tail_calibrator is None:
+        return raw_odds
+    return tail_calibrator.calibrate(probabilities, raw_odds)

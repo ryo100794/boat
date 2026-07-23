@@ -6,6 +6,8 @@ from boatrace_ai.listwise.payout_estimator import (
     FEATURE_COUNT,
     ConditionalPayoutRegressor,
     ConditionalPayoutStatistics,
+    ConditionalPayoutTailCalibrator,
+    payout_tail_bin_indices,
     fit_conditional_payout,
     fit_conditional_payout_statistics,
     payout_features,
@@ -121,3 +123,156 @@ def test_conditional_payout_regression_learns_probability_payout_relation() -> N
     )
     assert predicted[0] > predicted[1] * 5.0
     np.testing.assert_allclose(predicted, [39.0, 3.9], rtol=0.25)
+
+
+def test_tail_calibrator_uses_fixed_bins_and_winsorized_sufficient_statistics() -> None:
+    probabilities = np.asarray([0.02, 0.005, 0.001, 0.000999, 0.0])
+    raw_odds = np.full(5, 10.0)
+    actual_odds = np.asarray([0.1, 2.0, 20.0, 100.0, 40.0])
+    calibrator = ConditionalPayoutTailCalibrator.empty()
+
+    np.testing.assert_array_equal(
+        payout_tail_bin_indices(probabilities),
+        [0, 1, 2, 3, 3],
+    )
+    calibrator.update(probabilities, raw_odds, actual_odds)
+
+    np.testing.assert_array_equal(calibrator.statistics.counts, [1, 1, 1, 2])
+    np.testing.assert_allclose(calibrator.statistics.ratio_sums, [0.1, 0.2, 2.0, 8.0])
+    np.testing.assert_allclose(
+        calibrator.statistics.ratio_square_sums,
+        [0.01, 0.04, 4.0, 32.0],
+    )
+    diagnostics = calibrator.diagnostics()
+    assert diagnostics["samples"] == 5
+    assert diagnostics["ratio_winsor_limits"] == [0.1, 4.0]
+
+
+def test_tail_calibrator_shrinks_bins_to_global_statistics() -> None:
+    probabilities = np.asarray([0.03] * 2 + [0.007] * 10)
+    raw_odds = np.full(12, 10.0)
+    actual_odds = raw_odds * np.asarray([0.2] * 2 + [0.8] * 10)
+    calibrator = ConditionalPayoutTailCalibrator.empty(
+        prior_samples=20.0,
+        minimum_bin_samples=2,
+        confidence_z=0.0,
+    )
+
+    calibrator.update(probabilities, raw_odds, actual_odds)
+    factors = calibrator.factors()
+
+    global_mean = (2 * 0.2 + 10 * 0.8) / 12
+    expected_first_bin = (2 * 0.2 + 20 * global_mean) / 22
+    expected_second_bin = (10 * 0.8 + 20 * global_mean) / 30
+    np.testing.assert_allclose(
+        factors[:2],
+        [expected_first_bin, expected_second_bin],
+    )
+    np.testing.assert_allclose(factors[2:], [0.5, 0.5])
+
+
+def test_tail_calibrator_uses_one_sided_lower_confidence_factor() -> None:
+    probabilities = np.full(80, 0.003)
+    raw_odds = np.full(80, 20.0)
+    ratios = np.tile([0.4, 1.2], 40)
+    conservative = ConditionalPayoutTailCalibrator.empty()
+    posterior_mean = ConditionalPayoutTailCalibrator.empty(confidence_z=0.0)
+
+    conservative.update(probabilities, raw_odds, raw_odds * ratios)
+    posterior_mean.update(probabilities, raw_odds, raw_odds * ratios)
+
+    conservative_factors = conservative.factors()
+    mean_factors = posterior_mean.factors()
+    assert np.all(np.isfinite(conservative_factors))
+    assert np.all((conservative_factors > 0.0) & (conservative_factors <= 1.0))
+    assert conservative_factors[2] < mean_factors[2]
+
+
+def test_tail_calibrator_empty_and_small_samples_use_conservative_fallback() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty()
+    probabilities = np.asarray([0.03, 0.007, 0.003, 0.0003])
+    raw_odds = np.asarray([2.0, 10.0, 100.0, 1_000.0])
+
+    empty_calibrated = calibrator.calibrate(probabilities, raw_odds)
+    np.testing.assert_allclose(empty_calibrated, raw_odds * 0.5)
+
+    calibrator.update([0.03], [10.0], [40.0])
+    factors = calibrator.factors()
+    assert factors[0] <= calibrator.fallback_factor
+    assert np.all(np.isfinite(factors))
+    assert np.all((factors > 0.0) & (factors <= 1.0))
+
+
+def test_tail_calibrator_never_increases_raw_odds() -> None:
+    calibrator = ConditionalPayoutTailCalibrator.empty(minimum_bin_samples=1)
+    probabilities = np.asarray([0.03, 0.007, 0.003, 0.0003])
+    raw_odds = np.asarray([2.0, 10.0, 100.0, 1_000.0])
+    calibrator.update(
+        np.repeat(probabilities, 30),
+        np.tile(raw_odds, 30),
+        np.tile(raw_odds * 10.0, 30),
+    )
+
+    calibrated = calibrator.calibrate(probabilities, raw_odds)
+
+    assert np.all(np.isfinite(calibrated))
+    assert np.all(calibrated > 0.0)
+    assert np.all(calibrated <= raw_odds)
+
+
+def test_tail_calibrator_batch_updates_match_single_update() -> None:
+    rng = np.random.default_rng(20260723)
+    probabilities = 10.0 ** rng.uniform(-4.0, -1.0, 500)
+    raw_odds = rng.uniform(2.0, 500.0, 500)
+    actual_odds = raw_odds * rng.uniform(0.01, 5.0, 500)
+    single = ConditionalPayoutTailCalibrator.empty()
+    batched = ConditionalPayoutTailCalibrator.empty()
+
+    single.update(probabilities, raw_odds, actual_odds)
+    for start, stop in ((0, 17), (17, 123), (123, 301), (301, 500)):
+        batched.update(
+            probabilities[start:stop],
+            raw_odds[start:stop],
+            actual_odds[start:stop],
+        )
+
+    np.testing.assert_array_equal(
+        batched.statistics.counts,
+        single.statistics.counts,
+    )
+    np.testing.assert_array_equal(
+        batched.statistics.ratio_sums,
+        single.statistics.ratio_sums,
+    )
+    np.testing.assert_array_equal(
+        batched.statistics.ratio_square_sums,
+        single.statistics.ratio_square_sums,
+    )
+    np.testing.assert_array_equal(batched.factors(), single.factors())
+    assert batched.diagnostics() == single.diagnostics()
+
+
+def test_prediction_can_apply_tail_calibrator_after_ridge() -> None:
+    model = ConditionalPayoutRegressor(
+        weights=np.zeros(FEATURE_COUNT),
+        residual_variance=2.0,
+        ridge=10.0,
+        training_samples=100,
+    )
+    calibrator = ConditionalPayoutTailCalibrator.empty()
+
+    raw = predict_conditional_odds(
+        model,
+        [0.1],
+        ["1-2-3"],
+        [("r1", "2026-07-01", "01", 1)],
+    )
+    calibrated = predict_conditional_odds(
+        model,
+        [0.1],
+        ["1-2-3"],
+        [("r1", "2026-07-01", "01", 1)],
+        tail_calibrator=calibrator,
+    )
+
+    np.testing.assert_allclose(calibrated, raw * 0.5)

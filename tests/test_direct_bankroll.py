@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from boatrace_ai.listwise.direct_bankroll import (
     COMBINATION_LABELS,
@@ -268,3 +269,100 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert counts["1.00"] >= counts["1.05"] >= counts["1.10"] >= counts["1.20"]
     assert diagnostics["residual_variance_initial"] >= 0.0
     assert diagnostics["residual_variance_final"] >= 0.0
+
+
+def _tail_calibration_case(
+    *,
+    first_evaluation_payout_yen: int = 2_000,
+    same_day_reversed: bool = False,
+) -> dict[str, object]:
+    target = COMBINATION_LABELS.index("1-2-3")
+    calibration_keys = [
+        (f"cal-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    calibration_probabilities = np.full((4, 120), 0.85 / 119.0)
+    calibration_probabilities[:, target] = 0.15
+    race_keys = [
+        ("eval-a", "2026-07-01", "01", 1),
+        ("eval-b", "2026-07-01", "02", 1),
+        ("eval-c", "2026-07-02", "01", 1),
+    ]
+    probabilities = np.full((3, 120), 0.85 / 119.0)
+    probabilities[:, target] = 0.15
+    if same_day_reversed:
+        race_keys = [race_keys[1], race_keys[0], race_keys[2]]
+        probabilities = probabilities[[1, 0, 2]]
+    payouts = {
+        key[0]: {"combination": "1-2-3", "payout_yen": 2_000}
+        for key in calibration_keys
+    }
+    payouts.update(
+        {
+            "eval-a": {
+                "combination": "1-2-3",
+                "payout_yen": first_evaluation_payout_yen,
+            },
+            "eval-b": {"combination": "1-2-3", "payout_yen": 2_000},
+            "eval-c": {"combination": "1-2-3", "payout_yen": 2_000},
+        }
+    )
+    return simulate_conditional_payout_walk_forward(
+        probabilities,
+        race_keys=race_keys,
+        payouts=payouts,
+        calibration_probabilities=calibration_probabilities,
+        calibration_race_keys=calibration_keys,
+        policy_selection_days=2,
+        minimum_selection_tickets=10_000,
+    )
+
+
+def test_conditional_payout_rejects_decreasing_dates() -> None:
+    probabilities = np.full((2, 120), 1.0 / 120.0)
+    calibration_keys = [
+        ("cal-1", "2026-06-01", "01", 1),
+        ("cal-2", "2026-06-02", "01", 1),
+    ]
+    payouts = {
+        key[0]: {"combination": "1-2-3", "payout_yen": 2_000}
+        for key in calibration_keys
+    }
+    with pytest.raises(ValueError, match="race_keys dates must be non-decreasing"):
+        simulate_conditional_payout_walk_forward(
+            probabilities,
+            race_keys=[
+                ("eval-2", "2026-07-02", "01", 1),
+                ("eval-1", "2026-07-01", "01", 1),
+            ],
+            payouts=payouts,
+            calibration_probabilities=probabilities,
+            calibration_race_keys=calibration_keys,
+        )
+
+
+def test_conditional_payout_day_result_only_changes_following_day_prediction() -> None:
+    high = _tail_calibration_case(first_evaluation_payout_yen=20_000)
+    low = _tail_calibration_case(first_evaluation_payout_yen=110)
+
+    high_day, high_next = high["daily"]
+    low_day, low_next = low["daily"]
+    assert high_day["tickets"] == low_day["tickets"]
+    assert high_day["stake_yen"] == low_day["stake_yen"]
+    assert high_day["tail_calibration_bin_factors_initial"] == (
+        low_day["tail_calibration_bin_factors_initial"]
+    )
+    assert high_next["tail_calibration_bin_factors_initial"] != (
+        low_next["tail_calibration_bin_factors_initial"]
+    )
+
+
+def test_conditional_payout_same_day_order_does_not_change_purchases() -> None:
+    original = _tail_calibration_case()
+    reversed_rows = _tail_calibration_case(same_day_reversed=True)
+
+    original_day = original["daily"][0]
+    reversed_day = reversed_rows["daily"][0]
+    for key in ("tickets", "stake_yen", "return_yen", "profit_yen"):
+        assert original_day[key] == reversed_day[key]
+    assert original_day["selected_sample"] == reversed_day["selected_sample"]
