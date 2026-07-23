@@ -14,6 +14,9 @@ rclone_bin="${RCLONE_BIN:-rclone}"
 [[ "$min_age_minutes" =~ ^[0-9]+$ ]] || { echo "invalid minimum age: $min_age_minutes" >&2; exit 2; }
 [[ "$batch_files" =~ ^[1-9][0-9]*$ ]] || { echo "invalid batch size: $batch_files" >&2; exit 2; }
 mkdir -p "$raw_dir" "$staging_dir"
+lock_dir="$(dirname "$staging_dir")"
+mkdir -p "$lock_dir"
+exec 9>"$lock_dir/raw-archive.lock"
 
 upload_archive() {
   local archive="$1"
@@ -93,7 +96,12 @@ run_cycle() {
 }
 
 while true; do
+  if ! flock -w 300 9; then
+    echo "raw archive lock timeout" >&2
+    exit 75
+  fi
   run_cycle
+  flock -u 9
   [[ "${BOATRACE_RAW_ARCHIVE_ONCE:-0}" == "1" ]] && exit 0
   sleep "$interval"
 done

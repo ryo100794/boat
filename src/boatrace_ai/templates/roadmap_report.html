@@ -24,6 +24,7 @@
 <main>
   <div id="kpis" class="kpis"></div>
   <div class="grid">
+    <div class="panel"><h2><span>DB作業チケット</span><span class="muted">進捗の正本</span></h2><table><thead><tr><th>ID</th><th>優先</th><th>領域</th><th>状態</th><th>進捗</th><th>担当</th><th>作業 / 受入条件</th></tr></thead><tbody id="ticketRows"></tbody></table></div>
     <div class="panel"><h2><span>進行中の懸案</span><span id="meta" class="muted"></span></h2><div id="record" class="record"></div></div>
     <div class="panel"><h2><span>常駐プロセス</span><span class="muted">boatrace_ai</span></h2><table><thead><tr><th>種別</th><th>PID</th><th>cmd</th></tr></thead><tbody id="processRows"></tbody></table></div>
     <div class="panel"><h2><span>マイルストーン</span><span class="muted">更新対象</span></h2><table><thead><tr><th>ID</th><th>状態</th><th>進捗</th><th>次作業</th></tr></thead><tbody id="milestoneRows"></tbody></table></div>
@@ -42,11 +43,13 @@ const fmt = v => v == null ? "-" : Number(v).toLocaleString("ja-JP");
 const pct = v => v == null ? "-" : `${(Number(v)*100).toFixed(1)}%`;
 const bytes = v => { v=Number(v||0); if(v>1048576) return `${(v/1048576).toFixed(1)}MB`; if(v>1024) return `${(v/1024).toFixed(1)}KB`; return `${v}B`; };
 function tag(status){ const s=String(status||""); const c=s.includes("完了")?"ok":s.includes("要")||s.includes("失敗")?"bad":s.includes("進行")||s.includes("調査")?"warn":""; return `<span class="tag ${c}">${esc(s)}</span>`; }
+function ticketStatus(status){ return ({queued:"待機",in_progress:"進行中",blocked:"保留",completed:"完了",cancelled:"中止"})[status]||status||"-"; }
 async function load(){ const res=await fetch('/api/reports/roadmap-status',{cache:'no-store'}); const data=await res.json(); render(data); }
 function render(data){
   const p=(data.progress||{}), t=(p.today||{}), h=(p.historical||{}), rt=(p.realtime||{}), s=(data.summary||{}), v=(data.v_file_inventory||{});
   $('meta').textContent=`更新 ${String(data.generated_at||'').replace('T',' ').slice(0,19)}`;
   $('kpis').innerHTML=[['当日R',`${fmt(t.races)}/${fmt(t.target_races)}`],['当日結果残',fmt(t.final_remaining)],['過去結果日残',fmt(h.result_remaining_days)],['実odds学習R',`${fmt(rt.eligible_races)}/${fmt(rt.target_eligible_races)}`],['予測R',fmt(s.predictions)],['odds snap',fmt(s.odds_snapshots)],['v系py',fmt(v.count)]].map(([l,x])=>`<div class="kpi"><b title="${esc(x)}">${esc(x)}</b><span>${esc(l)}</span></div>`).join('');
+  $('ticketRows').innerHTML=(data.tickets||[]).map(r=>`<tr><td class="mono">${esc(r.ticket_key)}</td><td class="mono">${esc(r.priority)}</td><td>${esc(r.area)}</td><td>${tag(ticketStatus(r.status))}</td><td><div class="bar"><i style="width:${Number(r.progress||0)}%"></i></div></td><td>${esc(r.owner)}</td><td title="${esc((r.description||'')+' / '+(r.acceptance_criteria||''))}">${esc(r.title)} / ${esc(r.acceptance_criteria)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">DBチケット初期化待ち</td></tr>';
   $('record').textContent=data.record_markdown||'';
   $('processRows').innerHTML=(data.processes||[]).map(r=>`<tr><td>${esc(r.kind)}</td><td class="mono">${esc(r.pid)}</td><td title="${esc(r.cmd)}">${esc(r.cmd)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">稼働プロセスなし</td></tr>';
   $('milestoneRows').innerHTML=(data.milestones||[]).map(r=>`<tr><td class="mono" title="${esc(r.title)}">${esc(r.id)} ${esc(r.title)}</td><td>${tag(r.status)}</td><td><div class="bar"><i style="width:${Number(r.progress||0)}%"></i></div></td><td title="${esc(r.next)}">${esc(r.next)}</td></tr>`).join('');

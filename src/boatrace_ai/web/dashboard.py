@@ -1170,11 +1170,16 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
     feature_diagnostics.sort(key=lambda item: (item.get("generated_at") or "", item["file"]))
+    model_tracks = _model_track_summaries(model_dir, backtests, remote_evaluations)
     payload = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model_dir": str(model_dir),
         "backtests": backtests,
-        "model_tracks": _model_track_summaries(model_dir, backtests, remote_evaluations),
+        "model_tracks": model_tracks,
+        "report_contract": _model_performance_report_contract(
+            standardized,
+            model_tracks,
+        ),
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
@@ -1187,6 +1192,72 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
     return payload
+
+
+def _model_performance_report_contract(
+    standardized: dict[str, Any],
+    model_tracks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    formal_tracks = [
+        row for row in model_tracks if row.get("evaluation_group") == "t5_formal"
+    ]
+    formal_from = next(
+        (
+            row.get("formal_evaluation_from")
+            for row in formal_tracks
+            if row.get("formal_evaluation_from")
+        ),
+        None,
+    )
+    return {
+        "version": "model-performance-v3",
+        "principles": [
+            "異なる評価母集団の数値は横比較しない",
+            "損失は艇Entry LLと3連単LLを区別する",
+            "投資0円はROI 0ではなく購入なしと表示する",
+            "正式T-5評価は事前登録日以降の完全日だけを集計する",
+        ],
+        "groups": [
+            {
+                "id": "standard_365d",
+                "label": "統一365日 共通評価",
+                "comparison": "モデル間比較可",
+                "population": "同一holdout・同一レース集合",
+                "probability_metrics": "艇Entry LL / 1着Top1 / 3連単Top5",
+                "bankroll": "同一の日額10,000円資金運用",
+                "use": "過去ログモデルの昇格比較",
+                "ready": bool(standardized.get("ready")),
+            },
+            {
+                "id": "t5_formal",
+                "label": "正式T-5実odds評価",
+                "comparison": "同一完全日内のみ比較可",
+                "population": "T-5取得率100%の事前登録日以降",
+                "probability_metrics": "3連単LL / 3連単Top5 / 市場差ΔLL",
+                "bankroll": "前日以前で較正した日次前進運用",
+                "use": "実odds shadowの本番判定",
+                "formal_from": formal_from,
+            },
+            {
+                "id": "past_individual",
+                "label": "過去ログ 個別評価",
+                "comparison": "同一評価軸の行だけ比較可",
+                "population": "各成果物に記録した時系列holdout",
+                "probability_metrics": "行内に明記したLL / Top1 / Top5",
+                "bankroll": "各成果物の資金運用条件",
+                "use": "構造・特徴量の研究診断",
+            },
+            {
+                "id": "development",
+                "label": "開発・暫定診断",
+                "comparison": "正式評価と比較不可",
+                "population": "短期holdout・探索用データ",
+                "probability_metrics": "行内に明記した暫定指標",
+                "bankroll": "参考値のみ",
+                "use": "棄却・次候補選定",
+            },
+        ],
+    }
 
 
 def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
@@ -2108,6 +2179,17 @@ def _market_calibrated_model_tracks(
                 "coverage_excluded_days": coverage_gate.get("excluded_days"),
                 "coverage_minimum": coverage_gate.get("minimum_day_coverage"),
                 "coverage_latest_rate": latest_coverage,
+                "formal_evaluation_from": coverage_gate.get(
+                    "formal_evaluation_from"
+                ),
+                "formal_evaluation_dates": coverage_gate.get(
+                    "formal_evaluation_dates"
+                )
+                or [],
+                "pre_registration_clean_dates": coverage_gate.get(
+                    "pre_registration_clean_dates"
+                )
+                or [],
                 "target_races": 1000,
                 "backtest_available": status == "完了" and bool(result),
                 "entry_log_loss": None,
@@ -4026,11 +4108,13 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     processes = _process_snapshots()
     teleboat = teleboat_status(db_path)
     milestones = _roadmap_milestones(progress, processes, remote_evaluations, teleboat)
+    tickets = _roadmap_work_tickets(db_path)
 
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
         "date": race_date,
         "record_markdown": _read_project_status_markdown(),
+        "tickets": tickets,
         "milestones": milestones,
         "improvements": _roadmap_improvements(progress, processes, remote_evaluations, teleboat),
         "agents": _roadmap_agents(),
@@ -4045,6 +4129,27 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     }
     _ROADMAP_CACHE[db_path] = (now, payload)
     return payload
+
+
+def _roadmap_work_tickets(db_path: Path) -> list[dict[str, Any]]:
+    try:
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticket_key, title, area, description,
+                       acceptance_criteria, owner, priority, status,
+                       progress, related_job_id, source,
+                       created_at, updated_at, completed_at
+                FROM work_tickets
+                ORDER BY
+                  CASE status WHEN 'in_progress' THEN 0 WHEN 'queued' THEN 1
+                              WHEN 'blocked' THEN 2 ELSE 3 END,
+                  priority DESC, updated_at DESC
+                """
+            ).fetchall()
+    except Exception:
+        return []
+    return [{key: row[key] for key in row.keys()} for row in rows]
 
 
 _TELEBOAT_RESULT_KEYS = {
