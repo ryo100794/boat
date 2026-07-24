@@ -678,12 +678,21 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         lambda *_args, **_kwargs: conditional,
     )
     output = tmp_path / "result.json"
+    model_output = tmp_path / "model.joblib"
+    saved_artifact: dict[str, object] = {}
+
+    def fake_dump(path: Path, artifact: dict[str, object]) -> None:
+        saved_artifact.update(artifact)
+        path.write_bytes(b"joblib")
+
+    monkeypatch.setattr(recency, "dump_joblib_atomic", fake_dump)
 
     result = recency.evaluate_recency_mlp(
         None,
         output_path=output,
         evaluation_date=date(2025, 1, 2),
         feature_cache=tmp_path / "features",
+        model_output_path=model_output,
     )
 
     assert final_score_calls == [(training_count, dataset.race_count)]
@@ -706,6 +715,11 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         "payout_policy_pass": False,
         "pass": False,
     }
+    assert result["model_artifact_saved"] is True
+    assert saved_artifact["drop_feature_groups"] == ["research_correlates"]
+    assert saved_artifact["metadata"]["drop_feature_groups"] == [
+        "research_correlates"
+    ]
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()
