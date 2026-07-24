@@ -35,6 +35,75 @@ from .stagewise_mlp import COMBINATION_LANES, actual_combination_indices
 MODEL_NAME = "pastlog_conditional_order"
 EPSILON = 1e-15
 DEFAULT_REGULARIZATIONS = (0.0001, 0.001, 0.01, 0.1, 1.0)
+CONDITIONAL_PAYOUT_STATE_KEYS = frozenset(
+    {
+        "state_schema",
+        "state_role",
+        "trained_through",
+        "holdout_replay_state",
+        "payout_regressor",
+        "payout_statistics",
+        "tail_calibrator",
+        "policy",
+    }
+)
+
+
+def _attach_conditional_payout_state(
+    artifact: dict[str, Any],
+    state: dict[str, Any],
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    missing = CONDITIONAL_PAYOUT_STATE_KEYS - set(state)
+    if missing:
+        raise ValueError(
+            "conditional payout deployment state is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    if state["state_role"] != "next_day_inference_after_evaluation":
+        raise ValueError("conditional payout state is not a next-day inference state")
+    if state["holdout_replay_state"] is not False:
+        raise ValueError("post-evaluation state must not be marked for holdout replay")
+    return {
+        **artifact,
+        "conditional_payout_state": state,
+        "conditional_payout_gate": dict(gate),
+    }
+
+
+def _conditional_payout_holdout_gate(
+    gate: dict[str, Any],
+    *,
+    evaluation_from: str,
+    evaluation_through: str,
+) -> dict[str, Any]:
+    holdout_days = (
+        datetime.fromisoformat(evaluation_through).date()
+        - datetime.fromisoformat(evaluation_from).date()
+    ).days + 1
+    result = dict(gate)
+    result["performance_pass"] = bool(gate["pass"])
+    result["required_holdout_days"] = 365
+    result["holdout_days"] = holdout_days
+    result["holdout_period_pass"] = holdout_days == 365
+    result["pass"] = bool(
+        result["performance_pass"] and result["holdout_period_pass"]
+    )
+    return result
+
+
+def _conditional_payout_promotion_status(
+    gate: dict[str, Any],
+    *,
+    artifact_saved: bool,
+) -> tuple[bool, str]:
+    eligible = bool(artifact_saved and gate["pass"])
+    role = (
+        "production candidate with persisted next-day inference state"
+        if eligible
+        else "next-day inference artifact; 365-day promotion gate not passed"
+    )
+    return eligible, role
 
 
 @dataclass(frozen=True)
@@ -572,6 +641,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         payouts=payouts,
         training_races=training_races,
     )
+    conditional_payout_state: dict[str, Any] = {}
     conditional_payout_bankroll = simulate_conditional_payout_walk_forward(
         candidate_probabilities,
         race_keys=evaluation_keys,
@@ -593,6 +663,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             args.payout_minimum_selection_winning_days
         ),
         minimum_selection_roi=args.payout_minimum_selection_roi,
+        state_output=conditional_payout_state,
     )
     expected_return_bankroll = simulate_expected_return_calibrated_bankroll(
         candidate_probabilities,
@@ -631,6 +702,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         conditional_payout_bankroll,
         baseline_bankroll,
         conditional_payout_confidence,
+    )
+    conditional_payout_gate = _conditional_payout_holdout_gate(
+        conditional_payout_gate,
+        evaluation_from=args.evaluation_from,
+        evaluation_through=args.evaluation_through,
     )
     expected_return_confidence = bootstrap_daily_bankroll(
         expected_return_bankroll["daily"],
@@ -672,18 +748,33 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll_pass": bankroll_gate["pass"],
         "pass": bool(structure_gate["pass"] and bankroll_gate["pass"]),
     }
-    artifact = {
-        "model": model,
-        "base_model": baseline_model,
-        "hasher": baseline_artifact.get("hasher"),
-        "model_name": MODEL_NAME,
-        "source_model": str(args.baseline_model),
-        "drop_feature_groups": dropped,
-        "n_features": n_features,
-        "training_through": args.training_through,
-        "selected_regularization": float(selected["regularization"]),
-    }
-    dump_joblib_atomic(Path(args.model_output), artifact)
+    artifact = _attach_conditional_payout_state(
+        {
+            "model": model,
+            "base_model": baseline_model,
+            "hasher": baseline_artifact.get("hasher"),
+            "model_name": MODEL_NAME,
+            "source_model": str(args.baseline_model),
+            "drop_feature_groups": dropped,
+            "n_features": n_features,
+            "training_through": args.training_through,
+            "selected_regularization": float(selected["regularization"]),
+        },
+        conditional_payout_state,
+        conditional_payout_gate,
+    )
+    model_output = Path(args.model_output)
+    dump_joblib_atomic(model_output, artifact)
+    artifact_saved = model_output.is_file() and model_output.stat().st_size > 0
+    if not artifact_saved:
+        raise OSError("conditional order artifact was not persisted")
+    (
+        conditional_payout_promotion_eligible,
+        conditional_payout_role,
+    ) = _conditional_payout_promotion_status(
+        conditional_payout_gate,
+        artifact_saved=artifact_saved,
+    )
     result = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model": MODEL_NAME,
@@ -709,13 +800,15 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll": candidate_bankroll,
         "bankroll_confidence": bankroll_confidence,
         "conditional_payout_walk_forward": {
-            "role": (
-                "post-holdout development diagnostic; future untouched-day "
-                "confirmation required"
-            ),
-            "promotion_eligible": False,
+            "role": conditional_payout_role,
+            "promotion_eligible": conditional_payout_promotion_eligible,
+            "artifact_state_saved": artifact_saved,
+            "state_schema": conditional_payout_state["state_schema"],
+            "state_trained_through": conditional_payout_state["trained_through"],
+            "state_role": conditional_payout_state["state_role"],
             "bankroll": conditional_payout_bankroll,
             "bankroll_confidence": conditional_payout_confidence,
+            "conditional_payout_gate": conditional_payout_gate,
             "diagnostic_gate": conditional_payout_gate,
         },
         "expected_return_calibration": {

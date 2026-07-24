@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import joblib
 import numpy as np
 import pytest
 
 import boatrace_ai.listwise.direct_bankroll as direct_bankroll
+from boatrace_ai.listwise.conditional_order import _attach_conditional_payout_state
 from boatrace_ai.listwise.direct_bankroll import (
     COMBINATION_LABELS,
     _select_conditional_payout_policy,
@@ -277,8 +279,8 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert result["policy"]["market_reference"] == "fixed baseline probability"
     assert result["policy_selection"]["source"] == "fallback_fixed_policy"
     diagnostics = result["payout_diagnostics"]
-    assert diagnostics["feature_schema"] == "conditional_payout_additive_v1"
-    assert diagnostics["feature_count"] == 54
+    assert diagnostics["feature_schema"] == "conditional_payout_interactions_v2"
+    assert diagnostics["feature_count"] == 382
     assert diagnostics["candidate_combinations"] == 240
     assert np.isfinite(diagnostics["max_estimated_ev"])
     assert diagnostics["max_estimated_ev"] > 1.2
@@ -857,3 +859,108 @@ def test_tail_global_support_does_not_allow_sparse_bin_purchase(
     assert first_day["tickets"] == 0
     assert result["payout_diagnostics"]["tail_eligible_candidates"] == 0
     assert result["payout_diagnostics"]["tail_ineligible_candidates"] == 240
+
+
+def test_conditional_payout_next_day_state_joblib_roundtrip(tmp_path) -> None:
+    target_index = COMBINATION_LABELS.index("1-2-3")
+    calibration_keys = [
+        (
+            f"cal-{index}",
+            "2026-06-01",
+            f"{index % 24 + 1:02d}",
+            index % 12 + 1,
+        )
+        for index in range(60)
+    ]
+    calibration_probabilities = np.full((60, 120), 0.85 / 119.0)
+    calibration_probabilities[:, target_index] = 0.15
+    evaluation_keys = [
+        (
+            f"eval-{index}",
+            "2026-07-02",
+            f"{index % 24 + 1:02d}",
+            index % 12 + 1,
+        )
+        for index in range(20)
+    ]
+    evaluation_probabilities = np.full((20, 120), 0.85 / 119.0)
+    evaluation_probabilities[:, target_index] = 0.15
+    payouts = {
+        key[0]: {"combination": "1-2-3", "payout_yen": 2_000}
+        for key in calibration_keys + evaluation_keys
+    }
+    state = {}
+
+    result = simulate_conditional_payout_walk_forward(
+        evaluation_probabilities,
+        race_keys=evaluation_keys,
+        payouts=payouts,
+        calibration_probabilities=calibration_probabilities,
+        calibration_race_keys=calibration_keys,
+        ridge_candidates=(10.0,),
+        mean_correction_candidates=(0.0,),
+        threshold_candidates=(1.2,),
+        state_output=state,
+    )
+
+    assert state["state_role"] == "next_day_inference_after_evaluation"
+    assert state["trained_through"] == "2026-07-02"
+    assert state["valid_for_dates_after"] == "2026-07-02"
+    assert state["contains_evaluation_outcomes"] is True
+    assert state["holdout_replay_state"] is False
+    assert state["payout_statistics"].samples == 80
+    assert state["payout_regressor"].training_samples == 80
+    assert state["combination_labels"] == COMBINATION_LABELS
+    assert "conditional_payout_state" not in result
+
+    gate = {"pass": True, "holdout_days": 365}
+    artifact = _attach_conditional_payout_state(
+        {"model_name": "test-conditional-order"},
+        state,
+        gate,
+    )
+    artifact_path = tmp_path / "conditional-order.joblib"
+    joblib.dump(artifact, artifact_path)
+    restored = joblib.load(artifact_path)
+    restored_state = restored["conditional_payout_state"]
+
+    next_key = ("next-day", "2026-07-03", "03", 3)
+    next_market = np.full(120, 0.85 / 119.0)
+    next_market[target_index] = 0.15
+    next_keys = [next_key] * len(COMBINATION_LABELS)
+    mean_correction = float(state["policy"]["mean_correction_factor"])
+    raw_before = direct_bankroll.predict_conditional_odds(
+        state["payout_regressor"],
+        next_market,
+        COMBINATION_LABELS,
+        next_keys,
+        mean_correction_factor=mean_correction,
+    )
+    calibrated_before, eligible_before = state[
+        "tail_calibrator"
+    ].calibrate_with_eligibility(next_market, raw_before)
+    raw_after = direct_bankroll.predict_conditional_odds(
+        restored_state["payout_regressor"],
+        next_market,
+        restored_state["combination_labels"],
+        next_keys,
+        mean_correction_factor=float(
+            restored_state["policy"]["mean_correction_factor"]
+        ),
+    )
+    calibrated_after, eligible_after = restored_state[
+        "tail_calibrator"
+    ].calibrate_with_eligibility(next_market, raw_after)
+
+    np.testing.assert_allclose(raw_after, raw_before, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(
+        calibrated_after,
+        calibrated_before,
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_array_equal(eligible_after, eligible_before)
+    assert raw_after.shape == (120,)
+    assert np.count_nonzero(eligible_after) > 0
+    assert restored_state["policy"] == state["policy"]
+    assert restored["conditional_payout_gate"] == gate

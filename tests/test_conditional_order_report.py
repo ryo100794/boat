@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from boatrace_ai.listwise.conditional_order import (
+    _conditional_payout_holdout_gate,
+    _conditional_payout_promotion_status,
+)
 from boatrace_ai.web import dashboard
 
 
@@ -261,3 +267,49 @@ def test_local_result_does_not_treat_structure_only_as_promotion(tmp_path) -> No
     assert result["structure_gate"]["pass"] is True
     assert result["bankroll_gate"]["pass"] is False
     assert result["promotion_eligible"] is False
+
+
+def test_conditional_payout_gate_requires_exact_365_day_holdout() -> None:
+    performance_gate = {"pass": True, "roi": 1.1}
+
+    full_holdout = _conditional_payout_holdout_gate(
+        performance_gate,
+        evaluation_from="2025-07-20",
+        evaluation_through="2026-07-19",
+    )
+    short_holdout = _conditional_payout_holdout_gate(
+        performance_gate,
+        evaluation_from="2025-07-21",
+        evaluation_through="2026-07-19",
+    )
+
+    assert full_holdout["holdout_days"] == 365
+    assert full_holdout["performance_pass"] is True
+    assert full_holdout["holdout_period_pass"] is True
+    assert full_holdout["pass"] is True
+    assert short_holdout["holdout_days"] == 364
+    assert short_holdout["holdout_period_pass"] is False
+    assert short_holdout["pass"] is False
+
+
+@pytest.mark.parametrize(
+    ("artifact_saved", "gate_pass", "expected"),
+    [
+        (True, True, True),
+        (False, True, False),
+        (True, False, False),
+        (False, False, False),
+    ],
+)
+def test_conditional_payout_promotion_requires_artifact_and_gate(
+    artifact_saved: bool,
+    gate_pass: bool,
+    expected: bool,
+) -> None:
+    eligible, role = _conditional_payout_promotion_status(
+        {"pass": gate_pass},
+        artifact_saved=artifact_saved,
+    )
+
+    assert eligible is expected
+    assert "diagnostic" not in role

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import MutableMapping
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,7 @@ COMBINATION_INDEX = {
     combination: index for index, combination in enumerate(COMBINATION_LABELS)
 }
 PAYOUT_TAIL_SCHEMA = "conditional_payout_tail_probability_bins_v1"
+CONDITIONAL_PAYOUT_STATE_SCHEMA = "conditional_payout_next_day_inference_v1"
 MIN_DAILY_EXPOSURE_CANDIDATES = (0.0, 0.1, 0.2, 0.4)
 
 
@@ -720,6 +722,7 @@ def simulate_conditional_payout_walk_forward(
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
     minimum_selection_roi: float = 1.05,
+    state_output: MutableMapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_nondecreasing_race_dates(race_keys, name="race_keys")
     _validate_nondecreasing_race_dates(
@@ -992,6 +995,32 @@ def simulate_conditional_payout_walk_forward(
     )
     stake_yen = int(totals["stake_yen"])
     return_yen = int(totals["return_yen"])
+    trained_through = dates[-1] if dates else str(calibration_race_keys[-1][1])
+    if state_output is not None:
+        final_payout_regressor = fit_conditional_payout_statistics(
+            statistics,
+            ridge=selected_ridge,
+        )
+        state_output.clear()
+        state_output.update(
+            {
+                "state_schema": CONDITIONAL_PAYOUT_STATE_SCHEMA,
+                "state_role": "next_day_inference_after_evaluation",
+                "trained_through": trained_through,
+                "valid_for_dates_after": trained_through,
+                "contains_evaluation_outcomes": bool(dates),
+                "holdout_replay_state": False,
+                "payout_feature_schema": PAYOUT_FEATURE_SCHEMA,
+                "payout_feature_count": PAYOUT_FEATURE_COUNT,
+                "payout_tail_schema": PAYOUT_TAIL_SCHEMA,
+                "combination_labels": COMBINATION_LABELS,
+                "market_reference": selected_policy["market_reference"],
+                "payout_regressor": final_payout_regressor,
+                "payout_statistics": statistics,
+                "tail_calibrator": tail_calibrator,
+                "policy": dict(selected_policy),
+            }
+        )
     return {
         "policy": selected_policy,
         "evaluation_days": len(daily),

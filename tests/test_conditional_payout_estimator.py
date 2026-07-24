@@ -3,6 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 from boatrace_ai.listwise.payout_estimator import (
+    COMBINATION_OFFSET,
+    MONTH_OFFSET,
+    RACE_BUCKET_FIRST_LANE_OFFSET,
+    SURPRISE_RACE_BUCKET_OFFSET,
+    SURPRISE_VENUE_OFFSET,
+    VENUE_FIRST_LANE_OFFSET,
+    WEEKDAY_OFFSET,
     FEATURE_COUNT,
     ConditionalPayoutRegressor,
     ConditionalPayoutStatistics,
@@ -69,8 +76,43 @@ def test_payout_features_encode_probability_order_venue_and_race_number() -> Non
     assert matrix[0, 45] == 1.0
     assert matrix[1, 47] == 1.0
     assert matrix[1, 53] > matrix[0, 48]
-    assert np.count_nonzero(matrix[0]) == 9
-    assert np.count_nonzero(matrix[1]) == 9
+    assert (
+        matrix[:, COMBINATION_OFFSET:VENUE_FIRST_LANE_OFFSET]
+        .sum(axis=1)
+        .tolist()
+        == [1.0, 1.0]
+    )
+    assert (
+        matrix[:, VENUE_FIRST_LANE_OFFSET:RACE_BUCKET_FIRST_LANE_OFFSET]
+        .sum(axis=1)
+        .tolist()
+        == [1.0, 1.0]
+    )
+    assert (
+        matrix[:, RACE_BUCKET_FIRST_LANE_OFFSET:MONTH_OFFSET]
+        .sum(axis=1)
+        .tolist()
+        == [1.0, 1.0]
+    )
+    assert (
+        matrix[:, MONTH_OFFSET:WEEKDAY_OFFSET].sum(axis=1).tolist()
+        == [1.0, 1.0]
+    )
+    assert (
+        matrix[:, WEEKDAY_OFFSET:SURPRISE_VENUE_OFFSET]
+        .sum(axis=1)
+        .tolist()
+        == [1.0, 1.0]
+    )
+    assert np.all(
+        matrix[:, SURPRISE_VENUE_OFFSET:SURPRISE_RACE_BUCKET_OFFSET].sum(axis=1)
+        > 0.0
+    )
+    assert np.all(
+        matrix[:, SURPRISE_RACE_BUCKET_OFFSET:].sum(axis=1) > 0.0
+    )
+    assert np.count_nonzero(matrix[0]) == 16
+    assert np.count_nonzero(matrix[1]) == 16
 
 
 def test_conditional_payout_regression_learns_probability_payout_relation() -> None:

@@ -1,15 +1,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Sequence
 
 import numpy as np
+from scipy.linalg import cho_factor, cho_solve
 
 
 MIN_ODDS = 1.1
 MAX_ODDS = 2_000.0
-FEATURE_COUNT = 54
-FEATURE_SCHEMA = "conditional_payout_additive_v1"
+BASE_FEATURE_COUNT = 54
+COMBINATION_OFFSET = BASE_FEATURE_COUNT
+VENUE_FIRST_LANE_OFFSET = COMBINATION_OFFSET + 120
+RACE_BUCKET_FIRST_LANE_OFFSET = VENUE_FIRST_LANE_OFFSET + 24 * 6
+MONTH_OFFSET = RACE_BUCKET_FIRST_LANE_OFFSET + 3 * 6
+WEEKDAY_OFFSET = MONTH_OFFSET + 12
+SURPRISE_VENUE_OFFSET = WEEKDAY_OFFSET + 7
+SURPRISE_RACE_BUCKET_OFFSET = SURPRISE_VENUE_OFFSET + 24
+FEATURE_COUNT = SURPRISE_RACE_BUCKET_OFFSET + 3
+FEATURE_SCHEMA = "conditional_payout_interactions_v2"
+COMBINATION_LABELS = tuple(
+    f"{first}-{second}-{third}"
+    for first in range(1, 7)
+    for second in range(1, 7)
+    if second != first
+    for third in range(1, 7)
+    if third not in {first, second}
+)
+COMBINATION_INDEX = {
+    combination: index for index, combination in enumerate(COMBINATION_LABELS)
+}
 TAIL_PROBABILITY_THRESHOLDS = (0.02, 0.005, 0.001)
 TAIL_BIN_LABELS = ("ge_0.02", "ge_0.005", "ge_0.001", "lt_0.001")
 TAIL_BIN_COUNT = len(TAIL_BIN_LABELS)
@@ -350,7 +371,39 @@ def payout_features(
         rno = int(race_key[3])
         race_bucket = 0 if rno <= 4 else 1 if rno <= 8 else 2
         matrix[row_index, 45 + race_bucket] = 1.0
-        matrix[row_index, 48 + lanes[0] - 1] = surprise[row_index]
+        first_lane_index = lanes[0] - 1
+        matrix[row_index, 48 + first_lane_index] = surprise[row_index]
+        canonical_combination = "-".join(str(lane) for lane in lanes)
+        matrix[
+            row_index,
+            COMBINATION_OFFSET + COMBINATION_INDEX[canonical_combination],
+        ] = 1.0
+        if 1 <= jcd <= 24:
+            venue_index = jcd - 1
+            matrix[
+                row_index,
+                VENUE_FIRST_LANE_OFFSET + venue_index * 6 + first_lane_index,
+            ] = 1.0
+            matrix[
+                row_index,
+                SURPRISE_VENUE_OFFSET + venue_index,
+            ] = surprise[row_index]
+        matrix[
+            row_index,
+            RACE_BUCKET_FIRST_LANE_OFFSET
+            + race_bucket * 6
+            + first_lane_index,
+        ] = 1.0
+        matrix[
+            row_index,
+            SURPRISE_RACE_BUCKET_OFFSET + race_bucket,
+        ] = surprise[row_index]
+        try:
+            race_date = date.fromisoformat(str(race_key[1]))
+        except ValueError as exc:
+            raise ValueError(f"invalid race date: {race_key[1]}") from exc
+        matrix[row_index, MONTH_OFFSET + race_date.month - 1] = 1.0
+        matrix[row_index, WEEKDAY_OFFSET + race_date.weekday()] = 1.0
     return matrix
 
 
@@ -395,9 +448,12 @@ def fit_conditional_payout_statistics(
         raise ValueError("conditional payout target cross-product has an invalid shape")
     penalty = np.eye(FEATURE_COUNT, dtype=np.float64) * float(ridge)
     penalty[0, 0] = 0.0
-    weights = np.linalg.solve(
-        np.asarray(statistics.gram, dtype=np.float64) + penalty,
+    system = np.asarray(statistics.gram, dtype=np.float64) + penalty
+    factor = cho_factor(system, lower=True, check_finite=False)
+    weights = cho_solve(
+        factor,
         np.asarray(statistics.target_cross, dtype=np.float64),
+        check_finite=False,
     )
     residual_sum_squares = float(
         statistics.target_square_sum
