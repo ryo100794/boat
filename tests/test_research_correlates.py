@@ -9,6 +9,7 @@ from boatrace_ai.bankroll_optimizer import _validated_pretrained_bundle
 from boatrace_ai.base_features import is_home_branch, race_relative_features
 from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
 from boatrace_ai.contextual_features import RollingState
+from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.feature_tuning import build_race_features
 from boatrace_ai.standard_evaluation import race_set_sha256
 
@@ -154,6 +155,7 @@ def test_pretrained_bankroll_model_validates_training_universe() -> None:
             "train_races": 2,
             "train_race_set_sha256": race_set_sha256(train_races),
             "drop_feature_groups": ["research_correlates"],
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
         },
     }
     assert _validated_pretrained_bundle(
@@ -161,6 +163,17 @@ def test_pretrained_bankroll_model_validates_training_universe() -> None:
         train_races=train_races,
         drop_feature_groups=("research_correlates",),
     ) is bundle
+
+    stale = {
+        **bundle,
+        "metadata": {**bundle["metadata"], "feature_schema_version": "stale"},
+    }
+    with pytest.raises(ValueError, match="feature schema mismatch"):
+        _validated_pretrained_bundle(
+            stale,
+            train_races=train_races,
+            drop_feature_groups=("research_correlates",),
+        )
 
     with pytest.raises(ValueError, match="race set mismatch"):
         _validated_pretrained_bundle(

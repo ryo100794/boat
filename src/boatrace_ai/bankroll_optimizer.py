@@ -22,6 +22,7 @@ from .bankroll_backtest import (
     _load_trifecta_payouts,
 )
 from .db import connection, init_db
+from .feature_schema import FEATURE_SCHEMA_VERSION
 from .features import (
     MODEL_DECISION_LEAD_MINUTES,
     latest_trifecta_odds_before_deadline,
@@ -73,6 +74,14 @@ def adaptive_bankroll_streaming(
     if model_input_path is not None and folds != 1:
         raise ValueError("model_input_path requires folds=1")
     pretrained_bundle = joblib.load(model_input_path) if model_input_path else None
+    feature_schema_version = FEATURE_SCHEMA_VERSION
+    if pretrained_bundle is not None:
+        metadata = pretrained_bundle.get("metadata") or {}
+        feature_schema_version = str(
+            metadata.get("feature_schema_version")
+            or pretrained_bundle.get("feature_schema_version")
+            or ""
+        )
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
         fractional_kelly=fractional_kelly,
@@ -284,6 +293,7 @@ def adaptive_bankroll_streaming(
             "payout_prior_weight": payout_prior_weight,
             "allocation": "stake is proportional to positive Kelly edge; normalized-kelly can scale ranked positive edges up to min_daily_exposure_fraction before daily/race/ticket caps; each ticket stake is floored to stake_granularity_yen and tickets below min_stake_yen are skipped",
             "feature_set": FEATURE_SET,
+            "feature_schema_version": feature_schema_version,
             "drop_feature_groups": list(drop_feature_groups),
             "model": (
                 "win_model_pastlog_v7_stream_hash"
@@ -361,6 +371,7 @@ def _summarize(
         "worst_days": sorted(daily_rows, key=lambda row: row["profit_yen"])[:10],
         "ticket_roi_attribution": ticket_roi_attribution,
         "feature_set": FEATURE_SET,
+        "feature_schema_version": policy.get("feature_schema_version"),
         "model": str(policy.get("model") or "win_model_pastlog_v9_research"),
     }
 
@@ -372,6 +383,16 @@ def _validated_pretrained_bundle(
     drop_feature_groups: tuple[str, ...],
 ) -> dict[str, Any]:
     metadata = bundle.get("metadata") or {}
+    schema_version = str(
+        metadata.get("feature_schema_version")
+        or bundle.get("feature_schema_version")
+        or ""
+    )
+    if schema_version != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "pretrained model feature schema mismatch: "
+            f"expected {FEATURE_SCHEMA_VERSION}, got {schema_version or 'missing'}"
+        )
     expected_hash = race_set_sha256(train_races)
     if int(metadata.get("train_races") or -1) != len(train_races):
         raise ValueError("pretrained model training race count mismatch")
