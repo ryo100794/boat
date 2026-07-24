@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from .db import connection, init_db
+from .feature_schema import FEATURE_SCHEMA_VERSION
 
 
 PROTOCOL_ID = "standard_365d_v2"
@@ -56,6 +57,7 @@ class ModelSource:
     bankroll_file: str
     prediction_section: str | None = None
     role: str = "candidate"
+    requires_current_feature_schema: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,37 +75,57 @@ MODEL_SOURCES = (
         "no_odds_v8_bankroll.json",
         role="incumbent",
     ),
-    ModelSource("pastlog_v7", "pastlog_v7_prediction.json", "pastlog_v7_bankroll.json"),
+    ModelSource(
+        "pastlog_v7",
+        "pastlog_v7_prediction.json",
+        "pastlog_v7_bankroll.json",
+        requires_current_feature_schema=True,
+    ),
     ModelSource(
         "pastlog_v9_research",
         "pastlog_v9_research_prediction.json",
         "pastlog_v9_research_bankroll.json",
+        requires_current_feature_schema=True,
     ),
-    ModelSource("calibrated_linear", "calibrated_linear.json", "calibrated_linear.json"),
-    ModelSource("calibrated_mlp", "calibrated_mlp.json", "calibrated_mlp.json"),
+    ModelSource(
+        "calibrated_linear",
+        "calibrated_linear.json",
+        "calibrated_linear.json",
+        requires_current_feature_schema=True,
+    ),
+    ModelSource(
+        "calibrated_mlp",
+        "calibrated_mlp.json",
+        "calibrated_mlp.json",
+        requires_current_feature_schema=True,
+    ),
     ModelSource(
         "listwise_feature_teacher",
         "listwise_feature_teacher.json",
         "listwise_feature_teacher.json",
         "holdout",
+        requires_current_feature_schema=True,
     ),
     ModelSource(
         "listwise_newton",
         "listwise_newton.json",
         "listwise_newton.json",
         "holdout_after_newton",
+        requires_current_feature_schema=True,
     ),
     ModelSource(
         "listwise_combined_feature_teacher",
         "listwise_combined_feature_teacher.json",
         "listwise_combined_feature_teacher.json",
         "holdout",
+        requires_current_feature_schema=True,
     ),
     ModelSource(
         "listwise_combined_newton",
         "listwise_combined_newton.json",
         "listwise_combined_newton.json",
         "holdout_after_newton",
+        requires_current_feature_schema=True,
     ),
 )
 
@@ -304,6 +326,20 @@ def consolidate_model(
         for key, expected in POLICY.items()
         if not _same_value(normalized_policy.get(key), expected)
     ]
+    prediction_schema = (
+        prediction_metrics.get("feature_schema_version")
+        or prediction.get("feature_schema_version")
+    )
+    bankroll_schema = (
+        nested_bankroll.get("feature_schema_version")
+        or bankroll.get("feature_schema_version")
+    )
+    schema_mismatches = []
+    if source.requires_current_feature_schema:
+        if prediction_schema != FEATURE_SCHEMA_VERSION:
+            schema_mismatches.append("prediction")
+        if bankroll_schema != FEATURE_SCHEMA_VERSION:
+            schema_mismatches.append("bankroll")
     daily_dates = sorted({str(row.get("race_date")) for row in daily if row.get("race_date")})
     prediction_hash = _race_hash(prediction_metrics, prediction)
     bankroll_hash = _race_hash(nested_bankroll, bankroll)
@@ -321,6 +357,14 @@ def consolidate_model(
         "daily_start": daily_dates[0] if daily_dates else None,
         "daily_end": daily_dates[-1] if daily_dates else None,
         "policy_mismatches": policy_mismatches,
+        "required_feature_schema_version": (
+            FEATURE_SCHEMA_VERSION
+            if source.requires_current_feature_schema
+            else None
+        ),
+        "prediction_feature_schema_version": prediction_schema,
+        "bankroll_feature_schema_version": bankroll_schema,
+        "feature_schema_mismatches": schema_mismatches,
     }
     validation["passed"] = all(
         (
@@ -332,6 +376,7 @@ def consolidate_model(
             validation["daily_start"] == protocol["holdout_start"],
             validation["daily_end"] == protocol["holdout_end"],
             not policy_mismatches,
+            not schema_mismatches,
         )
     )
     bank = _bankroll_metrics(bankroll, nested_bankroll, aggregate)
@@ -344,6 +389,7 @@ def consolidate_model(
         "model": prediction.get("model") or bankroll.get("model") or source.model_id,
         "role": source.role,
         "feature_set": prediction.get("feature_set") or bankroll.get("feature_set"),
+        "feature_schema_version": prediction_schema or bankroll_schema,
         "include_odds": False,
         "protocol": protocol,
         "policy": dict(POLICY),

@@ -224,6 +224,7 @@ def backtest_streaming(
                     "metadata": {
                         "trained_at": _now(),
                         "feature_set": FEATURE_SET,
+                        "feature_schema_version": FEATURE_SCHEMA_VERSION,
                         "drop_feature_groups": list(drop_feature_groups),
                         "train_races": len(train_races),
                         "train_race_set_sha256": race_set_sha256(train_races),
@@ -271,6 +272,7 @@ def backtest_streaming(
         "races": len(races),
         "include_odds": False,
         "feature_set": FEATURE_SET,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "drop_feature_groups": list(drop_feature_groups),
         "evaluation_race_set_sha256": race_set_sha256(race_predictions),
         "entry_log_loss": safe_log_loss(all_labels, all_probs),
@@ -376,6 +378,7 @@ def bankroll_streaming(
             "payout_prior_weight": payout_prior_weight,
             "allocation": "each day, rank positive-EV tickets by estimated EV; buy within daily budget and split stake in 100-yen units",
             "feature_set": FEATURE_SET,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "drop_feature_groups": list(drop_feature_groups),
             "model": "win_model_pastlog_v9_research",
         },
@@ -385,6 +388,7 @@ def bankroll_streaming(
         "evaluated_races": len(evaluated_races),
         "candidate_tickets": len(candidates),
         "feature_set": FEATURE_SET,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "drop_feature_groups": list(drop_feature_groups),
         "model": "win_model_pastlog_v9_research",
         **allocated,
@@ -468,7 +472,12 @@ def train_bundle(
             first = _partial_fit(classifier, hasher, batch_x, batch_y, batch_weight, first=first)
     if first:
         raise ValueError("no training examples in fold")
-    return {"hasher": hasher, "classifier": classifier, "drop_feature_groups": list(drop_feature_groups)}
+    return {
+        "hasher": hasher,
+        "classifier": classifier,
+        "drop_feature_groups": list(drop_feature_groups),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+    }
 
 
 def _partial_fit(

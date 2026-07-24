@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.standard_evaluation import (
     MODEL_SOURCES,
     POLICY,
@@ -136,6 +137,57 @@ def test_consolidated_model_requires_one_protocol() -> None:
     assert result["bankroll_evaluated_races"] == 2
     assert result["roi"] == 1.25
     assert result["tickets"] == 4
+
+
+def test_schema_dependent_source_rejects_stale_artifacts() -> None:
+    source = ModelSource(
+        "candidate",
+        "prediction.json",
+        "bankroll.json",
+        requires_current_feature_schema=True,
+    )
+    stale = consolidate_model(
+        protocol=protocol(),
+        source=source,
+        prediction=prediction(),
+        bankroll=bankroll(),
+    )
+    assert stale["validation"]["passed"] is False
+    assert stale["validation"]["feature_schema_mismatches"] == [
+        "prediction",
+        "bankroll",
+    ]
+
+    current_prediction = {
+        **prediction(),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+    }
+    current_bankroll = {
+        **bankroll(),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+    }
+    current = consolidate_model(
+        protocol=protocol(),
+        source=source,
+        prediction=current_prediction,
+        bankroll=current_bankroll,
+    )
+    assert current["validation"]["passed"] is True
+    assert current["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+
+
+def test_all_feature_based_standard_sources_require_current_schema() -> None:
+    requirements = {
+        source.model_id: source.requires_current_feature_schema
+        for source in MODEL_SOURCES
+    }
+
+    assert requirements["no_odds_v8"] is False
+    assert all(
+        required
+        for model_id, required in requirements.items()
+        if model_id != "no_odds_v8"
+    )
 
 
 def test_policy_mismatch_blocks_comparison() -> None:

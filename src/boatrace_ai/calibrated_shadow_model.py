@@ -522,6 +522,7 @@ def backtest_model(
         "model_kind": model_kind,
         "role": "shadow",
         "feature_set": FEATURE_SET,
+        "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(drop_feature_groups),
         "include_odds": False,
         "scaler": "StandardScaler(with_mean=False, cached CSR partial_fit)",
