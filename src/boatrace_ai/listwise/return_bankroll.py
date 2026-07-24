@@ -20,7 +20,9 @@ from .direct_bankroll import (
     standard_direct_policy,
 )
 from .return_calibrator import (
+    calibrate_combination_returns,
     expected_return_poisson_loss,
+    fit_combination_return_calibrator,
     fit_expected_return_calibrator,
     predict_expected_returns,
 )
@@ -340,13 +342,30 @@ def simulate_expected_return_calibrated_bankroll(
             max_iterations=max_iterations,
             batch_races=batch_races,
         )
-        selection_returns = predict_expected_returns(
+        selection_fit_returns = predict_expected_returns(
             selection_calibrator,
-            calibration_values[split:],
-            calibration_market_values[split:],
-            calibration_race_keys[split:],
+            calibration_values[:split],
+            calibration_market_values[:split],
+            calibration_race_keys[:split],
             COMBINATION_LANES,
             batch_races=batch_races,
+        )
+        selection_combination_calibrator = fit_combination_return_calibrator(
+            selection_fit_returns,
+            calibration_race_keys[:split],
+            payouts,
+            COMBINATION_INDEX,
+        )
+        selection_returns = calibrate_combination_returns(
+            selection_combination_calibrator,
+            predict_expected_returns(
+                selection_calibrator,
+                calibration_values[split:],
+                calibration_market_values[split:],
+                calibration_race_keys[split:],
+                COMBINATION_LANES,
+                batch_races=batch_races,
+            ),
         )
         policy_diagnostics = _adaptive_threshold_diagnostics(
             calibration_values[split:],
@@ -385,20 +404,38 @@ def simulate_expected_return_calibrated_bankroll(
         max_iterations=max_iterations,
         batch_races=batch_races,
     )
-    expected_returns = predict_expected_returns(
+    calibration_returns = predict_expected_returns(
         calibrator,
-        values,
-        market_values,
-        race_keys,
+        calibration_values,
+        calibration_market_values,
+        calibration_race_keys,
         COMBINATION_LANES,
         batch_races=batch_races,
+    )
+    combination_calibrator = fit_combination_return_calibrator(
+        calibration_returns,
+        calibration_race_keys,
+        payouts,
+        COMBINATION_INDEX,
+    )
+    expected_returns = calibrate_combination_returns(
+        combination_calibrator,
+        predict_expected_returns(
+            calibrator,
+            values,
+            market_values,
+            race_keys,
+            COMBINATION_LANES,
+            batch_races=batch_races,
+        ),
     )
     selected_policy = base_policy
     selected_policy["ev_threshold"] = float(selected_threshold)
     selected_policy.update(
         {
             "payout_estimator": (
-                "pre-evaluation all-ticket expected-return Poisson calibration"
+                "pre-evaluation Poisson expected-return plus conservative "
+                "combination calibration"
             ),
             "market_reference": "fixed baseline probability",
             "expected_return_regularization": float(selected_regularization),
@@ -495,6 +532,19 @@ def simulate_expected_return_calibrated_bankroll(
         "objective": float(calibrator.objective),
         "gradient_norm": float(calibrator.gradient_norm),
         "max_expected_return": float(max_expected_return),
+        "combination_calibration": {
+            "method": "daily-bootstrap one-sided 95% lower bound",
+            "training_races": int(combination_calibrator.training_races),
+            "training_days": int(combination_calibrator.training_days),
+            "bootstrap_samples": int(combination_calibrator.bootstrap_samples),
+            "factor_min": float(combination_calibrator.factors.min()),
+            "factor_median": float(np.median(combination_calibrator.factors)),
+            "factor_max": float(combination_calibrator.factors.max()),
+            "factors": {
+                combination: float(combination_calibrator.factors[index])
+                for index, combination in enumerate(COMBINATION_LABELS)
+            },
+        },
     }
     result["policy_selection"] = {
         "source": selection_source,

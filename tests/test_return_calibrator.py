@@ -13,8 +13,10 @@ from boatrace_ai.listwise.return_bankroll import (
 
 from boatrace_ai.listwise.return_calibrator import (
     FEATURE_COUNT,
+    calibrate_combination_returns,
     expected_return_features,
     expected_return_poisson_loss,
+    fit_combination_return_calibrator,
     fit_expected_return_calibrator,
     predict_expected_returns,
 )
@@ -45,6 +47,59 @@ def test_expected_return_features_encode_candidate_market_edge() -> None:
     assert matrix[0, 45] == 1.0
     assert matrix[0, 56] > 0.0
     assert matrix[1, 56] < 0.0
+
+
+def test_combination_calibration_uses_conservative_daily_lower_bound() -> None:
+    race_keys = [
+        (f"r-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 21)
+    ]
+    predicted = np.full((20, 2), 0.5, dtype=np.float64)
+    payouts = {
+        race_key[0]: {"combination": "1-2-3", "payout_yen": 200}
+        for race_key in race_keys
+    }
+
+    calibrator = fit_combination_return_calibrator(
+        predicted,
+        race_keys,
+        payouts,
+        COMBINATION_INDEX,
+        samples=500,
+        seed=7,
+    )
+    adjusted = calibrate_combination_returns(calibrator, predicted[:1])
+
+    assert calibrator.training_races == 20
+    assert calibrator.training_days == 20
+    assert calibrator.bootstrap_samples == 500
+    assert calibrator.factors.tolist() == [2.0, 0.25]
+    assert adjusted.tolist() == [[1.0, 0.125]]
+
+
+def test_combination_calibration_is_deterministic_and_ignores_future_rows() -> None:
+    race_keys = [
+        (f"r-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 11)
+    ]
+    predicted = np.full((10, 2), 0.8, dtype=np.float64)
+    payouts = {
+        race_key[0]: {
+            "combination": COMBINATIONS[day % 2],
+            "payout_yen": 300,
+        }
+        for day, race_key in enumerate(race_keys)
+    }
+    first = fit_combination_return_calibrator(
+        predicted, race_keys, payouts, COMBINATION_INDEX, samples=500, seed=11
+    )
+    payouts["future"] = {"combination": "1-2-3", "payout_yen": 999_900}
+    second = fit_combination_return_calibrator(
+        predicted, race_keys, payouts, COMBINATION_INDEX, samples=500, seed=11
+    )
+
+    np.testing.assert_array_equal(first.factors, second.factors)
+    np.testing.assert_array_equal(first.lower_bounds, second.lower_bounds)
 
 
 def test_poisson_validation_loss_prefers_calibrated_returns() -> None:
@@ -199,3 +254,7 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     assert result["policy_selection"]["source"] == "fallback_fixed_threshold"
     assert result["return_calibrator"]["iterations"] <= 30
     assert np.isfinite(result["return_calibrator"]["gradient_norm"])
+    combination = result["return_calibrator"]["combination_calibration"]
+    assert combination["training_races"] == 200
+    assert combination["training_days"] == 1
+    assert set(combination["factors"]) == set(ALL_COMBINATIONS)

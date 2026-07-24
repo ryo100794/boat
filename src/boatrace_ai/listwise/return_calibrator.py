@@ -9,6 +9,9 @@ import numpy as np
 FEATURE_COUNT = 58
 MIN_EXPECTED_RETURN = 1e-4
 MAX_EXPECTED_RETURN = 20.0
+COMBINATION_BOOTSTRAP_SAMPLES = 2_000
+COMBINATION_FACTOR_FLOOR = 0.25
+COMBINATION_FACTOR_CAP = 2.0
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,121 @@ class ExpectedReturnCalibrator:
     converged: bool
     objective: float
     gradient_norm: float
+
+
+@dataclass(frozen=True)
+class CombinationReturnCalibrator:
+    factors: np.ndarray
+    point_ratios: np.ndarray
+    lower_bounds: np.ndarray
+    training_races: int
+    training_days: int
+    bootstrap_samples: int
+
+
+def fit_combination_return_calibrator(
+    predicted_returns: np.ndarray,
+    race_keys: Sequence[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    combination_index: dict[str, int],
+    *,
+    samples: int = COMBINATION_BOOTSTRAP_SAMPLES,
+    seed: int = 20260729,
+    chunk_size: int = 100,
+) -> CombinationReturnCalibrator:
+    predicted = np.asarray(predicted_returns, dtype=np.float64)
+    if predicted.ndim != 2 or predicted.shape[0] != len(race_keys):
+        raise ValueError("predicted returns and race keys must align")
+    if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
+        raise ValueError("predicted returns must be finite and positive")
+    if samples < 100:
+        raise ValueError("combination bootstrap samples must be at least 100")
+    if set(combination_index.values()) != set(range(predicted.shape[1])):
+        raise ValueError("combination index must cover every predicted column")
+
+    valid = []
+    for row_index, race_key in enumerate(race_keys):
+        actual = payouts.get(str(race_key[0]))
+        if actual is None:
+            continue
+        combination = combination_index.get(str(actual.get("combination")))
+        payout_yen = actual.get("payout_yen")
+        if combination is None or isinstance(payout_yen, bool):
+            continue
+        try:
+            payout_odds = float(payout_yen) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(payout_odds) or payout_odds < 0.0:
+            continue
+        valid.append((row_index, str(race_key[1]), combination, payout_odds))
+    if not valid:
+        raise ValueError("combination calibration requires complete payouts")
+
+    dates = sorted({row[1] for row in valid})
+    date_index = {date: index for index, date in enumerate(dates)}
+    daily_expected = np.zeros((len(dates), predicted.shape[1]), dtype=np.float64)
+    daily_observed = np.zeros_like(daily_expected)
+    for row_index, race_date, combination, payout_odds in valid:
+        day = date_index[race_date]
+        daily_expected[day] += predicted[row_index]
+        daily_observed[day, combination] += payout_odds
+
+    expected_total = daily_expected.sum(axis=0)
+    observed_total = daily_observed.sum(axis=0)
+    point_ratios = np.divide(
+        observed_total,
+        expected_total,
+        out=np.zeros_like(observed_total),
+        where=expected_total > 0.0,
+    )
+    bootstrap_ratios = np.zeros((samples, predicted.shape[1]), dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    step = max(1, int(chunk_size))
+    for start in range(0, samples, step):
+        stop = min(samples, start + step)
+        indices = rng.integers(0, len(dates), size=(stop - start, len(dates)))
+        sampled_observed = daily_observed[indices].sum(axis=1)
+        sampled_expected = daily_expected[indices].sum(axis=1)
+        bootstrap_ratios[start:stop] = np.divide(
+            sampled_observed,
+            sampled_expected,
+            out=np.zeros_like(sampled_observed),
+            where=sampled_expected > 0.0,
+        )
+    lower_bounds = np.quantile(bootstrap_ratios, 0.05, axis=0)
+    factors = np.clip(
+        np.minimum(point_ratios, lower_bounds),
+        COMBINATION_FACTOR_FLOOR,
+        COMBINATION_FACTOR_CAP,
+    )
+    return CombinationReturnCalibrator(
+        factors=np.asarray(factors, dtype=np.float64),
+        point_ratios=np.asarray(point_ratios, dtype=np.float64),
+        lower_bounds=np.asarray(lower_bounds, dtype=np.float64),
+        training_races=len(valid),
+        training_days=len(dates),
+        bootstrap_samples=int(samples),
+    )
+
+
+def calibrate_combination_returns(
+    calibrator: CombinationReturnCalibrator,
+    predicted_returns: np.ndarray,
+) -> np.ndarray:
+    predicted = np.asarray(predicted_returns, dtype=np.float64)
+    factors = np.asarray(calibrator.factors, dtype=np.float64)
+    if predicted.ndim != 2 or predicted.shape[1] != len(factors):
+        raise ValueError("predicted returns and combination factors must align")
+    if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
+        raise ValueError("predicted returns must be finite and positive")
+    if not np.all(np.isfinite(factors)) or np.any(factors <= 0.0):
+        raise ValueError("combination factors must be finite and positive")
+    return np.clip(
+        predicted * factors[None, :],
+        MIN_EXPECTED_RETURN,
+        MAX_EXPECTED_RETURN,
+    )
 
 
 def expected_return_features(
