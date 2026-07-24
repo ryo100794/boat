@@ -29,6 +29,7 @@ from .calibrated_shadow_model import (
 from .db import connection
 from .hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
 from .fast_math import plackett_luce_probabilities
+from .feature_tuning import normalize_drop_feature_groups
 from .listwise.conditional_order import (
     DEFAULT_REGULARIZATIONS,
     ConditionalOrderModel,
@@ -75,6 +76,16 @@ def parse_evaluation_date(value: str) -> date:
     if parsed.isoformat() != value:
         raise argparse.ArgumentTypeError("evaluation date must use YYYY-MM-DD")
     return parsed
+
+
+def parse_drop_feature_groups(value: str) -> tuple[str, ...]:
+    try:
+        groups = normalize_drop_feature_groups(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not groups:
+        raise argparse.ArgumentTypeError("at least one feature group must be dropped")
+    return groups
 
 
 def parse_half_lives(value: str) -> tuple[float | None, ...]:
@@ -745,12 +756,18 @@ def evaluate_recency_mlp(
     batch_size: int = BATCH_SIZE,
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
+    drop_feature_groups: Sequence[str] = DROP_FEATURE_GROUPS,
     model_output_path: Path | None = None,
     deployment_model_output_path: Path | None = None,
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    resolved_drop_feature_groups = normalize_drop_feature_groups(
+        drop_feature_groups
+    )
+    if not resolved_drop_feature_groups:
+        raise ValueError("at least one feature group must be dropped")
     with frozen_evaluation_max_date(evaluation_date):
         protocol = build_protocol(
             conn,
@@ -783,12 +800,12 @@ def evaluate_recency_mlp(
             race_rows=lambda: iter_race_feature_rows(
                 conn,
                 include_races={str(row[0]) for row in race_keys},
-                drop_feature_groups=DROP_FEATURE_GROUPS,
+                drop_feature_groups=resolved_drop_feature_groups,
             ),
             hasher=hasher,
             to_hashable=to_hashable,
             ensure_sparse_index32=_ensure_sparse_index32,
-            drop_feature_groups=DROP_FEATURE_GROUPS,
+            drop_feature_groups=resolved_drop_feature_groups,
             batch_size=batch_size,
         )
         validate_dataset_races(
@@ -909,7 +926,7 @@ def evaluate_recency_mlp(
         "role": "shadow",
         "feature_set": FEATURE_SET,
         "feature_schema_version": dataset.feature_schema_version,
-        "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+        "drop_feature_groups": list(resolved_drop_feature_groups),
         "include_odds": False,
         "performance_eligible": bool(performance_gate["pass"]),
         "promotion_eligible": False,
@@ -962,7 +979,7 @@ def evaluate_recency_mlp(
             "hasher": hasher,
             "conditional_order_model": conditional_order_model,
             "feature_schema_version": dataset.feature_schema_version,
-            "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+            "drop_feature_groups": list(resolved_drop_feature_groups),
             "trained_through": trained_through,
             "training_races": training_count,
             "training_race_set_sha256": training_hash,
@@ -972,7 +989,7 @@ def evaluate_recency_mlp(
                 "role": "shadow",
                 "feature_set": FEATURE_SET,
                 "feature_schema_version": dataset.feature_schema_version,
-                "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+                "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(trained_through),
                 "training_races": training_count,
                 "training_race_set_sha256": training_hash,
@@ -1021,7 +1038,7 @@ def evaluate_recency_mlp(
             "hasher": hasher,
             "conditional_order_model": deployment_order_model,
             "feature_schema_version": dataset.feature_schema_version,
-            "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+            "drop_feature_groups": list(resolved_drop_feature_groups),
             "trained_through": deployment_trained_through,
             "training_races": dataset.race_count,
             "training_race_set_sha256": deployment_training_hash,
@@ -1031,7 +1048,7 @@ def evaluate_recency_mlp(
                 "role": "production_candidate",
                 "feature_set": FEATURE_SET,
                 "feature_schema_version": dataset.feature_schema_version,
-                "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+                "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(deployment_trained_through),
                 "training_races": dataset.race_count,
                 "training_race_set_sha256": deployment_training_hash,
@@ -1091,6 +1108,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--feature-cache", type=Path, default=DEFAULT_FEATURE_CACHE)
     parser.add_argument(
+        "--drop-feature-groups",
+        type=parse_drop_feature_groups,
+        default=DROP_FEATURE_GROUPS,
+    )
+    parser.add_argument(
         "--half-lives",
         type=parse_half_lives,
         default=DEFAULT_HALF_LIVES,
@@ -1110,6 +1132,7 @@ def main(argv: list[str] | None = None) -> int:
             feature_cache=args.feature_cache,
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
+            drop_feature_groups=args.drop_feature_groups,
             model_output_path=args.model_output,
             deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,

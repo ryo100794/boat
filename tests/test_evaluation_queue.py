@@ -639,12 +639,33 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         "2026-07-22",
         "--feature-cache",
         str(root / "data/models/calibrated_shadow_features_16384"),
+        "--drop-feature-groups",
+        "research_correlates",
         "--half-lives",
         "none,180,365",
         "--calibration-days",
         "120",
     ]
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+    base_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "drop_feature_groups": "base_pastlog,base_pastlog",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    cache_index = base_command.index("--feature-cache") + 1
+    groups_index = base_command.index("--drop-feature-groups") + 1
+    assert base_command[cache_index].endswith(
+        "calibrated_shadow_features_16384__drop_base_pastlog"
+    )
+    assert base_command[groups_index] == "base_pastlog"
 
     default_command, _ = build_command(
         _job("calibrated_mlp_recency_search", {"evaluation_date": "2026-07-22"}),
@@ -671,6 +692,7 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         ({"evaluation_date": "2026-07-22", "timeout_seconds": 299}, "timeout_seconds"),
         ({"evaluation_date": "2026-07-22", "command": "rm -rf /"}, "unsupported"),
         ({"evaluation_date": "2026-07-22", "feature_cache": "/tmp/cache"}, "unsupported"),
+        ({"evaluation_date": "2026-07-22", "drop_feature_groups": "future"}, "unknown"),
     ],
 )
 def test_calibrated_mlp_recency_search_rejects_invalid_parameters(

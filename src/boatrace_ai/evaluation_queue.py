@@ -669,6 +669,27 @@ def _date(params: dict[str, Any], key: str) -> str:
     return value
 
 
+def _drop_feature_groups(params: dict[str, Any]) -> str:
+    raw = params.get("drop_feature_groups", "research_correlates")
+    if not isinstance(raw, str):
+        raise ValueError("drop_feature_groups must be a comma-separated string")
+    allowed = (
+        "base_pastlog",
+        "research_correlates",
+        "series_cached",
+        "series_relative",
+        "rolling_history",
+    )
+    requested = {value.strip() for value in raw.split(",") if value.strip()}
+    unknown = sorted(requested.difference(allowed))
+    if unknown:
+        raise ValueError("unknown drop_feature_groups: " + ", ".join(unknown))
+    selected = [value for value in allowed if value in requested]
+    if not selected:
+        raise ValueError("drop_feature_groups must contain at least one group")
+    return ",".join(selected)
+
+
 def _half_lives(params: dict[str, Any]) -> str:
     raw = params.get("half_lives", "none,180,365,730")
     if not isinstance(raw, str):
@@ -865,6 +886,7 @@ def build_command(
     if task_type == "calibrated_mlp_recency_search":
         unsupported = set(params) - {
             "evaluation_date", "timeout_seconds", "half_lives", "calibration_days",
+            "drop_feature_groups",
         }
         if unsupported:
             raise ValueError(
@@ -877,8 +899,17 @@ def build_command(
         _integer(params, "timeout_seconds", 28800, 300, 86400)
         half_lives = _half_lives(params)
         calibration_days = _integer(params, "calibration_days", 180, 30, 730)
+        drop_feature_groups = _drop_feature_groups(params)
+        cache_suffix = (
+            ""
+            if drop_feature_groups == "research_correlates"
+            else "__drop_" + drop_feature_groups.replace(",", "_")
+        )
         feature_cache = (
-            app_root / "data" / "models" / "calibrated_shadow_features_16384"
+            app_root
+            / "data"
+            / "models"
+            / ("calibrated_shadow_features_16384" + cache_suffix)
         )
         return [
             str(python), "-m", "boatrace_ai.recency_mlp_evaluation",
@@ -896,6 +927,7 @@ def build_command(
             ),
             "--evaluation-date", evaluation_date,
             "--feature-cache", str(feature_cache),
+            "--drop-feature-groups", drop_feature_groups,
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
         ], output

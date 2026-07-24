@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import date
 import os
 from pathlib import Path
@@ -852,8 +853,17 @@ def test_cli_defaults_match_recency_protocol() -> None:
     )
 
     assert args.feature_cache == recency.DEFAULT_FEATURE_CACHE
+    assert args.drop_feature_groups == ("research_correlates",)
     assert args.model_output is None
     assert args.incumbent_prediction is None
     assert args.incumbent_bankroll is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180
+
+
+def test_cli_validates_drop_feature_groups() -> None:
+    assert recency.parse_drop_feature_groups(
+        "base_pastlog,base_pastlog"
+    ) == ("base_pastlog",)
+    with pytest.raises(argparse.ArgumentTypeError, match="unknown feature"):
+        recency.parse_drop_feature_groups("future")
