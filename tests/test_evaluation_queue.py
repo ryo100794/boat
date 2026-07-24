@@ -705,6 +705,11 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
 
     assert len(inserted) == 12
+    standardized = [
+        row for row in calls if row["task_type"] == "standardized_365d"
+    ]
+    assert standardized[0]["parameters"]["timeout_seconds"] == 86400
+    assert standardized[0]["max_attempts"] == 3
     assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
     assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
     combined = [row for row in calls if row["task_type"] == "combined_feature_search"]
@@ -1012,6 +1017,16 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed_again is not None
     assert claimed_again["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200, 43200]
+
+
+def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:
+    parameters = evaluation_queue._timeout_retry_parameters(
+        {"timeout_seconds": 86400},
+        task_type="standardized_365d",
+        previous_error="TimeoutExpired: command timed out after 21600 seconds",
+    )
+
+    assert parameters["timeout_seconds"] == 86400
 
 
 def test_dependency_defer_preserves_job_1069_remaining_attempt() -> None:

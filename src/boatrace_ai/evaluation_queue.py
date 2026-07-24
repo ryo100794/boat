@@ -371,11 +371,17 @@ def _timeout_retry_parameters(
         r"timed out after ([0-9]+(?:\.[0-9]+)?) seconds",
         previous_error,
     )
-    if timeout_match is not None:
-        current = float(timeout_match.group(1))
     if isinstance(current, bool) or not isinstance(current, (int, float)):
         return updated
-    updated["timeout_seconds"] = min(86400, max(300, int(current)) * 2)
+    observed = (
+        float(timeout_match.group(1))
+        if timeout_match is not None
+        else float(current)
+    )
+    updated["timeout_seconds"] = min(
+        86400,
+        max(300, int(current), int(observed) * 2),
+    )
     return updated
 
 
@@ -1573,9 +1579,9 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
     add(
         task_type="standardized_365d",
         model_key="all_registered_models",
-        parameters={"evaluation_date": evaluation_date, "timeout_seconds": 28800},
+        parameters={"evaluation_date": evaluation_date, "timeout_seconds": 86400},
         priority=100,
-        max_attempts=2,
+        max_attempts=3,
     )
     for clip in (0.5, 1.0, 2.0, 3.0, 4.0, 6.0):
         add(

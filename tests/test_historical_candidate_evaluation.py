@@ -465,5 +465,5 @@ def test_default_seed_keeps_historical_task_opt_in(
     )
     assert standardized["parameters"] == {
         "evaluation_date": "2026-07-22",
-        "timeout_seconds": 28_800,
+        "timeout_seconds": 86_400,
     }
