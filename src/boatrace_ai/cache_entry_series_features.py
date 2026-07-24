@@ -69,7 +69,13 @@ def ensure_series_cache_table(conn) -> None:
 
 def populate_series_cache(conn, *, batch_size: int = 5000, limit: int | None = None) -> dict[str, Any]:
     ensure_series_cache_table(conn)
-    params: list[Any] = []
+    is_postgresql = getattr(conn, "dialect", None) == "postgresql"
+    source_filter = (
+        "jsonb_extract_path(CAST(e.raw_json AS jsonb), 'series_results') IS NOT NULL"
+        if is_postgresql
+        else "e.raw_json LIKE ?"
+    )
+    params: list[Any] = [] if is_postgresql else ["%series_results%"]
     limit_sql = ""
     if limit is not None:
         limit_sql = "LIMIT ?"
@@ -79,7 +85,7 @@ def populate_series_cache(conn, *, batch_size: int = 5000, limit: int | None = N
         SELECT r.rno, e.race_id, e.lane, e.raw_json
         FROM entries e
         JOIN races r ON r.race_id = e.race_id
-        WHERE e.raw_json LIKE '%series_results%'
+        WHERE {source_filter}
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC, e.lane
         {limit_sql}
         """,
