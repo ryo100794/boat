@@ -17,6 +17,7 @@ from sklearn.feature_extraction import FeatureHasher
 
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
+from ..feature_schema import FEATURE_SCHEMA_VERSION
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
@@ -479,6 +480,12 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(baseline_model, ListwiseLinearModel):
         raise ValueError("baseline artifact does not contain a ListwiseLinearModel")
     manifest = json.loads(Path(f"{args.cache_prefix}.manifest.json").read_text(encoding="utf-8"))
+    artifact_schema = str(baseline_artifact.get("feature_schema_version") or "")
+    manifest_schema = str(manifest.get("feature_schema_version") or "")
+    if artifact_schema != FEATURE_SCHEMA_VERSION or manifest_schema != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "baseline artifact and feature cache must use the current feature schema"
+        )
     last_date = str(manifest["last_race_id"])[:10]
     race_keys = [row for row in load_complete_race_ids(conn) if str(row[1]) <= last_date]
     dropped = tuple(str(value) for value in manifest.get("drop_feature_groups") or ())

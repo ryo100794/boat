@@ -651,6 +651,12 @@ def _selected_standard_cache_prefix(app_root: Path) -> Path:
         raise ValueError(
             "standardized feature artifact is incomplete or invalid"
         ) from exc
+    artifact_schema = str(payload.get("feature_schema_version") or "")
+    if artifact_schema != FEATURE_SCHEMA_VERSION:
+        raise JobDependencyUnavailable(
+            "standardized feature artifact uses a stale feature schema: "
+            f"{artifact_schema or 'missing'}; current={FEATURE_SCHEMA_VERSION}"
+        )
     if not isinstance(variant, str):
         raise ValueError("standardized feature artifact has an invalid feature variant")
     from .listwise.feature_search import feature_variants
@@ -681,6 +687,18 @@ def _selected_standard_cache_prefix(app_root: Path) -> Path:
     if not manifest.is_file():
         raise ValueError(
             f"selected standardized feature cache manifest is invalid: {manifest}"
+        )
+    try:
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "selected standardized feature cache manifest is invalid"
+        ) from exc
+    manifest_schema = str(manifest_payload.get("feature_schema_version") or "")
+    if manifest_schema != FEATURE_SCHEMA_VERSION:
+        raise JobDependencyUnavailable(
+            "selected standardized feature cache uses a stale feature schema: "
+            f"{manifest_schema or 'missing'}; current={FEATURE_SCHEMA_VERSION}"
         )
     return cache_prefix
 

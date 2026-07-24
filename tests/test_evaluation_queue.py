@@ -29,7 +29,10 @@ from boatrace_ai.evaluation_queue import (
     seed_work_tickets,
     summarize_result,
 )
-from boatrace_ai.feature_schema import MISSING_SAFE_FEATURE_SCHEMA_VERSION
+from boatrace_ai.feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+)
 from boatrace_ai.listwise.conditional_order import (
     build_parser as conditional_parser,
 )
@@ -160,12 +163,14 @@ def _write_standard_feature_artifact(
         "selected": {"feature_variant": variant},
         "selected_cache_dir": str(cache_dir),
         "n_features": n_features,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
     }), encoding="utf-8")
     cache_prefix = cache_dir / f"listwise_search_{n_features}_{variant}"
     if create_manifest:
         cache_dir.mkdir(parents=True, exist_ok=True)
         Path(str(cache_prefix) + ".manifest.json").write_text(
-            "{}", encoding="utf-8"
+            json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
+            encoding="utf-8",
         )
     return cache_prefix
 
@@ -288,6 +293,7 @@ def test_claimed_conditional_payout_fails_on_invalid_standard_artifact(
                 "selected": {"feature_variant": "full"},
                 "selected_cache_dir": str(cache_dir),
                 "n_features": 4096,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
             }
             if case == "incomplete":
                 payload.pop("selected")
@@ -302,10 +308,51 @@ def test_claimed_conditional_payout_fails_on_invalid_standard_artifact(
                 prefix = cache_dir / "listwise_search_4096_full"
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 Path(str(prefix) + ".manifest.json").write_text(
-                    "{}", encoding="utf-8"
+                    json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
+                    encoding="utf-8",
                 )
 
     with pytest.raises(ValueError, match=message):
+        build_command(
+            _job(
+                "conditional_payout_tail",
+                {
+                    "training_through": "2025-07-19",
+                    "evaluation_from": "2025-07-20",
+                    "evaluation_through": "2026-07-19",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
+@pytest.mark.parametrize("stale_part", ["artifact", "manifest"])
+def test_conditional_payout_defers_stale_feature_contract(
+    tmp_path,
+    monkeypatch,
+    stale_part,
+) -> None:
+    root = tmp_path / "boat"
+    cache_dir = tmp_path / "selected-standard-cache"
+    monkeypatch.setattr(
+        evaluation_queue,
+        "STANDARDIZED_SELECTED_CACHE_DIR",
+        cache_dir,
+    )
+    cache_prefix = _write_standard_feature_artifact(root, cache_dir)
+    target = (
+        root
+        / "data/models/standardized_365d_v2/raw/listwise_feature_teacher.json"
+        if stale_part == "artifact"
+        else Path(str(cache_prefix) + ".manifest.json")
+    )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload["feature_schema_version"] = MISSING_SAFE_FEATURE_SCHEMA_VERSION
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobDependencyUnavailable, match="stale feature schema"):
         build_command(
             _job(
                 "conditional_payout_tail",
