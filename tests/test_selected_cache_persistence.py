@@ -106,6 +106,31 @@ def test_persist_selected_cache_recompresses_and_updates_contract(
     )["status"] == "already_persistent"
 
 
+def test_persist_selected_cache_accepts_equivalent_relative_destination(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact_path, source_prefix = _write_source_cache(tmp_path)
+    monkeypatch.setattr(
+        persistence,
+        "TRANSIENT_SELECTED_CACHE_DIR",
+        source_prefix.parent,
+    )
+    destination_dir = tmp_path / "persistent"
+    persistence.persist_selected_cache(artifact_path, destination_dir)
+    monkeypatch.chdir(tmp_path)
+
+    result = persistence.persist_selected_cache(
+        artifact_path,
+        Path("persistent"),
+    )
+
+    assert result["status"] == "already_persistent"
+    assert result["cache_prefix"] == str(
+        destination_dir / source_prefix.name
+    )
+
+
 def test_persist_selected_cache_rejects_unapproved_source(
     tmp_path: Path,
 ) -> None:

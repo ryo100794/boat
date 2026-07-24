@@ -107,7 +107,9 @@ def persist_selected_cache(
     destination_dir: Path,
 ) -> dict[str, Any]:
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-    source_prefix = Path(str(artifact["selected_cache_prefix"]))
+    source_prefix = Path(str(artifact["selected_cache_prefix"])).resolve()
+    destination_dir = destination_dir.resolve()
+    transient_dir = TRANSIENT_SELECTED_CACHE_DIR.resolve()
     selected = artifact["selected"]
     n_features = int(artifact["n_features"])
     variant = str(selected["feature_variant"])
@@ -119,7 +121,7 @@ def persist_selected_cache(
             "status": "already_persistent",
             "cache_prefix": str(source_prefix),
         }
-    if source_prefix.parent != TRANSIENT_SELECTED_CACHE_DIR:
+    if source_prefix.parent != transient_dir:
         raise ValueError("selected cache source is outside the approved transient directory")
 
     source_matrix = Path(f"{source_prefix}.matrix.npz")
