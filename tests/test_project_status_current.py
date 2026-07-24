@@ -8,7 +8,8 @@ STATUS = Path("docs/PROJECT_STATUS.md").read_text(encoding="utf-8")
 def test_project_status_uses_current_evaluation_state() -> None:
     assert re.search(r"更新日時: 20\d{2}-\d{2}-\d{2} \d{2}:\d{2} UTC", STATUS)
     assert "厳格T-5較正適格 / 正式評価 | 401R / 0R（開始7月24日）" in STATUS
-    assert "標準365日v2は7モデル" in STATUS
+    assert "標準365日v2は既存7モデル" in STATUS
+    assert "combined特徴量の2モデルを同じ基準へ追加評価中" in STATUS
     assert "7月22日136RでLogLoss 3.85700" in STATUS
     assert "LogLoss 3.85700（市場3.87201）" in STATUS
     assert "状態: v19稼働中" in STATUS

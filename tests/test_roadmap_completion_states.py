@@ -189,7 +189,7 @@ def test_standardized_comparison_and_temporal_progress_are_visible() -> None:
 
     assert improvements["M4-4"]["status"] == "評価中"
     assert improvements["M4-4"]["progress"] == 0
-    assert "0/7件" in improvements["M4-4"]["next"]
+    assert "0/9件" in improvements["M4-4"]["next"]
     assert improvements["M6-9"]["status"] == "実行中"
     assert improvements["M6-9"]["progress"] == 80
 

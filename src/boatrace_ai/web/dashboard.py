@@ -5097,6 +5097,8 @@ _STANDARDIZED_V2_JOB_NAMES = {
     "standardized_365d_v2_calibrated_mlp",
     "standardized_365d_v2_listwise_feature_teacher",
     "standardized_365d_v2_listwise_newton",
+    "standardized_365d_v2_listwise_combined_feature_teacher",
+    "standardized_365d_v2_listwise_combined_newton",
 }
 
 def _roadmap_improvements(
@@ -5376,7 +5378,7 @@ def _roadmap_improvements(
             ),
             "item": "全モデル標準365日同一holdout比較",
             "next": (
-                f"統一v2の7モデルを同一365日・同一対象R・同一資金運用条件で完走。"
+                f"統一v2の9モデルを同一365日・同一対象R・同一資金運用条件で完走。"
                 f"no_odds_v8は1着 {float(standard_no_odds_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(standard_no_odds_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%。"
                 f"資金運用最高は{str((best_standardized or {}).get('name') or '-')}のROI "
@@ -5761,7 +5763,7 @@ def _roadmap_milestones(
             ),
             "progress": m4_progress,
             "next": (
-                f"標準365日・{int(best_standard_metrics.get('evaluated_races') or best_standard_metrics.get('bankroll_evaluated_races') or 0):,}Rで7モデル比較完了。予測主系と候補を同一期間で比較し、主系を維持する。"
+                f"標準365日・{int(best_standard_metrics.get('evaluated_races') or best_standard_metrics.get('bankroll_evaluated_races') or 0):,}Rで9モデル比較完了。予測主系と候補を同一期間で比較し、主系を維持する。"
                 if standardized_complete
                 else f"統一標準365日v2未完了。未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"

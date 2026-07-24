@@ -39,7 +39,10 @@ cleanup_temporary_files() {
     "$transient_cache_dir"/.listwise_search_*.tmp \
     "$eval_dir"/.listwise_newton.joblib.*.tmp \
     "$raw_dir"/.listwise_feature_teacher.json.*.tmp \
-    "$raw_dir"/.listwise_newton.json.*.tmp; do
+    "$raw_dir"/.listwise_newton.json.*.tmp \
+    "$raw_dir"/.listwise_combined_feature_teacher.json.*.tmp \
+    "$raw_dir"/.listwise_combined_newton.json.*.tmp \
+    "$eval_dir"/.listwise_combined_newton.joblib.*.tmp; do
     if [[ -f "$candidate" || -L "$candidate" ]]; then
       files+=("$candidate")
     fi
@@ -230,6 +233,31 @@ run_job standardized_365d_v2_listwise_newton \
   --search-result "$raw_dir/listwise_feature_teacher.json" \
   --output "$raw_dir/listwise_newton.json" \
   --model-output "$eval_dir/listwise_newton.joblib" \
+  --cache-dir "$transient_cache_dir" --cache-write-mode never \
+  --daily-budget-yen 10000 --ev-threshold 1.20
+
+fi
+
+if source_needs_run listwise_combined_feature_teacher; then
+run_job standardized_365d_v2_listwise_combined_feature_teacher \
+  .venv/bin/python -m boatrace_ai.listwise.combined_feature_search \
+  --db "$db" \
+  --output "$raw_dir/listwise_combined_feature_teacher.json" \
+  --cache-dir "$eval_dir/listwise_combined_search_cache" \
+  --cache-write-mode never --selected-cache-dir "$transient_cache_dir" \
+  --variant-workers 1 --candidate-workers 2 \
+  --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
+  --daily-budget-yen 10000 --ev-threshold 1.20
+
+fi
+
+if source_needs_run listwise_combined_newton; then
+run_job standardized_365d_v2_listwise_combined_newton \
+  .venv/bin/python -m boatrace_ai.listwise.newton_refine \
+  --db "$db" \
+  --search-result "$raw_dir/listwise_combined_feature_teacher.json" \
+  --output "$raw_dir/listwise_combined_newton.json" \
+  --model-output "$eval_dir/listwise_combined_newton.joblib" \
   --cache-dir "$transient_cache_dir" --cache-write-mode never \
   --daily-budget-yen 10000 --ev-threshold 1.20
 

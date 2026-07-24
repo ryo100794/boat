@@ -9,6 +9,8 @@ MODEL_IDS = (
     "calibrated_mlp",
     "listwise_feature_teacher",
     "listwise_newton",
+    "listwise_combined_feature_teacher",
+    "listwise_combined_newton",
 )
 
 
@@ -45,7 +47,7 @@ def v2_jobs(*, missing: str | None = None) -> dict:
     return {"jobs": jobs}
 
 
-def test_all_seven_v2_models_complete_unified_evaluation() -> None:
+def test_all_nine_v2_models_complete_unified_evaluation() -> None:
     improvements = {
         row["id"]: row for row in _roadmap_improvements({}, [], v2_jobs())
     }
@@ -69,5 +71,5 @@ def test_missing_v2_model_keeps_unified_evaluation_open() -> None:
     }
 
     assert improvements["M4-4"]["status"] == "評価中"
-    assert improvements["M4-4"]["progress"] == 85
+    assert improvements["M4-4"]["progress"] == 88
     assert milestones["M4"]["status"] == "統一再評価中"

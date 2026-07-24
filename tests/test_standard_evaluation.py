@@ -274,6 +274,20 @@ def test_promotion_thresholds_are_read_from_promotion_criteria(monkeypatch) -> N
     )
 
 
+def test_combined_listwise_sources_use_distinct_holdout_contracts() -> None:
+    sources = {source.model_id: source for source in MODEL_SOURCES}
+
+    teacher = sources["listwise_combined_feature_teacher"]
+    assert teacher.prediction_file == "listwise_combined_feature_teacher.json"
+    assert teacher.bankroll_file == "listwise_combined_feature_teacher.json"
+    assert teacher.prediction_section == "holdout"
+
+    newton = sources["listwise_combined_newton"]
+    assert newton.prediction_file == "listwise_combined_newton.json"
+    assert newton.bankroll_file == "listwise_combined_newton.json"
+    assert newton.prediction_section == "holdout_after_newton"
+
+
 def test_validate_model_source_reads_and_checks_the_pair(tmp_path) -> None:
     source = ModelSource("candidate", "prediction.json", "bankroll.json")
     (tmp_path / source.prediction_file).write_text(

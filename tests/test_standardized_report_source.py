@@ -199,7 +199,7 @@ def test_report_accepts_only_complete_current_protocol(tmp_path) -> None:
     assert merged["generated_at"] == manifest.get("generated_at")
 
 
-def test_model_report_contains_exactly_seven_unified_series(tmp_path) -> None:
+def test_model_report_contains_exactly_nine_unified_series(tmp_path) -> None:
     model_dir = tmp_path / "models"
     _write_bundle(model_dir)
 

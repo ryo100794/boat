@@ -93,6 +93,18 @@ MODEL_SOURCES = (
         "listwise_newton.json",
         "holdout_after_newton",
     ),
+    ModelSource(
+        "listwise_combined_feature_teacher",
+        "listwise_combined_feature_teacher.json",
+        "listwise_combined_feature_teacher.json",
+        "holdout",
+    ),
+    ModelSource(
+        "listwise_combined_newton",
+        "listwise_combined_newton.json",
+        "listwise_combined_newton.json",
+        "holdout_after_newton",
+    ),
 )
 
 MODEL_REGISTRY = (
