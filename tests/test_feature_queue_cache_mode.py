@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
+from boatrace_ai.listwise.feature_search import build_parser
 
 
 def test_feature_search_does_not_persist_each_large_variant_cache(tmp_path: Path) -> None:
@@ -40,3 +41,7 @@ def test_standard_evaluation_uses_one_variant_and_two_candidate_workers() -> Non
     assert '--model-output "$eval_dir/listwise_combined_newton.joblib"' in script
     assert "source_needs_run listwise_combined_feature_teacher" in script
     assert "source_needs_run listwise_combined_newton" in script
+
+
+def test_direct_feature_search_defaults_to_standard_hash_capacity() -> None:
+    assert build_parser().parse_args([]).n_features == 8192

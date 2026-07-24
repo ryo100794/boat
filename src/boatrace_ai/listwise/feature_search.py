@@ -828,7 +828,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Candidates sharing one read-only variant dataset (1-4).",
     )
     parser.add_argument("--as-of-date")
-    parser.add_argument("--n-features", type=int, default=1 << 12)
+    parser.add_argument("--n-features", type=int, default=1 << 13)
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.02)
