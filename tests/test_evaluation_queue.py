@@ -186,7 +186,7 @@ def _write_standard_feature_artifact(
 
 def test_standardized_selected_cache_root_is_fixed() -> None:
     assert evaluation_queue.STANDARDIZED_SELECTED_CACHE_DIR == Path(
-        "/tmp/boatrace-standardized-365d-v2"
+        "/workspace/boat/data/models/standardized_365d_v2/selected_cache"
     )
 
 

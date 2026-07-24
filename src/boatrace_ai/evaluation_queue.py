@@ -25,7 +25,9 @@ from .feature_schema import FEATURE_SCHEMA_VERSION
 
 JST = ZoneInfo("Asia/Tokyo")
 DEFAULT_DSN = "host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app"
-STANDARDIZED_SELECTED_CACHE_DIR = Path("/tmp/boatrace-standardized-365d-v2")
+STANDARDIZED_SELECTED_CACHE_DIR = Path(
+    "/workspace/boat/data/models/standardized_365d_v2/selected_cache"
+)
 SCHEMA_LOCK_ID = 71234001
 CLAIM_LOCK_ID = 71234002
 
@@ -698,7 +700,7 @@ def _selected_standard_cache_prefix(app_root: Path) -> Path:
     if selected_cache_dir != str(expected_cache_dir):
         raise ValueError(
             "standardized feature artifact selected_cache_dir must exactly match "
-            "/tmp/boatrace-standardized-365d-v2"
+            f"{expected_cache_dir}"
         )
     cache_prefix = expected_cache_dir / (
         f"listwise_search_{n_features}_{variant}"

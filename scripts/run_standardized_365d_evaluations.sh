@@ -240,6 +240,11 @@ run_job standardized_365d_v2_listwise_newton \
 
 fi
 
+run_job standardized_365d_v2_persist_selected_cache \
+  .venv/bin/python scripts/persist_selected_feature_cache.py \
+  --artifact "$raw_dir/listwise_feature_teacher.json" \
+  --destination-dir "$eval_dir/selected_cache"
+
 if source_needs_run listwise_combined_feature_teacher; then
 run_job standardized_365d_v2_listwise_combined_feature_teacher \
   .venv/bin/python -m boatrace_ai.listwise.combined_feature_search \
