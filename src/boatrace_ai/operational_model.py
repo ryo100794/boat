@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
+
 from .legacy_model_aliases import load_model_bundle
 
 from .db import connection, init_db, insert_prediction_rows
@@ -19,6 +21,10 @@ from .operational_features import (
     prediction_features as calibrated_prediction_features,
 )
 from .modeling import _normalize_lane_probs, trifecta_predictions
+from .listwise.conditional_order import (
+    ConditionalOrderModel,
+    conditional_probabilities,
+)
 from .historical_model import FEATURE_SET, positive_probs
 
 
@@ -60,14 +66,35 @@ def predict_race(
     if len(X) != 6 or len(raw) != 6:
         raise ValueError(f"race needs six entries before prediction: {race_id_value}")
     lane_probs = _normalize_lane_probs({lane: raw[lane - 1] for lane in range(1, 7)})
-    rows = trifecta_predictions(lane_probs, latest_odds=latest_trifecta_odds(conn, race_id_value))
+    order_model = bundle.get("conditional_order_model")
+    trifecta_values = None
+    rank_basis = "model_probability"
+    if order_model is not None:
+        if not isinstance(order_model, ConditionalOrderModel):
+            raise ValueError(
+                "calibrated model artifact has an invalid conditional order model"
+            )
+        lane_values = np.asarray(
+            [[lane_probs[lane] for lane in range(1, 7)]],
+            dtype=np.float64,
+        )
+        trifecta_values = conditional_probabilities(
+            np.log(np.clip(lane_values, 1e-15, 1.0)),
+            order_model,
+        )[0]
+        rank_basis = "conditional_order_probability"
+    rows = trifecta_predictions(
+        lane_probs,
+        latest_odds=latest_trifecta_odds(conn, race_id_value),
+        trifecta_probabilities=trifecta_values,
+    )
     rows = sorted(
         rows,
         key=lambda row: (float(row["probability"]), float(row.get("expected_value") or 0.0)),
         reverse=True,
     )[:top_n]
     for row in rows:
-        row["rank_basis"] = "model_probability"
+        row["rank_basis"] = rank_basis
         row["feature_set"] = feature_set
     if store:
         insert_prediction_rows(conn, race_id_value, _now(), str(model_path), rows)

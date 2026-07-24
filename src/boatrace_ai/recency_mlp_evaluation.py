@@ -29,7 +29,14 @@ from .calibrated_shadow_model import (
 from .db import connection
 from .hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
 from .fast_math import plackett_luce_probabilities
-from .listwise.conditional_order import bankroll_promotion_gate
+from .listwise.conditional_order import (
+    DEFAULT_REGULARIZATIONS,
+    ConditionalOrderModel,
+    bankroll_promotion_gate,
+    conditional_probabilities,
+    evaluate_probabilities,
+    fit_conditional_order,
+)
 from .listwise.direct_bankroll import (
     bootstrap_daily_bankroll,
     simulate_conditional_payout_walk_forward,
@@ -55,6 +62,7 @@ N_FEATURES = 1 << 14
 BATCH_SIZE = 12_000
 EPOCHS = 2
 ALPHA = 0.0001
+ORDER_VALIDATION_DAYS = 60
 
 
 def parse_evaluation_date(value: str) -> date:
@@ -378,34 +386,161 @@ def bankroll_summary(
     return policy, summary, daily
 
 
-def trifecta_probability_matrix(
+def lane_probability_matrix(
     predictions: dict[str, list[dict[str, Any]]],
     race_keys: Sequence[tuple[str, str, str, int]],
+    *,
+    context: str = "trifecta",
 ) -> np.ndarray:
-    matrix = np.empty((len(race_keys), 120), dtype=np.float64)
+    matrix = np.empty((len(race_keys), 6), dtype=np.float64)
     for race_index, race_key in enumerate(race_keys):
         rows = predictions.get(str(race_key[0]))
         if rows is None or len(rows) != 6:
-            raise ValueError("trifecta probability input contains an incomplete race")
+            raise ValueError(f"{context} probability input contains an incomplete race")
         lane_probabilities = {
             int(row["lane"]): float(row["probability"])
             for row in rows
         }
         if set(lane_probabilities) != set(range(1, 7)):
-            raise ValueError("trifecta probability input has invalid lanes")
+            raise ValueError(f"{context} probability input has invalid lanes")
         values = np.asarray(
             [lane_probabilities[lane] for lane in range(1, 7)],
             dtype=np.float64,
         )
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):
-            raise ValueError("lane probabilities must be finite and non-negative")
+            raise ValueError(
+                f"{context} lane probabilities must be finite and non-negative"
+            )
         total = float(values.sum())
         if total <= 0.0:
-            raise ValueError("lane probabilities must have a positive sum")
-        matrix[race_index] = plackett_luce_probabilities(values / total)
+            raise ValueError(f"{context} lane probabilities must have a positive sum")
+        matrix[race_index] = values / total
+    return matrix
+
+
+def trifecta_probability_matrix(
+    predictions: dict[str, list[dict[str, Any]]],
+    race_keys: Sequence[tuple[str, str, str, int]],
+    *,
+    conditional_order_model: ConditionalOrderModel | None = None,
+) -> np.ndarray:
+    lane_matrix = lane_probability_matrix(predictions, race_keys)
+    if conditional_order_model is None:
+        matrix = np.asarray(
+            [plackett_luce_probabilities(row) for row in lane_matrix],
+            dtype=np.float64,
+        )
+    else:
+        matrix = conditional_probabilities(
+            np.log(np.clip(lane_matrix, 1e-15, 1.0)),
+            conditional_order_model,
+        )
     if not np.allclose(matrix.sum(axis=1), 1.0, rtol=1e-10, atol=1e-12):
         raise ValueError("trifecta probabilities do not sum to one")
     return matrix
+
+
+def fit_conditional_order_layer(
+    predictions: dict[str, list[dict[str, Any]]],
+    race_keys: Sequence[tuple[str, str, str, int]],
+    ranks: np.ndarray,
+    *,
+    validation_days: int = ORDER_VALIDATION_DAYS,
+    regularizations: Sequence[float] = DEFAULT_REGULARIZATIONS,
+) -> tuple[ConditionalOrderModel, dict[str, Any]]:
+    if validation_days <= 0:
+        raise ValueError("conditional order validation days must be positive")
+    if len(race_keys) != len(ranks):
+        raise ValueError("conditional order race keys and ranks must align")
+    if not race_keys:
+        raise ValueError("conditional order calibration rows must not be empty")
+    candidates = tuple(sorted({float(value) for value in regularizations}))
+    if not candidates or any(
+        not np.isfinite(value) or value < 0.0 for value in candidates
+    ):
+        raise ValueError(
+            "conditional order regularizations must be finite and non-negative"
+        )
+    dates = [date.fromisoformat(str(row[1])) for row in race_keys]
+    if dates != sorted(dates):
+        raise ValueError("conditional order calibration races must be chronological")
+    validation_start_date = dates[-1] - timedelta(days=validation_days - 1)
+    validation_start = next(
+        (
+            index
+            for index, race_date in enumerate(dates)
+            if race_date >= validation_start_date
+        ),
+        len(dates),
+    )
+    if validation_start <= 0 or validation_start >= len(race_keys):
+        raise ValueError("conditional order validation split leaves an empty fold")
+
+    lane_probabilities = lane_probability_matrix(
+        predictions,
+        race_keys,
+        context="conditional order calibration",
+    )
+    scores = np.log(np.clip(lane_probabilities, 1e-15, 1.0))
+    rank_values = np.asarray(ranks, dtype=np.int8)
+    orders = np.argsort(rank_values, axis=1)[:, :3]
+
+    diagnostics: list[dict[str, Any]] = []
+    selected_model: ConditionalOrderModel | None = None
+    selected_key: tuple[float, float, float] | None = None
+    for regularization in candidates:
+        model, fit = fit_conditional_order(
+            scores[:validation_start],
+            orders[:validation_start],
+            regularization=regularization,
+        )
+        metrics = evaluate_probabilities(
+            conditional_probabilities(scores[validation_start:], model),
+            rank_values[validation_start:],
+        )
+        public_metrics = {
+            key: value
+            for key, value in metrics.items()
+            if key not in {"race_losses", "race_top5_hits"}
+        }
+        diagnostics.append(
+            {
+                "regularization": regularization,
+                "fit": fit,
+                "validation": public_metrics,
+            }
+        )
+        candidate_key = (
+            float(metrics["trifecta_log_loss"]),
+            -float(metrics["trifecta_top5_hit_rate"]),
+            -regularization,
+        )
+        if selected_key is None or candidate_key < selected_key:
+            selected_key = candidate_key
+            selected_model = model
+    if selected_model is None:
+        raise ValueError("conditional order selection produced no model")
+    selected_regularization = float(selected_model.regularization)
+    final_model, final_fit = fit_conditional_order(
+        scores,
+        orders,
+        regularization=selected_regularization,
+    )
+    return final_model, {
+        "scope": "outer training calibration only; final 365-day holdout untouched",
+        "fit_from": str(race_keys[0][1]),
+        "fit_through": str(race_keys[validation_start - 1][1]),
+        "validation_from": str(race_keys[validation_start][1]),
+        "validation_through": str(race_keys[-1][1]),
+        "fit_races": validation_start,
+        "validation_races": len(race_keys) - validation_start,
+        "selected_regularization": selected_regularization,
+        "selection_criterion": (
+            "minimum trifecta log loss; top5 and stronger regularization tie-breaks"
+        ),
+        "candidates": diagnostics,
+        "final_fit": final_fit,
+    }
 
 
 def load_incumbent_evaluation(
@@ -505,16 +640,19 @@ def conditional_payout_summary(
     baseline_bankroll: dict[str, Any],
     baseline_daily: list[dict[str, Any]],
     protocol: dict[str, Any],
+    conditional_order_model: ConditionalOrderModel | None = None,
 ) -> dict[str, Any]:
     calibration_keys = list(race_keys[inner_train_count:training_count])
     holdout_keys = list(race_keys[training_count:])
     calibration_probabilities = trifecta_probability_matrix(
         calibration_predictions,
         calibration_keys,
+        conditional_order_model=conditional_order_model,
     )
     holdout_probabilities = trifecta_probability_matrix(
         holdout_predictions,
         holdout_keys,
+        conditional_order_model=conditional_order_model,
     )
     candidate = simulate_conditional_payout_walk_forward(
         holdout_probabilities,
@@ -645,6 +783,30 @@ def evaluate_recency_mlp(
             race_end=dataset.race_count,
             batch_size=batch_size,
         )
+        calibration_start = int(split["inner_train_races"])
+        conditional_order_model, conditional_order_selection = (
+            fit_conditional_order_layer(
+                calibration_predictions,
+                race_keys[calibration_start:training_count],
+                dataset.ranks[calibration_start:training_count],
+            )
+        )
+        holdout_trifecta_probabilities = trifecta_probability_matrix(
+            predictions,
+            race_keys[training_count:],
+            conditional_order_model=conditional_order_model,
+        )
+        holdout_trifecta_metrics = evaluate_probabilities(
+            holdout_trifecta_probabilities,
+            dataset.ranks[training_count:],
+        )
+        prediction_metrics.update(
+            {
+                key: value
+                for key, value in holdout_trifecta_metrics.items()
+                if key not in {"race_losses", "race_top5_hits"}
+            }
+        )
         evaluation_hash = race_set_sha256(predictions)
         if evaluation_hash != str(protocol["race_set_sha256"]):
             raise ValueError("final holdout race set hash does not match the protocol")
@@ -670,6 +832,7 @@ def evaluate_recency_mlp(
             baseline_bankroll=incumbent_bankroll or bankroll,
             baseline_daily=(incumbent_bankroll or {}).get("daily") or daily,
             protocol=protocol,
+            conditional_order_model=conditional_order_model,
         )
         prediction_gate = prediction_promotion_gate(
             prediction_metrics,
@@ -728,6 +891,7 @@ def evaluate_recency_mlp(
         },
         "selection_candidates": candidates,
         "selected_recency_half_life_days": selected_half_life,
+        "conditional_order": conditional_order_selection,
         "evaluated_races": int(prediction_metrics["evaluated_races"]),
         **prediction_metrics,
         "policy": policy,
@@ -744,6 +908,7 @@ def evaluate_recency_mlp(
         artifact = {
             **final_bundle,
             "hasher": hasher,
+            "conditional_order_model": conditional_order_model,
             "feature_schema_version": dataset.feature_schema_version,
             "trained_through": trained_through,
             "training_races": training_count,
@@ -760,6 +925,9 @@ def evaluate_recency_mlp(
                 "evaluation_races": int(protocol["prediction_races"]),
                 "evaluation_race_set_sha256": evaluation_hash,
                 "recency_half_life_days": selected_half_life,
+                "conditional_order_regularization": (
+                    conditional_order_selection["selected_regularization"]
+                ),
                 "include_odds": False,
             },
         }

@@ -11,6 +11,7 @@ from scipy import sparse
 from boatrace_ai import calibrated_shadow_model as calibrated
 from boatrace_ai import recency_mlp_evaluation as recency
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
+from boatrace_ai.listwise.conditional_order import identity_model
 from boatrace_ai.standard_evaluation import race_set_sha256
 
 
@@ -259,6 +260,79 @@ def test_trifecta_probability_matrix_is_ordered_and_normalized() -> None:
     assert int(np.argmax(matrix[0])) == 0
     with pytest.raises(ValueError, match="incomplete race"):
         recency.trifecta_probability_matrix({"r1": predictions["r1"][:5]}, race_keys)
+
+
+def test_identity_conditional_order_matches_plain_plackett_luce() -> None:
+    race_keys = [("r1", "2026-01-01", "01", 1)]
+    predictions = {
+        "r1": [
+            {"lane": lane, "probability": float(7 - lane)}
+            for lane in range(1, 7)
+        ]
+    }
+
+    plain = recency.trifecta_probability_matrix(predictions, race_keys)
+    conditional = recency.trifecta_probability_matrix(
+        predictions,
+        race_keys,
+        conditional_order_model=identity_model(),
+    )
+
+    np.testing.assert_allclose(conditional, plain, rtol=1e-12, atol=1e-12)
+
+
+def test_conditional_order_layer_selects_on_trailing_calibration_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race_keys = [
+        (f"r{index}", f"2026-01-0{index + 1}", "01", index + 1)
+        for index in range(4)
+    ]
+    predictions = {
+        race_id: [
+            {"lane": lane, "probability": float(7 - lane)}
+            for lane in range(1, 7)
+        ]
+        for race_id, *_rest in race_keys
+    }
+    ranks = np.tile(np.arange(1, 7, dtype=np.int8), (4, 1))
+    fit_shapes: list[tuple[int, float]] = []
+    validation_calls = 0
+
+    def fake_fit(scores, _orders, *, regularization, **_kwargs):
+        fit_shapes.append((len(scores), float(regularization)))
+        return identity_model(regularization=regularization), {"success": True}
+
+    def fake_evaluate(_probabilities, rank_values):
+        nonlocal validation_calls
+        validation_calls += 1
+        loss = 1.0 if validation_calls == 1 else 0.8
+        return {
+            "evaluated_races": len(rank_values),
+            "trifecta_log_loss": loss,
+            "trifecta_top1_hit_rate": 0.1,
+            "trifecta_top5_hit_rate": 0.2,
+            "race_losses": np.full(len(rank_values), loss),
+            "race_top5_hits": np.zeros(len(rank_values)),
+        }
+
+    monkeypatch.setattr(recency, "fit_conditional_order", fake_fit)
+    monkeypatch.setattr(recency, "evaluate_probabilities", fake_evaluate)
+
+    model, selection = recency.fit_conditional_order_layer(
+        predictions,
+        race_keys,
+        ranks,
+        validation_days=2,
+        regularizations=(0.1, 1.0),
+    )
+
+    assert fit_shapes == [(2, 0.1), (2, 1.0), (4, 1.0)]
+    assert model.regularization == 1.0
+    assert selection["fit_through"] == "2026-01-02"
+    assert selection["validation_from"] == "2026-01-03"
+    assert selection["selected_regularization"] == 1.0
+    assert "holdout untouched" in selection["scope"]
 
 
 def test_conditional_payout_uses_pre_holdout_calibration(
@@ -549,6 +623,33 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         )
 
     monkeypatch.setattr(recency, "score_range", fake_final_score)
+    order_model = identity_model(regularization=0.1)
+    order_selection = {
+        "scope": "outer training calibration only; final 365-day holdout untouched",
+        "selected_regularization": 0.1,
+    }
+    monkeypatch.setattr(
+        recency,
+        "fit_conditional_order_layer",
+        lambda *_args, **_kwargs: (order_model, order_selection),
+    )
+    monkeypatch.setattr(
+        recency,
+        "trifecta_probability_matrix",
+        lambda *_args, **_kwargs: np.full((2, 120), 1.0 / 120.0),
+    )
+    monkeypatch.setattr(
+        recency,
+        "evaluate_probabilities",
+        lambda *_args, **_kwargs: {
+            "evaluated_races": 2,
+            "trifecta_log_loss": 4.0,
+            "trifecta_top1_hit_rate": 0.1,
+            "trifecta_top5_hit_rate": 0.2,
+            "race_losses": np.full(2, 4.0),
+            "race_top5_hits": np.zeros(2),
+        },
+    )
     policy = {"daily_budget_yen": 10_000, "model": recency.MODEL_NAME}
     bankroll = {
         "evaluated_races": 2,
@@ -595,6 +696,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert result["winner_top1_accuracy"] == 0.5
     assert result["trifecta_top1_hit_rate"] == 0.1
     assert result["trifecta_top5_hit_rate"] == 0.2
+    assert result["conditional_order"] == order_selection
     assert result["evaluation_race_set_sha256"] == holdout_hash
     assert result["daily"] == daily
     assert result["conditional_payout_walk_forward"] == conditional

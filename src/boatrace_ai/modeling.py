@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import joblib
 import numpy as np
@@ -287,12 +287,27 @@ def trifecta_predictions(
     lane_probs: dict[int, float],
     *,
     latest_odds: dict[str, float] | None = None,
+    trifecta_probabilities: Sequence[float] | None = None,
 ) -> list[dict[str, Any]]:
     latest_odds = latest_odds or {}
     rows = []
-    probabilities = plackett_luce_probabilities(
-        lane_probs[lane] for lane in range(1, 7)
-    )
+    if trifecta_probabilities is None:
+        probabilities = np.asarray(
+            plackett_luce_probabilities(
+                lane_probs[lane] for lane in range(1, 7)
+            ),
+            dtype=np.float64,
+        )
+    else:
+        probabilities = np.asarray(trifecta_probabilities, dtype=np.float64)
+        if probabilities.shape != (len(TRIFECTA_COMBINATIONS),):
+            raise ValueError("trifecta probabilities must contain 120 combinations")
+        if not np.all(np.isfinite(probabilities)) or np.any(probabilities < 0.0):
+            raise ValueError("trifecta probabilities must be finite and non-negative")
+        total = float(probabilities.sum())
+        if total <= 0.0:
+            raise ValueError("trifecta probabilities must have positive mass")
+        probabilities = probabilities / total
     for (first, second, third), probability in zip(
         TRIFECTA_COMBINATIONS, probabilities
     ):

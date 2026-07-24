@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from boatrace_ai import operational_features
 from boatrace_ai import operational_model
 from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
+from boatrace_ai.listwise.conditional_order import ConditionalOrderModel
 
 
 def test_operational_features_honor_schema_and_dropped_groups(monkeypatch) -> None:
@@ -125,6 +127,48 @@ def test_operational_model_dispatches_calibrated_artifact(monkeypatch) -> None:
     assert len(rows) == 5
     assert all(row["feature_set"] == "calibrated_test_model_probability_rank" for row in rows)
     assert rows[0]["combination"] == "1-2-3"
+
+
+def test_operational_model_uses_persisted_conditional_order(monkeypatch) -> None:
+    second_bias = np.zeros((6, 6), dtype=float)
+    second_bias[0, 5] = 5.0
+    order_model = ConditionalOrderModel(
+        scales=np.ones(3),
+        second_bias=second_bias,
+        third_first_bias=np.zeros((6, 6), dtype=float),
+        third_second_bias=np.zeros((6, 6), dtype=float),
+        regularization=0.1,
+    )
+    bundle = {
+        "hasher": object(),
+        "scaler": object(),
+        "classifier": object(),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "conditional_order_model": order_model,
+    }
+    monkeypatch.setattr(operational_model, "load_model_bundle", lambda _path: bundle)
+    monkeypatch.setattr(
+        operational_model,
+        "calibrated_prediction_features",
+        lambda *_args, **_kwargs: [{"lane": lane} for lane in range(1, 7)],
+    )
+    monkeypatch.setattr(
+        operational_model,
+        "calibrated_predict_probabilities",
+        lambda *_args, **_kwargs: [6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+    )
+    monkeypatch.setattr(operational_model, "latest_trifecta_odds", lambda *_args: {})
+
+    rows = operational_model.predict_race(
+        None,
+        model_path=Path("conditional.joblib"),
+        race_id_value="race",
+        top_n=1,
+        store=False,
+    )
+
+    assert rows[0]["combination"].startswith("1-6-")
+    assert rows[0]["rank_basis"] == "conditional_order_probability"
 
 
 def test_operational_model_rejects_calibrated_artifact_without_schema(monkeypatch) -> None:
