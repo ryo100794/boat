@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import gzip
 import html
 import importlib.util
 import ipaddress
@@ -203,9 +204,18 @@ def send_json(handler: BaseHTTPRequestHandler, value: Any, status: int = 200) ->
     payload = json.dumps(
         value, ensure_ascii=False, default=_json_default
     ).encode("utf-8")
+    accepts_gzip = "gzip" in str(
+        handler.headers.get("Accept-Encoding", "")
+    ).lower()
+    compressed = accepts_gzip and len(payload) >= 1024
+    if compressed:
+        payload = gzip.compress(payload, compresslevel=5)
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Vary", "Accept-Encoding")
+    if compressed:
+        handler.send_header("Content-Encoding", "gzip")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     try:
@@ -782,7 +792,12 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                 elif parsed.path == "/reports/models":
                     send_html(self, MODEL_REPORT_HTML)
                 elif parsed.path == "/api/reports/model-performance":
-                    send_json(self, model_performance_report(db_path, query))
+                    send_json(
+                        self,
+                        model_performance_public_report(
+                            model_performance_report(db_path, query)
+                        ),
+                    )
                 elif parsed.path == "/reports/roadmap":
                     send_html(self, ROADMAP_REPORT_HTML)
                 elif parsed.path == "/api/reports/roadmap-status":
@@ -1226,6 +1241,12 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
     return payload
+
+
+def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:
+    public = dict(report)
+    public.pop("bankroll_daily", None)
+    return public
 
 
 def _model_performance_report_contract(
