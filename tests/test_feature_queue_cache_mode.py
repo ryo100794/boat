@@ -34,6 +34,7 @@ def test_standard_evaluation_uses_one_variant_and_two_candidate_workers() -> Non
         encoding="utf-8"
     )
     assert "--variant-workers 1 --candidate-workers 2" in script
+    assert script.count("--n-features 8192") == 2
     assert "-m boatrace_ai.listwise.combined_feature_search" in script
     assert '--search-result "$raw_dir/listwise_combined_feature_teacher.json"' in script
     assert '--model-output "$eval_dir/listwise_combined_newton.joblib"' in script
