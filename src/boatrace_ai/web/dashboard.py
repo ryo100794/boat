@@ -1167,6 +1167,19 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         }
     )
     queued_evaluations = _database_evaluation_status(db_path)
+    queue_backtests, queue_bankroll, queue_daily = _database_evaluation_artifacts(
+        queued_evaluations,
+        model_dir,
+    )
+    existing_backtests = {str(row.get("name")) for row in backtests}
+    existing_bankroll = {str(row.get("name")) for row in bankroll}
+    backtests.extend(
+        row for row in queue_backtests if str(row.get("name")) not in existing_backtests
+    )
+    bankroll.extend(
+        row for row in queue_bankroll if str(row.get("name")) not in existing_bankroll
+    )
+    bankroll_daily.update(queue_daily)
     legacy_evaluation_jobs = _remote_evaluation_job_summaries(remote_evaluations)
     if queued_evaluations["jobs"]:
         legacy_evaluation_jobs = [
@@ -2347,6 +2360,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("trifecta_top5_hit_rate")
                 ),
+                "result_path": row.get("result_path"),
                 "error": row.get("error") if status == "failed" else None,
             }
         )
@@ -2402,6 +2416,109 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         "jobs": jobs,
         "candidates": candidates,
     }
+
+
+def _database_evaluation_artifacts(
+    queue_status: dict[str, Any],
+    model_dir: Path,
+    *,
+    maximum_artifacts: int = 20,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    backtests: list[dict[str, Any]] = []
+    bankroll_rows: list[dict[str, Any]] = []
+    daily: dict[str, list[dict[str, Any]]] = {}
+    seen_models: set[str] = set()
+    root = model_dir.resolve()
+    for candidate in queue_status.get("candidates") or []:
+        model_key = str(candidate.get("model_key") or "").strip()
+        if not model_key or model_key in seen_models:
+            continue
+        result_path = str(candidate.get("result_path") or "").strip()
+        if not result_path:
+            continue
+        path = Path(result_path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        try:
+            if (
+                path.suffix.lower() != ".json"
+                or not path.is_file()
+                or path.stat().st_size > 20 * 1024 * 1024
+            ):
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        seen_models.add(model_key)
+        label = model_key
+        prediction_metrics = {
+            key: data.get(key)
+            for key in (
+                "entry_log_loss",
+                "entry_brier",
+                "winner_top1_accuracy",
+                "trifecta_top1_hit_rate",
+                "trifecta_top5_hit_rate",
+                "ranking_log_loss",
+                "evaluated_races",
+                "evaluation_race_set_sha256",
+            )
+            if data.get(key) is not None
+        }
+        if prediction_metrics.get("entry_log_loss") is not None:
+            backtests.append(
+                _backtest_summary(
+                    path,
+                    label,
+                    {**data, **prediction_metrics},
+                )
+            )
+        direct = data.get("bankroll")
+        if isinstance(direct, dict) and direct:
+            direct_result = {
+                **prediction_metrics,
+                **direct,
+                "model": data.get("model") or model_key,
+                "generated_at": data.get("generated_at"),
+                "daily": direct.get("daily") or data.get("daily") or [],
+            }
+            bankroll_rows.append(_bankroll_summary(path, label, direct_result))
+            direct_daily = _daily_report_rows(direct_result["daily"])
+            if direct_daily:
+                daily[label] = direct_daily
+        walk = data.get("conditional_payout_walk_forward")
+        if isinstance(walk, dict):
+            walk_bankroll = walk.get("bankroll")
+            walk_confidence = walk.get("bankroll_confidence") or {}
+            if isinstance(walk_bankroll, dict) and walk_bankroll:
+                walk_label = f"{label}_conditional_payout_walk_forward"
+                walk_result = {
+                    **prediction_metrics,
+                    **walk_bankroll,
+                    "model": f"{data.get('model') or model_key}_conditional_payout_walk_forward",
+                    "generated_at": data.get("generated_at"),
+                    "roi_ci95_lower": walk_confidence.get("roi_ci95_lower"),
+                    "roi_ci95_upper": walk_confidence.get("roi_ci95_upper"),
+                    "roi_delta_ci95_lower": walk_confidence.get(
+                        "roi_delta_ci95_lower"
+                    ),
+                    "roi_delta_ci95_upper": walk_confidence.get(
+                        "roi_delta_ci95_upper"
+                    ),
+                }
+                bankroll_rows.append(
+                    _bankroll_summary(path, walk_label, walk_result)
+                )
+                walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
+                if walk_daily:
+                    daily[walk_label] = walk_daily
+        if len(seen_models) >= max(1, int(maximum_artifacts)):
+            break
+    return backtests, bankroll_rows, daily
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:

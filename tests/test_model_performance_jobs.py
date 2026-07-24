@@ -3,6 +3,7 @@ import sqlite3
 
 from boatrace_ai.web.dashboard import (
     MODEL_REPORT_HTML,
+    _database_evaluation_artifacts,
     _database_evaluation_status,
     _remote_evaluation_job_summaries,
 )
@@ -109,3 +110,96 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["status"] == "完了"
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_roi_delta_ci95_lower"] == 0.02
+
+
+def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
+    tmp_path,
+) -> None:
+    model_dir = tmp_path / "models"
+    result_path = model_dir / "evaluation_queue" / "job-00000932.json"
+    result_path.parent.mkdir(parents=True)
+    result_path.write_text(
+        json.dumps(
+            {
+                "model": "calibrated_mlp_recency_selected",
+                "generated_at": "2026-07-24T00:00:00+00:00",
+                "entry_log_loss": 0.32,
+                "entry_brier": 0.09,
+                "winner_top1_accuracy": 0.57,
+                "trifecta_top5_hit_rate": 0.31,
+                "evaluated_races": 100,
+                "bankroll": {
+                    "roi": 0.8,
+                    "profit_yen": -200,
+                    "stake_yen": 1000,
+                    "return_yen": 800,
+                },
+                "daily": [
+                    {
+                        "race_date": "2026-07-23",
+                        "stake_yen": 1000,
+                        "return_yen": 800,
+                    }
+                ],
+                "conditional_payout_walk_forward": {
+                    "bankroll": {
+                        "roi": 1.2,
+                        "profit_yen": 200,
+                        "stake_yen": 1000,
+                        "return_yen": 1200,
+                        "daily": [
+                            {
+                                "race_date": "2026-07-23",
+                                "stake_yen": 1000,
+                                "return_yen": 1200,
+                            }
+                        ],
+                    },
+                    "bankroll_confidence": {
+                        "roi_ci95_lower": 1.01,
+                        "roi_ci95_upper": 1.4,
+                        "roi_delta_ci95_lower": 0.1,
+                        "roi_delta_ci95_upper": 0.5,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue_status = {
+        "candidates": [
+            {
+                "model_key": "calibrated_mlp_recency_selected",
+                "result_path": str(result_path),
+            }
+        ]
+    }
+
+    backtests, bankroll, daily = _database_evaluation_artifacts(
+        queue_status,
+        model_dir,
+    )
+
+    assert [row["name"] for row in backtests] == [
+        "calibrated_mlp_recency_selected"
+    ]
+    assert [row["name"] for row in bankroll] == [
+        "calibrated_mlp_recency_selected",
+        "calibrated_mlp_recency_selected_conditional_payout_walk_forward",
+    ]
+    assert daily["calibrated_mlp_recency_selected"][0]["roi_delta"] == -0.2
+    assert daily[
+        "calibrated_mlp_recency_selected_conditional_payout_walk_forward"
+    ][0]["roi_delta"] == 0.2
+
+
+def test_database_evaluation_artifact_rejects_paths_outside_model_dir(
+    tmp_path,
+) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    assert _database_evaluation_artifacts(
+        {"candidates": [{"model_key": "outside", "result_path": str(outside)}]},
+        tmp_path / "models",
+    ) == ([], [], {})
