@@ -871,7 +871,8 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     combined = [row for row in calls if row["task_type"] == "combined_feature_search"]
     assert len(combined) == 1
     assert combined[0]["priority"] == 85
-    assert combined[0]["parameters"]["n_features"] == 4096
+    assert combined[0]["model_key"] == "listwise_combined_8192"
+    assert combined[0]["parameters"]["n_features"] == 8192
     assert not any(
         row["task_type"] == "calibrated_mlp_recency_search" for row in calls
     )

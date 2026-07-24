@@ -1760,10 +1760,10 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
         )
     add(
         task_type="combined_feature_search",
-        model_key="listwise_combined_4096",
+        model_key="listwise_combined_8192",
         parameters={
             "evaluation_date": evaluation_date,
-            "n_features": 4096,
+            "n_features": 8192,
             "targets": "winner,top3_pl",
             "alphas": "0.00001,0.0001",
             "learning_rate": 0.02,
