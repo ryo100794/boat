@@ -3,6 +3,7 @@ import builtins
 from boatrace_ai.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LEGACY_FEATURE_SCHEMA_VERSION,
+    SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
 )
 from boatrace_ai.listwise import backtest
 from boatrace_ai.listwise.backtest import build_parser
@@ -34,3 +35,10 @@ def test_backtest_output_disconnect_does_not_abort_evaluation(monkeypatch) -> No
     backtest.emit_json({"fold": 2})
 
     assert calls == 1
+
+
+def test_v3_schema_remains_selectable_for_reproducibility() -> None:
+    args = build_parser().parse_args(
+        ["--feature-schema-version", SPARSE_MISSING_FEATURE_SCHEMA_VERSION]
+    )
+    assert args.feature_schema_version == SPARSE_MISSING_FEATURE_SCHEMA_VERSION

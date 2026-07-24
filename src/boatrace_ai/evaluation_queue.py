@@ -1541,7 +1541,7 @@ DEFAULT_WORK_TICKETS = (
         "公式series特徴キャッシュの継続更新",
         "モデル",
         "公式raw JSONのseries成績をPostgreSQL特徴キャッシュへ増分反映する",
-        "raw保有艇を欠落なく反映し、負のtrendを保持したv3で365日評価を記録する",
+        "raw保有艇を欠落なく反映し、負のtrendを保持し方向を実績較正したv4で365日評価を記録する",
         95,
         "in_progress",
         75,

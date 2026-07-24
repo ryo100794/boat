@@ -3,6 +3,7 @@ from boatrace_ai.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LEGACY_FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
 )
 from boatrace_ai.operational_features import (
     _ranks,
@@ -111,10 +112,30 @@ def test_sparse_schema_preserves_negative_finish_trend() -> None:
         feature_schema_version=FEATURE_SCHEMA_VERSION,
     )
 
-    assert features[1]["series_finish_trend_rank"] == 6
-    assert features[6]["series_finish_trend_rank"] == 1
+    assert features[1]["series_finish_trend_rank"] == 1
+    assert features[6]["series_finish_trend_rank"] == 6
     assert features[1]["series_finish_trend_vs_mean"] < 0
     assert cached_series_features(
         rows[0],
         feature_schema_version=FEATURE_SCHEMA_VERSION,
     )["series_finish_trend"] == -2.0
+
+
+def test_v3_schema_preserves_previous_finish_trend_direction() -> None:
+    trends = (-2.0, -1.0, 0.0, 1.0, 2.0, 3.0)
+    rows = [
+        _row(
+            lane,
+            series_finish_trend=trends[lane - 1],
+            series_has_results=1.0,
+        )
+        for lane in range(1, 7)
+    ]
+
+    features = series_relative_features(
+        rows,
+        feature_schema_version=SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
+    )
+
+    assert features[1]["series_finish_trend_rank"] == 6
+    assert features[6]["series_finish_trend_rank"] == 1

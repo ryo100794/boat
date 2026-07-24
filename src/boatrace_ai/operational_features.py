@@ -11,6 +11,7 @@ from .base_features import _group_by_race, race_relative_features
 from .feature_schema import (
     FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    uses_empirical_series_trend_direction,
     uses_missing_safe_series,
     uses_sparse_series_missing,
 )
@@ -224,7 +225,10 @@ def series_relative_features(
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> dict[int, dict[str, float]]:
     if uses_sparse_series_missing(feature_schema_version):
-        return _sparse_series_relative_features(rows)
+        return _sparse_series_relative_features(
+            rows,
+            feature_schema_version=feature_schema_version,
+        )
     missing_safe = uses_missing_safe_series(feature_schema_version)
     by_lane = {
         int(row["lane"]): cached_series_features(
@@ -272,10 +276,17 @@ def series_relative_features(
 
 def _sparse_series_relative_features(
     rows: list[sqlite3.Row],
+    *,
+    feature_schema_version: str,
 ) -> dict[int, dict[str, float]]:
     by_lane = {int(row["lane"]): row for row in rows}
     out: dict[int, dict[str, float]] = {lane: {} for lane in by_lane}
     for field, high_is_good in SERIES_RELATIVE_FIELDS.items():
+        if (
+            field == "series_finish_trend"
+            and uses_empirical_series_trend_direction(feature_schema_version)
+        ):
+            high_is_good = False
         present_values = {
             lane: value
             for lane, row in by_lane.items()

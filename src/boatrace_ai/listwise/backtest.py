@@ -25,6 +25,7 @@ from ..feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LEGACY_FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
 )
 from ..hashed_feature_dataset import load_or_build_hashed_dataset
 from .model import (
@@ -254,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--feature-schema-version",
         choices=(
             FEATURE_SCHEMA_VERSION,
+            SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
             MISSING_SAFE_FEATURE_SCHEMA_VERSION,
             LEGACY_FEATURE_SCHEMA_VERSION,
         ),

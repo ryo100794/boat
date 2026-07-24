@@ -386,7 +386,7 @@ def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None
 
     assert json.dumps(signature, separators=(",", ":")) == (
         '{"checkpoint_version":1,"cache_version":2,'
-        '"feature_schema_version":"pastlog-listwise-hashed-v3-series-sparse-missing",'
+        '"feature_schema_version":"pastlog-listwise-hashed-v4-series-trend-direction",'
         '"as_of_date":"2026-07-23","race_count":2,'
         '"race_universe_sha256":'
         '"a5d59ddbba062a4884a2242737fca8bc14d2858a52d64cb1af19dddb3bd6bd23",'
