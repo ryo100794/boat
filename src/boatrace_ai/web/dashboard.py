@@ -3013,6 +3013,11 @@ def _daily_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     else None
                 ),
                 "roi": roi,
+                "roi_delta": (
+                    float(row["profit_yen"]) / float(stake)
+                    if stake
+                    else (float(roi) - 1.0 if roi is not None else None)
+                ),
                 "budget_used_fraction": budget_used,
                 "ticket_hit_rate": (
                     float(row["_hit_tickets"]) / float(tickets)
