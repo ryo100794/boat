@@ -703,6 +703,30 @@ def _selected_standard_cache_prefix(app_root: Path) -> Path:
     return cache_prefix
 
 
+def _standardized_holdout_contract(app_root: Path) -> tuple[str, str, str]:
+    protocol_path = (
+        app_root / "data" / "models" / "standardized_365d_v2"
+        / "protocol.json"
+    )
+    try:
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+        holdout_start = str(protocol["holdout_start"])
+        holdout_end = str(protocol["holdout_end"])
+        calendar_days = int(protocol["calendar_days"])
+        start_date = datetime.strptime(holdout_start, "%Y-%m-%d").date()
+        end_date = datetime.strptime(holdout_end, "%Y-%m-%d").date()
+    except FileNotFoundError as exc:
+        raise JobDependencyUnavailable(
+            f"standardized evaluation protocol is not available yet: {protocol_path}"
+        ) from exc
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("standardized evaluation protocol is invalid") from exc
+    if calendar_days != 365 or end_date - start_date != timedelta(days=364):
+        raise ValueError("standardized evaluation protocol is not an exact 365-day window")
+    training_through = (start_date - timedelta(days=1)).isoformat()
+    return training_through, holdout_start, holdout_end
+
+
 def build_command(
     job: dict[str, Any],
     *,
@@ -885,6 +909,17 @@ def build_command(
             )
         _integer(params, "timeout_seconds", 21600, 300, 86400)
         cache_prefix = _selected_standard_cache_prefix(app_root)
+        expected_contract = _standardized_holdout_contract(app_root)
+        requested_contract = (
+            training_through,
+            evaluation_from,
+            evaluation_through,
+        )
+        if requested_contract != expected_contract:
+            raise ObsoleteJob(
+                "conditional payout window does not match the current standardized "
+                f"protocol: requested={requested_contract}; expected={expected_contract}"
+            )
         baseline_model = (
             app_root / "data" / "models" / "standardized_365d_v2"
             / "listwise_newton.joblib"
@@ -1671,6 +1706,20 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
         model_key="all_registered_models",
         parameters={"evaluation_date": evaluation_date, "timeout_seconds": 86400},
         priority=100,
+        max_attempts=3,
+    )
+    evaluation_end = datetime.strptime(evaluation_date, "%Y-%m-%d").date()
+    evaluation_start = evaluation_end - timedelta(days=364)
+    add(
+        task_type="conditional_payout_tail",
+        model_key="conditional_payout_tail_365d_v1",
+        parameters={
+            "training_through": (evaluation_start - timedelta(days=1)).isoformat(),
+            "evaluation_from": evaluation_start.isoformat(),
+            "evaluation_through": evaluation_end.isoformat(),
+            "timeout_seconds": 86400,
+        },
+        priority=90,
         max_attempts=3,
     )
     for clip in (0.5, 1.0, 2.0, 3.0, 4.0, 6.0):

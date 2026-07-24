@@ -159,6 +159,15 @@ def _write_standard_feature_artifact(
         / "listwise_feature_teacher.json"
     )
     artifact.parent.mkdir(parents=True, exist_ok=True)
+    protocol = artifact.parent.parent / "protocol.json"
+    protocol.write_text(
+        json.dumps({
+            "holdout_start": "2025-07-20",
+            "holdout_end": "2026-07-19",
+            "calendar_days": 365,
+        }),
+        encoding="utf-8",
+    )
     artifact.write_text(json.dumps({
         "selected": {"feature_variant": variant},
         "selected_cache_dir": str(cache_dir),
@@ -396,6 +405,35 @@ def test_conditional_payout_defers_until_selected_cache_exists(
                     "training_through": "2025-07-19",
                     "evaluation_from": "2025-07-20",
                     "evaluation_through": "2026-07-19",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
+def test_conditional_payout_cancels_window_not_matching_standard_protocol(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "boat"
+    cache_dir = tmp_path / "selected-standard-cache"
+    monkeypatch.setattr(
+        evaluation_queue,
+        "STANDARDIZED_SELECTED_CACHE_DIR",
+        cache_dir,
+    )
+    _write_standard_feature_artifact(root, cache_dir)
+
+    with pytest.raises(ObsoleteJob, match="does not match"):
+        build_command(
+            _job(
+                "conditional_payout_tail",
+                {
+                    "training_through": "2025-07-20",
+                    "evaluation_from": "2025-07-21",
+                    "evaluation_through": "2026-07-20",
                 },
             ),
             app_root=root,
@@ -813,12 +851,21 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
 
     inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
 
-    assert len(inserted) == 12
+    assert len(inserted) == 13
     standardized = [
         row for row in calls if row["task_type"] == "standardized_365d"
     ]
     assert standardized[0]["parameters"]["timeout_seconds"] == 86400
     assert standardized[0]["max_attempts"] == 3
+    payout = next(row for row in calls if row["task_type"] == "conditional_payout_tail")
+    assert payout["parameters"] == {
+        "training_through": "2025-07-22",
+        "evaluation_from": "2025-07-23",
+        "evaluation_through": "2026-07-22",
+        "timeout_seconds": 86400,
+    }
+    assert payout["priority"] == 90
+    assert payout["max_attempts"] == 3
     assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
     assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
     combined = [row for row in calls if row["task_type"] == "combined_feature_search"]
@@ -829,7 +876,9 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
         row["task_type"] == "calibrated_mlp_recency_search" for row in calls
     )
     assert all(
-        row["parameters"]["evaluation_date"] == "2026-07-22" for row in calls
+        row["parameters"]["evaluation_date"] == "2026-07-22"
+        for row in calls
+        if row["task_type"] != "conditional_payout_tail"
     )
 
 
