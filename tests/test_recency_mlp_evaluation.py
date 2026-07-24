@@ -335,6 +335,60 @@ def test_conditional_order_layer_selects_on_trailing_calibration_only(
     assert "holdout untouched" in selection["scope"]
 
 
+def test_deployment_order_refit_uses_fixed_regularization_and_requires_convergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race_keys = [("r1", "2026-01-01", "01", 1)]
+    predictions = {
+        "r1": [
+            {"lane": lane, "probability": float(7 - lane)}
+            for lane in range(1, 7)
+        ]
+    }
+    ranks = np.asarray([[1, 2, 3, 4, 5, 6]], dtype=np.int8)
+    captured: dict[str, object] = {}
+
+    def converged(scores, orders, **kwargs):
+        captured["scores"] = scores
+        captured["orders"] = orders
+        captured.update(kwargs)
+        return identity_model(regularization=kwargs["regularization"]), {
+            "success": True,
+            "iterations": 3,
+        }
+
+    monkeypatch.setattr(recency, "fit_conditional_order", converged)
+    model, report = recency.fit_deployment_conditional_order_layer(
+        predictions,
+        race_keys,
+        ranks,
+        regularization=0.1,
+    )
+
+    assert model.regularization == 0.1
+    assert captured["scores"].shape == (1, 6)
+    assert captured["orders"].tolist() == [[0, 1, 2]]
+    assert captured["max_iterations"] == 200
+    assert report["fit_races"] == 1
+    assert "metrics not recomputed" in report["scope"]
+
+    monkeypatch.setattr(
+        recency,
+        "fit_conditional_order",
+        lambda *_args, **_kwargs: (
+            identity_model(),
+            {"success": False, "message": "iteration limit"},
+        ),
+    )
+    with pytest.raises(ValueError, match="did not converge"):
+        recency.fit_deployment_conditional_order_layer(
+            predictions,
+            race_keys,
+            ranks,
+            regularization=0.1,
+        )
+
+
 def test_conditional_payout_uses_pre_holdout_calibration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -627,6 +681,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     order_selection = {
         "scope": "outer training calibration only; final 365-day holdout untouched",
         "selected_regularization": 0.1,
+        "final_fit": {"success": True},
     }
     monkeypatch.setattr(
         recency,
@@ -669,20 +724,34 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         lambda *_args, **_kwargs: (policy, bankroll, daily),
     )
     conditional = {
-        "promotion_eligible": False,
-        "bankroll": {"roi": 0.9, "daily": daily},
+        "promotion_eligible": True,
+        "bankroll": {"roi": 1.1, "daily": daily},
     }
     monkeypatch.setattr(
         recency,
         "conditional_payout_summary",
         lambda *_args, **_kwargs: conditional,
     )
+    monkeypatch.setattr(
+        recency,
+        "prediction_promotion_gate",
+        lambda *_args, **_kwargs: {"pass": True},
+    )
+    monkeypatch.setattr(
+        recency,
+        "fit_deployment_conditional_order_layer",
+        lambda *_args, **_kwargs: (
+            identity_model(regularization=0.1),
+            {"fit_races": 2, "fit": {"success": True}},
+        ),
+    )
     output = tmp_path / "result.json"
     model_output = tmp_path / "model.joblib"
-    saved_artifact: dict[str, object] = {}
+    deployment_output = tmp_path / "model.deployment.joblib"
+    saved_artifacts: dict[Path, dict[str, object]] = {}
 
     def fake_dump(path: Path, artifact: dict[str, object]) -> None:
-        saved_artifact.update(artifact)
+        saved_artifacts[path] = artifact
         path.write_bytes(b"joblib")
 
     monkeypatch.setattr(recency, "dump_joblib_atomic", fake_dump)
@@ -693,6 +762,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         evaluation_date=date(2025, 1, 2),
         feature_cache=tmp_path / "features",
         model_output_path=model_output,
+        deployment_model_output_path=deployment_output,
     )
 
     assert final_score_calls == [(training_count, dataset.race_count)]
@@ -709,17 +779,27 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert result["evaluation_race_set_sha256"] == holdout_hash
     assert result["daily"] == daily
     assert result["conditional_payout_walk_forward"] == conditional
-    assert result["promotion_eligible"] is False
+    assert result["performance_eligible"] is True
+    assert result["promotion_eligible"] is True
     assert result["promotion_gate"] == {
-        "prediction_pass": False,
-        "payout_policy_pass": False,
-        "pass": False,
+        "prediction_pass": True,
+        "payout_policy_pass": True,
+        "conditional_order_converged": True,
+        "performance_pass": True,
+        "deployable_artifact_pass": True,
+        "pass": True,
     }
     assert result["model_artifact_saved"] is True
-    assert saved_artifact["drop_feature_groups"] == ["research_correlates"]
-    assert saved_artifact["metadata"]["drop_feature_groups"] == [
+    assert result["deployment_model_artifact_saved"] is True
+    shadow_artifact = saved_artifacts[model_output]
+    deployment_artifact = saved_artifacts[deployment_output]
+    assert shadow_artifact["drop_feature_groups"] == ["research_correlates"]
+    assert shadow_artifact["metadata"]["drop_feature_groups"] == [
         "research_correlates"
     ]
+    assert deployment_artifact["training_races"] == dataset.race_count
+    assert deployment_artifact["metadata"]["role"] == "production_candidate"
+    assert deployment_artifact["drop_feature_groups"] == ["research_correlates"]
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()

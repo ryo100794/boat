@@ -543,6 +543,47 @@ def fit_conditional_order_layer(
     }
 
 
+def fit_deployment_conditional_order_layer(
+    predictions: dict[str, list[dict[str, Any]]],
+    race_keys: Sequence[tuple[str, str, str, int]],
+    ranks: np.ndarray,
+    *,
+    regularization: float,
+) -> tuple[ConditionalOrderModel, dict[str, Any]]:
+    if len(race_keys) != len(ranks) or not race_keys:
+        raise ValueError("deployment order rows must be non-empty and aligned")
+    lane_probabilities = lane_probability_matrix(
+        predictions,
+        race_keys,
+        context="deployment conditional order",
+    )
+    scores = np.log(np.clip(lane_probabilities, 1e-15, 1.0))
+    rank_values = np.asarray(ranks, dtype=np.int8)
+    orders = np.argsort(rank_values, axis=1)[:, :3]
+    model, fit = fit_conditional_order(
+        scores,
+        orders,
+        regularization=float(regularization),
+        max_iterations=200,
+    )
+    if not bool(fit.get("success")):
+        raise ValueError(
+            "deployment conditional order optimization did not converge: "
+            + str(fit.get("message") or fit.get("status") or "unknown")
+        )
+    return model, {
+        "scope": (
+            "post-evaluation deployment refit on untouched holdout predictions; "
+            "evaluation metrics not recomputed"
+        ),
+        "fit_from": str(race_keys[0][1]),
+        "fit_through": str(race_keys[-1][1]),
+        "fit_races": len(race_keys),
+        "regularization": float(regularization),
+        "fit": fit,
+    }
+
+
 def load_incumbent_evaluation(
     prediction_path: Path,
     bankroll_path: Path,
@@ -705,6 +746,7 @@ def evaluate_recency_mlp(
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
     model_output_path: Path | None = None,
+    deployment_model_output_path: Path | None = None,
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -840,11 +882,20 @@ def evaluate_recency_mlp(
             evaluation_hash=evaluation_hash,
             evaluated_races=int(protocol["prediction_races"]),
         )
-        promotion_gate = {
+        performance_gate = {
             "prediction_pass": bool(prediction_gate["pass"]),
             "payout_policy_pass": bool(conditional_payout["promotion_eligible"]),
+            "conditional_order_converged": bool(
+                (conditional_order_selection.get("final_fit") or {}).get("success")
+            ),
         }
-        promotion_gate["pass"] = bool(all(promotion_gate.values()))
+        performance_gate["pass"] = bool(all(performance_gate.values()))
+        promotion_gate = {
+            **performance_gate,
+            "performance_pass": bool(performance_gate["pass"]),
+            "deployable_artifact_pass": False,
+            "pass": False,
+        }
 
     bankroll_flat = {
         key: value for key, value in bankroll.items() if key != "evaluated_races"
@@ -860,11 +911,12 @@ def evaluate_recency_mlp(
         "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(DROP_FEATURE_GROUPS),
         "include_odds": False,
-        "promotion_eligible": bool(promotion_gate["pass"]),
+        "performance_eligible": bool(performance_gate["pass"]),
+        "promotion_eligible": False,
         "promotion_note": (
-            "same-race prediction and payout-policy gates passed"
-            if promotion_gate["pass"]
-            else "promotion requires same-race prediction non-regression and payout-policy gates"
+            "performance gates passed; deployable full-data artifact is pending"
+            if performance_gate["pass"]
+            else "promotion requires prediction, payout, and order-convergence gates"
         ),
         "promotion_gate": promotion_gate,
         "prediction_promotion_gate": prediction_gate,
@@ -938,6 +990,86 @@ def evaluate_recency_mlp(
         result["model_artifact_saved"] = bool(
             model_output_path.is_file() and model_output_path.stat().st_size > 0
         )
+
+    deployment_saved = False
+    if performance_gate["pass"] and deployment_model_output_path is not None:
+        deployment_order_model, deployment_order_fit = (
+            fit_deployment_conditional_order_layer(
+                predictions,
+                race_keys[training_count:],
+                dataset.ranks[training_count:],
+                regularization=float(
+                    conditional_order_selection["selected_regularization"]
+                ),
+            )
+        )
+        deployment_bundle = train_bundle_from_dataset(
+            dataset,
+            train_race_count=dataset.race_count,
+            model_kind="mlp",
+            batch_size=batch_size,
+            epochs=epochs,
+            alpha=alpha,
+            recency_half_life_days=selected_half_life,
+        )
+        deployment_training_hash = race_set_sha256(
+            row[0] for row in race_keys
+        )
+        deployment_trained_through = race_keys[-1]
+        deployment_artifact = {
+            **deployment_bundle,
+            "hasher": hasher,
+            "conditional_order_model": deployment_order_model,
+            "feature_schema_version": dataset.feature_schema_version,
+            "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+            "trained_through": deployment_trained_through,
+            "training_races": dataset.race_count,
+            "training_race_set_sha256": deployment_training_hash,
+            "metadata": {
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+                "model": MODEL_NAME,
+                "role": "production_candidate",
+                "feature_set": FEATURE_SET,
+                "feature_schema_version": dataset.feature_schema_version,
+                "drop_feature_groups": list(DROP_FEATURE_GROUPS),
+                "trained_through": list(deployment_trained_through),
+                "training_races": dataset.race_count,
+                "training_race_set_sha256": deployment_training_hash,
+                "evaluation_date": evaluation_date.isoformat(),
+                "evaluation_races": int(protocol["prediction_races"]),
+                "evaluation_race_set_sha256": evaluation_hash,
+                "recency_half_life_days": selected_half_life,
+                "conditional_order_regularization": (
+                    conditional_order_selection["selected_regularization"]
+                ),
+                "include_odds": False,
+            },
+        }
+        dump_joblib_atomic(deployment_model_output_path, deployment_artifact)
+        deployment_saved = bool(
+            deployment_model_output_path.is_file()
+            and deployment_model_output_path.stat().st_size > 0
+        )
+        result["deployment_model_artifact"] = str(deployment_model_output_path)
+        result["deployment_model_artifact_saved"] = deployment_saved
+        result["deployment_refit"] = {
+            "trained_through": list(deployment_trained_through),
+            "training_races": dataset.race_count,
+            "training_race_set_sha256": deployment_training_hash,
+            "conditional_order": deployment_order_fit,
+        }
+    elif deployment_model_output_path is not None:
+        result["deployment_model_artifact"] = str(deployment_model_output_path)
+        result["deployment_model_artifact_saved"] = False
+
+    promotion_gate["deployable_artifact_pass"] = deployment_saved
+    promotion_gate["pass"] = bool(performance_gate["pass"] and deployment_saved)
+    result["promotion_eligible"] = bool(promotion_gate["pass"])
+    result["promotion_note"] = (
+        "all performance gates passed and full-data deployment artifact persisted"
+        if promotion_gate["pass"]
+        else result["promotion_note"]
+    )
     write_json_atomic(output_path, result)
     return result
 
@@ -949,6 +1081,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-output", type=Path)
+    parser.add_argument("--deployment-model-output", type=Path)
     parser.add_argument("--incumbent-prediction", type=Path)
     parser.add_argument("--incumbent-bankroll", type=Path)
     parser.add_argument(
@@ -978,6 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
             model_output_path=args.model_output,
+            deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
         )

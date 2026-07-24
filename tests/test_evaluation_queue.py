@@ -629,6 +629,8 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         str(root / "data/models/evaluation_queue/job-00000007.json"),
         "--model-output",
         str(root / "data/models/evaluation_queue/job-00000007.joblib"),
+        "--deployment-model-output",
+        str(root / "data/models/evaluation_queue/job-00000007.deployment.joblib"),
         "--incumbent-prediction",
         str(root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"),
         "--incumbent-bankroll",

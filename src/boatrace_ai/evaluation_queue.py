@@ -885,6 +885,9 @@ def build_command(
             "--db", db,
             "--output", str(output),
             "--model-output", str(output.with_suffix(".joblib")),
+            "--deployment-model-output", str(
+                output.with_name(output.stem + ".deployment.joblib")
+            ),
             "--incumbent-prediction", str(
                 app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
             ),
