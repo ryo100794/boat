@@ -12,6 +12,7 @@ import boatrace_ai.evaluation_queue as evaluation_queue
 from boatrace_ai.evaluation_queue import (
     DEFAULT_WORK_TICKETS,
     JobDependencyUnavailable,
+    ObsoleteJob,
     ResourceSnapshot,
     TASK_PROFILES,
     build_command,
@@ -28,6 +29,7 @@ from boatrace_ai.evaluation_queue import (
     seed_work_tickets,
     summarize_result,
 )
+from boatrace_ai.feature_schema import MISSING_SAFE_FEATURE_SCHEMA_VERSION
 from boatrace_ai.listwise.conditional_order import (
     build_parser as conditional_parser,
 )
@@ -87,6 +89,31 @@ def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
         "idle_cpu": 3.0,
         "max_parallel": 1,
     }
+
+
+def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    result = root / "data/models/evaluation_queue/job-00000395.json"
+    result.parent.mkdir(parents=True)
+    result.write_text(
+        json.dumps({"feature_schema_version": MISSING_SAFE_FEATURE_SCHEMA_VERSION}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ObsoleteJob, match="obsolete"):
+        build_command(
+            _job(
+                "listwise_newton_refine",
+                {
+                    "search_result": "data/models/evaluation_queue/job-00000395.json",
+                    "cache_dir": str(root / "data/models/evaluation_cache/job-00000395"),
+                },
+            ),
+            app_root=root,
+            python=Path("/venv/python"),
+            db="host=postgres dbname=boatrace",
+        )
 
 
 def test_series_feature_cache_profile_and_command(tmp_path: Path) -> None:

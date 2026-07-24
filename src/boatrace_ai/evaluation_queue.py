@@ -20,6 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .db import connection
+from .feature_schema import FEATURE_SCHEMA_VERSION
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -621,6 +622,10 @@ class JobDependencyUnavailable(RuntimeError):
     """A required upstream artifact has not been generated yet."""
 
 
+class ObsoleteJob(RuntimeError):
+    """A queued job references an artifact superseded by the current schema."""
+
+
 def _selected_standard_cache_prefix(app_root: Path) -> Path:
     artifact = (
         app_root / "data" / "models" / "standardized_365d_v2"
@@ -942,6 +947,18 @@ def build_command(
         search_result = app_root / str(params["search_result"])
         if app_root not in search_result.resolve().parents:
             raise ValueError("search_result must be inside app root")
+        try:
+            search_payload = json.loads(search_result.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise JobDependencyUnavailable(
+                f"feature search result is not available yet: {search_result}"
+            ) from exc
+        search_schema = str(search_payload.get("feature_schema_version") or "")
+        if search_schema != FEATURE_SCHEMA_VERSION:
+            raise ObsoleteJob(
+                f"feature schema {search_schema or 'missing'} is obsolete; "
+                f"current={FEATURE_SCHEMA_VERSION}"
+            )
         model_output = output.with_suffix(".joblib")
         cache = Path(str(params.get("cache_dir") or "/tmp/boatrace-evaluation/newton"))
         return [
@@ -1159,6 +1176,33 @@ def fail_job(conn: Any, *, job: dict[str, Any], error: str) -> None:
         WHERE job_id = ? AND attempt = ?
         """,
         (error[-8000:], int(job["job_id"]), int(job["attempt"])),
+    )
+
+
+def cancel_obsolete_job(
+    conn: Any,
+    *,
+    job: dict[str, Any],
+    reason: str,
+) -> None:
+    audit_error = f"obsolete job cancelled: {reason}"[-8000:]
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET status = 'cancelled', worker_id = NULL, locked_at = NULL,
+            updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP,
+            error = ?
+        WHERE job_id = ?
+        """,
+        (audit_error, int(job["job_id"])),
+    )
+    conn.execute(
+        """
+        UPDATE model_evaluation_job_runs
+        SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error = ?
+        WHERE job_id = ? AND attempt = ?
+        """,
+        (audit_error, int(job["job_id"]), int(job["attempt"])),
     )
 
 
@@ -1742,6 +1786,9 @@ def run_worker(args: argparse.Namespace) -> int:
             except JobDependencyUnavailable as exc:
                 with connection(args.db) as conn:
                     defer_job(conn, job=job, reason=str(exc))
+            except ObsoleteJob as exc:
+                with connection(args.db) as conn:
+                    cancel_obsolete_job(conn, job=job, reason=str(exc))
             except Exception as exc:
                 with connection(args.db) as conn:
                     fail_job(
