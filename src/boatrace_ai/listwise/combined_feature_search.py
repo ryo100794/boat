@@ -15,17 +15,16 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
         ("base_pastlog", "research_correlates"),
     ),
     (
-        "drop_base_pastlog_research_correlates_series_cached",
-        ("base_pastlog", "research_correlates", "series_cached"),
+        "drop_base_pastlog_series_cached",
+        ("base_pastlog", "series_cached"),
     ),
     (
-        "drop_base_pastlog_research_correlates_series_cached_series_relative",
-        (
-            "base_pastlog",
-            "research_correlates",
-            "series_cached",
-            "series_relative",
-        ),
+        "drop_base_pastlog_series_relative",
+        ("base_pastlog", "series_relative"),
+    ),
+    (
+        "drop_base_pastlog_rolling_history",
+        ("base_pastlog", "rolling_history"),
     ),
 )
 

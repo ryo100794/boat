@@ -24,17 +24,16 @@ EXPECTED_COMBINED_VARIANTS = (
         ("base_pastlog", "research_correlates"),
     ),
     (
-        "drop_base_pastlog_research_correlates_series_cached",
-        ("base_pastlog", "research_correlates", "series_cached"),
+        "drop_base_pastlog_series_cached",
+        ("base_pastlog", "series_cached"),
     ),
     (
-        "drop_base_pastlog_research_correlates_series_cached_series_relative",
-        (
-            "base_pastlog",
-            "research_correlates",
-            "series_cached",
-            "series_relative",
-        ),
+        "drop_base_pastlog_series_relative",
+        ("base_pastlog", "series_relative"),
+    ),
+    (
+        "drop_base_pastlog_rolling_history",
+        ("base_pastlog", "rolling_history"),
     ),
 )
 
@@ -85,6 +84,13 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
+    assert all(drops[0] == "base_pastlog" for _name, drops in COMBINED_FEATURE_VARIANTS)
+    assert {drops[1] for _name, drops in COMBINED_FEATURE_VARIANTS} == {
+        "research_correlates",
+        "series_cached",
+        "series_relative",
+        "rolling_history",
+    }
     assert feature_variants() == defaults_before
     assert all(
         Path(name).name == name and ".." not in name
