@@ -361,12 +361,15 @@ def backtest_model(
     feature_cache: Path | None = None,
     daily_budget_yen: int = 10_000,
     ev_threshold: float = 1.20,
+    model_output_path: Path | None = None,
 ) -> dict[str, Any]:
     # Imported lazily because listwise.model reuses the matrix batching helper here.
     from .listwise.validation import default_policy, evaluate_bankroll_fold
 
     model_kind = normalize_model_kind(model_kind)
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
+    if model_output_path is not None and int(folds) != 1:
+        raise ValueError("model_output_path requires a single outer fold")
     race_keys = load_complete_race_ids(conn)
     races = [race_id for race_id, *_ in race_keys]
     if len(races) < min_train_races + folds:
@@ -549,6 +552,43 @@ def backtest_model(
         "daily": daily_rows,
         **bankroll_flat,
     }
+    if model_output_path is not None:
+        from .listwise.newton_refine import dump_joblib_atomic
+
+        trained_through = dataset.race_keys[min_train_races - 1]
+        training_race_ids = [
+            race_id for race_id, *_rest in dataset.race_keys[:min_train_races]
+        ]
+        metadata = {
+            "trained_at": now_iso(),
+            "model": f"calibrated_{model_kind}_shadow",
+            "role": "shadow",
+            "feature_set": FEATURE_SET,
+            "feature_schema_version": dataset.feature_schema_version,
+            "training_races": int(min_train_races),
+            "training_race_set_sha256": race_set_sha256(training_race_ids),
+            "trained_through": list(trained_through),
+            "n_features": int(n_features),
+            "epochs": max(1, int(epochs)),
+            "alpha": float(alpha),
+            "include_odds": False,
+            "evaluation_races": len(race_predictions),
+            "evaluation_race_set_sha256": evaluation_hash,
+        }
+        artifact = {
+            **bundle,
+            "hasher": hasher,
+            "feature_schema_version": dataset.feature_schema_version,
+            "trained_through": trained_through,
+            "training_races": int(min_train_races),
+            "training_race_set_sha256": metadata["training_race_set_sha256"],
+            "metadata": metadata,
+        }
+        dump_joblib_atomic(model_output_path, artifact)
+        result["model_artifact"] = str(model_output_path)
+        result["model_artifact_saved"] = bool(
+            model_output_path.is_file() and model_output_path.stat().st_size > 0
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
@@ -610,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     backtest = subparsers.add_parser("backtest")
     add_common(backtest)
     backtest.add_argument("--output", required=True)
+    backtest.add_argument("--model-output")
     backtest.add_argument("--folds", type=int, default=5)
     backtest.add_argument("--min-train-races", type=int, default=500)
     backtest.add_argument("--daily-budget-yen", type=int, default=10_000)
@@ -654,6 +695,9 @@ def run_backtest(args: argparse.Namespace) -> int:
             feature_cache=Path(args.feature_cache) if args.feature_cache else None,
             daily_budget_yen=args.daily_budget_yen,
             ev_threshold=args.ev_threshold,
+            model_output_path=(
+                Path(args.model_output) if args.model_output else None
+            ),
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0

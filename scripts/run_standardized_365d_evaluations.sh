@@ -207,6 +207,7 @@ for kind in linear mlp; do
     .venv/bin/python -m boatrace_ai.calibrated_shadow_model backtest \
     --db "$db" --model-kind "$kind" \
     --output "$raw_dir/calibrated_${kind}.json" \
+    --model-output "$eval_dir/calibrated_${kind}.joblib" \
     --folds 1 --min-train-races "$min_train" \
     --drop-feature-groups research_correlates \
     --daily-budget-yen 10000 --ev-threshold 1.20

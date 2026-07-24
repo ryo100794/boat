@@ -1,10 +1,12 @@
 from unittest.mock import patch
 
+import joblib
 import numpy as np
 import pytest
 from scipy import sparse
 
 from boatrace_ai.calibrated_shadow_model import (
+    backtest_model,
     normalize_model_kind,
     predict_probabilities,
     score_dataset_fold,
@@ -60,6 +62,80 @@ def test_calibrated_shadow_trains_in_batches(model_kind) -> None:
 def test_unknown_model_kind_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown model kind"):
         normalize_model_kind("tree")
+
+
+def test_backtest_artifact_requires_single_outer_fold(tmp_path) -> None:
+    with pytest.raises(ValueError, match="single outer fold"):
+        backtest_model(
+            None,
+            output_path=tmp_path / "result.json",
+            model_output_path=tmp_path / "model.joblib",
+            model_kind="mlp",
+            folds=2,
+        )
+
+
+def test_backtest_persists_exact_training_artifact(tmp_path, monkeypatch) -> None:
+    race_keys = [
+        ("r0", "2026-01-01", "01", 1),
+        ("r1", "2026-01-02", "01", 1),
+        ("r2", "2026-01-03", "01", 1),
+    ]
+    matrix = np.zeros((18, 256), dtype=np.float64)
+    for race in range(3):
+        for lane in range(6):
+            matrix[race * 6 + lane, lane] = 1.0
+    dataset = HashedRaceDataset(
+        matrix=sparse.csr_matrix(matrix),
+        race_keys=race_keys,
+        ranks=np.asarray([[1, 2, 3, 4, 5, 6]] * 3, dtype=np.int8),
+        n_features=256,
+        drop_feature_groups=(),
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.calibrated_shadow_model.load_complete_race_ids",
+        lambda _conn: race_keys,
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.calibrated_shadow_model.load_or_build_hashed_dataset",
+        lambda **_kwargs: (dataset, "test-cache"),
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.calibrated_shadow_model._load_trifecta_payouts",
+        lambda _conn: {},
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.validation.evaluate_bankroll_fold",
+        lambda **_kwargs: (
+            {"stake_yen": 0, "return_yen": 0, "profit_yen": 0, "roi": 0.0},
+            (0, 0, 0),
+        ),
+    )
+    output = tmp_path / "result.json"
+    model_output = tmp_path / "model.joblib"
+
+    result = backtest_model(
+        None,
+        output_path=output,
+        model_output_path=model_output,
+        model_kind="linear",
+        folds=1,
+        min_train_races=2,
+        n_features=256,
+        epochs=1,
+        feature_cache=tmp_path / "features",
+    )
+
+    artifact = joblib.load(model_output)
+    assert result["model_artifact_saved"] is True
+    assert artifact["hasher"].n_features == 256
+    assert artifact["training_races"] == 2
+    assert artifact["trained_through"] == race_keys[1]
+    assert artifact["feature_schema_version"] == dataset.feature_schema_version
+    assert artifact["metadata"]["evaluation_races"] == 1
+    assert artifact["metadata"]["evaluation_race_set_sha256"] == result[
+        "evaluation_race_set_sha256"
+    ]
 
 
 @pytest.mark.parametrize("model_kind", ["linear", "mlp"])
