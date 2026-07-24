@@ -186,6 +186,13 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(
         "0.0",
         "0.5",
         "1.0",
+        "--payout-threshold-candidates",
+        "1.05",
+        "1.10",
+        "1.20",
+        "1.30",
+        "1.50",
+        "2.00",
         "--promote-legacy-cache",
     ]
     assert output == result

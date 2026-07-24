@@ -878,6 +878,8 @@ def build_command(
             "--validation-days", "365",
             "--batch-races", "4000",
             "--payout-mean-corrections", "0.0", "0.5", "1.0",
+            "--payout-threshold-candidates",
+            "1.05", "1.10", "1.20", "1.30", "1.50", "2.00",
             "--promote-legacy-cache",
         ], output
     if task_type == "venue_conditional_order":
