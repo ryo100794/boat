@@ -73,10 +73,11 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
         _IdleQueue(), now=datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
     )
 
-    assert inserted == [1, 2, 3]
+    assert inserted == [1, 2, 3, 4]
     assert [row["task_type"] for row in calls] == [
         "gdrive_raw_archive",
         "evaluation_aggregate",
+        "series_feature_cache",
         "repository_hygiene",
     ]
     assert all("schedule_bucket" in row["parameters"] for row in calls)

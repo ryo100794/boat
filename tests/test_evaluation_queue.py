@@ -89,6 +89,33 @@ def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
     }
 
 
+def test_series_feature_cache_profile_and_command(tmp_path: Path) -> None:
+    assert TASK_PROFILES["series_feature_cache"] == {
+        "category": "maintenance",
+        "memory_mb": 512,
+        "disk_mb": 256,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+    command, output = build_command(
+        _job(
+            "series_feature_cache",
+            {"from_date": "2026-07-09", "timeout_seconds": 600},
+        ),
+        app_root=tmp_path,
+        python=Path("/venv/python"),
+        db="host=postgres dbname=boatrace",
+    )
+    assert command == [
+        "/venv/python", "-m", "boatrace_ai.cache_entry_series_features",
+        "--db", "host=postgres dbname=boatrace",
+        "--batch-size", "1000",
+        "--from-date", "2026-07-09",
+        "--output", str(output),
+    ]
+    assert output == tmp_path / "data/models/evaluation_queue/job-00000007.json"
+
+
 def _write_standard_feature_artifact(
     root: Path,
     cache_dir: Path,
@@ -565,6 +592,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "OPS-GITHUB-SYNC-001",
         "DOCS-HIERARCHY-001",
         "MODEL-FEATURE-COMBINE-001",
+        "MODEL-SERIES-CACHE-001",
         "MODEL-PAYOUT-001",
         "MODEL-RECENCY-001",
         "MODEL-VENUE-001",
@@ -758,11 +786,14 @@ def test_periodic_seed_uses_low_backup_priority_and_skips_completed_bucket(
     monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
     now = datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
 
-    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3]
+    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3, 4]
     assert seed_periodic_jobs(conn, now=now) == []
-    assert len(calls) == 3
+    assert len(calls) == 4
     backup = next(row for row in calls if row["task_type"] == "gdrive_raw_archive")
     assert backup["priority"] == 10
+    series = next(row for row in calls if row["task_type"] == "series_feature_cache")
+    assert series["priority"] == 45
+    assert series["parameters"]["from_date"] == "2026-07-09"
 
 
 def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:

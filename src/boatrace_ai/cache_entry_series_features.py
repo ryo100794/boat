@@ -67,15 +67,31 @@ def ensure_series_cache_table(conn) -> None:
     conn.executescript(SERIES_CACHE_SCHEMA)
 
 
-def populate_series_cache(conn, *, batch_size: int = 5000, limit: int | None = None) -> dict[str, Any]:
+def populate_series_cache(
+    conn,
+    *,
+    batch_size: int = 5000,
+    limit: int | None = None,
+    from_date: str | None = None,
+    refresh_all: bool = False,
+) -> dict[str, Any]:
     ensure_series_cache_table(conn)
     is_postgresql = getattr(conn, "dialect", None) == "postgresql"
-    source_filter = (
+    filters = [
         "jsonb_extract_path(CAST(e.raw_json AS jsonb), 'series_results') IS NOT NULL"
         if is_postgresql
         else "e.raw_json LIKE ?"
-    )
+    ]
     params: list[Any] = [] if is_postgresql else ["%series_results%"]
+    if not refresh_all:
+        filters.append(
+            "(sf.race_id IS NULL OR CAST(sf.updated_at AS timestamp) < CAST(e.updated_at AS timestamp))"
+            if is_postgresql
+            else "(sf.race_id IS NULL OR datetime(sf.updated_at) < datetime(e.updated_at))"
+        )
+    if from_date:
+        filters.append("r.race_date >= ?")
+        params.append(from_date)
     limit_sql = ""
     if limit is not None:
         limit_sql = "LIMIT ?"
@@ -85,7 +101,9 @@ def populate_series_cache(conn, *, batch_size: int = 5000, limit: int | None = N
         SELECT r.rno, e.race_id, e.lane, e.raw_json
         FROM entries e
         JOIN races r ON r.race_id = e.race_id
-        WHERE {source_filter}
+        LEFT JOIN entry_series_features sf
+          ON sf.race_id = e.race_id AND sf.lane = e.lane
+        WHERE {" AND ".join(filters)}
         ORDER BY r.race_date DESC, r.jcd DESC, r.rno DESC, e.lane
         {limit_sql}
         """,
@@ -107,7 +125,11 @@ def populate_series_cache(conn, *, batch_size: int = 5000, limit: int | None = N
         _flush(conn, buffer)
         total += len(buffer)
     conn.commit()
-    return {"cached": total}
+    return {
+        "cached": total,
+        "from_date": from_date,
+        "refresh_all": refresh_all,
+    }
 
 
 def _flush(conn, rows: list[dict[str, Any]]) -> None:
@@ -131,10 +153,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--batch-size", type=int, default=5000)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--from-date")
+    parser.add_argument("--refresh-all", action="store_true")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     init_db(args.db)
-    with connection(Path(args.db)) as conn:
-        result = populate_series_cache(conn, batch_size=args.batch_size, limit=args.limit)
+    with connection(args.db) as conn:
+        result = populate_series_cache(
+            conn,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            from_date=args.from_date,
+            refresh_all=args.refresh_all,
+        )
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(args.output)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
 

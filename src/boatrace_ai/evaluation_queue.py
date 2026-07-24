@@ -53,6 +53,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
 }
 
 
@@ -929,6 +930,14 @@ def build_command(
             "repository-hygiene", "--app-root", str(app_root),
             "--output", str(output),
         ], output
+    if task_type == "series_feature_cache":
+        return [
+            str(python), "-m", "boatrace_ai.cache_entry_series_features",
+            "--db", db,
+            "--batch-size", "1000",
+            "--from-date", _date(params, "from_date"),
+            "--output", str(output),
+        ], output
     if task_type == "listwise_newton_refine":
         search_result = app_root / str(params["search_result"])
         if app_root not in search_result.resolve().parents:
@@ -954,7 +963,7 @@ def build_command(
 
 
 METRIC_KEYS = (
-    "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
+    "cached", "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
     "entry_brier", "trifecta_log_loss", "calibrated_trifecta_log_loss",
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
     "roi", "profit_yen", "stake_yen",
@@ -1072,6 +1081,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "aggregation_complete"
     if task_type == "gdrive_raw_archive":
         return "backup_complete"
+    if task_type in {"repository_hygiene", "series_feature_cache"}:
+        return "maintenance_complete"
     return "reject_or_research_only"
 
 
@@ -1393,6 +1404,7 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
     schedules = (
         ("gdrive_raw_archive", "raw-data", 600, 10, 1800),
         ("evaluation_aggregate", "all-models", 900, 30, 900),
+        ("series_feature_cache", "official-series", 1800, 45, 600),
         ("repository_hygiene", "repository", 21600, 20, 300),
     )
     epoch = int(now.timestamp())
@@ -1404,6 +1416,10 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
             ).isoformat(),
             "timeout_seconds": timeout,
         }
+        if task_type == "series_feature_cache":
+            parameters["from_date"] = (
+                now.astimezone(JST).date() - timedelta(days=14)
+            ).isoformat()
         key = dedupe_key(task_type, model_key, parameters)
         if already_scheduled(task_type, key):
             continue
@@ -1475,6 +1491,16 @@ DEFAULT_WORK_TICKETS = (
         88,
         "queued",
         10,
+    ),
+    (
+        "MODEL-SERIES-CACHE-001",
+        "公式series特徴キャッシュの継続更新",
+        "モデル",
+        "公式raw JSONのseries成績をPostgreSQL特徴キャッシュへ増分反映する",
+        "raw保有艇を欠落なく反映し、負のtrendを保持したv3で365日評価を記録する",
+        95,
+        "in_progress",
+        75,
     ),
     (
         "MODEL-PAYOUT-001",
