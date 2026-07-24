@@ -28,6 +28,13 @@ from .calibrated_shadow_model import (
 )
 from .db import connection
 from .hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
+from .fast_math import plackett_luce_probabilities
+from .listwise.conditional_order import bankroll_promotion_gate
+from .listwise.direct_bankroll import (
+    bootstrap_daily_bankroll,
+    simulate_conditional_payout_walk_forward,
+)
+from .listwise.newton_refine import dump_joblib_atomic
 from .listwise.validation import default_policy, evaluate_bankroll_fold
 from .modeling import _race_level_metrics
 from .standard_evaluation import (
@@ -233,6 +240,7 @@ def select_recency_half_life(
     batch_size: int = BATCH_SIZE,
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
+    prediction_output: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
@@ -242,6 +250,8 @@ def select_recency_half_life(
         calibration_days=calibration_days,
     )
     candidates: list[dict[str, Any]] = []
+    selected_key: tuple[float, int, float] | None = None
+    selected_predictions: dict[str, list[dict[str, Any]]] = {}
     for half_life in half_lives:
         bundle = train_bundle_from_dataset(
             dataset,
@@ -252,7 +262,7 @@ def select_recency_half_life(
             alpha=alpha,
             recency_half_life_days=half_life,
         )
-        metrics, _predictions = score_range(
+        metrics, candidate_predictions = score_range(
             dataset,
             bundle=bundle,
             race_start=inner_train_end,
@@ -261,16 +271,23 @@ def select_recency_half_life(
         )
         if not np.isfinite(float(metrics["entry_log_loss"])):
             raise ValueError("candidate calibration log loss is not finite")
-        candidates.append(
-            {
-                "recency_half_life_days": half_life,
-                "inner_train_races": inner_train_end,
-                "calibration_races": outer_train_end - inner_train_end,
-                "calibration_start": calibration_start,
-                "calibration_end": calibration_end,
-                **metrics,
-            }
+        candidate = {
+            "recency_half_life_days": half_life,
+            "inner_train_races": inner_train_end,
+            "calibration_races": outer_train_end - inner_train_end,
+            "calibration_start": calibration_start,
+            "calibration_end": calibration_end,
+            **metrics,
+        }
+        candidates.append(candidate)
+        candidate_key = (
+            float(candidate["entry_log_loss"]),
+            0 if half_life is None else 1,
+            -float(half_life or 0.0),
         )
+        if selected_key is None or candidate_key < selected_key:
+            selected_key = candidate_key
+            selected_predictions = candidate_predictions
 
     selected = min(
         candidates,
@@ -280,6 +297,9 @@ def select_recency_half_life(
             -float(row["recency_half_life_days"] or 0.0),
         ),
     )
+    if prediction_output is not None:
+        prediction_output.clear()
+        prediction_output.update(selected_predictions)
     split = {
         "inner_train_races": inner_train_end,
         "calibration_races": outer_train_end - inner_train_end,
@@ -358,6 +378,83 @@ def bankroll_summary(
     return policy, summary, daily
 
 
+def trifecta_probability_matrix(
+    predictions: dict[str, list[dict[str, Any]]],
+    race_keys: Sequence[tuple[str, str, str, int]],
+) -> np.ndarray:
+    matrix = np.empty((len(race_keys), 120), dtype=np.float64)
+    for race_index, race_key in enumerate(race_keys):
+        rows = predictions.get(str(race_key[0]))
+        if rows is None or len(rows) != 6:
+            raise ValueError("trifecta probability input contains an incomplete race")
+        lane_probabilities = {
+            int(row["lane"]): float(row["probability"])
+            for row in rows
+        }
+        if set(lane_probabilities) != set(range(1, 7)):
+            raise ValueError("trifecta probability input has invalid lanes")
+        values = np.asarray(
+            [lane_probabilities[lane] for lane in range(1, 7)],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+            raise ValueError("lane probabilities must be finite and non-negative")
+        total = float(values.sum())
+        if total <= 0.0:
+            raise ValueError("lane probabilities must have a positive sum")
+        matrix[race_index] = plackett_luce_probabilities(values / total)
+    if not np.allclose(matrix.sum(axis=1), 1.0, rtol=1e-10, atol=1e-12):
+        raise ValueError("trifecta probabilities do not sum to one")
+    return matrix
+
+
+def conditional_payout_summary(
+    conn: Any,
+    *,
+    race_keys: Sequence[tuple[str, str, str, int]],
+    training_count: int,
+    inner_train_count: int,
+    calibration_predictions: dict[str, list[dict[str, Any]]],
+    holdout_predictions: dict[str, list[dict[str, Any]]],
+    baseline_bankroll: dict[str, Any],
+    baseline_daily: list[dict[str, Any]],
+    protocol: dict[str, Any],
+) -> dict[str, Any]:
+    calibration_keys = list(race_keys[inner_train_count:training_count])
+    holdout_keys = list(race_keys[training_count:])
+    calibration_probabilities = trifecta_probability_matrix(
+        calibration_predictions,
+        calibration_keys,
+    )
+    holdout_probabilities = trifecta_probability_matrix(
+        holdout_predictions,
+        holdout_keys,
+    )
+    candidate = simulate_conditional_payout_walk_forward(
+        holdout_probabilities,
+        race_keys=holdout_keys,
+        payouts=_load_trifecta_payouts(conn),
+        calibration_probabilities=calibration_probabilities,
+        calibration_race_keys=calibration_keys,
+    )
+    if int(candidate["evaluated_races"]) != int(
+        protocol["bankroll_evaluable_races"]
+    ):
+        raise ValueError("conditional payout race count does not match the protocol")
+    confidence = bootstrap_daily_bankroll(
+        candidate["daily"],
+        baseline_daily=baseline_daily,
+    )
+    gate = bankroll_promotion_gate(candidate, baseline_bankroll, confidence)
+    return {
+        "role": "untouched 365-day payout-policy candidate",
+        "promotion_eligible": bool(gate["pass"]),
+        "bankroll": candidate,
+        "bankroll_confidence": confidence,
+        "diagnostic_gate": gate,
+    }
+
+
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
@@ -383,6 +480,7 @@ def evaluate_recency_mlp(
     batch_size: int = BATCH_SIZE,
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
+    model_output_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     with frozen_evaluation_max_date(evaluation_date):
@@ -422,6 +520,7 @@ def evaluate_recency_mlp(
             training_hash=training_hash,
         )
 
+        calibration_predictions: dict[str, list[dict[str, Any]]] = {}
         selected_half_life, candidates, split = select_recency_half_life(
             dataset,
             outer_train_end=training_count,
@@ -430,6 +529,7 @@ def evaluate_recency_mlp(
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
+            prediction_output=calibration_predictions,
         )
         final_bundle = train_bundle_from_dataset(
             dataset,
@@ -462,6 +562,17 @@ def evaluate_recency_mlp(
             test_dates=test_dates,
             protocol=protocol,
         )
+        conditional_payout = conditional_payout_summary(
+            conn,
+            race_keys=race_keys,
+            training_count=training_count,
+            inner_train_count=int(split["inner_train_races"]),
+            calibration_predictions=calibration_predictions,
+            holdout_predictions=predictions,
+            baseline_bankroll=bankroll,
+            baseline_daily=daily,
+            protocol=protocol,
+        )
 
     bankroll_flat = {
         key: value for key, value in bankroll.items() if key != "evaluated_races"
@@ -474,10 +585,14 @@ def evaluate_recency_mlp(
         "model_kind": "mlp",
         "role": "shadow",
         "feature_set": FEATURE_SET,
+        "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(DROP_FEATURE_GROUPS),
         "include_odds": False,
         "promotion_eligible": False,
-        "promotion_note": "training-only half-life selection; no promotion decision",
+        "promotion_note": (
+            "payout-policy gate is reported separately; full promotion also "
+            "requires the standard prediction non-regression gates"
+        ),
         "protocol": protocol,
         "training_races": training_count,
         "training_race_set_sha256": training_hash,
@@ -508,9 +623,39 @@ def evaluate_recency_mlp(
         "bankroll": bankroll,
         "bankroll_evaluated_races": int(bankroll["evaluated_races"]),
         "daily": daily,
+        "conditional_payout_walk_forward": conditional_payout,
         **bankroll_flat,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
+    if model_output_path is not None:
+        trained_through = race_keys[training_count - 1]
+        artifact = {
+            **final_bundle,
+            "hasher": hasher,
+            "feature_schema_version": dataset.feature_schema_version,
+            "trained_through": trained_through,
+            "training_races": training_count,
+            "training_race_set_sha256": training_hash,
+            "metadata": {
+                "trained_at": result["generated_at"],
+                "model": MODEL_NAME,
+                "role": "shadow",
+                "feature_set": FEATURE_SET,
+                "feature_schema_version": dataset.feature_schema_version,
+                "trained_through": list(trained_through),
+                "training_races": training_count,
+                "training_race_set_sha256": training_hash,
+                "evaluation_races": int(protocol["prediction_races"]),
+                "evaluation_race_set_sha256": evaluation_hash,
+                "recency_half_life_days": selected_half_life,
+                "include_odds": False,
+            },
+        }
+        dump_joblib_atomic(model_output_path, artifact)
+        result["model_artifact"] = str(model_output_path)
+        result["model_artifact_saved"] = bool(
+            model_output_path.is_file() and model_output_path.stat().st_size > 0
+        )
     write_json_atomic(output_path, result)
     return result
 
@@ -521,6 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model-output", type=Path)
     parser.add_argument(
         "--evaluation-date",
         type=parse_evaluation_date,
@@ -547,6 +693,7 @@ def main(argv: list[str] | None = None) -> int:
             feature_cache=args.feature_cache,
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
+            model_output_path=args.model_output,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0

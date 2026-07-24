@@ -828,6 +828,7 @@ def build_command(
             str(python), "-m", "boatrace_ai.recency_mlp_evaluation",
             "--db", db,
             "--output", str(output),
+            "--model-output", str(output.with_suffix(".joblib")),
             "--evaluation-date", evaluation_date,
             "--feature-cache", str(feature_cache),
             "--half-lives", half_lives,

@@ -216,17 +216,23 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
                 "trifecta_top5_hit_rate": 0.05,
                 "evaluated_races": race_end - race_start,
             },
-            {},
+            {
+                "calibration": [
+                    {"half_life": bundle["half_life"]}
+                ]
+            },
         )
 
     monkeypatch.setattr(recency, "train_bundle_from_dataset", fake_train)
     monkeypatch.setattr(recency, "score_range", fake_score)
 
+    selected_predictions: dict[str, list[dict[str, object]]] = {}
     selected, candidates, split = recency.select_recency_half_life(
         dataset,
         outer_train_end=5,
         half_lives=(730.0, None, 365.0),
         calibration_days=2,
+        prediction_output=selected_predictions,
     )
 
     assert selected is None
@@ -234,6 +240,84 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
     assert scored == [(3, 5), (3, 5), (3, 5)]
     assert split["calibration_end"] == "2026-01-11"
     assert all(row["calibration_races"] == 2 for row in candidates)
+    assert selected_predictions == {"calibration": [{"half_life": None}]}
+
+
+def test_trifecta_probability_matrix_is_ordered_and_normalized() -> None:
+    race_keys = [("r1", "2026-01-01", "01", 1)]
+    predictions = {
+        "r1": [
+            {"lane": lane, "probability": float(7 - lane)}
+            for lane in range(1, 7)
+        ]
+    }
+
+    matrix = recency.trifecta_probability_matrix(predictions, race_keys)
+
+    assert matrix.shape == (1, 120)
+    assert matrix.sum() == pytest.approx(1.0)
+    assert int(np.argmax(matrix[0])) == 0
+    with pytest.raises(ValueError, match="incomplete race"):
+        recency.trifecta_probability_matrix({"r1": predictions["r1"][:5]}, race_keys)
+
+
+def test_conditional_payout_uses_pre_holdout_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race_keys = [
+        ("inner", "2025-12-30", "01", 1),
+        ("cal", "2025-12-31", "01", 2),
+        ("hold", "2026-01-01", "01", 1),
+    ]
+    lane_rows = lambda race_id: [
+        {"race_id": race_id, "lane": lane, "probability": float(7 - lane)}
+        for lane in range(1, 7)
+    ]
+    captured: dict[str, object] = {}
+
+    def fake_simulate(probabilities, **kwargs):
+        captured["probabilities"] = probabilities
+        captured.update(kwargs)
+        return {
+            "evaluated_races": 1,
+            "roi": 1.2,
+            "profit_yen": 200,
+            "daily": [{"race_date": "2026-01-01", "stake_yen": 100, "return_yen": 120}],
+        }
+
+    monkeypatch.setattr(recency, "_load_trifecta_payouts", lambda _conn: {})
+    monkeypatch.setattr(recency, "simulate_conditional_payout_walk_forward", fake_simulate)
+    monkeypatch.setattr(
+        recency,
+        "bootstrap_daily_bankroll",
+        lambda *_args, **_kwargs: {
+            "roi_ci95_lower": 1.01,
+            "roi_delta_ci95_lower": 0.01,
+        },
+    )
+    monkeypatch.setattr(
+        recency,
+        "bankroll_promotion_gate",
+        lambda *_args, **_kwargs: {"pass": True},
+    )
+
+    result = recency.conditional_payout_summary(
+        None,
+        race_keys=race_keys,
+        training_count=2,
+        inner_train_count=1,
+        calibration_predictions={"cal": lane_rows("cal")},
+        holdout_predictions={"hold": lane_rows("hold")},
+        baseline_bankroll={"roi": 0.8, "profit_yen": -100},
+        baseline_daily=[{"race_date": "2026-01-01", "stake_yen": 100, "return_yen": 80}],
+        protocol={"bankroll_evaluable_races": 1},
+    )
+
+    assert captured["race_keys"] == [race_keys[2]]
+    assert captured["calibration_race_keys"] == [race_keys[1]]
+    assert np.asarray(captured["probabilities"]).shape == (1, 120)
+    assert np.asarray(captured["calibration_probabilities"]).shape == (1, 120)
+    assert result["promotion_eligible"] is True
 
 
 def test_protocol_race_validation_rejects_holdout_hash_mismatch(
@@ -383,6 +467,15 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         "bankroll_summary",
         lambda *_args, **_kwargs: (policy, bankroll, daily),
     )
+    conditional = {
+        "promotion_eligible": False,
+        "bankroll": {"roi": 0.9, "daily": daily},
+    }
+    monkeypatch.setattr(
+        recency,
+        "conditional_payout_summary",
+        lambda *_args, **_kwargs: conditional,
+    )
     output = tmp_path / "result.json"
 
     result = recency.evaluate_recency_mlp(
@@ -404,6 +497,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert result["trifecta_top5_hit_rate"] == 0.2
     assert result["evaluation_race_set_sha256"] == holdout_hash
     assert result["daily"] == daily
+    assert result["conditional_payout_walk_forward"] == conditional
     assert result["promotion_eligible"] is False
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
@@ -457,5 +551,6 @@ def test_cli_defaults_match_recency_protocol() -> None:
     )
 
     assert args.feature_cache == recency.DEFAULT_FEATURE_CACHE
+    assert args.model_output is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180

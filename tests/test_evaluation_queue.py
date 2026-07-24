@@ -562,6 +562,8 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         "postgresql://test",
         "--output",
         str(root / "data/models/evaluation_queue/job-00000007.json"),
+        "--model-output",
+        str(root / "data/models/evaluation_queue/job-00000007.joblib"),
         "--evaluation-date",
         "2026-07-22",
         "--feature-cache",
