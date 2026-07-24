@@ -12,6 +12,12 @@ from .legacy_model_aliases import load_model_bundle
 from .db import connection, init_db, insert_prediction_rows
 from .features import latest_trifecta_odds
 from .base_features import prediction_features
+from .calibrated_shadow_model import (
+    predict_probabilities as calibrated_predict_probabilities,
+)
+from .operational_features import (
+    prediction_features as calibrated_prediction_features,
+)
 from .modeling import _normalize_lane_probs, trifecta_predictions
 from .historical_model import FEATURE_SET, positive_probs
 
@@ -28,11 +34,31 @@ def predict_race(
     store: bool = True,
 ) -> list[dict[str, Any]]:
     bundle = load_model_bundle(model_path)
-    pipeline = bundle["pipeline"]
-    X = prediction_features(conn, race_id=race_id_value, include_odds=False)
-    if len(X) != 6:
+    if "pipeline" in bundle:
+        X = prediction_features(conn, race_id=race_id_value, include_odds=False)
+        raw = positive_probs(bundle["pipeline"], X)
+        feature_set = MODEL_RANK_FEATURE_SET
+    elif all(key in bundle for key in ("hasher", "scaler", "classifier")):
+        feature_schema_version = str(bundle.get("feature_schema_version") or "")
+        if not feature_schema_version:
+            raise ValueError("calibrated model artifact lacks feature schema")
+        X = calibrated_prediction_features(
+            conn,
+            race_id=race_id_value,
+            include_odds=False,
+            feature_schema_version=feature_schema_version,
+            drop_feature_groups=tuple(bundle.get("drop_feature_groups") or ()),
+        )
+        raw = calibrated_predict_probabilities(bundle, X)
+        artifact_feature_set = str(
+            (bundle.get("metadata") or {}).get("feature_set")
+            or "pastlog_calibrated_hash_shadow"
+        )
+        feature_set = f"{artifact_feature_set}_model_probability_rank"
+    else:
+        raise ValueError("unsupported operational model artifact")
+    if len(X) != 6 or len(raw) != 6:
         raise ValueError(f"race needs six entries before prediction: {race_id_value}")
-    raw = positive_probs(pipeline, X)
     lane_probs = _normalize_lane_probs({lane: raw[lane - 1] for lane in range(1, 7)})
     rows = trifecta_predictions(lane_probs, latest_odds=latest_trifecta_odds(conn, race_id_value))
     rows = sorted(
@@ -42,7 +68,7 @@ def predict_race(
     )[:top_n]
     for row in rows:
         row["rank_basis"] = "model_probability"
-        row["feature_set"] = MODEL_RANK_FEATURE_SET
+        row["feature_set"] = feature_set
     if store:
         insert_prediction_rows(conn, race_id_value, _now(), str(model_path), rows)
     return rows

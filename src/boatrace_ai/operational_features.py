@@ -123,33 +123,75 @@ def load_training_examples(
     return features, labels, meta
 
 
-def prediction_features(conn: sqlite3.Connection, *, race_id: str, include_odds: bool = False) -> list[dict[str, Any]]:
+def prediction_features(
+    conn: sqlite3.Connection,
+    *,
+    race_id: str,
+    include_odds: bool = False,
+    feature_schema_version: str = MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    drop_feature_groups: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     if include_odds:
         raise ValueError("operational_features does not use odds")
+    dropped = {str(value).strip() for value in drop_feature_groups if str(value).strip()}
+    allowed_groups = {
+        "base_pastlog",
+        "series_cached",
+        "series_relative",
+        "rolling_history",
+        "research_correlates",
+    }
+    unknown = dropped - allowed_groups
+    if unknown:
+        raise ValueError(f"unknown feature groups: {', '.join(sorted(unknown))}")
     ensure_series_cache_table(conn)
     rows = load_race_entries(conn, race_id=race_id)
     if len(rows) != 6:
         return []
     state = RollingState()
-    for history_rows in history_groups_prior_dates(conn, rows[0]):
-        state.update_race(history_rows)
-    relatives = race_relative_features(rows, {lane: {} for lane in range(1, 7)})
-    series_relatives = series_relative_features(
-        rows,
-        feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    if "rolling_history" not in dropped:
+        for history_rows in history_groups_prior_dates(conn, rows[0]):
+            state.update_race(history_rows)
+    relatives = (
+        race_relative_features(
+            rows,
+            {lane: {} for lane in range(1, 7)},
+            include_research="research_correlates" not in dropped,
+        )
+        if "base_pastlog" not in dropped
+        else {}
+    )
+    series_relatives = (
+        series_relative_features(
+            rows,
+            feature_schema_version=feature_schema_version,
+        )
+        if "series_relative" not in dropped
+        else {}
     )
     result = []
     for row in rows:
         lane = int(row["lane"])
-        item = base_pastlog_features(row, relatives[lane])
-        item.update(
-            cached_series_features(
-                row,
-                feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+        item: dict[str, Any] = {}
+        if "base_pastlog" not in dropped:
+            item.update(base_pastlog_features(row, relatives[lane]))
+        if "series_cached" not in dropped:
+            item.update(
+                cached_series_features(
+                    row,
+                    feature_schema_version=feature_schema_version,
+                )
             )
-        )
-        item.update(series_relatives[lane])
-        item.update(state.features_for(row))
+        if "series_relative" not in dropped:
+            item.update(series_relatives[lane])
+        if "rolling_history" not in dropped:
+            item.update(state.features_for(row))
+        if "research_correlates" in dropped:
+            item = {
+                key: value
+                for key, value in item.items()
+                if not key.startswith("research_")
+            }
         result.append(item)
     return result
 
