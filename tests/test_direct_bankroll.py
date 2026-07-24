@@ -532,6 +532,65 @@ def test_conditional_policy_tie_break_uses_roi_profit_then_low_exposure(
     assert selected[8] == expected_exposure
 
 
+def test_conditional_policy_prefers_bootstrap_lower_bound_over_raw_roi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    volatile = _selection_diagnostic(
+        roi=1.8,
+        profit_yen=800,
+        exposure=0.4,
+        tickets=20,
+    )
+    volatile.update(
+        selection_roi_ci95_lower=0.4,
+        selection_probability_roi_above_one=0.55,
+    )
+    stable = _selection_diagnostic(
+        roi=1.2,
+        profit_yen=200,
+        exposure=0.0,
+        tickets=20,
+    )
+    stable.update(
+        selection_roi_ci95_lower=1.05,
+        selection_probability_roi_above_one=0.98,
+    )
+
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_selection_walk_forward_for_ridge",
+        lambda *_args, **_kwargs: (
+            [volatile, stable],
+            direct_bankroll.ConditionalPayoutStatistics.empty(),
+            direct_bankroll.ConditionalPayoutTailCalibrator.empty(),
+        ),
+    )
+    race_keys = [
+        (f"cal-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    probabilities = np.full((4, 120), 1.0 / 120.0)
+
+    selected = direct_bankroll._select_conditional_payout_policy_state(
+        probabilities,
+        probabilities,
+        race_keys,
+        {},
+        selection_days=2,
+        base_policy=standard_direct_policy(),
+        fallback_ridge=10.0,
+        ridge_candidates=(10.0,),
+        correction_candidates=(0.0,),
+        threshold_candidates=(1.2,),
+        minimum_tickets=0,
+        minimum_hits=0,
+        minimum_winning_days=0,
+        minimum_roi=0.0,
+    )
+
+    assert selected[8] == 0.0
+
+
 def test_conditional_policy_selects_mean_correction_from_pre_evaluation_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -40,6 +40,8 @@ COMBINATION_INDEX = {
 PAYOUT_TAIL_SCHEMA = "conditional_payout_tail_probability_bins_v1"
 CONDITIONAL_PAYOUT_STATE_SCHEMA = "conditional_payout_next_day_inference_v1"
 MIN_DAILY_EXPOSURE_CANDIDATES = (0.0, 0.1, 0.2, 0.4)
+POLICY_SELECTION_DAYS = 60
+SELECTION_BOOTSTRAP_SAMPLES = 2_000
 
 
 def _finite_quantile(values: np.ndarray) -> tuple[float, float]:
@@ -461,6 +463,11 @@ def _selection_walk_forward_for_ridge(
         totals = run["totals"]
         stake_yen = int(totals["stake_yen"])
         return_yen = int(totals["return_yen"])
+        selection_confidence = bootstrap_daily_bankroll(
+            run["daily"],
+            samples=SELECTION_BOOTSTRAP_SAMPLES,
+            seed=20260728,
+        )
         diagnostics.append(
             {
                 "ridge": float(ridge),
@@ -474,6 +481,15 @@ def _selection_walk_forward_for_ridge(
                 "return_yen": return_yen,
                 "profit_yen": return_yen - stake_yen,
                 "roi": return_yen / stake_yen if stake_yen else 0.0,
+                "selection_roi_ci95_lower": float(
+                    selection_confidence["roi_ci95_lower"]
+                ),
+                "selection_probability_roi_above_one": float(
+                    selection_confidence["probability_roi_above_one"]
+                ),
+                "selection_profit_ci95_lower_yen": float(
+                    selection_confidence["profit_ci95_lower_yen"]
+                ),
                 "winning_days": int(totals["winning_days"]),
                 "losing_days": int(totals["losing_days"]),
                 "max_drawdown_yen": int(run["state"][2]),
@@ -632,6 +648,8 @@ def _select_conditional_payout_policy_state(
         selected = max(
             eligible,
             key=lambda row: (
+                float(row.get("selection_roi_ci95_lower", row["roi"])),
+                float(row.get("selection_probability_roi_above_one", 0.0)),
                 float(row["roi"]), int(row["profit_yen"]),
                 -float(row["min_daily_exposure_fraction"]),
                 int(row["winning_days"]), int(row["hits"]),
@@ -667,6 +685,11 @@ def _select_conditional_payout_policy_state(
         "tail_final_samples": int(tail_calibrator.samples),
         "selected_min_daily_exposure_fraction": selected_exposure,
         "selected_mean_correction_factor": selected_mean_correction,
+        "selection_objective": (
+            "maximum daily-bootstrap ROI 95% lower bound, then probability "
+            "ROI>1, ROI, and profit"
+        ),
+        "selection_bootstrap_samples": SELECTION_BOOTSTRAP_SAMPLES,
     }
     return (
         selected_ridge, selected_mean_correction,
@@ -717,7 +740,7 @@ def simulate_conditional_payout_walk_forward(
     min_daily_exposure_candidates: tuple[float, ...] = (
         MIN_DAILY_EXPOSURE_CANDIDATES
     ),
-    policy_selection_days: int = 30,
+    policy_selection_days: int = POLICY_SELECTION_DAYS,
     minimum_selection_tickets: int = 100,
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
@@ -807,7 +830,7 @@ def simulate_conditional_payout_walk_forward(
             "selection": (
                 "pre-evaluation adaptive two-stage payout policy selection; "
                 "ridge, EV threshold, and minimum daily exposure are fixed "
-                "before evaluation"
+                "before evaluation using risk-adjusted bootstrap ranking"
             ),
         }
     )
