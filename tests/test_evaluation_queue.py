@@ -851,7 +851,7 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
 
     inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
 
-    assert len(inserted) == 13
+    assert len(inserted) == 14
     standardized = [
         row for row in calls if row["task_type"] == "standardized_365d"
     ]
@@ -866,6 +866,16 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     }
     assert payout["priority"] == 90
     assert payout["max_attempts"] == 3
+    research = next(
+        row for row in calls
+        if row["task_type"] == "historical_research_logit"
+    )
+    assert research["model_key"] == "no_odds_v9_research_logit"
+    assert research["parameters"] == {
+        "evaluation_date": "2026-07-22",
+        "timeout_seconds": 86400,
+    }
+    assert research["priority"] == 89
     assert sum(row["task_type"] == "market_curvature" for row in calls) == 6
     assert sum(row["task_type"] == "listwise_feature_search" for row in calls) == 4
     combined = [row for row in calls if row["task_type"] == "combined_feature_search"]

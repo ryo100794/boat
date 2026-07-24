@@ -28,7 +28,12 @@ from .adaptive_allocation import (
 )
 from .base_features import load_training_examples
 from .db import connection, init_db
-from .historical_model import FEATURE_SET, iter_scored_entries, make_pipeline
+from .historical_model import (
+    FEATURE_SET,
+    RESEARCH_FEATURE_SET,
+    iter_scored_entries,
+    make_pipeline,
+)
 from .feature_tuning import load_complete_race_ids
 from .model_core import positive_probs
 from .standard_evaluation import race_set_sha256
@@ -66,6 +71,7 @@ def operational_adaptive_bankroll(
     adaptive_no_bet: bool = False,
     calibration_fraction: float = 0.25,
     model_input_path: Path | None = None,
+    include_research: bool = False,
 ) -> dict[str, Any]:
     _validate_policy(
         daily_budget_yen=daily_budget_yen,
@@ -83,6 +89,12 @@ def operational_adaptive_bankroll(
     if adaptive_no_bet and not 0.0 < calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must be between zero and one")
 
+    selected_feature_set = (
+        RESEARCH_FEATURE_SET if include_research else FEATURE_SET
+    )
+    selected_model_name = (
+        "win_model_no_odds_v9_research" if include_research else MODEL_NAME
+    )
     pretrained_bundle: dict[str, Any] | None = None
     features: list[dict[str, Any]] = []
     labels: list[int] = []
@@ -97,7 +109,7 @@ def operational_adaptive_bankroll(
         features, labels, meta = load_training_examples(
             conn,
             include_odds=False,
-            include_research=False,
+            include_research=include_research,
         )
         race_keys = race_keys_from_meta(meta)
         for index, row in enumerate(meta):
@@ -128,14 +140,16 @@ def operational_adaptive_bankroll(
         min_stake_yen=min_stake_yen,
         adaptive_no_bet=adaptive_no_bet,
         calibration_fraction=calibration_fraction,
+        model_name=selected_model_name,
+        feature_set=selected_feature_set,
     )
     checkpoint_file = checkpoint_path or output_path.with_suffix(
         output_path.suffix + ".checkpoint"
     )
     checkpoint_signature = {
         "version": 1,
-        "model": MODEL_NAME,
-        "feature_set": FEATURE_SET,
+        "model": selected_model_name,
+        "feature_set": selected_feature_set,
         "policy": policy,
         "folds": folds,
         "min_train_races": min_train_races,
@@ -176,6 +190,7 @@ def operational_adaptive_bankroll(
             _validate_pretrained_bundle(
                 pretrained_bundle,
                 train_races=train_races,
+                expected_feature_set=selected_feature_set,
             )
         else:
             train_indices = _indices_for_races(indices_by_race, train_races)
@@ -192,13 +207,15 @@ def operational_adaptive_bankroll(
         rows_by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
         if pretrained_bundle is not None:
             pipeline = pretrained_bundle["pipeline"]
-            scored_rows = iter_scored_entries(
-                conn,
-                pipeline=pipeline,
-                include_races=test_races,
-                from_date=min(test_dates),
-                through_date=max(test_dates),
-            )
+            score_kwargs = {
+                "pipeline": pipeline,
+                "include_races": test_races,
+                "from_date": min(test_dates),
+                "through_date": max(test_dates),
+            }
+            if include_research:
+                score_kwargs["include_research"] = True
+            scored_rows = iter_scored_entries(conn, **score_kwargs)
             for probability, row in scored_rows:
                 rows_by_race[str(row["race_id"])].append(
                     {
@@ -374,8 +391,9 @@ def operational_adaptive_bankroll(
     result.update(
         {
             "examples": len(race_keys) * 6,
-            "model": MODEL_NAME,
-            "feature_set": FEATURE_SET,
+            "model": selected_model_name,
+            "feature_set": selected_feature_set,
+            "include_research": include_research,
             "comparison_role": "operational_model_same_policy_backtest",
         }
     )
@@ -388,9 +406,10 @@ def _validate_pretrained_bundle(
     bundle: dict[str, Any],
     *,
     train_races: set[str],
+    expected_feature_set: str = FEATURE_SET,
 ) -> None:
     metadata = bundle.get("metadata") or {}
-    if metadata.get("feature_set") != FEATURE_SET:
+    if metadata.get("feature_set") != expected_feature_set:
         raise ValueError("pretrained model feature set mismatch")
     trained_races = int(
         metadata.get("train_races") or metadata.get("races") or 0
@@ -551,6 +570,8 @@ def operational_policy(
     min_stake_yen: int,
     adaptive_no_bet: bool = False,
     calibration_fraction: float = 0.25,
+    model_name: str = MODEL_NAME,
+    feature_set: str = FEATURE_SET,
 ) -> dict[str, Any]:
     return {
         "daily_budget_yen": daily_budget_yen,
@@ -578,8 +599,8 @@ def operational_policy(
             if adaptive_no_bet
             else "fixed baseline"
         ),
-        "model": MODEL_NAME,
-        "feature_set": FEATURE_SET,
+        "model": model_name,
+        "feature_set": feature_set,
         "model_pipeline": "DictVectorizer + SparseIndex32 + MaxAbsScaler + LogisticRegression(liblinear,C=0.20,class_weight=None)",
         "allocation": "same normalized-Kelly policy used by the past-log comparison",
     }
@@ -617,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--adaptive-no-bet", action="store_true")
     parser.add_argument("--calibration-fraction", type=float, default=0.25)
+    parser.add_argument("--include-research", action="store_true")
     args = parser.parse_args(argv)
 
     init_db(args.db)
@@ -643,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
             adaptive_no_bet=args.adaptive_no_bet,
             calibration_fraction=args.calibration_fraction,
             model_input_path=args.model_input,
+            include_research=args.include_research,
         )
     compact = {key: value for key, value in result.items() if key != "daily"}
     compact["daily_rows"] = len(result.get("daily") or [])

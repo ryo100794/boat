@@ -44,6 +44,7 @@ class ResourceSnapshot:
 TASK_PROFILES: dict[str, dict[str, Any]] = {
     "standardized_365d": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 8192},
     "historical_coverage_safe": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
+    "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
@@ -326,6 +327,7 @@ def enqueue_job(
     key = dedupe_key(task_type, model_key, parameters)
     semantic_keys = {
         "standardized_365d": ("evaluation_date",),
+        "historical_research_logit": ("evaluation_date",),
         "conditional_payout_tail": (
             "training_through",
             "evaluation_from",
@@ -787,6 +789,22 @@ def build_command(
             "--output", str(output),
             "--model-input", str(model_input),
             "--evaluation-date", evaluation_date,
+        ], output
+    if task_type == "historical_research_logit":
+        evaluation_date = _date(params, "evaluation_date")
+        _integer(params, "timeout_seconds", 28800, 300, 86400)
+        unsupported = set(params) - {"evaluation_date", "timeout_seconds"}
+        if unsupported:
+            raise ValueError(
+                "unsupported historical_research_logit parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        return [
+            str(python), "-m", "boatrace_ai.historical_research_evaluation",
+            "--db", db,
+            "--evaluation-date", evaluation_date,
+            "--model-dir", str(app_root / "data" / "models"),
+            "--output", str(output),
         ], output
     if task_type == "calibrated_mlp_recency_search":
         unsupported = set(params) - {
@@ -1745,6 +1763,16 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
         },
         priority=90,
         max_attempts=3,
+    )
+    add(
+        task_type="historical_research_logit",
+        model_key="no_odds_v9_research_logit",
+        parameters={
+            "evaluation_date": evaluation_date,
+            "timeout_seconds": 86400,
+        },
+        priority=89,
+        max_attempts=2,
     )
     for clip in (0.5, 1.0, 2.0, 3.0, 4.0, 6.0):
         add(

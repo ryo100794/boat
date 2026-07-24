@@ -28,6 +28,10 @@ FEATURE_SET = (
     "no_odds_v8_historical_only_beforeinfo_excluded_"
     "sparse32_scaled_logreg_C0.20_unweighted"
 )
+RESEARCH_FEATURE_SET = (
+    "no_odds_v9_research_correlates_historical_only_beforeinfo_excluded_"
+    "sparse32_scaled_logreg_C0.20_unweighted"
+)
 
 
 SparseIndex32 = base.SparseIndex32
@@ -64,6 +68,7 @@ def train_model(
     model_path: Path,
     min_examples: int = 100,
     batch_size: int = 24_000,
+    include_research: bool = False,
 ) -> dict[str, Any]:
     race_keys = load_complete_race_ids(conn)
     races = {race_id for race_id, *_rest in race_keys}
@@ -75,6 +80,7 @@ def train_model(
         conn,
         train_races=races,
         batch_size=batch_size,
+        include_research=include_research,
     )
     model_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, model_path)
@@ -86,6 +92,7 @@ def fit_streaming_pipeline(
     *,
     train_races: set[str],
     batch_size: int = 24_000,
+    include_research: bool = False,
 ) -> dict[str, Any]:
     if not train_races:
         raise ValueError("no training races")
@@ -96,7 +103,7 @@ def fit_streaming_pipeline(
         for item, _label, _meta in iter_training_examples(
             conn,
             include_odds=False,
-            include_research=False,
+            include_research=include_research,
             include_beforeinfo=False,
             include_races=train_races,
         )
@@ -106,6 +113,7 @@ def fit_streaming_pipeline(
         vectorizer=vectorizer,
         train_races=train_races,
         batch_size=batch_size,
+        include_research=include_research,
     )
     if len(set(labels.tolist())) < 2:
         raise ValueError("training labels need both winners and non-winners")
@@ -124,7 +132,10 @@ def fit_streaming_pipeline(
         "vectorizer": "DictVectorizer(sparse=True, streamed vocabulary and CSR batches)",
         "scaler": "MaxAbsScaler",
         "classifier": "LogisticRegression(liblinear, C=0.20, class_weight=None)",
-        "feature_set": FEATURE_SET,
+        "feature_set": (
+            RESEARCH_FEATURE_SET if include_research else FEATURE_SET
+        ),
+        "include_research": include_research,
         "train_race_set_sha256": race_set_sha256(train_races),
     }
     del matrix, labels
@@ -138,6 +149,7 @@ def _training_matrix(
     vectorizer: DictVectorizer,
     train_races: set[str],
     batch_size: int,
+    include_research: bool = False,
 ) -> tuple[sparse.csr_matrix, np.ndarray]:
     matrices: list[sparse.csr_matrix] = []
     labels: list[int] = []
@@ -145,7 +157,7 @@ def _training_matrix(
     for item, label, meta in iter_training_examples(
         conn,
         include_odds=False,
-        include_research=False,
+        include_research=include_research,
         include_beforeinfo=False,
         include_races=train_races,
     ):
@@ -180,6 +192,7 @@ def iter_scored_entries(
     from_date: str | None = None,
     through_date: str | None = None,
     batch_size: int = 24_000,
+    include_research: bool = False,
 ) -> Iterable[tuple[float, dict[str, Any]]]:
     batch: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
@@ -188,7 +201,7 @@ def iter_scored_entries(
         from_date=from_date,
         through_date=through_date,
         include_odds=False,
-        include_research=False,
+        include_research=include_research,
         include_beforeinfo=False,
         include_races=include_races,
     ):
@@ -212,6 +225,7 @@ def backtest_model(
     min_train_races: int = 500,
     batch_size: int = 24_000,
     model_output_path: Path | None = None,
+    include_research: bool = False,
 ) -> dict[str, Any]:
     if model_output_path is not None and folds != 1:
         raise ValueError("model_output_path requires folds=1")
@@ -238,6 +252,7 @@ def backtest_model(
             conn,
             train_races=train_races,
             batch_size=batch_size,
+            include_research=include_research,
         )
         bundle["metadata"].update(
             {
@@ -256,6 +271,7 @@ def backtest_model(
             pipeline=bundle["pipeline"],
             include_races=test_races,
             batch_size=batch_size,
+            include_research=include_research,
         ):
             label = 1 if int(meta["rank"]) == 1 else 0
             labels.append(label)
@@ -287,7 +303,10 @@ def backtest_model(
         "races": len(races),
         "include_odds": False,
         "include_beforeinfo": False,
-        "feature_set": FEATURE_SET,
+        "include_research": include_research,
+        "feature_set": (
+            RESEARCH_FEATURE_SET if include_research else FEATURE_SET
+        ),
         "evaluation_race_set_sha256": race_set_sha256(race_predictions),
         "entry_log_loss": base._safe_log_loss(all_labels, all_probs),
         "entry_brier": float(brier_score_loss(all_labels, all_probs)),
@@ -346,12 +365,18 @@ def main(argv: list[str] | None = None) -> int:
 
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default="data/boatrace.sqlite")
+    parser.add_argument("--include-research", action="store_true")
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
     init_db(args.db)
     with connection(args.db) as conn:
-        result = train_model(conn, model_path=Path(args.model), min_examples=args.min_examples)
+        result = train_model(
+            conn,
+            model_path=Path(args.model),
+            min_examples=args.min_examples,
+            include_research=args.include_research,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
 
@@ -366,6 +391,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             min_train_races=args.min_train_races,
             batch_size=args.batch_size,
             model_output_path=Path(args.model_output) if args.model_output else None,
+            include_research=args.include_research,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
