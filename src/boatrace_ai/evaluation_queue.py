@@ -58,6 +58,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
 
@@ -1023,6 +1024,38 @@ def build_command(
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
         ], output
+    if task_type == "persist_standard_selected_cache":
+        allowed = {"artifact_mtime_after", "timeout_seconds"}
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported persist cache parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "artifact_mtime_after" not in params:
+            raise ValueError("artifact_mtime_after is required")
+        artifact_mtime_after = _number(
+            params, "artifact_mtime_after", 0.0, 1.0, 4_102_444_800.0
+        )
+        timeout_seconds = _integer(
+            params, "timeout_seconds", 21600, 600, 86400
+        )
+        artifact = (
+            app_root / "data/models/standardized_365d_v2/raw"
+            / "listwise_feature_teacher.json"
+        )
+        destination = (
+            app_root / "data/models/standardized_365d_v2/selected_cache"
+        )
+        return [
+            str(python),
+            str(app_root / "scripts/persist_selected_feature_cache.py"),
+            "--artifact", str(artifact),
+            "--destination-dir", str(destination),
+            "--wait-for-mtime-after", str(artifact_mtime_after),
+            "--wait-timeout-seconds", str(max(300, timeout_seconds - 300)),
+            "--output", str(output),
+        ], output
     if task_type == "evaluation_aggregate":
         return [
             str(python), "-m", "boatrace_ai.maintenance_tasks", "aggregate-evaluations",
@@ -1202,7 +1235,11 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "aggregation_complete"
     if task_type == "gdrive_raw_archive":
         return "backup_complete"
-    if task_type in {"repository_hygiene", "series_feature_cache"}:
+    if task_type in {
+        "repository_hygiene",
+        "series_feature_cache",
+        "persist_standard_selected_cache",
+    }:
         return "maintenance_complete"
     return "reject_or_research_only"
 

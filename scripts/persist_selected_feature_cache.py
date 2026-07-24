@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,30 @@ def _recompress_npz(source: Path, destination: Path) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def wait_for_new_artifact(
+    artifact_path: Path,
+    *,
+    newer_than: float,
+    timeout_seconds: float,
+    poll_seconds: float = 10.0,
+) -> None:
+    if timeout_seconds <= 0.0 or poll_seconds <= 0.0:
+        raise ValueError("cache wait intervals must be positive")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            modified = artifact_path.stat().st_mtime
+        except FileNotFoundError:
+            modified = 0.0
+        if modified > newer_than:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                "timed out waiting for a newly generated selected cache artifact"
+            )
+        time.sleep(min(poll_seconds, max(0.01, deadline - time.monotonic())))
 
 
 def persist_selected_cache(
@@ -148,8 +173,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--destination-dir", type=Path, required=True)
+    parser.add_argument("--wait-for-mtime-after", type=float)
+    parser.add_argument("--wait-timeout-seconds", type=float, default=21_300.0)
+    parser.add_argument("--poll-seconds", type=float, default=10.0)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.wait_for_mtime_after is not None:
+        wait_for_new_artifact(
+            args.artifact,
+            newer_than=args.wait_for_mtime_after,
+            timeout_seconds=args.wait_timeout_seconds,
+            poll_seconds=args.poll_seconds,
+        )
     result = persist_selected_cache(args.artifact, args.destination_dir)
+    if args.output is not None:
+        _write_json_atomic(args.output, result)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
 

@@ -94,6 +94,71 @@ def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
     }
 
 
+
+def test_persist_selected_cache_profile_and_wait_command(tmp_path: Path) -> None:
+    assert TASK_PROFILES["persist_standard_selected_cache"] == {
+        "category": "maintenance",
+        "memory_mb": 512,
+        "disk_mb": 1024,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "persist_standard_selected_cache",
+            {
+                "artifact_mtime_after": 1_774_500_000.5,
+                "timeout_seconds": 21_600,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command == [
+        str(root / ".venv/bin/python"),
+        str(root / "scripts/persist_selected_feature_cache.py"),
+        "--artifact",
+        str(
+            root
+            / "data/models/standardized_365d_v2/raw/listwise_feature_teacher.json"
+        ),
+        "--destination-dir",
+        str(root / "data/models/standardized_365d_v2/selected_cache"),
+        "--wait-for-mtime-after",
+        "1774500000.5",
+        "--wait-timeout-seconds",
+        "21300",
+        "--output",
+        str(root / "data/models/evaluation_queue/job-00000007.json"),
+    ]
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+    assert result_decision(
+        "persist_standard_selected_cache", {"status": "persisted"}
+    ) == "maintenance_complete"
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {},
+        {"artifact_mtime_after": 0.0},
+        {"artifact_mtime_after": 1_774_500_000.5, "unexpected": True},
+    ],
+)
+def test_persist_selected_cache_command_rejects_invalid_parameters(
+    tmp_path: Path, parameters: dict
+) -> None:
+    with pytest.raises(ValueError):
+        build_command(
+            _job("persist_standard_selected_cache", parameters),
+            app_root=tmp_path / "boat",
+            python=tmp_path / "boat/.venv/bin/python",
+            db="postgresql://test",
+        )
+
 def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
     tmp_path: Path,
 ) -> None:
