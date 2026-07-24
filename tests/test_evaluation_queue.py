@@ -184,6 +184,8 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(
         "4000",
         "--payout-mean-corrections",
         "0.0",
+        "0.5",
+        "1.0",
         "--promote-legacy-cache",
     ]
     assert output == result
