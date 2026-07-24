@@ -6,6 +6,7 @@ from boatrace_ai.listwise.conditional_order import (
     ConditionalOrderModel,
     _pack,
     bankroll_promotion_gate,
+    build_parser,
     conditional_probabilities,
     evaluate_probabilities,
     fit_conditional_order,
@@ -16,6 +17,23 @@ from boatrace_ai.listwise.stagewise_mlp import (
     COMBINATION_LANES,
     stagewise_trifecta_probabilities,
 )
+
+
+def test_policy_selection_cli_defaults_to_sixty_days() -> None:
+    args = build_parser().parse_args(
+        [
+            "--cache-prefix", "cache",
+            "--baseline-model", "model.joblib",
+            "--training-through", "2025-07-23",
+            "--evaluation-from", "2025-07-24",
+            "--evaluation-through", "2026-07-23",
+            "--model-output", "output.joblib",
+            "--output", "output.json",
+        ]
+    )
+
+    assert args.payout_policy_selection_days == 60
+    assert args.return_policy_selection_days == 60
 
 
 def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> None:

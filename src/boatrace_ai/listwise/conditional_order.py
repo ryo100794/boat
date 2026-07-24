@@ -22,6 +22,7 @@ from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .direct_bankroll import (
+    POLICY_SELECTION_DAYS,
     bootstrap_daily_bankroll,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
@@ -890,7 +891,11 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=[1.05, 1.10, 1.20],
     )
-    parser.add_argument("--payout-policy-selection-days", type=int, default=30)
+    parser.add_argument(
+        "--payout-policy-selection-days",
+        type=int,
+        default=POLICY_SELECTION_DAYS,
+    )
     parser.add_argument("--payout-minimum-selection-tickets", type=int, default=100)
     parser.add_argument("--payout-minimum-selection-hits", type=int, default=10)
     parser.add_argument(
@@ -909,7 +914,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--return-max-iterations", type=int, default=20)
     parser.add_argument("--return-batch-races", type=int, default=500)
-    parser.add_argument("--return-policy-selection-days", type=int, default=30)
+    parser.add_argument(
+        "--return-policy-selection-days",
+        type=int,
+        default=POLICY_SELECTION_DAYS,
+    )
     parser.add_argument(
         "--return-threshold-candidates",
         type=float,
