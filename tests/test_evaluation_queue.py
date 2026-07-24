@@ -940,6 +940,72 @@ def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:
     assert "ON CONFLICT(dedupe_key) DO NOTHING" in conn.sql
 
 
+@pytest.mark.parametrize(
+    ("task_type", "model_key", "parameters", "identity"),
+    [
+        (
+            "standardized_365d",
+            "all_registered_models",
+            {"evaluation_date": "2026-07-23", "timeout_seconds": 86400},
+            {"evaluation_date": "2026-07-23"},
+        ),
+        (
+            "conditional_payout_tail",
+            "listwise-conditional-payout",
+            {
+                "training_through": "2025-07-23",
+                "evaluation_from": "2025-07-24",
+                "evaluation_through": "2026-07-23",
+                "timeout_seconds": 86400,
+            },
+            {
+                "training_through": "2025-07-23",
+                "evaluation_from": "2025-07-24",
+                "evaluation_through": "2026-07-23",
+            },
+        ),
+    ],
+)
+def test_long_evaluation_enqueue_semantically_dedupes_retry_parameter_changes(
+    task_type,
+    model_key,
+    parameters,
+    identity,
+) -> None:
+    class RecordingConnection:
+        def __init__(self):
+            self.inserted = False
+
+        def execute(self, statement, values=()):
+            sql = " ".join(statement.split())
+            if sql.startswith("SELECT job_id"):
+                assert "parameters @> CAST(? AS JSONB)" in sql
+                assert values == (
+                    task_type,
+                    model_key,
+                    json.dumps(
+                        identity,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                return _QueryResult({"job_id": 387})
+            if sql.startswith("INSERT INTO model_evaluation_jobs"):
+                self.inserted = True
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    conn = RecordingConnection()
+
+    assert enqueue_job(
+        conn,
+        task_type=task_type,
+        model_key=model_key,
+        parameters=parameters,
+    ) is None
+    assert conn.inserted is False
+
+
 def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     events = []
     connection_count = 0

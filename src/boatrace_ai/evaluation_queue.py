@@ -324,6 +324,30 @@ def enqueue_job(
     min_idle_cpu_percent = float(profile["idle_cpu"] if min_idle_cpu_percent is None else min_idle_cpu_percent)
     max_parallel = int(profile["max_parallel"] if max_parallel is None else max_parallel)
     key = dedupe_key(task_type, model_key, parameters)
+    semantic_keys = {
+        "standardized_365d": ("evaluation_date",),
+        "conditional_payout_tail": (
+            "training_through",
+            "evaluation_from",
+            "evaluation_through",
+        ),
+    }.get(task_type)
+    if semantic_keys and all(name in parameters for name in semantic_keys):
+        identity = {name: parameters[name] for name in semantic_keys}
+        existing = conn.execute(
+            """
+            SELECT job_id
+            FROM model_evaluation_jobs
+            WHERE task_type = ?
+              AND model_key = ?
+              AND status IN ('queued', 'running', 'completed')
+              AND parameters @> CAST(? AS JSONB)
+            LIMIT 1
+            """,
+            (task_type, model_key, _json(identity)),
+        ).fetchone()
+        if existing is not None:
+            return None
     row = conn.execute(
         """
         INSERT INTO model_evaluation_jobs(
