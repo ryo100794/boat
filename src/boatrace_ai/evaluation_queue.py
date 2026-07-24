@@ -1887,6 +1887,19 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
     evaluation_end = datetime.strptime(evaluation_date, "%Y-%m-%d").date()
     evaluation_start = evaluation_end - timedelta(days=364)
     add(
+        task_type="calibrated_mlp_recency_search",
+        model_key="calibrated_mlp_recency_drop_base_pastlog",
+        parameters={
+            "evaluation_date": evaluation_date,
+            "half_lives": "none,180,365,730",
+            "calibration_days": 180,
+            "drop_feature_groups": "base_pastlog",
+            "timeout_seconds": 86400,
+        },
+        priority=90,
+        max_attempts=3,
+    )
+    add(
         task_type="conditional_payout_tail",
         model_key="conditional_payout_tail_365d_v1",
         parameters={

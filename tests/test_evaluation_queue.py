@@ -946,12 +946,26 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
 
     inserted = seed_default_jobs(object(), evaluation_date="2026-07-22")
 
-    assert len(inserted) == 14
+    assert len(inserted) == 15
     standardized = [
         row for row in calls if row["task_type"] == "standardized_365d"
     ]
     assert standardized[0]["parameters"]["timeout_seconds"] == 86400
     assert standardized[0]["max_attempts"] == 3
+    drop_base_mlp = next(
+        row for row in calls
+        if row["model_key"] == "calibrated_mlp_recency_drop_base_pastlog"
+    )
+    assert drop_base_mlp["task_type"] == "calibrated_mlp_recency_search"
+    assert drop_base_mlp["parameters"] == {
+        "evaluation_date": "2026-07-22",
+        "half_lives": "none,180,365,730",
+        "calibration_days": 180,
+        "drop_feature_groups": "base_pastlog",
+        "timeout_seconds": 86400,
+    }
+    assert drop_base_mlp["priority"] == 90
+    assert drop_base_mlp["max_attempts"] == 3
     payout = next(row for row in calls if row["task_type"] == "conditional_payout_tail")
     assert payout["parameters"] == {
         "training_through": "2025-07-22",
@@ -978,9 +992,9 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     assert combined[0]["priority"] == 85
     assert combined[0]["model_key"] == "listwise_combined_8192"
     assert combined[0]["parameters"]["n_features"] == 8192
-    assert not any(
+    assert sum(
         row["task_type"] == "calibrated_mlp_recency_search" for row in calls
-    )
+    ) == 1
     assert all(
         row["parameters"]["evaluation_date"] == "2026-07-22"
         for row in calls
