@@ -361,6 +361,32 @@ def test_conditional_payout_rejects_decreasing_dates() -> None:
         )
 
 
+def test_conditional_payout_rejects_calibration_date_overlap() -> None:
+    probabilities = np.full((1, 120), 1.0 / 120.0)
+
+    with pytest.raises(ValueError, match="strictly precede"):
+        simulate_conditional_payout_walk_forward(
+            probabilities,
+            race_keys=[("eval", "2026-06-02", "01", 1)],
+            payouts={},
+            calibration_probabilities=probabilities,
+            calibration_race_keys=[("cal", "2026-06-02", "01", 1)],
+        )
+
+
+def test_conditional_payout_rejects_race_id_overlap() -> None:
+    probabilities = np.full((1, 120), 1.0 / 120.0)
+
+    with pytest.raises(ValueError, match="race IDs must not overlap"):
+        simulate_conditional_payout_walk_forward(
+            probabilities,
+            race_keys=[("same-race", "2026-07-01", "01", 1)],
+            payouts={},
+            calibration_probabilities=probabilities,
+            calibration_race_keys=[("same-race", "2026-06-01", "01", 1)],
+        )
+
+
 def test_conditional_payout_day_result_only_changes_following_day_prediction() -> None:
     high = _tail_calibration_case(first_evaluation_payout_yen=20_000)
     low = _tail_calibration_case(first_evaluation_payout_yen=110)

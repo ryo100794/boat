@@ -254,6 +254,24 @@ def _validate_nondecreasing_race_dates(
         raise ValueError(f"{name} dates must be non-decreasing")
 
 
+def _validate_pre_evaluation_period(
+    calibration_race_keys: list[tuple[str, str, str, int]],
+    evaluation_race_keys: list[tuple[str, str, str, int]],
+) -> None:
+    if not calibration_race_keys or not evaluation_race_keys:
+        return
+    if str(calibration_race_keys[-1][1]) >= str(evaluation_race_keys[0][1]):
+        raise ValueError(
+            "calibration dates must strictly precede evaluation dates"
+        )
+    calibration_ids = {str(row[0]) for row in calibration_race_keys}
+    evaluation_ids = {str(row[0]) for row in evaluation_race_keys}
+    if calibration_ids & evaluation_ids:
+        raise ValueError(
+            "calibration and evaluation race IDs must not overlap"
+        )
+
+
 def _update_tail_for_winners(
     tail_calibrator: ConditionalPayoutTailCalibrator,
     market_probabilities: np.ndarray,
@@ -707,6 +725,7 @@ def simulate_conditional_payout_walk_forward(
     _validate_nondecreasing_race_dates(
         calibration_race_keys, name="calibration_race_keys"
     )
+    _validate_pre_evaluation_period(calibration_race_keys, race_keys)
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
         raise ValueError("probability matrix and race keys must align")
