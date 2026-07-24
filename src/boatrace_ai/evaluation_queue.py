@@ -869,7 +869,7 @@ def build_command(
             "--evaluation-through", evaluation_through,
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
-            "--validation-days", "90",
+            "--validation-days", "365",
             "--batch-races", "4000",
             "--payout-mean-corrections", "0.0", "0.5", "1.0",
             "--promote-legacy-cache",

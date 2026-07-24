@@ -179,7 +179,7 @@ def test_conditional_payout_tail_profile_and_command_are_fixed(
         "--output",
         str(result),
         "--validation-days",
-        "90",
+        "365",
         "--batch-races",
         "4000",
         "--payout-mean-corrections",
