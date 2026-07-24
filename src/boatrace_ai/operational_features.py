@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections import defaultdict
 from typing import Any
@@ -7,7 +8,12 @@ from typing import Any
 from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .features import _num
 from .base_features import _group_by_race, race_relative_features
-from .feature_schema import FEATURE_SCHEMA_VERSION, uses_missing_safe_series
+from .feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    uses_missing_safe_series,
+    uses_sparse_series_missing,
+)
 from .contextual_features import RollingState, _race_sort_key
 from .series_features_form import base_pastlog_features
 
@@ -83,11 +89,19 @@ def load_training_examples(
         for race_id_value in day_races:
             race_rows = sorted(grouped[race_id_value], key=lambda row: int(row["lane"]))
             relatives = race_relative_features(race_rows, {lane: {} for lane in range(1, 7)})
-            series_relatives = series_relative_features(race_rows)
+            series_relatives = series_relative_features(
+                race_rows,
+                feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+            )
             for row in race_rows:
                 lane = int(row["lane"])
                 item = base_pastlog_features(row, relatives[lane])
-                item.update(cached_series_features(row))
+                item.update(
+                    cached_series_features(
+                        row,
+                        feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+                    )
+                )
                 item.update(series_relatives[lane])
                 item.update(state.features_for(row))
                 features.append(item)
@@ -119,12 +133,20 @@ def prediction_features(conn: sqlite3.Connection, *, race_id: str, include_odds:
     for history_rows in history_groups_prior_dates(conn, rows[0]):
         state.update_race(history_rows)
     relatives = race_relative_features(rows, {lane: {} for lane in range(1, 7)})
-    series_relatives = series_relative_features(rows)
+    series_relatives = series_relative_features(
+        rows,
+        feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+    )
     result = []
     for row in rows:
         lane = int(row["lane"])
         item = base_pastlog_features(row, relatives[lane])
-        item.update(cached_series_features(row))
+        item.update(
+            cached_series_features(
+                row,
+                feature_schema_version=MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+            )
+        )
         item.update(series_relatives[lane])
         item.update(state.features_for(row))
         result.append(item)
@@ -182,8 +204,18 @@ def history_groups_prior_dates(conn: sqlite3.Connection, target: sqlite3.Row) ->
     ]
 
 
-def cached_series_features(row: sqlite3.Row) -> dict[str, Any]:
-    return {field: _num(row[field]) for field in CACHE_FIELDS}
+def cached_series_features(
+    row: sqlite3.Row,
+    *,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    if not uses_sparse_series_missing(feature_schema_version):
+        return {field: _num(row[field]) for field in CACHE_FIELDS}
+    return {
+        field: _num(row[field])
+        for field in CACHE_FIELDS
+        if row[field] is not None
+    }
 
 
 def series_relative_features(
@@ -191,8 +223,16 @@ def series_relative_features(
     *,
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> dict[int, dict[str, float]]:
+    if uses_sparse_series_missing(feature_schema_version):
+        return _sparse_series_relative_features(rows)
     missing_safe = uses_missing_safe_series(feature_schema_version)
-    by_lane = {int(row["lane"]): cached_series_features(row) for row in rows}
+    by_lane = {
+        int(row["lane"]): cached_series_features(
+            row,
+            feature_schema_version=feature_schema_version,
+        )
+        for row in rows
+    }
     out = {lane: {} for lane in by_lane}
     for field, high_is_good in SERIES_RELATIVE_FIELDS.items():
         values = {lane: _num(features.get(field)) for lane, features in by_lane.items()}
@@ -230,8 +270,71 @@ def series_relative_features(
     return out
 
 
-def _ranks(values: dict[int, float], *, high_is_good: bool) -> dict[int, int]:
-    valid = [(lane, value) for lane, value in values.items() if value >= 0]
+def _sparse_series_relative_features(
+    rows: list[sqlite3.Row],
+) -> dict[int, dict[str, float]]:
+    by_lane = {int(row["lane"]): row for row in rows}
+    out: dict[int, dict[str, float]] = {lane: {} for lane in by_lane}
+    for field, high_is_good in SERIES_RELATIVE_FIELDS.items():
+        present_values = {
+            lane: value
+            for lane, row in by_lane.items()
+            if (value := _series_relative_value(row, field)) is not None
+        }
+        if not present_values:
+            continue
+        all_present = len(present_values) == len(by_lane)
+        if all_present and len(set(present_values.values())) == 1:
+            continue
+        mean = sum(present_values.values()) / len(present_values)
+        variance = sum(
+            (value - mean) ** 2 for value in present_values.values()
+        ) / len(present_values)
+        std = variance ** 0.5 or 1.0
+        values = {lane: present_values.get(lane, 0.0) for lane in by_lane}
+        present = {lane: lane in present_values for lane in by_lane}
+        ranks = _ranks(
+            values,
+            high_is_good=high_is_good,
+            present=present,
+        )
+        for lane, value in present_values.items():
+            if not all_present:
+                out[lane][f"has_{field}"] = 1
+            out[lane][f"{field}_rank"] = ranks[lane]
+            relative = value - mean
+            if relative:
+                out[lane][f"{field}_vs_mean"] = relative
+                out[lane][f"{field}_z"] = relative / std
+    return out
+
+
+def _series_relative_value(row: sqlite3.Row, field: str) -> float | None:
+    raw = row[field]
+    if raw is None:
+        return None
+    if field != "series_starts":
+        has_results = row["series_has_results"]
+        if has_results is None or _num(has_results) <= 0:
+            return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _ranks(
+    values: dict[int, float],
+    *,
+    high_is_good: bool,
+    present: dict[int, bool] | None = None,
+) -> dict[int, int]:
+    valid = [
+        (lane, value)
+        for lane, value in values.items()
+        if (present.get(lane, False) if present is not None else value >= 0)
+    ]
     ordered = sorted(valid, key=lambda item: -item[1] if high_is_good else item[1])
     result = {lane: 0 for lane in values}
     previous: float | None = None

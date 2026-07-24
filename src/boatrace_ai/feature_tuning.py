@@ -627,7 +627,12 @@ def build_race_features(
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
         if "series_cached" not in dropped:
-            item.update(cached_series_features(row))
+            item.update(
+                cached_series_features(
+                    row,
+                    feature_schema_version=feature_schema_version,
+                )
+            )
         if "series_relative" not in dropped:
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:

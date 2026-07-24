@@ -21,7 +21,11 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
-from ..feature_schema import FEATURE_SCHEMA_VERSION, LEGACY_FEATURE_SCHEMA_VERSION
+from ..feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    LEGACY_FEATURE_SCHEMA_VERSION,
+    MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+)
 from ..hashed_feature_dataset import load_or_build_hashed_dataset
 from .model import (
     FEATURE_SET,
@@ -248,7 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument(
         "--feature-schema-version",
-        choices=(FEATURE_SCHEMA_VERSION, LEGACY_FEATURE_SCHEMA_VERSION),
+        choices=(
+            FEATURE_SCHEMA_VERSION,
+            MISSING_SAFE_FEATURE_SCHEMA_VERSION,
+            LEGACY_FEATURE_SCHEMA_VERSION,
+        ),
         default=FEATURE_SCHEMA_VERSION,
         help="Feature semantics to use; select legacy only for controlled ablation.",
     )
