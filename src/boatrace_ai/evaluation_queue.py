@@ -41,6 +41,7 @@ class ResourceSnapshot:
     load_1m: float
     memory_limit_mb: int | None = None
     memory_usage_mb: int | None = None
+    reclaimable_file_mb: int | None = None
 
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
@@ -239,6 +240,47 @@ def _cgroup_memory(root: Path = Path("/sys/fs/cgroup")) -> tuple[int, int] | Non
     return None
 
 
+def _cgroup_reclaimable_file_bytes(
+    root: Path = Path("/sys/fs/cgroup"),
+) -> int:
+    stat_paths = (
+        root / "memory.stat",
+        root / "memory" / "memory.stat",
+    )
+    for stat_path in stat_paths:
+        try:
+            values = {
+                key: int(value)
+                for key, value, *_ in (
+                    line.split()
+                    for line in stat_path.read_text(encoding="utf-8").splitlines()
+                )
+            }
+        except (OSError, ValueError):
+            continue
+        # Use the same reclaimable file-cache component as the standard
+        # Linux/Kubernetes cgroup working-set calculation. Prefer v1 totals.
+        return max(
+            0,
+            values.get("total_inactive_file", values.get("inactive_file", 0)),
+        )
+    return 0
+
+
+def _cgroup_quota_available_mb(
+    memory_limit_mb: int,
+    memory_usage_mb: int,
+    reclaimable_file_mb: int,
+    *,
+    safety_reserve_mb: int = 4096,
+) -> int:
+    reclaimable_mb = min(max(0, reclaimable_file_mb), max(0, memory_usage_mb))
+    return max(
+        0,
+        memory_limit_mb - memory_usage_mb + reclaimable_mb - safety_reserve_mb,
+    )
+
+
 def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
     meminfo = {}
     for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
@@ -247,11 +289,20 @@ def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
     host_available_mb = int(meminfo.get("MemAvailable", 0) // 1024)
     memory_limit_mb = None
     memory_usage_mb = None
+    reclaimable_file_mb = None
     cgroup = _cgroup_memory()
     if cgroup is not None:
         memory_limit_mb = int(cgroup[0] // 1024**2)
         memory_usage_mb = int(cgroup[1] // 1024**2)
-        quota_available_mb = max(0, memory_limit_mb - memory_usage_mb - 4096)
+        reclaimable_file_mb = min(
+            memory_usage_mb,
+            int(_cgroup_reclaimable_file_bytes() // 1024**2),
+        )
+        quota_available_mb = _cgroup_quota_available_mb(
+            memory_limit_mb,
+            memory_usage_mb,
+            reclaimable_file_mb,
+        )
         host_available_mb = min(host_available_mb, quota_available_mb)
     idle_before, total_before = _read_cpu_times()
     time.sleep(max(0.0, sample_seconds))
@@ -266,6 +317,7 @@ def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
         load_1m=float(os.getloadavg()[0]),
         memory_limit_mb=memory_limit_mb,
         memory_usage_mb=memory_usage_mb,
+        reclaimable_file_mb=reclaimable_file_mb,
     )
 
 
@@ -278,6 +330,7 @@ def resource_snapshot_dict(snapshot: ResourceSnapshot) -> dict[str, Any]:
         "load_1m": round(snapshot.load_1m, 3),
         "memory_limit_mb": snapshot.memory_limit_mb,
         "memory_usage_mb": snapshot.memory_usage_mb,
+        "reclaimable_file_mb": snapshot.reclaimable_file_mb,
     }
 
 
