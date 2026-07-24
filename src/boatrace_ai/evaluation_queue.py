@@ -829,6 +829,12 @@ def build_command(
             "--db", db,
             "--output", str(output),
             "--model-output", str(output.with_suffix(".joblib")),
+            "--incumbent-prediction", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
+            ),
+            "--incumbent-bankroll", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_bankroll.json"
+            ),
             "--evaluation-date", evaluation_date,
             "--feature-cache", str(feature_cache),
             "--half-lives", half_lives,

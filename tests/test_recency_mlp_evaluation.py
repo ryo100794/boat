@@ -320,6 +320,106 @@ def test_conditional_payout_uses_pre_holdout_calibration(
     assert result["promotion_eligible"] is True
 
 
+def test_prediction_promotion_gate_requires_same_races_and_all_metrics() -> None:
+    incumbent = {
+        "evaluation_race_set_sha256": "a" * 64,
+        "evaluated_races": 100,
+        "entry_log_loss": 0.4,
+        "winner_top1_accuracy": 0.5,
+        "trifecta_top5_hit_rate": 0.3,
+    }
+    candidate = {
+        "entry_log_loss": 0.39,
+        "winner_top1_accuracy": 0.51,
+        "trifecta_top5_hit_rate": 0.31,
+    }
+
+    passing = recency.prediction_promotion_gate(
+        candidate,
+        incumbent,
+        evaluation_hash="a" * 64,
+        evaluated_races=100,
+    )
+    regressing = recency.prediction_promotion_gate(
+        {**candidate, "trifecta_top5_hit_rate": 0.29},
+        incumbent,
+        evaluation_hash="a" * 64,
+        evaluated_races=100,
+    )
+    mismatched = recency.prediction_promotion_gate(
+        candidate,
+        incumbent,
+        evaluation_hash="b" * 64,
+        evaluated_races=100,
+    )
+
+    assert passing["pass"] is True
+    assert regressing["trifecta_top5_not_worse"] is False
+    assert regressing["pass"] is False
+    assert mismatched["comparison_ready"] is False
+    assert mismatched["pass"] is False
+    assert recency.prediction_promotion_gate(
+        candidate,
+        None,
+        evaluation_hash="a" * 64,
+        evaluated_races=100,
+    )["pass"] is False
+
+
+def test_load_incumbent_evaluation_enforces_frozen_protocol(tmp_path) -> None:
+    race_hash = "c" * 64
+    prediction_path = tmp_path / "prediction.json"
+    bankroll_path = tmp_path / "bankroll.json"
+    prediction_path.write_text(
+        __import__("json").dumps(
+            {
+                "evaluation_race_set_sha256": race_hash,
+                "evaluated_races": 2,
+                "entry_log_loss": 0.4,
+                "winner_top1_accuracy": 0.5,
+                "trifecta_top5_hit_rate": 0.3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    bankroll_path.write_text(
+        __import__("json").dumps(
+            {
+                "evaluation_race_set_sha256": race_hash,
+                "evaluated_races": 2,
+                "roi": 0.8,
+                "profit_yen": -100,
+                "daily": [{"race_date": "2026-01-01"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    protocol = {
+        "race_set_sha256": race_hash,
+        "prediction_races": 2,
+        "bankroll_evaluable_races": 2,
+    }
+
+    prediction, bankroll = recency.load_incumbent_evaluation(
+        prediction_path,
+        bankroll_path,
+        protocol=protocol,
+    )
+
+    assert prediction["evaluated_races"] == 2
+    assert bankroll["roi"] == 0.8
+    prediction_path.write_text(
+        prediction_path.read_text(encoding="utf-8").replace(race_hash, "d" * 64),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="race set hash mismatch"):
+        recency.load_incumbent_evaluation(
+            prediction_path,
+            bankroll_path,
+            protocol=protocol,
+        )
+
+
 def test_protocol_race_validation_rejects_holdout_hash_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -499,6 +599,11 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert result["daily"] == daily
     assert result["conditional_payout_walk_forward"] == conditional
     assert result["promotion_eligible"] is False
+    assert result["promotion_gate"] == {
+        "prediction_pass": False,
+        "payout_policy_pass": False,
+        "pass": False,
+    }
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()
@@ -552,5 +657,7 @@ def test_cli_defaults_match_recency_protocol() -> None:
 
     assert args.feature_cache == recency.DEFAULT_FEATURE_CACHE
     assert args.model_output is None
+    assert args.incumbent_prediction is None
+    assert args.incumbent_bankroll is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180

@@ -408,6 +408,92 @@ def trifecta_probability_matrix(
     return matrix
 
 
+def load_incumbent_evaluation(
+    prediction_path: Path,
+    bankroll_path: Path,
+    *,
+    protocol: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        prediction = json.loads(prediction_path.read_text(encoding="utf-8"))
+        bankroll = json.loads(bankroll_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("incumbent evaluation artifacts are unreadable") from exc
+    if not isinstance(prediction, dict) or not isinstance(bankroll, dict):
+        raise ValueError("incumbent evaluation artifacts must be objects")
+    expected_hash = str(protocol["race_set_sha256"])
+    expected_races = int(protocol["prediction_races"])
+    prediction_hash = str(prediction.get("evaluation_race_set_sha256") or "")
+    bankroll_hash = str(bankroll.get("evaluation_race_set_sha256") or "")
+    if prediction_hash != expected_hash or bankroll_hash != expected_hash:
+        raise ValueError("incumbent evaluation race set hash mismatch")
+    prediction_races = int(prediction.get("evaluated_races") or 0)
+    bankroll_races = int(
+        bankroll.get("evaluated_races")
+        or bankroll.get("bankroll_evaluated_races")
+        or 0
+    )
+    if prediction_races != expected_races or bankroll_races != int(
+        protocol["bankroll_evaluable_races"]
+    ):
+        raise ValueError("incumbent evaluation race count mismatch")
+    if not isinstance(bankroll.get("daily"), list) or not bankroll["daily"]:
+        raise ValueError("incumbent bankroll lacks daily rows")
+    return prediction, bankroll
+
+
+def prediction_promotion_gate(
+    candidate: dict[str, Any],
+    incumbent: dict[str, Any] | None,
+    *,
+    evaluation_hash: str,
+    evaluated_races: int,
+) -> dict[str, Any]:
+    if incumbent is None:
+        return {
+            "comparison_ready": False,
+            "entry_log_loss_not_worse": False,
+            "winner_top1_not_worse": False,
+            "trifecta_top5_not_worse": False,
+            "pass": False,
+        }
+    same_hash = str(incumbent.get("evaluation_race_set_sha256") or "") == str(
+        evaluation_hash
+    )
+    same_races = int(incumbent.get("evaluated_races") or 0) == int(
+        evaluated_races
+    )
+    checks = {
+        "comparison_ready": bool(same_hash and same_races),
+        "entry_log_loss_not_worse": float(candidate["entry_log_loss"])
+        <= float(incumbent["entry_log_loss"]),
+        "winner_top1_not_worse": float(candidate["winner_top1_accuracy"])
+        >= float(incumbent["winner_top1_accuracy"]),
+        "trifecta_top5_not_worse": float(candidate["trifecta_top5_hit_rate"])
+        >= float(incumbent["trifecta_top5_hit_rate"]),
+    }
+    checks["pass"] = bool(all(checks.values()))
+    return {
+        **checks,
+        "candidate": {
+            key: candidate[key]
+            for key in (
+                "entry_log_loss",
+                "winner_top1_accuracy",
+                "trifecta_top5_hit_rate",
+            )
+        },
+        "incumbent": {
+            key: incumbent[key]
+            for key in (
+                "entry_log_loss",
+                "winner_top1_accuracy",
+                "trifecta_top5_hit_rate",
+            )
+        },
+    }
+
+
 def conditional_payout_summary(
     conn: Any,
     *,
@@ -481,6 +567,8 @@ def evaluate_recency_mlp(
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
     model_output_path: Path | None = None,
+    incumbent_prediction_path: Path | None = None,
+    incumbent_bankroll_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     with frozen_evaluation_max_date(evaluation_date):
@@ -493,6 +581,16 @@ def evaluate_recency_mlp(
         verify_protocol_against_database(conn, protocol)
         race_keys, training_hash = validated_protocol_race_keys(conn, protocol)
         training_count = int(protocol["training_races"])
+        if (incumbent_prediction_path is None) != (incumbent_bankroll_path is None):
+            raise ValueError("both incumbent evaluation paths are required")
+        incumbent_prediction: dict[str, Any] | None = None
+        incumbent_bankroll: dict[str, Any] | None = None
+        if incumbent_prediction_path is not None and incumbent_bankroll_path is not None:
+            incumbent_prediction, incumbent_bankroll = load_incumbent_evaluation(
+                incumbent_prediction_path,
+                incumbent_bankroll_path,
+                protocol=protocol,
+            )
 
         hasher = FeatureHasher(
             n_features=N_FEATURES,
@@ -569,10 +667,21 @@ def evaluate_recency_mlp(
             inner_train_count=int(split["inner_train_races"]),
             calibration_predictions=calibration_predictions,
             holdout_predictions=predictions,
-            baseline_bankroll=bankroll,
-            baseline_daily=daily,
+            baseline_bankroll=incumbent_bankroll or bankroll,
+            baseline_daily=(incumbent_bankroll or {}).get("daily") or daily,
             protocol=protocol,
         )
+        prediction_gate = prediction_promotion_gate(
+            prediction_metrics,
+            incumbent_prediction,
+            evaluation_hash=evaluation_hash,
+            evaluated_races=int(protocol["prediction_races"]),
+        )
+        promotion_gate = {
+            "prediction_pass": bool(prediction_gate["pass"]),
+            "payout_policy_pass": bool(conditional_payout["promotion_eligible"]),
+        }
+        promotion_gate["pass"] = bool(all(promotion_gate.values()))
 
     bankroll_flat = {
         key: value for key, value in bankroll.items() if key != "evaluated_races"
@@ -588,11 +697,14 @@ def evaluate_recency_mlp(
         "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(DROP_FEATURE_GROUPS),
         "include_odds": False,
-        "promotion_eligible": False,
+        "promotion_eligible": bool(promotion_gate["pass"]),
         "promotion_note": (
-            "payout-policy gate is reported separately; full promotion also "
-            "requires the standard prediction non-regression gates"
+            "same-race prediction and payout-policy gates passed"
+            if promotion_gate["pass"]
+            else "promotion requires same-race prediction non-regression and payout-policy gates"
         ),
+        "promotion_gate": promotion_gate,
+        "prediction_promotion_gate": prediction_gate,
         "protocol": protocol,
         "training_races": training_count,
         "training_race_set_sha256": training_hash,
@@ -667,6 +779,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-output", type=Path)
+    parser.add_argument("--incumbent-prediction", type=Path)
+    parser.add_argument("--incumbent-bankroll", type=Path)
     parser.add_argument(
         "--evaluation-date",
         type=parse_evaluation_date,
@@ -694,6 +808,8 @@ def main(argv: list[str] | None = None) -> int:
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
             model_output_path=args.model_output,
+            incumbent_prediction_path=args.incumbent_prediction,
+            incumbent_bankroll_path=args.incumbent_bankroll,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
