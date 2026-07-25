@@ -1410,7 +1410,9 @@ METRIC_KEYS = (
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
     "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
     "promotion_eligible", "incremental_confidence_pass", "converged",
-    "gradient_norm", "elapsed_seconds",
+    "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
+    "source_bytes_before", "source_bytes_after", "archived_files_removed",
+    "archived_bytes_removed", "staging_files",
 )
 
 
@@ -1880,7 +1882,7 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
         return bool(row and int(row["count"]))
 
     schedules = (
-        ("gdrive_raw_archive", "raw-data", 600, 10, 1800),
+        ("gdrive_raw_archive", "raw-data", 3600, 10, 1800),
         ("evaluation_aggregate", "all-models", 900, 30, 900),
         ("series_feature_cache", "official-series", 1800, 45, 600),
         ("repository_sync", "repository", 1800, 25, 300),

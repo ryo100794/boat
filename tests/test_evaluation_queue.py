@@ -899,6 +899,24 @@ def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
     assert result_decision("market_curvature", summary) == "confirm_on_new_holdout"
 
 
+def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "source_files_before": 35,
+        "source_files_after": 24,
+        "source_bytes_before": 664383,
+        "source_bytes_after": 506907,
+        "archived_files_removed": 11,
+        "archived_bytes_removed": 157476,
+        "staging_files": 0,
+    })
+
+    assert summary["archived_files_removed"] == 11
+    assert summary["archived_bytes_removed"] == 157476
+    assert summary["source_files_after"] == 24
+    assert summary["staging_files"] == 0
+
+
 def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     summary = summarize_result({
         "model": "venue",
@@ -1164,6 +1182,9 @@ def test_periodic_seed_uses_low_backup_priority_and_skips_completed_bucket(
     assert len(calls) == 5
     backup = next(row for row in calls if row["task_type"] == "gdrive_raw_archive")
     assert backup["priority"] == 10
+    assert backup["parameters"]["schedule_bucket"] == (
+        "2026-07-23T12:00:00+00:00"
+    )
     series = next(row for row in calls if row["task_type"] == "series_feature_cache")
     assert series["priority"] == 45
     assert series["parameters"]["from_date"] == "2026-07-09"
