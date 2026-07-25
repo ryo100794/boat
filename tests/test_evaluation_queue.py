@@ -941,6 +941,26 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     )
 
 
+def test_market_walk_forward_requires_explicit_promotion_eligibility() -> None:
+    summary = summarize_result({
+        "model": "market-candidate",
+        "promotion_eligible": False,
+        "roi": 7.42,
+        "profit_yen": 3_210,
+        "evaluation_races": 170,
+        "evaluation_days": 1,
+    })
+
+    assert result_decision("market_residual_walk_forward", summary) == (
+        "accumulate_formal_evidence"
+    )
+    summary["promotion_eligible"] = True
+    assert (
+        result_decision("market_residual_walk_forward", summary)
+        == "promotion_candidate"
+    )
+
+
 def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> None:
     summary = summarize_result({
         "promotion_eligible": True,

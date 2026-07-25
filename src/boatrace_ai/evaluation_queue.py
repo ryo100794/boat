@@ -1501,6 +1501,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
+    if task_type == "market_residual_walk_forward":
+        if summary.get("promotion_eligible") is True:
+            return "promotion_candidate"
+        return "accumulate_formal_evidence"
     if task_type == "conditional_payout_tail":
         if summary.get("payout_feature_promotion_eligible") is True:
             return "payout_feature_promotion_candidate"
