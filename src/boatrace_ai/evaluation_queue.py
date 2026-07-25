@@ -212,6 +212,31 @@ def ensure_schema(conn: Any) -> None:
             16384,
         ),
     )
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET min_free_memory_mb = ?
+        WHERE status = 'queued'
+          AND task_type = ?
+          AND min_free_memory_mb = ?
+        """,
+        (14336, "lightgbm_recency_search", 65536),
+    )
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET parameters = jsonb_set(
+            parameters,
+            '{n_jobs}',
+            to_jsonb(CAST(? AS INTEGER)),
+            true
+        )
+        WHERE status = 'queued'
+          AND task_type = ?
+          AND parameters->>'n_jobs' = ?
+        """,
+        (4, "lightgbm_recency_search", "16"),
+    )
 
 
 def _read_cpu_times() -> tuple[int, int]:

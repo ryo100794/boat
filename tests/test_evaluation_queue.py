@@ -1310,6 +1310,19 @@ def test_feature_search_profiles_fit_the_32gb_quota_and_migrate_old_defaults() -
         "listwise_feature_search",
         16384,
     )
+    lightgbm_memory_migration = next(
+        (statement, params)
+        for statement, params in conn.calls
+        if params == (14336, "lightgbm_recency_search", 65536)
+    )
+    assert "status = 'queued'" in lightgbm_memory_migration[0]
+    lightgbm_worker_migration = next(
+        (statement, params)
+        for statement, params in conn.calls
+        if params == (4, "lightgbm_recency_search", "16")
+    )
+    assert "jsonb_set" in lightgbm_worker_migration[0]
+    assert "status = 'queued'" in lightgbm_worker_migration[0]
 
 class _QueryResult:
     def __init__(self, row=None):

@@ -88,6 +88,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "payout_feature_candidate_schema": "interactions_v2",
         "payout_feature_legacy_schema": "additive_v1",
         "payout_feature_candidate_roi": 1.03,
+        "payout_feature_candidate_profit_yen": 300,
+        "payout_feature_candidate_max_drawdown_yen": 1_200,
+        "payout_feature_roi_ci95_lower": 1.01,
+        "payout_feature_probability_roi_above_one": 0.96,
         "payout_feature_legacy_roi": 0.90,
         "payout_feature_roi_delta": 0.13,
         "payout_feature_roi_delta_ci95_lower": 0.02,
@@ -113,6 +117,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
 
     assert status["jobs"][0]["status"] == "完了"
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
+    assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
+    assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200
+    assert status["candidates"][0]["payout_feature_roi_ci95_lower"] == 1.01
+    assert status["candidates"][0]["payout_feature_probability_roi_above_one"] == 0.96
     assert status["candidates"][0]["payout_feature_roi_delta_ci95_lower"] == 0.02
 
 

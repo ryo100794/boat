@@ -2413,6 +2413,20 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "payout_feature_candidate_roi": _float_or_none(
                     candidate_metrics.get("payout_feature_candidate_roi")
                 ),
+                "payout_feature_candidate_profit_yen": candidate_metrics.get(
+                    "payout_feature_candidate_profit_yen"
+                ),
+                "payout_feature_candidate_max_drawdown_yen": candidate_metrics.get(
+                    "payout_feature_candidate_max_drawdown_yen"
+                ),
+                "payout_feature_roi_ci95_lower": _float_or_none(
+                    candidate_metrics.get("payout_feature_roi_ci95_lower")
+                ),
+                "payout_feature_probability_roi_above_one": _float_or_none(
+                    candidate_metrics.get(
+                        "payout_feature_probability_roi_above_one"
+                    )
+                ),
                 "payout_feature_legacy_roi": _float_or_none(
                     candidate_metrics.get("payout_feature_legacy_roi")
                 ),
