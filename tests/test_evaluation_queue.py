@@ -1636,7 +1636,7 @@ def test_combined_feature_search_rejects_injected_worker_or_path(
 def test_lightgbm_recency_search_profile() -> None:
     assert TASK_PROFILES["lightgbm_recency_search"] == {
         "category": "evaluation",
-        "memory_mb": 16384,
+        "memory_mb": 14336,
         "disk_mb": 1024,
         "idle_cpu": 15.0,
         "max_parallel": 1,
