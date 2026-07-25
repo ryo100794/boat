@@ -90,9 +90,14 @@ def select_policy_threshold(
         and int(row.get("hits") or 0) >= minimum_hits
         and int(row.get("winning_days") or 0) >= minimum_winning_days
         and float(row["roi"]) >= minimum_roi
+        and float(row.get("selection_roi_ci95_lower", row["roi"]))
+        >= minimum_roi
         and int(row["profit_yen"]) > 0
     ]
     if not eligible:
         return float(fallback), "fallback_fixed_threshold"
     selected = min(eligible, key=lambda row: float(row["ev_threshold"]))
-    return float(selected["ev_threshold"]), "pre_evaluation_temporal_selection"
+    return (
+        float(selected["ev_threshold"]),
+        "pre_evaluation_risk_adjusted_temporal_selection",
+    )

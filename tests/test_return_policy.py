@@ -51,7 +51,7 @@ def test_threshold_selection_uses_only_profitable_supported_rows() -> None:
         minimum_roi=1.05,
     )
     assert threshold == 1.05
-    assert source == "pre_evaluation_temporal_selection"
+    assert source == "pre_evaluation_risk_adjusted_temporal_selection"
 
 
 def test_threshold_diagnostics_exclude_races_without_results() -> None:
@@ -103,6 +103,41 @@ def test_adaptive_threshold_diagnostics_use_operational_allocator() -> None:
     assert diagnostics[1]["roi"] == diagnostics[0]["roi"]
     assert diagnostics[1]["profit_yen"] == diagnostics[0]["profit_yen"]
     assert diagnostics[1]["profit_yen"] > 0
+    assert diagnostics[1]["selection_roi_ci95_lower"] > 1.0
+    assert diagnostics[1]["selection_probability_roi_above_one"] == 1.0
+
+
+def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
+    threshold, source = select_policy_threshold(
+        [
+            {
+                "ev_threshold": 1.05,
+                "tickets": 200,
+                "hits": 20,
+                "winning_days": 12,
+                "roi": 1.8,
+                "selection_roi_ci95_lower": 0.7,
+                "profit_yen": 8_000,
+            },
+            {
+                "ev_threshold": 1.10,
+                "tickets": 180,
+                "hits": 18,
+                "winning_days": 12,
+                "roi": 1.2,
+                "selection_roi_ci95_lower": 1.06,
+                "profit_yen": 2_000,
+            },
+        ],
+        fallback=1.20,
+        minimum_tickets=100,
+        minimum_roi=1.05,
+        minimum_hits=10,
+        minimum_winning_days=8,
+    )
+
+    assert threshold == 1.10
+    assert source == "pre_evaluation_risk_adjusted_temporal_selection"
 
 
 def test_threshold_selection_rejects_sparse_wins() -> None:

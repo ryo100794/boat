@@ -15,6 +15,8 @@ from ..roi_attribution import (
 )
 from .direct_bankroll import (
     COMBINATION_INDEX,
+    SELECTION_BOOTSTRAP_SAMPLES,
+    bootstrap_daily_bankroll,
     COMBINATION_LABELS,
     direct_candidates,
     standard_direct_policy,
@@ -169,6 +171,11 @@ def _adaptive_threshold_diagnostics(
         settled = _settle_candidate_days(
             filtered, evaluated_by_day, race_dates, threshold_policy
         )
+        confidence = bootstrap_daily_bankroll(
+            settled["daily"],
+            samples=SELECTION_BOOTSTRAP_SAMPLES,
+            seed=20260730,
+        )
         diagnostics.append(
             {
                 "ev_threshold": threshold_value,
@@ -179,6 +186,15 @@ def _adaptive_threshold_diagnostics(
                 "return_yen": int(settled["return_yen"]),
                 "profit_yen": int(settled["profit_yen"]),
                 "roi": float(settled["roi"]),
+                "selection_roi_ci95_lower": float(
+                    confidence["roi_ci95_lower"]
+                ),
+                "selection_probability_roi_above_one": float(
+                    confidence["probability_roi_above_one"]
+                ),
+                "selection_profit_ci95_lower_yen": float(
+                    confidence["profit_ci95_lower_yen"]
+                ),
                 "max_drawdown_yen": int(settled["max_drawdown_yen"]),
                 "winning_days": int(settled["winning_days"]),
                 "losing_days": int(settled["losing_days"]),
