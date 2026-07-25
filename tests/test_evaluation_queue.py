@@ -1688,6 +1688,7 @@ def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
     assert command[command.index("--feature-cache") + 1].endswith(
         "lightgbm_v6_features_16384_drop_legacy_composites"
     )
+    assert "--no-write-feature-cache" in command
     assert command[command.index("--drop-feature-groups") + 1] == (
         "legacy_composites"
     )

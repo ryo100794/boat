@@ -1052,6 +1052,7 @@ def build_command(
             ),
             "--evaluation-date", evaluation_date,
             "--feature-cache", str(feature_cache),
+            "--no-write-feature-cache",
             "--drop-feature-groups", drop_feature_groups,
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),

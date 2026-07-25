@@ -760,6 +760,7 @@ def evaluate_recency_mlp(
     output_path: Path,
     evaluation_date: date,
     feature_cache: Path | None = DEFAULT_FEATURE_CACHE,
+    write_feature_cache: bool = True,
     half_lives: Sequence[float | None] = DEFAULT_HALF_LIVES,
     calibration_days: int = 180,
     batch_size: int = BATCH_SIZE,
@@ -826,6 +827,7 @@ def evaluate_recency_mlp(
             drop_feature_groups=resolved_drop_feature_groups,
             feature_schema_version=feature_schema_version,
             batch_size=batch_size,
+            write_cache=write_feature_cache,
         )
         validate_dataset_races(
             dataset,
@@ -1134,6 +1136,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     parser.add_argument("--feature-cache", type=Path, default=DEFAULT_FEATURE_CACHE)
+    parser.add_argument("--no-write-feature-cache", dest="write_feature_cache", action="store_false")
     parser.add_argument(
         "--drop-feature-groups",
         type=parse_drop_feature_groups,
@@ -1157,6 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path=args.output,
             evaluation_date=args.evaluation_date,
             feature_cache=args.feature_cache,
+            write_feature_cache=args.write_feature_cache,
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
             drop_feature_groups=args.drop_feature_groups,

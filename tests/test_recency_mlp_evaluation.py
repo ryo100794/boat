@@ -612,7 +612,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         "validated_protocol_race_keys",
         lambda *_args, **_kwargs: (dataset.race_keys, training_hash),
     )
-    feature_contract: dict[str, tuple[str, ...]] = {}
+    feature_contract: dict[str, object] = {}
 
     def fake_iter_rows(
         _conn: object,
@@ -629,6 +629,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     def fake_load_dataset(**kwargs: object):
         feature_contract["cache"] = kwargs["drop_feature_groups"]
         feature_contract["cache_schema"] = kwargs["feature_schema_version"]
+        feature_contract["write_cache"] = kwargs["write_cache"]
         list(kwargs["race_rows"]())
         return dataset, "disk"
 
@@ -766,6 +767,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         output_path=output,
         evaluation_date=date(2025, 1, 2),
         feature_cache=tmp_path / "features",
+        write_feature_cache=False,
         model_output_path=model_output,
         deployment_model_output_path=deployment_output,
     )
@@ -778,6 +780,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         "rows_schema": FEATURE_SCHEMA_VERSION,
         "cache": ("research_correlates",),
         "cache_schema": FEATURE_SCHEMA_VERSION,
+        "write_cache": False,
     }
     assert result["selected_recency_half_life_days"] == 365.0
     assert result["entry_log_loss"] == 0.25
@@ -862,6 +865,7 @@ def test_cli_defaults_match_recency_protocol() -> None:
     )
 
     assert args.feature_cache == recency.DEFAULT_FEATURE_CACHE
+    assert args.write_feature_cache is True
     assert args.drop_feature_groups == ("research_correlates",)
     assert args.model_output is None
     assert args.incumbent_prediction is None

@@ -138,6 +138,7 @@ def test_lightgbm_cli_uses_separate_cache_and_safe_feature_drop() -> None:
     )
 
     assert args.feature_cache == lightgbm_eval.DEFAULT_FEATURE_CACHE
+    assert args.write_feature_cache is True
     assert args.drop_feature_groups == ("legacy_composites",)
     assert args.half_lives == (None, 365.0)
     assert args.n_jobs == 4
@@ -155,11 +156,13 @@ def test_lightgbm_wrapper_injects_model_contract(monkeypatch: pytest.MonkeyPatch
         None,
         output_path=lightgbm_eval.Path("result.json"),
         evaluation_date=date(2026, 7, 24),
+        write_feature_cache=False,
         n_estimators=20,
     )
 
     assert result["model"] == lightgbm_eval.MODEL_NAME
     assert captured["model_kind"] == "lightgbm"
+    assert captured["write_feature_cache"] is False
     assert captured["feature_set"] == lightgbm_eval.FEATURE_SET
     assert captured["feature_schema_version"] == (
         lightgbm_eval.LIGHTGBM_FEATURE_SCHEMA_VERSION
