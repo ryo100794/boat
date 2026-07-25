@@ -133,10 +133,26 @@ def test_racer_stats_parser_reads_avg_st_and_trailing_origin() -> None:
     line[54:56] = b"50"
     line[58:62] = b"0756"
     line[62:66] = b"0459"
+    line[66:69] = b"037"
+    line[69:72] = b"019"
     line[72:75] = b"122"
     line[79:82] = b"016"
-    line[410:416] = "大阪  ".encode("cp932")
+    line[166:170] = b"7400"
+    line[170:174] = b"7500"
+    line[179:187] = b"20250501"
+    line[187:195] = b"20251031"
+    line[195:198] = b"064"
+    line[204:207] = b"020"
+    line[216:218] = b"01"
+    line[218:220] = b"01"
+    line[410:416] = "千　葉".encode("cp932")
 
     rows = parse_racer_stats_bytes(bytes(line), year=2026, half=1)
     assert rows[0]["avg_st"] == 0.16
-    assert rows[0]["origin"] == "大阪"
+    assert rows[0]["origin"] == "千葉"
+    assert rows[0]["third_count"] == 20
+    assert rows[0]["place3_rate"] == pytest.approx(100 * 76 / 122)
+    assert rows[0]["f_count"] == 1
+    assert rows[0]["l_count"] == 1
+    assert rows[0]["ability_index"] == 75.0
+    assert rows[0]["calculation_to"] == "20251031"
