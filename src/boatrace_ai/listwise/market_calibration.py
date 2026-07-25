@@ -47,6 +47,7 @@ from .closing_odds_momentum import (
     select_closing_odds_model,
     selected_closing_odds_metrics,
 )
+from .conditional_order import ConditionalOrderModel, conditional_probabilities
 from .conditional_stagewise import (
     ConditionalStagewiseModel,
     conditional_position_utilities,
@@ -124,6 +125,41 @@ def artifact_model_probabilities(
     matrix = _ensure_sparse_index32(
         hasher.transform([to_hashable(item["features"]) for item in feature_rows])
     )
+    classifier = artifact.get("classifier")
+    model_kind = str(artifact.get("model_kind") or "").strip().lower()
+    if model is None and classifier is not None:
+        if model_kind not in {"linear", "mlp", "lightgbm"}:
+            raise ValueError("unsupported classifier model kind for market scoring")
+        scaler = artifact.get("scaler")
+        transformed = matrix if scaler is None else scaler.transform(matrix)
+        raw = np.asarray(classifier.predict_proba(transformed), dtype=np.float64)
+        classes = np.asarray(getattr(classifier, "classes_", [0, 1]))
+        positive = np.flatnonzero(classes == 1)
+        if raw.ndim != 2 or raw.shape[0] != 6 or len(positive) != 1:
+            raise ValueError("classifier artifact must score six lanes for binary winner probability")
+        lane_scores = raw[:, int(positive[0])]
+        if not np.all(np.isfinite(lane_scores)) or np.any(lane_scores < 0.0):
+            raise ValueError("classifier artifact returned invalid winner probabilities")
+        total = float(lane_scores.sum())
+        if total <= 0.0:
+            raise ValueError("classifier artifact returned zero winner probability mass")
+        lane_probabilities = lane_scores / total
+        order_model = artifact.get("conditional_order_model")
+        trifecta_values = None
+        if order_model is not None:
+            if not isinstance(order_model, ConditionalOrderModel):
+                raise ValueError("classifier artifact has an invalid conditional order model")
+            trifecta_values = conditional_probabilities(
+                np.log(np.clip(lane_probabilities.reshape(1, 6), 1e-15, 1.0)),
+                order_model,
+            )[0]
+        return {
+            row["combination"]: float(row["probability"])
+            for row in trifecta_predictions(
+                {lane: float(lane_probabilities[lane - 1]) for lane in range(1, 7)},
+                trifecta_probabilities=trifecta_values,
+            )
+        }
     if isinstance(model, ListwiseLinearModel):
         scores = np.asarray(model.scaler.transform(matrix).dot(model.weights)).reshape(6)
         lane_probabilities = stable_softmax(scores)
