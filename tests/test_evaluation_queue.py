@@ -852,6 +852,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-RECENCY-001",
         "MODEL-VENUE-001",
         "MODEL-SEGMENT-001",
+        "MODEL-MARKET-RESIDUAL-001",
         "UI-MODEL-DAILY-001",
     } <= keys
     memory_ticket = next(
@@ -1733,5 +1734,70 @@ def test_lightgbm_recency_search_rejects_invalid_parameters(
             _job("lightgbm_recency_search", parameters),
             app_root=tmp_path,
             python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    model = root / "data/models/evaluation_queue/job-00002606.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"artifact")
+    python = root / ".venv/bin/python"
+
+    command, output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": "newton_residual",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["market_residual_walk_forward"] == {
+        "category": "evaluation",
+        "memory_mb": 2048,
+        "disk_mb": 256,
+        "idle_cpu": 5.0,
+        "max_parallel": 1,
+    }
+    assert command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.market_calibration",
+    ]
+    assert command[command.index("--model") + 1] == str(model)
+    assert command[command.index("--calibrator-strategy") + 1] == "newton_residual"
+    assert command[command.index("--through-date") + 1] == "2026-07-24"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+    with pytest.raises(ValueError, match="inside data/models"):
+        build_command(
+            _job(
+                "market_residual_walk_forward",
+                {"model_input": "../../outside.joblib", "from_date": "2026-07-18"},
+            ),
+            app_root=root,
+            python=python,
+            db="postgresql://test",
+        )
+    with pytest.raises(ValueError, match="unsupported"):
+        build_command(
+            _job(
+                "market_residual_walk_forward",
+                {
+                    "model_input": "data/models/candidate.joblib",
+                    "from_date": "2026-07-18",
+                    "command": "arbitrary",
+                },
+            ),
+            app_root=root,
+            python=python,
             db="postgresql://test",
         )

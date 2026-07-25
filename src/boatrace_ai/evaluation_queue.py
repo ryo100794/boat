@@ -49,6 +49,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "historical_coverage_safe": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
+    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
@@ -1079,6 +1080,65 @@ def build_command(
             "--output",
             str(output),
         ], output
+    if task_type == "market_residual_walk_forward":
+        allowed = {
+            "model_input", "from_date", "through_date", "daily_budget_yen",
+            "min_calibration_days", "calibrator_strategy",
+            "minimum_day_coverage", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported market_residual_walk_forward parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        missing = {"model_input", "from_date"} - set(params)
+        if missing:
+            raise ValueError(
+                "missing market_residual_walk_forward parameters: "
+                + ", ".join(sorted(missing))
+            )
+        from_date = _date(params, "from_date")
+        through_date = (
+            _date(params, "through_date")
+            if params.get("through_date") is not None
+            else None
+        )
+        if through_date is not None and through_date < from_date:
+            raise ValueError("market evaluation dates must be chronological")
+        _integer(params, "timeout_seconds", 3600, 300, 86400)
+        model_root = (app_root / "data" / "models").resolve()
+        model_input = (app_root / str(params["model_input"])).resolve()
+        if model_root not in model_input.parents or model_input.suffix != ".joblib":
+            raise ValueError("model_input must be a joblib artifact inside data/models")
+        if not model_input.is_file():
+            raise JobDependencyUnavailable(
+                f"market source model is not available yet: {model_input}"
+            )
+        strategy = str(params.get("calibrator_strategy", "newton_residual"))
+        if strategy not in {"grid", "newton_residual"}:
+            raise ValueError("unsupported market calibrator_strategy")
+        command = [
+            str(python), "-m", "boatrace_ai.listwise.market_calibration",
+            "--db", db,
+            "--model", str(model_input),
+            "--output", str(output),
+            "--scored-cache", str(output.with_suffix(".races.joblib")),
+            "--from-date", from_date,
+            "--daily-budget-yen", str(
+                _integer(params, "daily_budget_yen", 10000, 100, 1000000)
+            ),
+            "--min-calibration-days", str(
+                _integer(params, "min_calibration_days", 2, 1, 365)
+            ),
+            "--calibrator-strategy", strategy,
+            "--minimum-day-coverage", str(
+                _number(params, "minimum_day_coverage", 1.0, 0.5, 1.0)
+            ),
+        ]
+        if through_date is not None:
+            command.extend(["--through-date", through_date])
+        return command, output
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",
@@ -1957,6 +2017,16 @@ DEFAULT_WORK_TICKETS = (
         60,
         "queued",
         10,
+    ),
+    (
+        "MODEL-MARKET-RESIDUAL-001",
+        "履歴モデルとT-5公式オッズの残差評価",
+        "モデル",
+        "365日最良履歴モデルの確率を事前分布としT-5公式オッズ残差を日付単位walk-forwardで較正する",
+        "全適格レースを日単位foldで市場単独・履歴単独と比較し、LogLoss・1着・3T5・ROI・損益・最大DD・ROI片側95%下限を記録する。30日未満はshadow限定とする",
+        96,
+        "in_progress",
+        25,
     ),
     (
         "UI-MODEL-DAILY-001",

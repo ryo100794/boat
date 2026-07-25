@@ -1207,10 +1207,16 @@ def score_real_odds_races(
     _validate_artifact_before_period(artifact, from_date=from_date)
     model = artifact.get("model")
     hasher = artifact.get("hasher")
-    if not isinstance(
+    model_kind = str(artifact.get("model_kind") or "").strip().lower()
+    supported_classifier = (
+        artifact.get("classifier") is not None
+        and model_kind in {"linear", "mlp", "lightgbm"}
+    )
+    supported_listwise = isinstance(
         model,
         (ListwiseLinearModel, StagewiseBlendModel, ConditionalStagewiseModel),
-    ) or hasher is None:
+    )
+    if (not supported_listwise and not supported_classifier) or hasher is None:
         raise ValueError("model artifact must contain a supported model and hasher")
     race_keys = load_complete_race_ids(conn)
     target_ids = {
