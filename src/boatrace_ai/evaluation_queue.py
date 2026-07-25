@@ -241,11 +241,38 @@ def ensure_schema(conn: Any) -> None:
     )
 
 
-def _read_cpu_times() -> tuple[int, int]:
-    fields = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()[1:]
-    values = [int(value) for value in fields]
-    idle = values[3] + (values[4] if len(values) > 4 else 0)
-    return idle, sum(values)
+def _available_cpu_ids() -> set[int] | None:
+    try:
+        return set(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return None
+
+
+def _read_cpu_times(
+    cpu_ids: set[int] | None = None,
+    *,
+    stat_path: Path = Path("/proc/stat"),
+) -> tuple[int, int]:
+    lines = stat_path.read_text(encoding="utf-8").splitlines()
+    selected: list[list[int]] = []
+    for line in lines:
+        fields = line.split()
+        label = fields[0] if fields else ""
+        if cpu_ids is None:
+            if label != "cpu":
+                continue
+        elif not label.startswith("cpu") or not label[3:].isdigit():
+            continue
+        elif int(label[3:]) not in cpu_ids:
+            continue
+        selected.append([int(value) for value in fields[1:]])
+        if cpu_ids is None:
+            break
+    if not selected:
+        raise RuntimeError("no CPU counters found for the process affinity")
+    idle = sum(values[3] + (values[4] if len(values) > 4 else 0) for values in selected)
+    total = sum(sum(values) for values in selected)
+    return idle, total
 
 
 def _cgroup_memory(root: Path = Path("/sys/fs/cgroup")) -> tuple[int, int] | None:
@@ -334,16 +361,17 @@ def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
             reclaimable_file_mb,
         )
         host_available_mb = min(host_available_mb, quota_available_mb)
-    idle_before, total_before = _read_cpu_times()
+    cpu_ids = _available_cpu_ids()
+    idle_before, total_before = _read_cpu_times(cpu_ids)
     time.sleep(max(0.0, sample_seconds))
-    idle_after, total_after = _read_cpu_times()
+    idle_after, total_after = _read_cpu_times(cpu_ids)
     total_delta = max(1, total_after - total_before)
     idle_percent = max(0.0, min(100.0, (idle_after - idle_before) * 100.0 / total_delta))
     return ResourceSnapshot(
         available_memory_mb=host_available_mb,
         available_disk_mb=int(shutil.disk_usage("/tmp").free // 1024**2),
         idle_cpu_percent=idle_percent,
-        cpu_count=os.cpu_count() or 1,
+        cpu_count=len(cpu_ids) if cpu_ids else (os.cpu_count() or 1),
         load_1m=float(os.getloadavg()[0]),
         memory_limit_mb=memory_limit_mb,
         memory_usage_mb=memory_usage_mb,

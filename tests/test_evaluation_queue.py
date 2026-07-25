@@ -93,6 +93,23 @@ def test_load_job_parameters_rejects_non_object(tmp_path: Path) -> None:
         evaluation_queue.load_job_parameters(parameters_file)
 
 
+def test_cpu_times_are_limited_to_process_affinity(tmp_path: Path) -> None:
+    stat = tmp_path / "stat"
+    stat.write_text(
+        "cpu  300 0 100 600 30 0 0 0 0 0\n"
+        "cpu0 100 0 20 200 10 0 0 0 0 0\n"
+        "cpu1 80 0 30 100 5 0 0 0 0 0\n"
+        "cpu2 120 0 50 300 15 0 0 0 0 0\n",
+        encoding="utf-8",
+    )
+
+    assert evaluation_queue._read_cpu_times({0, 2}, stat_path=stat) == (
+        525,
+        815,
+    )
+    assert evaluation_queue._read_cpu_times(None, stat_path=stat) == (630, 1030)
+
+
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
