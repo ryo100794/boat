@@ -43,7 +43,7 @@ def train_lightgbm_bundle_from_dataset(
     min_child_samples: int = 100,
     feature_fraction: float = 0.6,
     max_bin: int = 63,
-    n_jobs: int = 16,
+    n_jobs: int = 4,
 ) -> dict[str, Any]:
     del batch_size, epochs, alpha
     if model_kind != MODEL_KIND:
@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-child-samples", type=int, default=100)
     parser.add_argument("--feature-fraction", type=float, default=0.6)
     parser.add_argument("--max-bin", type=int, default=63)
-    parser.add_argument("--n-jobs", type=int, default=16)
+    parser.add_argument("--n-jobs", type=int, default=4)
     return parser
 
 
