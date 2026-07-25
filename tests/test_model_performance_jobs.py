@@ -57,6 +57,7 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert 'id="candidateRows"' in MODEL_REPORT_HTML
     assert "基準1着" in MODEL_REPORT_HTML
     assert "evaluation_jobs" in MODEL_REPORT_HTML
+    assert "<th>判定</th>" in MODEL_REPORT_HTML
     assert "新損益" in MODEL_REPORT_HTML
     assert "新最大DD" in MODEL_REPORT_HTML
     assert "新ROI下限" in MODEL_REPORT_HTML
@@ -116,6 +117,7 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     status = _database_evaluation_status(db_path)
 
     assert status["jobs"][0]["status"] == "完了"
+    assert status["jobs"][0]["decision"] == "confirm_on_new_holdout"
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
     assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200
