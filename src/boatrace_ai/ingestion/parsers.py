@@ -579,6 +579,7 @@ def parse_racer_stats_bytes(payload: bytes, *, year: int, half: int) -> list[dic
             "final_count": to_int(field(75, 77)),
             "champion_count": to_int(field(77, 79)),
             "avg_st": _scaled_int(field(79, 82), 100),
+            "origin": field(410, 416) if len(raw_line) >= 416 else "",
             "class_rank": CLASS_RANK.get(field(39, 41)),
         }
         rows.append(row)

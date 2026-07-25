@@ -6,6 +6,8 @@ import pytest
 
 from boatrace_ai import racer_stats_backfill
 from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
+from boatrace_ai.ingestion.parsers import parse_racer_stats_bytes
+from boatrace_ai.official import racer_stats_url
 
 
 class FakeConnection:
@@ -112,3 +114,29 @@ def test_queue_rejects_arbitrary_racer_stats_parameters(tmp_path: Path) -> None:
             python=tmp_path / "python",
             db="postgresql://test",
         )
+
+
+def test_official_racer_stats_urls_match_download_page() -> None:
+    assert racer_stats_url(2026, 1).endswith("/kibetsu/fan2510.lzh")
+    assert racer_stats_url(2026, 2).endswith("/kibetsu/fan2604.lzh")
+    assert racer_stats_url(2016, 1).endswith("/kibetsu/fan1510.lzh")
+    assert racer_stats_url(2016, 2).endswith("/kibetsu/fan1604.lzh")
+
+
+def test_racer_stats_parser_reads_avg_st_and_trailing_origin() -> None:
+    line = bytearray(b" " * 416)
+    line[0:4] = b"3415"
+    line[4:20] = b"RACER           "
+    line[35:39] = "大阪".encode("cp932")
+    line[39:41] = b"A1"
+    line[49:51] = b"44"
+    line[54:56] = b"50"
+    line[58:62] = b"0756"
+    line[62:66] = b"0459"
+    line[72:75] = b"122"
+    line[79:82] = b"016"
+    line[410:416] = "大阪  ".encode("cp932")
+
+    rows = parse_racer_stats_bytes(bytes(line), year=2026, half=1)
+    assert rows[0]["avg_st"] == 0.16
+    assert rows[0]["origin"] == "大阪"
