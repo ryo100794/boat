@@ -1586,7 +1586,7 @@ def test_lightgbm_recency_search_profile() -> None:
     assert TASK_PROFILES["lightgbm_recency_search"] == {
         "category": "evaluation",
         "memory_mb": 65536,
-        "disk_mb": 8192,
+        "disk_mb": 1024,
         "idle_cpu": 15.0,
         "max_parallel": 1,
     }
