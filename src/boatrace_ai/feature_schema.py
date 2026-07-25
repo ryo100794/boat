@@ -3,7 +3,7 @@ MISSING_SAFE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing
 SPARSE_MISSING_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v3-series-sparse-missing"
 FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v4-series-trend-direction"
 LIGHTGBM_FEATURE_SCHEMA_VERSION = (
-    "pastlog-lightgbm-hashed-v5-card-missing-flags"
+    "pastlog-lightgbm-hashed-v5-card-coverage-safe"
 )
 
 

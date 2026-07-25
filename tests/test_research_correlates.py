@@ -155,7 +155,7 @@ def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
     assert "boat_2_rate" in dropped[0]["features"]
 
 
-def test_lightgbm_schema_retains_sparse_card_values_with_missing_flags() -> None:
+def test_lightgbm_schema_rejects_temporal_availability_leaks() -> None:
     rows = [_entry(lane) for lane in range(1, 7)]
     rows[0]["avg_st"] = None
     rows[0]["national_3_rate"] = None
@@ -175,10 +175,9 @@ def test_lightgbm_schema_retains_sparse_card_values_with_missing_flags() -> None
 
     assert "avg_st" not in current
     assert "national_3_rate" not in current
-    assert lightgbm["avg_st"] == -1.0
-    assert lightgbm["national_3_rate"] == -1.0
-    assert lightgbm["has_avg_st"] == 0
-    assert lightgbm["has_national_3_rate"] == 0
+    assert "avg_st" not in lightgbm
+    assert "national_3_rate" not in lightgbm
+    assert "origin" not in lightgbm
     assert lightgbm["has_national_win_rate"] == 1
 
 

@@ -30,10 +30,7 @@ from .feature_schema import (
     FEATURE_SCHEMA_VERSION,
     uses_explicit_card_missing_flags,
 )
-from .series_features_form import (
-    base_pastlog_features,
-    base_v1 as raw_base_pastlog_features,
-)
+from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
 from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
@@ -56,19 +53,12 @@ LEGACY_COMPOSITE_FEATURES = (
 EXPLICIT_CARD_MISSING_ROOTS = (
     "age",
     "weight_kg",
-    "f_count",
-    "l_count",
-    "avg_st",
     "national_win_rate",
     "national_2_rate",
-    "national_3_rate",
     "local_win_rate",
     "local_2_rate",
-    "local_3_rate",
     "motor_2_rate",
-    "motor_3_rate",
     "boat_2_rate",
-    "boat_3_rate",
     "series_starts",
     "series_avg_finish",
     "series_latest_finish",
@@ -665,16 +655,11 @@ def build_race_features(
         else {}
     )
     out = []
-    card_feature_builder = (
-        raw_base_pastlog_features
-        if uses_explicit_card_missing_flags(feature_schema_version)
-        else base_pastlog_features
-    )
     for row in race_rows:
         lane = int(row["lane"])
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
-            item.update(card_feature_builder(row, relatives[lane]))
+            item.update(base_pastlog_features(row, relatives[lane]))
         if "series_cached" not in dropped:
             item.update(
                 cached_series_features(
@@ -696,6 +681,7 @@ def build_race_features(
                 if not key.startswith(RESEARCH_FEATURE_PREFIX)
             }
         if uses_explicit_card_missing_flags(feature_schema_version):
+            item.pop("origin", None)
             _add_explicit_card_missing_flags(item)
         out.append(
             {
