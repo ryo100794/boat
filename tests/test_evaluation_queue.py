@@ -25,6 +25,7 @@ from boatrace_ai.evaluation_queue import (
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
+    seed_daily_market_jobs,
     seed_periodic_jobs,
     seed_work_tickets,
     summarize_result,
@@ -1013,6 +1014,56 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     )
 
 
+def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -> None:
+    model_dir = tmp_path / "data" / "models" / "evaluation_queue"
+    model_dir.mkdir(parents=True)
+    sources = {
+        "calibrated_mlp_recency_card_features": model_dir / "mlp.json",
+        "calibrated_lightgbm_recency_period_v6_4cpu": model_dir / "lightgbm.json",
+    }
+    for path in sources.values():
+        path.with_suffix(".joblib").write_bytes(b"model")
+
+    class FakeConn:
+        parameters = ()
+
+        def execute(self, _sql, parameters):
+            self.parameters = parameters
+            return self
+
+        def fetchone(self):
+            source_key = self.parameters[1]
+            return {"result_path": str(sources[source_key])}
+
+    conn = FakeConn()
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+
+    inserted = seed_daily_market_jobs(
+        conn, app_root=tmp_path, evaluation_date="2026-07-25"
+    )
+
+    assert inserted == [1, 2]
+    assert {row["model_key"] for row in calls} == {
+        "calibrated_mlp_recency_selected:market_residual:20260718-25",
+        "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
+    }
+    assert all(
+        row["parameters"]["through_date"] == "2026-07-25"
+        and row["parameters"]["from_date"] == "2026-07-18"
+        and row["priority"] == 96
+        for row in calls
+    )
+    assert seed_daily_market_jobs(
+        conn, app_root=tmp_path, evaluation_date="2026-07-17"
+    ) == []
+
+
 def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     calls = []
 
@@ -1243,6 +1294,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "seed_daily_market_jobs",
+        lambda *_a, **_k: events.append("seed-market"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_periodic_jobs",
         lambda *_a, **_k: events.append("seed-periodic"),
     )
@@ -1267,6 +1323,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
 
     assert evaluation_queue.run_worker(args) == 0
     assert events.index("commit:maintenance") < events.index("enter:claim")
+    assert events.index("seed-market") < events.index("commit:maintenance")
     assert events.index("seed-periodic") < events.index("commit:maintenance")
     assert events.index("enter:claim") < events.index("claim")
 

@@ -2198,6 +2198,77 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
     return inserted
 
 
+MARKET_FORMAL_FROM_DATE = "2026-07-18"
+MARKET_EVALUATION_SOURCES = (
+    (
+        "calibrated_mlp_recency_selected",
+        "calibrated_mlp_recency_search",
+        "calibrated_mlp_recency_card_features",
+    ),
+    (
+        "calibrated_lightgbm_recency_selected",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+    ),
+)
+
+
+def seed_daily_market_jobs(
+    conn: Any,
+    *,
+    app_root: Path,
+    evaluation_date: str,
+) -> list[int]:
+    through = datetime.strptime(evaluation_date, "%Y-%m-%d").date()
+    formal_from = datetime.strptime(MARKET_FORMAL_FROM_DATE, "%Y-%m-%d").date()
+    if through < formal_from:
+        return []
+    model_root = (app_root / "data" / "models").resolve()
+    inserted: list[int] = []
+    for label, task_type, source_key in MARKET_EVALUATION_SOURCES:
+        source = conn.execute(
+            """
+            SELECT result_path
+            FROM model_evaluation_jobs
+            WHERE task_type = ? AND model_key = ?
+              AND status = ? AND result_path IS NOT NULL
+            ORDER BY completed_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            (task_type, source_key, "completed"),
+        ).fetchone()
+        if source is None:
+            continue
+        result_path = Path(str(source["result_path"]))
+        if not result_path.is_absolute():
+            result_path = app_root / result_path
+        model_input = result_path.with_suffix(".joblib").resolve()
+        if model_root not in model_input.parents or not model_input.is_file():
+            continue
+        parameters = {
+            "model_input": model_input.relative_to(app_root).as_posix(),
+            "from_date": MARKET_FORMAL_FROM_DATE,
+            "through_date": through.isoformat(),
+            "daily_budget_yen": 10000,
+            "min_calibration_days": 2,
+            "calibrator_strategy": "newton_residual",
+            "minimum_day_coverage": 1.0,
+            "timeout_seconds": 3600,
+        }
+        range_key = formal_from.strftime("%Y%m%d") + f"-{through.day:02d}"
+        job_id = enqueue_job(
+            conn,
+            task_type="market_residual_walk_forward",
+            model_key=f"{label}:market_residual:{range_key}",
+            parameters=parameters,
+            priority=96,
+            max_attempts=2,
+        )
+        if job_id is not None:
+            inserted.append(job_id)
+    return inserted
+
+
 def run_worker(args: argparse.Namespace) -> int:
     worker_id = args.worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     app_root = Path(args.app_root).resolve()
@@ -2228,6 +2299,11 @@ def run_worker(args: argparse.Namespace) -> int:
                             datetime.now(JST).date() - timedelta(days=1)
                         ).isoformat()
                         seed_default_jobs(conn, evaluation_date=evaluation_date)
+                        seed_daily_market_jobs(
+                            conn,
+                            app_root=app_root,
+                            evaluation_date=evaluation_date,
+                        )
                         seeded_defaults = True
                     if (
                         args.schedule_periodic
