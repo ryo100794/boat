@@ -1955,10 +1955,11 @@ def seed_work_tickets(conn: Any) -> int:
               priority, status, progress, source
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'codex')
             ON CONFLICT(ticket_key) DO NOTHING
+            RETURNING ticket_key
             """,
             (key, title, area, description, acceptance, priority, status, progress),
         )
-        changed += max(0, int(cursor.rowcount or 0))
+        changed += int(cursor.fetchone() is not None)
     return changed
 
 

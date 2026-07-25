@@ -804,9 +804,21 @@ def test_fresh_work_ticket_seed_registers_feature_search_parallelization(
         )
         """
     )
+    class CursorWithoutRowcount:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchone(self):
+            return self.cursor.fetchone()
+
+    class ConnectionWithoutRowcount:
+        def execute(self, statement, parameters=()):
+            return CursorWithoutRowcount(conn.execute(statement, parameters))
+
+    compat_conn = ConnectionWithoutRowcount()
     try:
-        assert seed_work_tickets(conn) == len(DEFAULT_WORK_TICKETS)
-        assert seed_work_tickets(conn) == 0
+        assert seed_work_tickets(compat_conn) == len(DEFAULT_WORK_TICKETS)
+        assert seed_work_tickets(compat_conn) == 0
         actual = conn.execute(
             """
             SELECT ticket_key, title, area, description, acceptance_criteria,
