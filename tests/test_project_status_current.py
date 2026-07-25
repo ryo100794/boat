@@ -8,9 +8,9 @@ STATUS = Path("docs/PROJECT_STATUS.md").read_text(encoding="utf-8")
 def test_project_status_uses_current_evaluation_state() -> None:
     assert re.search(r"更新日時: 20\d{2}-\d{2}-\d{2} \d{2}:\d{2} UTC", STATUS)
     assert "厳格T-5較正適格 / 正式評価 | 401R / 0R（開始7月24日）" in STATUS
-    assert "標準365日v2は9モデル" in STATUS
+    assert "標準365日v2は11モデル" in STATUS
     assert "35,396行・2,170選手" in STATUS
-    assert "ジョブ2705" in STATUS
+    assert "ジョブ2707" in STATUS
     assert "再評価ジョブ2306" in STATUS
     assert "point-in-time v6" in STATUS
     assert "LightGBM v6" in STATUS
