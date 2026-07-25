@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1437,6 +1438,18 @@ def test_supervisor_runs_four_postgresql_queue_workers() -> None:
     assert "numprocs=4" in config
     assert "--seed-defaults" in config
     assert "--vm-limit-gib 0" in config
+    assert 'BOATRACE_PG_APPLICATION_NAME="boatrace_evaluator"' in config
+    assert 'BOATRACE_PG_WORK_MEM="128MB"' in config
+
+
+def test_worker_sets_database_memory_defaults_without_overriding(monkeypatch) -> None:
+    monkeypatch.delenv("BOATRACE_PG_APPLICATION_NAME", raising=False)
+    monkeypatch.setenv("BOATRACE_PG_WORK_MEM", "256MB")
+
+    evaluation_queue._configure_worker_database_memory()
+
+    assert os.environ["BOATRACE_PG_APPLICATION_NAME"] == "boatrace_evaluator"
+    assert os.environ["BOATRACE_PG_WORK_MEM"] == "256MB"
 
 
 def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> None:

@@ -2347,7 +2347,13 @@ def seed_daily_market_jobs(
     return inserted
 
 
+def _configure_worker_database_memory() -> None:
+    os.environ.setdefault("BOATRACE_PG_APPLICATION_NAME", "boatrace_evaluator")
+    os.environ.setdefault("BOATRACE_PG_WORK_MEM", "128MB")
+
+
 def run_worker(args: argparse.Namespace) -> int:
+    _configure_worker_database_memory()
     worker_id = args.worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     app_root = Path(args.app_root).resolve()
     python = Path(args.python)
