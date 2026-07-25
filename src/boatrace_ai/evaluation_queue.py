@@ -2184,11 +2184,18 @@ def run_worker(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PostgreSQL-backed model evaluation queue")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "seed", "retry", "reprioritize", "status", "run"):
+    for name in ("init", "seed", "enqueue", "retry", "reprioritize", "status", "run"):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
             command.add_argument("--evaluation-date", required=True)
+        if name == "enqueue":
+            command.add_argument("--task-type", choices=sorted(TASK_PROFILES), required=True)
+            command.add_argument("--model-key", required=True)
+            command.add_argument("--parameters-file", type=Path, required=True)
+            command.add_argument("--priority", type=int, default=0)
+            command.add_argument("--max-attempts", type=int, default=2)
+            command.add_argument("--parent-job-id", type=int)
         if name == "retry":
             command.add_argument("--include-failed", action="store_true")
             command.add_argument("--include-running", action="store_true")
@@ -2210,6 +2217,16 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--schedule-periodic", action="store_true")
             command.add_argument("--once", action="store_true")
     return parser
+
+
+def load_job_parameters(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid parameters file {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("parameters file must contain one JSON object")
+    return value
 
 
 def status_rows(conn: Any) -> list[dict[str, Any]]:
@@ -2287,6 +2304,17 @@ def main(argv: list[str] | None = None) -> int:
         ensure_schema(conn)
         if args.command == "seed":
             print(_json({"inserted": seed_default_jobs(conn, evaluation_date=args.evaluation_date)}))
+        elif args.command == "enqueue":
+            job_id = enqueue_job(
+                conn,
+                task_type=args.task_type,
+                model_key=args.model_key,
+                parameters=load_job_parameters(args.parameters_file),
+                priority=args.priority,
+                max_attempts=args.max_attempts,
+                parent_job_id=args.parent_job_id,
+            )
+            print(_json({"job_id": job_id, "inserted": job_id is not None}))
         elif args.command == "retry":
             print(
                 _json(

@@ -57,6 +57,41 @@ def test_dedupe_key_is_parameter_order_independent() -> None:
     )
 
 
+def test_enqueue_parser_loads_parameters_from_file(tmp_path: Path) -> None:
+    parameters_file = tmp_path / "parameters.json"
+    parameters_file.write_text('{"from_year": 2016, "to_year": 2026}', encoding="utf-8")
+    args = evaluation_queue.build_parser().parse_args(
+        [
+            "enqueue",
+            "--task-type",
+            "racer_stats_backfill",
+            "--model-key",
+            "official_racer_periods_2016_2026",
+            "--parameters-file",
+            str(parameters_file),
+            "--priority",
+            "93",
+            "--max-attempts",
+            "3",
+        ]
+    )
+
+    assert evaluation_queue.load_job_parameters(args.parameters_file) == {
+        "from_year": 2016,
+        "to_year": 2026,
+    }
+    assert args.priority == 93
+    assert args.max_attempts == 3
+
+
+def test_load_job_parameters_rejects_non_object(tmp_path: Path) -> None:
+    parameters_file = tmp_path / "parameters.json"
+    parameters_file.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="one JSON object"):
+        evaluation_queue.load_job_parameters(parameters_file)
+
+
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
