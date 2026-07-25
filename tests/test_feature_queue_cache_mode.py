@@ -49,8 +49,9 @@ def test_standard_evaluation_persists_selected_cache_before_newton() -> None:
     )
     persist = script.index("standardized_365d_v2_persist_selected_cache")
     newton = script.index("standardized_365d_v2_listwise_newton")
+    newton_guard = script.index("if source_needs_run listwise_newton; then")
 
-    assert persist < newton
+    assert newton_guard < persist < newton
     assert '--cache-dir "$eval_dir/selected_cache" --cache-write-mode never' in script
 
 

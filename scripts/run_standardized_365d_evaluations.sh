@@ -228,12 +228,12 @@ run_job standardized_365d_v2_listwise_feature_teacher \
 
 fi
 
+if source_needs_run listwise_newton; then
 run_job standardized_365d_v2_persist_selected_cache \
   .venv/bin/python scripts/persist_selected_feature_cache.py \
   --artifact "$raw_dir/listwise_feature_teacher.json" \
   --destination-dir "$eval_dir/selected_cache"
 
-if source_needs_run listwise_newton; then
 run_job standardized_365d_v2_listwise_newton \
   .venv/bin/python -m boatrace_ai.listwise.newton_refine \
   --db "$db" \
