@@ -999,7 +999,7 @@ def build_command(
         max_bin = _integer(params, "max_bin", 63, 15, 255)
         n_jobs = _integer(params, "n_jobs", 16, 1, 128)
         cache_name = (
-            "lightgbm_v5_features_16384_drop_"
+            "lightgbm_v6_features_16384_drop_"
             + drop_feature_groups.replace(",", "_")
         )
         feature_cache = app_root / "data" / "models" / cache_name

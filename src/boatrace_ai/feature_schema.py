@@ -3,7 +3,7 @@ MISSING_SAFE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing
 SPARSE_MISSING_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v3-series-sparse-missing"
 FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v4-series-trend-direction"
 LIGHTGBM_FEATURE_SCHEMA_VERSION = (
-    "pastlog-lightgbm-hashed-v5-card-coverage-safe"
+    "pastlog-lightgbm-hashed-v6-period-coverage-safe"
 )
 
 
@@ -24,6 +24,12 @@ def uses_empirical_series_trend_direction(version: str | None) -> bool:
         FEATURE_SCHEMA_VERSION,
         LIGHTGBM_FEATURE_SCHEMA_VERSION,
     }
+
+
+def uses_racer_period_stats(version: str | None) -> bool:
+    return str(version or LEGACY_FEATURE_SCHEMA_VERSION) == (
+        LIGHTGBM_FEATURE_SCHEMA_VERSION
+    )
 
 
 def uses_explicit_card_missing_flags(version: str | None) -> bool:

@@ -143,7 +143,11 @@ class MarketPredictor:
             return
         assert self._artifact is not None
         state = historical_state(conn, race_date=race_date.isoformat())
-        rows_by_race = load_date_races(conn, race_date=race_date.isoformat())
+        rows_by_race = load_date_races(
+            conn,
+            race_date=race_date.isoformat(),
+            feature_schema_version=self._artifact.get("feature_schema_version"),
+        )
         probabilities = {}
         dropped = tuple(self._artifact.get("drop_feature_groups") or ())
         for race_id, race_rows in rows_by_race.items():

@@ -29,9 +29,15 @@ from .contextual_features import RollingState, _race_sort_key
 from .feature_schema import (
     FEATURE_SCHEMA_VERSION,
     uses_explicit_card_missing_flags,
+    uses_racer_period_stats,
 )
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
+from .racer_period_features import (
+    enrich_racer_period_rows,
+    load_racer_period_lookup,
+    racer_period_feature_values,
+)
 from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
 
@@ -605,7 +611,9 @@ def iter_race_feature_rows(
     state = RollingState()
     current_date: str | None = None
     day_updates: list[list[Any]] = []
-    for race_rows in iter_complete_races(conn):
+    for race_rows in iter_complete_races(
+        conn, feature_schema_version=feature_schema_version
+    ):
         race_id_value = str(race_rows[0]["race_id"])
         race_date_value = str(race_rows[0]["race_date"])
         if current_date is None:
@@ -660,6 +668,8 @@ def build_race_features(
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
+        if uses_racer_period_stats(feature_schema_version):
+            item.update(racer_period_feature_values(row))
         if "series_cached" not in dropped:
             item.update(
                 cached_series_features(
@@ -713,8 +723,17 @@ def _add_explicit_card_missing_flags(item: dict[str, Any]) -> None:
         )
 
 
-def iter_complete_races(conn) -> Iterable[list[Any]]:
+def iter_complete_races(
+    conn,
+    *,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> Iterable[list[Any]]:
     ensure_series_cache_table(conn)
+    period_lookup = (
+        load_racer_period_lookup(conn)
+        if uses_racer_period_stats(feature_schema_version)
+        else {}
+    )
     max_race_date = os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     date_filter = "WHERE race_date <= ?" if max_race_date else ""
     params = (max_race_date,) if max_race_date else ()
@@ -757,6 +776,8 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
             """,
             (date_chunk[0], date_chunk[-1]),
         )
+        if period_lookup:
+            rows = enrich_racer_period_rows(rows, period_lookup)
         yield from _group_complete_rows(rows)
 
 

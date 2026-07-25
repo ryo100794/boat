@@ -179,6 +179,24 @@ def test_lightgbm_schema_rejects_temporal_availability_leaks() -> None:
     assert "national_3_rate" not in lightgbm
     assert "origin" not in lightgbm
     assert lightgbm["has_national_win_rate"] == 1
+    assert lightgbm["has_racer_period_stats"] == 0
+
+    rows[0]["_racer_period"] = {
+        "available_from": date(2026, 6, 30),
+        "avg_st": 0.14,
+        "ability_index": 72.0,
+        "origin": "東京",
+    }
+    enriched = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+    assert enriched["has_racer_period_stats"] == 1
+    assert enriched["period_avg_st"] == 0.14
+    assert enriched["period_ability_index"] == 72.0
+    assert enriched["period_origin"] == "東京"
 
 
 def test_postgresql_series_cache_check_is_read_only() -> None:

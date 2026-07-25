@@ -20,10 +20,10 @@ from .recency_mlp_evaluation import (
 
 MODEL_NAME = "calibrated_lightgbm_recency_selected"
 MODEL_KIND = "lightgbm"
-FEATURE_SET = "pastlog_lightgbm_hash_v2_coverage_safe"
+FEATURE_SET = "pastlog_lightgbm_hash_v3_period_coverage_safe"
 DEFAULT_DROP_FEATURE_GROUPS = ("legacy_composites",)
 DEFAULT_FEATURE_CACHE = Path(
-    "data/models/lightgbm_v5_features_16384_drop_legacy_composites"
+    "data/models/lightgbm_v6_features_16384_drop_legacy_composites"
 )
 DEFAULT_HALF_LIVES: tuple[float | None, ...] = (None, 365.0)
 
