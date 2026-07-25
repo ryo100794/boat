@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ import psycopg
 
 
 _NAMED_PARAMETER = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_MEMORY_SETTING = re.compile(r"[1-9][0-9]*(?:kB|MB|GB)", re.IGNORECASE)
 
 
 class CompatRow(Sequence[Any]):
@@ -125,9 +127,25 @@ class Connection:
         self._raw.close()
 
 
+def _connection_options() -> dict[str, Any]:
+    work_mem = os.environ.get("BOATRACE_PG_WORK_MEM", "").strip()
+    if work_mem and _MEMORY_SETTING.fullmatch(work_mem) is None:
+        raise ValueError("BOATRACE_PG_WORK_MEM must be a positive kB, MB, or GB value")
+    options: dict[str, Any] = {
+        "connect_timeout": 30,
+        "application_name": os.environ.get(
+            "BOATRACE_PG_APPLICATION_NAME",
+            "boatrace_realtime_collector",
+        ),
+    }
+    if work_mem:
+        options["options"] = f"-c work_mem={work_mem}"
+    return options
+
+
 @contextmanager
 def connection(dsn: str) -> Iterator[Connection]:
-    raw = psycopg.connect(dsn, connect_timeout=30, application_name="boatrace_realtime_collector")
+    raw = psycopg.connect(dsn, **_connection_options())
     wrapped = Connection(raw)
     try:
         yield wrapped
