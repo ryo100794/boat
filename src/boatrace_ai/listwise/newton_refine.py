@@ -36,6 +36,15 @@ from .validation import default_policy, evaluate_bankroll_fold
 from ..standard_evaluation import race_set_sha256
 
 
+def _result_contract_metadata(
+    search_result: dict[str, Any], policy: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "feature_schema_version": str(search_result["feature_schema_version"]),
+        "policy": dict(policy),
+    }
+
+
 def validate_search_race_universe(
     search_result: dict[str, Any],
     race_keys: list[tuple[str, str, str, int]],
@@ -392,6 +401,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     after_metrics["evaluation_race_set_sha256"] = evaluation_hash
     result: dict[str, Any] = {
         "model": "pastlog_listwise_newton_cg_v1",
+        **_result_contract_metadata(search_result, policy),
         "comparison_role": "selected_feature_teacher_newton_refinement_holdout",
         "source_search_result": args.search_result,
         "selected": selected,

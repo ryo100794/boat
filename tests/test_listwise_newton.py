@@ -12,6 +12,7 @@ from boatrace_ai.listwise.newton import (
     refine_newton_cg,
 )
 from boatrace_ai.listwise.model import train_listwise_model
+from boatrace_ai.listwise.newton_refine import _result_contract_metadata
 
 
 def dataset() -> HashedRaceDataset:
@@ -32,6 +33,20 @@ def dataset() -> HashedRaceDataset:
         2,
         (),
     )
+
+
+def test_newton_result_contract_includes_schema_and_policy_copy() -> None:
+    policy = {"daily_budget_yen": 10_000, "ev_threshold": 1.2}
+
+    metadata = _result_contract_metadata(
+        {"feature_schema_version": "schema-v1"}, policy
+    )
+    policy["ev_threshold"] = 2.0
+
+    assert metadata == {
+        "feature_schema_version": "schema-v1",
+        "policy": {"daily_budget_yen": 10_000, "ev_threshold": 1.2},
+    }
 
 
 def test_score_hessian_product_matches_gradient_difference() -> None:
