@@ -58,6 +58,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "基準1着" in MODEL_REPORT_HTML
     assert "evaluation_jobs" in MODEL_REPORT_HTML
     assert "<th>判定</th>" in MODEL_REPORT_HTML
+    assert "<th>予測</th>" in MODEL_REPORT_HTML
+    assert "winner_log_loss" in MODEL_REPORT_HTML
     assert "新損益" in MODEL_REPORT_HTML
     assert "新最大DD" in MODEL_REPORT_HTML
     assert "新ROI下限" in MODEL_REPORT_HTML
@@ -85,6 +87,8 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "roi": 0.94,
         "profit_yen": -600,
         "trifecta_log_loss": 3.79,
+        "winner_log_loss": 1.24,
+        "winner_top1_accuracy": 0.53,
         "trifecta_top5_hit_rate": 0.35,
         "payout_feature_candidate_schema": "interactions_v2",
         "payout_feature_legacy_schema": "additive_v1",
@@ -118,6 +122,8 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
 
     assert status["jobs"][0]["status"] == "完了"
     assert status["jobs"][0]["decision"] == "confirm_on_new_holdout"
+    assert status["jobs"][0]["winner_log_loss"] == 1.24
+    assert status["jobs"][0]["winner_top1_accuracy"] == 0.53
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
     assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200

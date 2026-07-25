@@ -1840,6 +1840,9 @@ def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[st
                 "target_races": None,
                 "backtest_available": job.get("status") == "完了" and bool(result),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_log_loss": _float_or_none(
+                    metrics.get("winner_log_loss")
+                ),
                 "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
                 "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
             }
@@ -2384,6 +2387,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "evaluated_races": metrics.get("evaluated_races")
                 or metrics.get("evaluation_races"),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_log_loss": _float_or_none(
+                    metrics.get("winner_log_loss")
+                ),
                 "winner_top1_accuracy": _float_or_none(
                     metrics.get("winner_top1_accuracy")
                 ),

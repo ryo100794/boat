@@ -21,6 +21,8 @@ def test_project_status_uses_current_evaluation_state() -> None:
     assert "較正401R、開発136R、正式170R・1日を分離" in STATUS
     assert "calibrated_mlp_recency_selected | 170R・1日" in STATUS
     assert "calibrated_lightgbm_recency_selected | 170R・1日" in STATUS
+    assert "1.24800 | 52.94% | 3.85415 | 34.71%" in STATUS
+    assert "1.24542 | 51.76% | 3.84080 | 35.29%" in STATUS
     assert "どちらも30日・1,000Rと市場比較信頼区間を満たさず、本番昇格不可" in STATUS
     assert "レースcluster 95%下限で補正" in STATUS
     assert "正式開始日を成果物へ記録" in STATUS
