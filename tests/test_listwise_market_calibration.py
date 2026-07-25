@@ -15,6 +15,7 @@ from boatrace_ai.listwise.market_calibration import (
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
     load_scored_cache,
+    score_real_odds_races,
     select_calibrator,
     select_policy,
     snapshot_age_seconds,
@@ -277,6 +278,40 @@ def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
         "feature_schema_version": None,
     }
     assert artifact_drop_feature_groups({}) == ()
+
+
+@pytest.mark.parametrize("model_kind", ["linear", "mlp", "lightgbm"])
+def test_real_odds_scoring_accepts_classifier_artifact(
+    monkeypatch, model_kind: str
+) -> None:
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration.load_complete_race_ids",
+        lambda _conn: [],
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration._load_trifecta_payouts",
+        lambda _conn: {},
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration.iter_artifact_feature_rows",
+        lambda *_args, **_kwargs: iter(()),
+    )
+
+    races, dataset = score_real_odds_races(
+        "connection",
+        artifact={
+            "classifier": object(),
+            "hasher": object(),
+            "model_kind": model_kind,
+            "trained_through": ("race-id", "2026-07-17", "24", 12),
+        },
+        from_date="2026-07-18",
+        through_date="2026-07-24",
+    )
+
+    assert races == []
+    assert dataset["target_complete_races"] == 0
+    assert dataset["eligible_real_odds_races"] == 0
 
 
 def test_clean_day_gate_excludes_partial_t5_and_missing_payout_days() -> None:
