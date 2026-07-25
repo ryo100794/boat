@@ -97,6 +97,15 @@ def aggregate_evaluations(db: str, output: Path) -> dict[str, Any]:
     return payload
 
 
+def _archived_file_count(log: str) -> int | None:
+    counts = re.findall(
+        r"^uploaded and removed (\d+) archived source files$",
+        log,
+        flags=re.MULTILINE,
+    )
+    return sum(map(int, counts)) if counts else None
+
+
 def backup_raw(app_root: Path, output: Path) -> dict[str, Any]:
     raw_dir = app_root / "data" / "raw"
     staging_dir = app_root / "data" / "archive-staging" / "raw"
@@ -122,6 +131,7 @@ def backup_raw(app_root: Path, output: Path) -> dict[str, Any]:
     after_files = sum(1 for path in raw_dir.rglob("*") if path.is_file())
     after_bytes = sum(path.stat().st_size for path in raw_dir.rglob("*") if path.is_file())
     staging_files = [path for path in staging_dir.glob("*") if path.is_file()]
+    archived_files = _archived_file_count(completed.stdout)
     payload = {
         "status": "completed",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -129,7 +139,11 @@ def backup_raw(app_root: Path, output: Path) -> dict[str, Any]:
         "source_files_after": after_files,
         "source_bytes_before": before_bytes,
         "source_bytes_after": after_bytes,
-        "archived_files_removed": max(0, before_files - after_files),
+        "archived_files_removed": (
+            archived_files
+            if archived_files is not None
+            else max(0, before_files - after_files)
+        ),
         "archived_bytes_removed": max(0, before_bytes - after_bytes),
         "staging_files": len(staging_files),
         "log_tail": completed.stdout.splitlines()[-20:],

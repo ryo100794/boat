@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from boatrace_ai.maintenance_tasks import _archived_file_count
+
 
 def test_queued_backup_is_bounded_to_one_snapshot_batch() -> None:
     script = Path(
@@ -12,3 +14,17 @@ def test_queued_backup_is_bounded_to_one_snapshot_batch() -> None:
     assert "BOATRACE_RAW_ARCHIVE_MAX_BATCHES" in script
     assert 'batches=$((batches + 1))' in script
     assert 'env["BOATRACE_RAW_ARCHIVE_MAX_BATCHES"] = "1"' in task
+
+
+def test_archive_count_uses_confirmed_removal_log() -> None:
+    log = "\n".join(
+        [
+            "archiving 49 files as raw.tar.zst",
+            "verified remote md5 abc for raw.tar.zst",
+            "uploaded and removed 49 archived source files",
+            "uploaded and removed 3 archived source files",
+        ]
+    )
+
+    assert _archived_file_count(log) == 52
+    assert _archived_file_count("nothing eligible") is None
