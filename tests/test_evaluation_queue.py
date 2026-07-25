@@ -949,8 +949,12 @@ def test_market_walk_forward_requires_explicit_promotion_eligibility() -> None:
         "profit_yen": 3_210,
         "evaluation_races": 170,
         "evaluation_days": 1,
+        "winner_log_loss": 1.10,
+        "winner_top1_accuracy": 0.58,
     })
 
+    assert summary["winner_log_loss"] == 1.10
+    assert summary["winner_top1_accuracy"] == 0.58
     assert result_decision("market_residual_walk_forward", summary) == (
         "accumulate_formal_evidence"
     )

@@ -11,6 +11,7 @@ from boatrace_ai.listwise.market_calibration import (
     fit_deployment_configuration,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
+    probability_metrics,
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
@@ -59,6 +60,22 @@ def test_market_probabilities_remove_overround() -> None:
     probabilities = normalized_market_probabilities({"1-2-3": 2.0, "2-1-3": 4.0})
     assert sum(probabilities.values()) == pytest.approx(1.0)
     assert probabilities["1-2-3"] == pytest.approx(2.0 / 3.0)
+
+
+def test_probability_metrics_include_winner_marginals() -> None:
+    metrics = probability_metrics(
+        [_race("2026-07-18", 1)],
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+    )
+
+    assert metrics["model_winner_log_loss"] is not None
+    assert metrics["market_winner_log_loss"] is not None
+    assert metrics["calibrated_winner_log_loss"] == pytest.approx(
+        metrics["model_winner_log_loss"]
+    )
+    assert metrics["model_winner_top1_accuracy"] == 1.0
+    assert metrics["market_winner_top1_accuracy"] == 1.0
+    assert metrics["calibrated_winner_top1_accuracy"] == 1.0
 
 
 def test_geometric_blend_has_exact_endpoints() -> None:
@@ -114,6 +131,8 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     result = walk_forward_evaluate(races, min_calibration_days=2)
     assert result["evaluation_days"] == 2
     assert result["evaluation_races"] == 24
+    assert result["winner_log_loss"] is not None
+    assert result["winner_top1_accuracy"] == 1.0
     assert [row["evaluation_date"] for row in result["folds"]] == [
         "2026-07-20",
         "2026-07-21",

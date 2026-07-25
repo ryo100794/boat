@@ -2249,6 +2249,12 @@ def _market_calibrated_model_tracks(
                 "backtest_available": status == "完了" and bool(result),
                 "entry_log_loss": None,
                 "trifecta_log_loss": displayed_log_loss,
+                "winner_log_loss": _float_or_none(
+                    metrics.get("winner_log_loss")
+                ),
+                "winner_top1_accuracy": _float_or_none(
+                    metrics.get("winner_top1_accuracy")
+                ),
                 "model_trifecta_log_loss": _float_or_none(
                     metrics.get("model_trifecta_log_loss")
                 ),
@@ -4879,6 +4885,7 @@ _LOCAL_EVALUATION_METRICS = (
     "real_odds_races",
     "entry_log_loss",
     "entry_brier",
+    "winner_log_loss",
     "winner_top1_accuracy",
     "trifecta_top5_hit_rate",
     "trifecta_top1_hit_rate",

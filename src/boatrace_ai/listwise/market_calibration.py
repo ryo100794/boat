@@ -538,6 +538,8 @@ def probability_metrics(
 ) -> dict[str, float | int | None]:
     losses = {"model": [], "market": [], "calibrated": []}
     top5_hits = {key: 0 for key in losses}
+    winner_losses = {key: [] for key in losses}
+    winner_top1_hits = {key: 0 for key in losses}
     for race in races:
         sources = {
             "model": race["model_probabilities"],
@@ -551,16 +553,41 @@ def probability_metrics(
                 temperature=float(calibrator["temperature"]),
             )
         actual = str(race["actual_combination"])
+        actual_winner = actual.split("-", 1)[0]
         for name, probabilities in sources.items():
             losses[name].append(-math.log(max(EPSILON, probabilities.get(actual, 0.0))))
             top5 = sorted(probabilities, key=probabilities.get, reverse=True)[:5]
             top5_hits[name] += int(actual in top5)
+            winner_probabilities: dict[str, float] = defaultdict(float)
+            for combination, probability in probabilities.items():
+                winner_probabilities[str(combination).split("-", 1)[0]] += float(
+                    probability
+                )
+            winner_losses[name].append(
+                -math.log(
+                    max(EPSILON, winner_probabilities.get(actual_winner, 0.0))
+                )
+            )
+            predicted_winner = max(
+                winner_probabilities,
+                key=winner_probabilities.get,
+            )
+            winner_top1_hits[name] += int(predicted_winner == actual_winner)
     result: dict[str, float | int | None] = {"evaluated_races": len(races)}
     for name in ("model", "market", "calibrated"):
         values = losses[name]
         result[f"{name}_trifecta_log_loss"] = sum(values) / len(values) if values else None
         result[f"{name}_trifecta_top5_hit_rate"] = (
             top5_hits[name] / len(values) if values else None
+        )
+        winner_values = winner_losses[name]
+        result[f"{name}_winner_log_loss"] = (
+            sum(winner_values) / len(winner_values) if winner_values else None
+        )
+        result[f"{name}_winner_top1_accuracy"] = (
+            winner_top1_hits[name] / len(winner_values)
+            if winner_values
+            else None
         )
     return result
 
@@ -755,7 +782,15 @@ def waiting_walk_forward_result(
         "market_trifecta_log_loss": None,
         "market_trifecta_top5_hit_rate": None,
         "calibrated_trifecta_log_loss": None,
+        "winner_log_loss": None,
+        "winner_top1_accuracy": None,
         "calibrated_trifecta_top5_hit_rate": None,
+        "model_winner_log_loss": None,
+        "model_winner_top1_accuracy": None,
+        "market_winner_log_loss": None,
+        "market_winner_top1_accuracy": None,
+        "calibrated_winner_log_loss": None,
+        "calibrated_winner_top1_accuracy": None,
     }
     promotion_gate = {
         "minimum_evaluation_races": 1000,
@@ -802,6 +837,8 @@ def waiting_walk_forward_result(
             [], daily_budget_yen=daily_budget_yen
         ),
         "calibrated_trifecta_log_loss": None,
+        "winner_log_loss": None,
+        "winner_top1_accuracy": None,
         "trifecta_top5_hit_rate": None,
         "tickets": 0,
         "hit_tickets": 0,
@@ -1131,6 +1168,10 @@ def walk_forward_evaluate(
         "calibrated_trifecta_log_loss": aggregate_metrics.get(
             "calibrated_trifecta_log_loss"
         ),
+        "winner_log_loss": aggregate_metrics.get("calibrated_winner_log_loss"),
+        "winner_top1_accuracy": aggregate_metrics.get(
+            "calibrated_winner_top1_accuracy"
+        ),
         "trifecta_top5_hit_rate": aggregate_metrics.get(
             "calibrated_trifecta_top5_hit_rate"
         ),
@@ -1169,7 +1210,12 @@ def _aggregate_fold_probability_metrics(folds: list[dict[str, Any]]) -> dict[str
     total = sum(int(fold["evaluation_races"]) for fold in folds)
     result: dict[str, Any] = {"evaluated_races": total}
     for source in ("model", "market", "calibrated"):
-        for metric in ("trifecta_log_loss", "trifecta_top5_hit_rate"):
+        for metric in (
+            "winner_log_loss",
+            "winner_top1_accuracy",
+            "trifecta_log_loss",
+            "trifecta_top5_hit_rate",
+        ):
             key = f"{source}_{metric}"
             result[key] = (
                 sum(
