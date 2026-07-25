@@ -138,7 +138,13 @@ def test_model_cache_archive_uses_backup_profile_and_allowlisted_paths(
         db="postgresql://test",
     )
 
-    assert TASK_PROFILES["gdrive_model_cache_archive"]["category"] == "backup"
+    assert TASK_PROFILES["gdrive_model_cache_archive"] == {
+        "category": "backup",
+        "memory_mb": 512,
+        "disk_mb": 2048,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
     assert command[-2:] == ["--path", str(cache)]
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
