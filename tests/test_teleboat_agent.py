@@ -96,7 +96,7 @@ def test_service_is_dry_run_by_default_and_does_not_create_executor() -> None:
     assert result["batches"][0]["codes"] == ["0131123002", "0131654003"]
 
 
-def test_live_vote_requires_two_explicit_gates_and_idempotency() -> None:
+def test_live_vote_requires_two_explicit_gates_and_idempotency(tmp_path) -> None:
     executions = []
 
     class FakeExecutor:
@@ -111,6 +111,7 @@ def test_live_vote_requires_two_explicit_gates_and_idempotency() -> None:
             member_number="member",
             pin="pin",
             authorization_number_of_mobile="mobile",
+            journal_path=str(tmp_path / "votes.jsonl"),
         ),
         executor_factory=lambda _settings: FakeExecutor(),
     )
@@ -339,7 +340,7 @@ def test_confirmation_verifier_checks_identity_totals_and_every_ticket() -> None
         )
 
 
-def test_uncertain_submission_keeps_idempotency_reservation() -> None:
+def test_uncertain_submission_keeps_idempotency_reservation(tmp_path) -> None:
     class UncertainExecutor:
         def execute(self, request):
             raise VoteExecutionError(
@@ -354,6 +355,7 @@ def test_uncertain_submission_keeps_idempotency_reservation() -> None:
             member_number="member",
             pin="pin",
             authorization_number_of_mobile="mobile",
+            journal_path=str(tmp_path / "votes.jsonl"),
         ),
         executor_factory=lambda _settings: UncertainExecutor(),
     )
@@ -371,3 +373,45 @@ def test_uncertain_submission_keeps_idempotency_reservation() -> None:
             live_confirmation="confirm-secret",
             idempotency_key="uncertain-1",
         )
+
+
+def test_completed_vote_is_deduplicated_after_service_restart(tmp_path) -> None:
+    executions = []
+
+    class FakeExecutor:
+        def execute(self, request):
+            executions.append(request)
+            return [{"batch": 1, "status": "submitted_verified"}]
+
+    vote_settings = settings(
+        live_vote_enabled=True,
+        live_confirmation_secret="confirm-secret",
+        member_number="member",
+        pin="pin",
+        authorization_number_of_mobile="mobile",
+        journal_path=str(tmp_path / "votes.jsonl"),
+    )
+    first = VoteTicketsService(
+        vote_settings,
+        executor_factory=lambda _settings: FakeExecutor(),
+    )
+    first.call(
+        payload(),
+        live_requested=True,
+        live_confirmation="confirm-secret",
+        idempotency_key="restart-key",
+    )
+
+    restarted = VoteTicketsService(
+        vote_settings,
+        executor_factory=lambda _settings: FakeExecutor(),
+    )
+    with pytest.raises(DuplicateRequestError):
+        restarted.call(
+            payload(),
+            live_requested=True,
+            live_confirmation="confirm-secret",
+            idempotency_key="restart-key",
+        )
+
+    assert len(executions) == 1

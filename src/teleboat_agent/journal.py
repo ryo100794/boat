@@ -13,6 +13,10 @@ class VoteJournalError(RuntimeError):
     pass
 
 
+class DuplicateJournalReservationError(VoteJournalError):
+    pass
+
+
 _SENSITIVE_KEYS = {
     "application_token",
     "authorization",
@@ -77,8 +81,24 @@ class VoteJournal:
         self.path = Path(path)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
+        return self._append(event, reserve_idempotency=False)
+
+    def reserve_live_request(self, event: dict[str, Any]) -> dict[str, Any]:
+        return self._append(event, reserve_idempotency=True)
+
+    def _append(
+        self,
+        event: dict[str, Any],
+        *,
+        reserve_idempotency: bool,
+    ) -> dict[str, Any]:
         if not event.get("request_id") or not event.get("event"):
             raise VoteJournalError("journal event requires request_id and event")
+        fingerprint = event.get("idempotency_key_sha256")
+        if reserve_idempotency and not fingerprint:
+            raise VoteJournalError(
+                "live reservation requires an idempotency fingerprint"
+            )
         self._ensure_parent()
         safe_event = _redact(event)
         base = {
@@ -92,11 +112,47 @@ class VoteJournal:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
                 handle.seek(0)
                 previous_hash = ""
-                for line in handle:
+                reservation_active = False
+                for line_number, line in enumerate(handle, start=1):
                     try:
-                        previous_hash = str(json.loads(line).get("record_hash") or "")
+                        row = json.loads(line)
                     except json.JSONDecodeError as exc:
-                        raise VoteJournalError("journal contains an invalid JSONL record") from exc
+                        raise VoteJournalError(
+                            "journal contains an invalid JSONL record"
+                        ) from exc
+                    record_hash = str(row.pop("record_hash", ""))
+                    if row.get("previous_hash") != (previous_hash or None):
+                        raise VoteJournalError(
+                            f"journal previous hash mismatch at line {line_number}"
+                        )
+                    canonical = json.dumps(
+                        row,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    expected = hashlib.sha256(
+                        (previous_hash + canonical).encode("utf-8")
+                    ).hexdigest()
+                    if not record_hash or record_hash != expected:
+                        raise VoteJournalError(
+                            f"journal record hash mismatch at line {line_number}"
+                        )
+                    previous_hash = record_hash
+                    if row.get("idempotency_key_sha256") != fingerprint:
+                        continue
+                    if row.get("event") == "live_authorized":
+                        reservation_active = True
+                    elif (
+                        row.get("event") == "live_execution_failed"
+                        and row.get("status") == "pre_submission_failed"
+                        and row.get("retry_allowed") is True
+                    ):
+                        reservation_active = False
+                if reserve_idempotency and reservation_active:
+                    raise DuplicateJournalReservationError(
+                        "idempotency key has already been durably reserved"
+                    )
                 base["previous_hash"] = previous_hash or None
                 canonical = json.dumps(
                     base,

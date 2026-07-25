@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .browser import SeleniumVoteExecutor, VoteExecutionError, VoteExecutor
 from .config import Settings
 from .journal import (
+    DuplicateJournalReservationError,
     VoteJournal,
     VoteJournalError,
     idempotency_fingerprint,
@@ -111,7 +112,7 @@ class VoteTicketsService:
         assert self.idempotency_store is not None
         self.idempotency_store.reserve(idempotency_key)
         try:
-            self._journal(
+            self._reserve_live_request(
                 {
                     **journal_base,
                     "event": "live_authorized",
@@ -130,6 +131,11 @@ class VoteTicketsService:
                     },
                 }
             )
+        except DuplicateJournalReservationError as exc:
+            self.idempotency_store.release(idempotency_key)
+            raise DuplicateRequestError(
+                "idempotency key has already been used"
+            ) from exc
         except VoteJournalError:
             self.idempotency_store.release(idempotency_key)
             raise
@@ -244,6 +250,10 @@ class VoteTicketsService:
     def _journal(self, event: dict[str, Any]) -> None:
         assert self.journal is not None
         self.journal.append(event)
+
+    def _reserve_live_request(self, event: dict[str, Any]) -> None:
+        assert self.journal is not None
+        self.journal.reserve_live_request(event)
 
     def _journal_best_effort(self, event: dict[str, Any]) -> None:
         try:

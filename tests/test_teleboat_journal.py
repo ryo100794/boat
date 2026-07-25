@@ -6,7 +6,13 @@ import json
 import pytest
 from pathlib import Path
 
-from teleboat_agent.journal import VoteJournal, VoteJournalError, request_snapshot, verify_journal
+from teleboat_agent.journal import (
+    DuplicateJournalReservationError,
+    VoteJournal,
+    VoteJournalError,
+    request_snapshot,
+    verify_journal,
+)
 from teleboat_agent.models import VoteRequest
 from teleboat_agent.service import VoteTicketsService
 
@@ -130,3 +136,62 @@ def test_verify_journal_detects_tampering(tmp_path: Path) -> None:
     path.write_text(path.read_text().replace("live_authorized", "tampered"))
     with pytest.raises(VoteJournalError, match="hash mismatch"):
         verify_journal(path)
+
+
+def test_live_reservation_is_durable_across_journal_instances(tmp_path: Path) -> None:
+    path = tmp_path / "votes.jsonl"
+    fingerprint = hashlib.sha256(b"durable-key").hexdigest()
+    event = {
+        "request_id": "request-1",
+        "event": "live_authorized",
+        "mode": "live",
+        "idempotency_key_sha256": fingerprint,
+    }
+
+    VoteJournal(path).reserve_live_request(event)
+
+    with pytest.raises(DuplicateJournalReservationError):
+        VoteJournal(path).reserve_live_request({**event, "request_id": "request-2"})
+
+
+def test_pre_submission_failure_releases_durable_reservation(tmp_path: Path) -> None:
+    path = tmp_path / "votes.jsonl"
+    fingerprint = hashlib.sha256(b"retryable-key").hexdigest()
+    journal = VoteJournal(path)
+    journal.reserve_live_request(
+        {
+            "request_id": "request-1",
+            "event": "live_authorized",
+            "mode": "live",
+            "idempotency_key_sha256": fingerprint,
+        }
+    )
+    journal.append(
+        {
+            "request_id": "request-1",
+            "event": "live_execution_failed",
+            "mode": "live",
+            "status": "pre_submission_failed",
+            "retry_allowed": True,
+            "idempotency_key_sha256": fingerprint,
+        }
+    )
+
+    VoteJournal(path).reserve_live_request(
+        {
+            "request_id": "request-2",
+            "event": "live_authorized",
+            "mode": "live",
+            "idempotency_key_sha256": fingerprint,
+        }
+    )
+
+
+def test_append_rejects_a_tampered_existing_chain(tmp_path: Path) -> None:
+    path = tmp_path / "votes.jsonl"
+    journal = VoteJournal(path)
+    journal.append({"request_id": "request-1", "event": "dry_run_validated"})
+    path.write_text(path.read_text().replace("dry_run_validated", "tampered"))
+
+    with pytest.raises(VoteJournalError, match="record hash mismatch"):
+        journal.append({"request_id": "request-2", "event": "dry_run_validated"})
