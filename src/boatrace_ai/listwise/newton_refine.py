@@ -369,6 +369,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         max_cg_iterations=args.max_cg_iterations,
         gradient_tolerance=args.gradient_tolerance,
         cg_tolerance=args.cg_tolerance,
+        progress_callback=lambda row: print(
+            "NEWTON_PROGRESS "
+            + json.dumps(row, ensure_ascii=True, sort_keys=True),
+            flush=True,
+        ),
     )
     after_metrics, holdout_rows = evaluate_range(
         dataset,

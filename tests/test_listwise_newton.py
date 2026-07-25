@@ -153,6 +153,24 @@ def test_newton_cg_reduces_regularized_objective() -> None:
     assert not np.allclose(refined.weights, model.weights)
 
 
+def test_newton_cg_reports_each_completed_iteration() -> None:
+    data = dataset()
+    model, _ = train_listwise_model(
+        data, train_race_end=24, target="top3_pl", alpha=1e-3,
+        epochs=1, batch_races=6,
+    )
+    progress: list[dict] = []
+
+    _refined, report = refine_newton_cg(
+        data, model, train_race_end=24, batch_races=6,
+        max_newton_iterations=3, max_cg_iterations=10,
+        gradient_tolerance=1e-12, progress_callback=progress.append,
+    )
+
+    assert progress == report["history"]
+    assert all("objective" in row and "gradient_l2" in row for row in progress)
+
+
 def test_hessian_diagonal_matches_explicit_hessian_and_batching() -> None:
     data = dataset()
     model, _ = train_listwise_model(
