@@ -854,6 +854,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-VENUE-001",
         "MODEL-SEGMENT-001",
         "MODEL-MARKET-RESIDUAL-001",
+        "MODEL-MARKET-POLICY-CAL-001",
         "UI-MODEL-DAILY-001",
     } <= keys
     memory_ticket = next(
