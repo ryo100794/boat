@@ -215,10 +215,26 @@ def is_postgresql_target(path: str | Path) -> bool:
     return value.startswith(("postgresql://", "postgres://", "host="))
 
 
+def _sqlite_compatible_sql(statement: str) -> str:
+    if sqlite3.sqlite_version_info < (3, 35, 0):
+        return statement.replace(" AS MATERIALIZED (", " AS (")
+    return statement
+
+
+class _SQLiteConnection(sqlite3.Connection):
+    def execute(
+        self,
+        sql: str,
+        parameters: Any = (),
+        /,
+    ) -> sqlite3.Cursor:
+        return super().execute(_sqlite_compatible_sql(sql), parameters)
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=30.0, factory=_SQLiteConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA journal_mode=WAL")
