@@ -138,6 +138,48 @@ def backup_raw(app_root: Path, output: Path) -> dict[str, Any]:
     return payload
 
 
+def backup_model_cache(
+    app_root: Path, output: Path, paths: list[Path]
+) -> dict[str, Any]:
+    before = {
+        path: path.stat().st_size
+        for path in paths
+        if path.is_file()
+    }
+    command = (
+        app_root / "scripts" / "deployment"
+        / "run-boatrace-model-cache-archive.sh"
+    )
+    completed = subprocess.run(
+        [str(command), *map(str, paths)],
+        cwd=app_root,
+        env=dict(os.environ),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "model cache backup exited "
+            f"{completed.returncode}: {completed.stdout[-4000:]}"
+        )
+    removed = [path for path in before if not path.exists()]
+    payload = {
+        "status": "completed",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "requested_files": len(paths),
+        "archived_files_removed": len(removed),
+        "archived_bytes_removed": sum(before[path] for path in removed),
+        "archive_markers": sum(
+            1 for path in paths if Path(f"{path}.gdrive.json").is_file()
+        ),
+        "log_tail": completed.stdout.splitlines()[-20:],
+    }
+    _json_file(output, payload)
+    return payload
+
+
 def _git_files(app_root: Path, *, include_untracked: bool) -> tuple[list[Path], bool]:
     command = ["git", "-C", str(app_root), "ls-files", "-z", "--cached"]
     if include_untracked:
@@ -415,6 +457,10 @@ def build_parser() -> argparse.ArgumentParser:
     backup = sub.add_parser("backup-raw")
     backup.add_argument("--app-root", type=Path, required=True)
     backup.add_argument("--output", type=Path, required=True)
+    model_backup = sub.add_parser("backup-model-cache")
+    model_backup.add_argument("--app-root", type=Path, required=True)
+    model_backup.add_argument("--output", type=Path, required=True)
+    model_backup.add_argument("--path", type=Path, action="append", required=True)
     hygiene = sub.add_parser("repository-hygiene")
     hygiene.add_argument("--app-root", type=Path, required=True)
     hygiene.add_argument("--output", type=Path, required=True)
@@ -437,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
         aggregate_evaluations(args.db, args.output)
     elif args.command == "backup-raw":
         backup_raw(args.app_root.resolve(), args.output)
+    elif args.command == "backup-model-cache":
+        backup_model_cache(args.app_root.resolve(), args.output, args.path)
     elif args.command == "repository-hygiene":
         repository_hygiene(
             args.app_root,

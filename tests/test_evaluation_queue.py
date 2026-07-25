@@ -120,6 +120,37 @@ def test_calibrated_mlp_recency_search_profile() -> None:
     }
 
 
+def test_model_cache_archive_uses_backup_profile_and_allowlisted_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    cache = root / "data/models/legacy.matrix.npz"
+    command, output = build_command(
+        _job(
+            "gdrive_model_cache_archive",
+            {
+                "paths": ["data/models/legacy.matrix.npz"],
+                "timeout_seconds": 86400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["gdrive_model_cache_archive"]["category"] == "backup"
+    assert command[-2:] == ["--path", str(cache)]
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+    with pytest.raises(ValueError, match="inside data/models"):
+        build_command(
+            _job("gdrive_model_cache_archive", {"paths": ["../secret"]}),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
     assert TASK_PROFILES["repository_hygiene"] == {
         "category": "maintenance",

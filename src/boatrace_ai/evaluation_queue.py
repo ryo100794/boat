@@ -59,6 +59,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "gdrive_model_cache_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -1348,6 +1349,32 @@ def build_command(
             str(python), "-m", "boatrace_ai.maintenance_tasks", "backup-raw",
             "--app-root", str(app_root), "--output", str(output),
         ], output
+    if task_type == "gdrive_model_cache_archive":
+        allowed = {"paths", "timeout_seconds"}
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported model cache archive parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        paths = params.get("paths")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("model cache archive paths must be a non-empty list")
+        model_root = (app_root / "data" / "models").resolve()
+        resolved_paths: list[Path] = []
+        for value in paths:
+            if not isinstance(value, str) or not value:
+                raise ValueError("model cache archive paths must contain strings")
+            candidate = (app_root / value).resolve()
+            if model_root not in candidate.parents:
+                raise ValueError("model cache archive path must be inside data/models")
+            resolved_paths.append(candidate)
+        return [
+            str(python), "-m", "boatrace_ai.maintenance_tasks",
+            "backup-model-cache", "--app-root", str(app_root),
+            "--output", str(output),
+            *[item for path in resolved_paths for item in ("--path", str(path))],
+        ], output
     if task_type == "repository_hygiene":
         return [
             str(python), "-m", "boatrace_ai.maintenance_tasks",
@@ -1525,7 +1552,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "refine_selected_candidate"
     if task_type == "evaluation_aggregate":
         return "aggregation_complete"
-    if task_type == "gdrive_raw_archive":
+    if task_type in {"gdrive_raw_archive", "gdrive_model_cache_archive"}:
         return "backup_complete"
     if task_type in {
         "repository_hygiene",
