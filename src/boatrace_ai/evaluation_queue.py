@@ -488,6 +488,14 @@ def claim_job(
         WHERE jobs.status = 'queued'
           AND jobs.available_at <= CURRENT_TIMESTAMP
           AND jobs.attempt < jobs.max_attempts
+          AND (
+            jobs.parent_job_id IS NULL
+            OR EXISTS (
+              SELECT 1 FROM model_evaluation_jobs parent
+              WHERE parent.job_id = jobs.parent_job_id
+                AND parent.status = 'completed'
+            )
+          )
           AND jobs.min_free_memory_mb <= ?
           AND jobs.min_free_disk_mb <= ?
           AND jobs.min_idle_cpu_percent <= ?

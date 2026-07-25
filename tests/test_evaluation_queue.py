@@ -1311,12 +1311,14 @@ class _ClaimConnection:
     def __init__(self, state):
         self.state = state
         self.saved_timeouts = []
+        self.candidate_sql = ""
 
     def execute(self, statement, parameters=()):
         sql = " ".join(statement.split())
         if "pg_advisory_xact_lock" in sql:
             return _QueryResult()
         if "SELECT jobs.*" in sql:
+            self.candidate_sql = sql
             return _QueryResult(dict(self.state))
         if "UPDATE model_evaluation_jobs" in sql and "RETURNING *" in sql:
             saved = json.loads(parameters[1])
@@ -1392,6 +1394,8 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed is not None
     assert claimed["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200]
+    assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
+    assert "parent.status = 'completed'" in conn.candidate_sql
 
     state.update({
         "status": "queued",
