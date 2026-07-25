@@ -202,7 +202,12 @@ def test_return_regularization_uses_pre_policy_temporal_validation() -> None:
 def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     target_index = ALL_COMBINATIONS.index("1-2-3")
     calibration_keys = [
-        (f"cal-{index}", "2026-06-01", f"{index % 24 + 1:02d}", index % 12 + 1)
+        (
+            f"cal-{index}",
+            f"2026-06-{index // 50 + 1:02d}",
+            f"{index % 24 + 1:02d}",
+            index % 12 + 1,
+        )
         for index in range(200)
     ]
     calibration_candidate = np.full((200, 120), 0.4 / 119.0)
@@ -242,8 +247,12 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
         calibration_race_keys=calibration_keys,
         policy=policy,
         regularization=0.001,
+        regularization_candidates=(0.001,),
+        regularization_validation_days=1,
         max_iterations=30,
         batch_races=50,
+        policy_selection_days=2,
+        minimum_selection_tickets=10_000,
     )
 
     assert result["evaluated_races"] == 2
@@ -256,5 +265,11 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     assert np.isfinite(result["return_calibrator"]["gradient_norm"])
     combination = result["return_calibrator"]["combination_calibration"]
     assert combination["training_races"] == 200
-    assert combination["training_days"] == 1
+    assert combination["training_days"] == 4
     assert set(combination["factors"]) == set(ALL_COMBINATIONS)
+    assert set(combination["point_ratios"]) == set(ALL_COMBINATIONS)
+    assert set(combination["lower_bounds"]) == set(ALL_COMBINATIONS)
+    selection = result["policy_selection"]["combination_calibration"]
+    assert selection["training_races"] == 100
+    assert selection["training_days"] == 2
+    assert set(selection["factors"]) == set(ALL_COMBINATIONS)

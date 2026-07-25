@@ -38,6 +38,30 @@ from .return_policy import (
 COMBINATION_LANES = np.asarray(TRIFECTA_COMBINATIONS, dtype=np.int64) - 1
 
 
+def _combination_calibration_summary(calibrator: Any) -> dict[str, Any]:
+    return {
+        "method": "daily-bootstrap one-sided 95% lower bound",
+        "training_races": int(calibrator.training_races),
+        "training_days": int(calibrator.training_days),
+        "bootstrap_samples": int(calibrator.bootstrap_samples),
+        "factor_min": float(calibrator.factors.min()),
+        "factor_median": float(np.median(calibrator.factors)),
+        "factor_max": float(calibrator.factors.max()),
+        "factors": {
+            combination: float(calibrator.factors[index])
+            for index, combination in enumerate(COMBINATION_LABELS)
+        },
+        "point_ratios": {
+            combination: float(calibrator.point_ratios[index])
+            for index, combination in enumerate(COMBINATION_LABELS)
+        },
+        "lower_bounds": {
+            combination: float(calibrator.lower_bounds[index])
+            for index, combination in enumerate(COMBINATION_LABELS)
+        },
+    }
+
+
 def _settle_candidate_days(
     candidates_by_day: dict[str, list[dict[str, Any]]],
     evaluated_by_day: dict[str, set[str]],
@@ -346,6 +370,7 @@ def simulate_expected_return_calibrated_bankroll(
     selected_threshold = fixed_threshold
     selection_source = "fallback_fixed_threshold"
     selection_period = None
+    selection_combination_calibration = None
     if split is not None:
         selection_calibrator = fit_expected_return_calibrator(
             calibration_values[:split],
@@ -371,6 +396,9 @@ def simulate_expected_return_calibrated_bankroll(
             calibration_race_keys[:split],
             payouts,
             COMBINATION_INDEX,
+        )
+        selection_combination_calibration = _combination_calibration_summary(
+            selection_combination_calibrator
         )
         selection_returns = calibrate_combination_returns(
             selection_combination_calibrator,
@@ -548,19 +576,9 @@ def simulate_expected_return_calibrated_bankroll(
         "objective": float(calibrator.objective),
         "gradient_norm": float(calibrator.gradient_norm),
         "max_expected_return": float(max_expected_return),
-        "combination_calibration": {
-            "method": "daily-bootstrap one-sided 95% lower bound",
-            "training_races": int(combination_calibrator.training_races),
-            "training_days": int(combination_calibrator.training_days),
-            "bootstrap_samples": int(combination_calibrator.bootstrap_samples),
-            "factor_min": float(combination_calibrator.factors.min()),
-            "factor_median": float(np.median(combination_calibrator.factors)),
-            "factor_max": float(combination_calibrator.factors.max()),
-            "factors": {
-                combination: float(combination_calibrator.factors[index])
-                for index, combination in enumerate(COMBINATION_LABELS)
-            },
-        },
+        "combination_calibration": _combination_calibration_summary(
+            combination_calibrator
+        ),
     }
     result["policy_selection"] = {
         "source": selection_source,
@@ -572,6 +590,7 @@ def simulate_expected_return_calibrated_bankroll(
         "minimum_hits": int(minimum_selection_hits),
         "minimum_winning_days": int(minimum_selection_winning_days),
         "period": selection_period,
+        "combination_calibration": selection_combination_calibration,
         "threshold_diagnostics": policy_diagnostics,
     }
     return result
