@@ -27,17 +27,16 @@ def pl_hessian_score_product(
     if not stages:
         raise ValueError(f"unknown target: {target}")
     product = np.zeros_like(values)
-    for race_index in range(values.shape[0]):
-        order = np.argsort(rank_values[race_index])
-        remaining = np.ones(6, dtype=bool)
-        for stage in range(stages):
-            lane_indices = np.flatnonzero(remaining)
-            probabilities = stable_softmax(values[race_index, lane_indices])
-            direction = vector[race_index, lane_indices]
-            product[race_index, lane_indices] += probabilities * (
-                direction - float(probabilities.dot(direction))
-            )
-            remaining[int(order[stage])] = False
+    order = np.argsort(rank_values, axis=1)
+    remaining = np.ones_like(values, dtype=bool)
+    race_indices = np.arange(values.shape[0])
+    for stage in range(stages):
+        probabilities = stable_softmax(np.where(remaining, values, -np.inf))
+        expected_direction = np.sum(
+            probabilities * vector, axis=1, keepdims=True
+        )
+        product += probabilities * (vector - expected_direction)
+        remaining[race_indices, order[:, stage]] = False
     return product / max(1, values.shape[0] * stages)
 
 

@@ -69,6 +69,34 @@ def test_score_hessian_product_matches_gradient_difference() -> None:
     assert np.allclose(analytic, (plus - minus) / (2 * epsilon), atol=1e-6)
 
 
+@pytest.mark.parametrize("target", ["winner", "top3_pl"])
+def test_vectorized_score_hessian_matches_racewise_reference(target: str) -> None:
+    random = np.random.default_rng(20260725)
+    scores = random.normal(size=(127, 6))
+    vector = random.normal(size=(127, 6))
+    ranks = np.vstack([random.permutation(6) + 1 for _ in range(127)])
+    stages = 1 if target == "winner" else 3
+    reference = np.zeros_like(scores)
+    for race_index in range(scores.shape[0]):
+        order = np.argsort(ranks[race_index])
+        remaining = np.ones(6, dtype=bool)
+        for stage in range(stages):
+            lanes = np.flatnonzero(remaining)
+            lane_scores = scores[race_index, lanes]
+            probabilities = np.exp(lane_scores - lane_scores.max())
+            probabilities /= probabilities.sum()
+            direction = vector[race_index, lanes]
+            reference[race_index, lanes] += probabilities * (
+                direction - probabilities.dot(direction)
+            )
+            remaining[order[stage]] = False
+    reference /= scores.shape[0] * stages
+
+    actual = pl_hessian_score_product(scores, ranks, vector, target=target)
+
+    np.testing.assert_allclose(actual, reference, rtol=1e-13, atol=1e-15)
+
+
 def test_feature_hessian_product_matches_gradient_difference() -> None:
     data = dataset()
     model, _ = train_listwise_model(
