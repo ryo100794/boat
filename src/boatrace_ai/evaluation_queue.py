@@ -53,6 +53,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 65536, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 8192},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -448,6 +449,7 @@ def _timeout_retry_parameters(
             "standardized_365d",
             "historical_coverage_safe",
             "calibrated_mlp_recency_search",
+            "lightgbm_recency_search",
         }
         else 21600
     )
@@ -680,6 +682,7 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
         "series_cached",
         "series_relative",
         "rolling_history",
+        "legacy_composites",
     )
     requested = {value.strip() for value in raw.split(",") if value.strip()}
     unknown = sorted(requested.difference(allowed))
@@ -932,6 +935,76 @@ def build_command(
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
         ], output
+    if task_type == "lightgbm_recency_search":
+        allowed = {
+            "evaluation_date", "timeout_seconds", "half_lives",
+            "calibration_days", "drop_feature_groups", "n_estimators",
+            "num_leaves", "max_depth", "min_child_samples",
+            "feature_fraction", "max_bin", "n_jobs",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported lightgbm_recency_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "evaluation_date" not in params:
+            raise ValueError("evaluation_date is required")
+        evaluation_date = _date(params, "evaluation_date")
+        _integer(params, "timeout_seconds", 86400, 300, 86400)
+        half_life_params = dict(params)
+        half_life_params.setdefault("half_lives", "none,365")
+        half_lives = _half_lives(half_life_params)
+        calibration_days = _integer(params, "calibration_days", 180, 30, 730)
+        drop_params = dict(params)
+        drop_params.setdefault("drop_feature_groups", "legacy_composites")
+        drop_feature_groups = _drop_feature_groups(drop_params)
+        n_estimators = _integer(params, "n_estimators", 300, 10, 2000)
+        num_leaves = _integer(params, "num_leaves", 31, 2, 512)
+        max_depth = _integer(params, "max_depth", -1, -1, 20)
+        if max_depth == 0:
+            raise ValueError("max_depth must be -1 or in [1, 20]")
+        min_child_samples = _integer(
+            params, "min_child_samples", 100, 1, 100000
+        )
+        feature_fraction = _number(
+            params, "feature_fraction", 0.6, 0.05, 1.0
+        )
+        max_bin = _integer(params, "max_bin", 63, 15, 255)
+        n_jobs = _integer(params, "n_jobs", 16, 1, 128)
+        cache_name = (
+            "lightgbm_features_16384_drop_"
+            + drop_feature_groups.replace(",", "_")
+        )
+        feature_cache = app_root / "data" / "models" / cache_name
+        return [
+            str(python), "-m", "boatrace_ai.lightgbm_recency_evaluation",
+            "--db", db,
+            "--output", str(output),
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--deployment-model-output", str(
+                output.with_name(output.stem + ".deployment.joblib")
+            ),
+            "--incumbent-prediction", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
+            ),
+            "--incumbent-bankroll", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_bankroll.json"
+            ),
+            "--evaluation-date", evaluation_date,
+            "--feature-cache", str(feature_cache),
+            "--drop-feature-groups", drop_feature_groups,
+            "--half-lives", half_lives,
+            "--calibration-days", str(calibration_days),
+            "--n-estimators", str(n_estimators),
+            "--num-leaves", str(num_leaves),
+            "--max-depth", str(max_depth),
+            "--min-child-samples", str(min_child_samples),
+            "--feature-fraction", str(feature_fraction),
+            "--max-bin", str(max_bin),
+            "--n-jobs", str(n_jobs),
+        ], output
+
     if task_type == "market_curvature":
         cache = app_root / "data" / "models" / "stagewise_blend_market_shadow.races.joblib"
         clip = _number(params, "disagreement_clip", 4.0, 0.1, 12.0)
@@ -1583,6 +1656,7 @@ def execute_job(
             "standardized_365d",
             "historical_coverage_safe",
             "calibrated_mlp_recency_search",
+            "lightgbm_recency_search",
         }
         else 21600
     )

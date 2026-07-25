@@ -1581,3 +1581,92 @@ def test_combined_feature_search_rejects_injected_worker_or_path(
             python=tmp_path / "python",
             db="postgresql://test",
         )
+
+def test_lightgbm_recency_search_profile() -> None:
+    assert TASK_PROFILES["lightgbm_recency_search"] == {
+        "category": "evaluation",
+        "memory_mb": 65536,
+        "disk_mb": 8192,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
+
+
+def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "half_lives": "none,365",
+                "drop_feature_groups": "legacy_composites",
+                "n_estimators": 400,
+                "num_leaves": 63,
+                "max_depth": 8,
+                "min_child_samples": 200,
+                "feature_fraction": 0.8,
+                "max_bin": 127,
+                "n_jobs": 24,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[0:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.lightgbm_recency_evaluation",
+    ]
+    assert command[command.index("--feature-cache") + 1].endswith(
+        "lightgbm_features_16384_drop_legacy_composites"
+    )
+    assert command[command.index("--drop-feature-groups") + 1] == (
+        "legacy_composites"
+    )
+    expected = {
+        "--half-lives": "none,365",
+        "--n-estimators": "400",
+        "--num-leaves": "63",
+        "--max-depth": "8",
+        "--min-child-samples": "200",
+        "--feature-fraction": "0.8",
+        "--max-bin": "127",
+        "--n-jobs": "24",
+    }
+    for flag, value in expected.items():
+        assert command[command.index(flag) + 1] == value
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({}, "evaluation_date is required"),
+        ({"evaluation_date": "2026-07-24", "max_depth": 0}, "max_depth"),
+        ({"evaluation_date": "2026-07-24", "n_estimators": 9}, "n_estimators"),
+        (
+            {"evaluation_date": "2026-07-24", "drop_feature_groups": "future"},
+            "unknown",
+        ),
+        (
+            {"evaluation_date": "2026-07-24", "command": "arbitrary"},
+            "unsupported",
+        ),
+    ],
+)
+def test_lightgbm_recency_search_rejects_invalid_parameters(
+    tmp_path: Path,
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job("lightgbm_recency_search", parameters),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )

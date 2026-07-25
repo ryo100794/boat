@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
 from sklearn.feature_extraction import FeatureHasher
@@ -260,6 +260,9 @@ def select_recency_half_life(
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
     prediction_output: dict[str, list[dict[str, Any]]] | None = None,
+    bundle_trainer: Callable[..., dict[str, Any]] | None = None,
+    model_kind: str = "mlp",
+    trainer_kwargs: dict[str, Any] | None = None,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
@@ -271,15 +274,18 @@ def select_recency_half_life(
     candidates: list[dict[str, Any]] = []
     selected_key: tuple[float, int, float] | None = None
     selected_predictions: dict[str, list[dict[str, Any]]] = {}
+    trainer = bundle_trainer or train_bundle_from_dataset
+    extra_trainer_kwargs = dict(trainer_kwargs or {})
     for half_life in half_lives:
-        bundle = train_bundle_from_dataset(
+        bundle = trainer(
             dataset,
             train_race_count=inner_train_end,
-            model_kind="mlp",
+            model_kind=model_kind,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=half_life,
+            **extra_trainer_kwargs,
         )
         metrics, candidate_predictions = score_range(
             dataset,
@@ -335,6 +341,8 @@ def bankroll_summary(
     training_races: set[str],
     test_dates: set[str],
     protocol: dict[str, Any],
+    model_name: str = MODEL_NAME,
+    feature_set: str = FEATURE_SET,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     policy = default_policy(
         daily_budget_yen=DAILY_BUDGET_YEN,
@@ -344,7 +352,7 @@ def bankroll_summary(
     for key, expected in STANDARD_POLICY.items():
         if policy.get(key) != expected:
             raise ValueError(f"fixed policy mismatch: {key}")
-    policy.update({"model": MODEL_NAME, "feature_set": FEATURE_SET})
+    policy.update({"model": model_name, "feature_set": feature_set})
     totals = zero_totals()
     daily: list[dict[str, Any]] = []
     bankroll, profit_state = evaluate_bankroll_fold(
@@ -761,8 +769,15 @@ def evaluate_recency_mlp(
     deployment_model_output_path: Path | None = None,
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
+    model_name: str = MODEL_NAME,
+    model_kind: str = "mlp",
+    feature_set: str = FEATURE_SET,
+    bundle_trainer: Callable[..., dict[str, Any]] | None = None,
+    trainer_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    trainer = bundle_trainer or train_bundle_from_dataset
+    extra_trainer_kwargs = dict(trainer_kwargs or {})
     resolved_drop_feature_groups = normalize_drop_feature_groups(
         drop_feature_groups
     )
@@ -825,15 +840,19 @@ def evaluate_recency_mlp(
             epochs=epochs,
             alpha=alpha,
             prediction_output=calibration_predictions,
+            bundle_trainer=trainer,
+            model_kind=model_kind,
+            trainer_kwargs=extra_trainer_kwargs,
         )
-        final_bundle = train_bundle_from_dataset(
+        final_bundle = trainer(
             dataset,
             train_race_count=training_count,
-            model_kind="mlp",
+            model_kind=model_kind,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
+            **extra_trainer_kwargs,
         )
         prediction_metrics, predictions = score_range(
             dataset,
@@ -880,6 +899,8 @@ def evaluate_recency_mlp(
             training_races=training_races,
             test_dates=test_dates,
             protocol=protocol,
+            model_name=model_name,
+            feature_set=feature_set,
         )
         conditional_payout = conditional_payout_summary(
             conn,
@@ -921,10 +942,10 @@ def evaluate_recency_mlp(
         "status": "completed",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "evaluation_date": evaluation_date.isoformat(),
-        "model": MODEL_NAME,
-        "model_kind": "mlp",
+        "model": model_name,
+        "model_kind": model_kind,
         "role": "shadow",
-        "feature_set": FEATURE_SET,
+        "feature_set": feature_set,
         "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(resolved_drop_feature_groups),
         "include_odds": False,
@@ -949,6 +970,7 @@ def evaluate_recency_mlp(
         "n_features": N_FEATURES,
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
+        "trainer_parameters": extra_trainer_kwargs,
         "selection": {
             "criterion": "inner calibration entry_log_loss",
             "tie_break": "None first, otherwise longer half-life",
@@ -985,9 +1007,9 @@ def evaluate_recency_mlp(
             "training_race_set_sha256": training_hash,
             "metadata": {
                 "trained_at": result["generated_at"],
-                "model": MODEL_NAME,
+                "model": model_name,
                 "role": "shadow",
-                "feature_set": FEATURE_SET,
+                "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
                 "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(trained_through),
@@ -1020,14 +1042,15 @@ def evaluate_recency_mlp(
                 ),
             )
         )
-        deployment_bundle = train_bundle_from_dataset(
+        deployment_bundle = trainer(
             dataset,
             train_race_count=dataset.race_count,
-            model_kind="mlp",
+            model_kind=model_kind,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
+            **extra_trainer_kwargs,
         )
         deployment_training_hash = race_set_sha256(
             row[0] for row in race_keys
@@ -1044,9 +1067,9 @@ def evaluate_recency_mlp(
             "training_race_set_sha256": deployment_training_hash,
             "metadata": {
                 "trained_at": datetime.now(timezone.utc).isoformat(),
-                "model": MODEL_NAME,
+                "model": model_name,
                 "role": "production_candidate",
-                "feature_set": FEATURE_SET,
+                "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
                 "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(deployment_trained_through),

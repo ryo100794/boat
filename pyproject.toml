@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 lzh = ["lhafile>=0.3.0"]
+gbdt = ["lightgbm>=4.5,<5"]
 dev = ["pytest>=8.0"]
 teleboat = ["playwright>=1.55"]
 
