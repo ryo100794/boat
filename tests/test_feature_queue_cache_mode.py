@@ -43,5 +43,16 @@ def test_standard_evaluation_uses_one_variant_and_two_candidate_workers() -> Non
     assert "source_needs_run listwise_combined_newton" in script
 
 
+def test_standard_evaluation_persists_selected_cache_before_newton() -> None:
+    script = Path("scripts/run_standardized_365d_evaluations.sh").read_text(
+        encoding="utf-8"
+    )
+    persist = script.index("standardized_365d_v2_persist_selected_cache")
+    newton = script.index("standardized_365d_v2_listwise_newton")
+
+    assert persist < newton
+    assert '--cache-dir "$eval_dir/selected_cache" --cache-write-mode never' in script
+
+
 def test_direct_feature_search_defaults_to_standard_hash_capacity() -> None:
     assert build_parser().parse_args([]).n_features == 8192

@@ -228,6 +228,11 @@ run_job standardized_365d_v2_listwise_feature_teacher \
 
 fi
 
+run_job standardized_365d_v2_persist_selected_cache \
+  .venv/bin/python scripts/persist_selected_feature_cache.py \
+  --artifact "$raw_dir/listwise_feature_teacher.json" \
+  --destination-dir "$eval_dir/selected_cache"
+
 if source_needs_run listwise_newton; then
 run_job standardized_365d_v2_listwise_newton \
   .venv/bin/python -m boatrace_ai.listwise.newton_refine \
@@ -235,15 +240,10 @@ run_job standardized_365d_v2_listwise_newton \
   --search-result "$raw_dir/listwise_feature_teacher.json" \
   --output "$raw_dir/listwise_newton.json" \
   --model-output "$eval_dir/listwise_newton.joblib" \
-  --cache-dir "$transient_cache_dir" --cache-write-mode never \
+  --cache-dir "$eval_dir/selected_cache" --cache-write-mode never \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
 fi
-
-run_job standardized_365d_v2_persist_selected_cache \
-  .venv/bin/python scripts/persist_selected_feature_cache.py \
-  --artifact "$raw_dir/listwise_feature_teacher.json" \
-  --destination-dir "$eval_dir/selected_cache"
 
 if source_needs_run listwise_combined_feature_teacher; then
 run_job standardized_365d_v2_listwise_combined_feature_teacher \
