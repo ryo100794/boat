@@ -912,7 +912,14 @@ def build_command(
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"job-{job_id:08d}.json"
     if task_type == "standardized_365d":
-        return [str(app_root / "scripts" / "run_standardized_365d_evaluations.sh")], (
+        return [
+            str(python),
+            "-m",
+            "boatrace_ai.script_snapshot",
+            "--app-root",
+            str(app_root),
+            str(app_root / "scripts" / "run_standardized_365d_evaluations.sh"),
+        ], (
             app_root / "data" / "models" / "standardized_365d_v2" / "manifest.json"
         )
     if task_type == "historical_coverage_safe":

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${BOATRACE_APP_ROOT:-$(dirname "$0")/..}"
 export PYTHONPATH=src
 
 db="${BOATRACE_DB:-data/boatrace.sqlite}"
