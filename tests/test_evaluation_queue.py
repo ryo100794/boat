@@ -904,6 +904,8 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
                 "roi": 1.08,
                 "profit_yen": 8_000,
                 "stake_yen": 100_000,
+                "return_yen": 108_000,
+                "max_drawdown_yen": 12_000,
                 "policy": {
                     "payout_tail_schema": "conditional_payout_tail_v1",
                     "payout_feature_schema": "conditional_payout_interactions_v2",
@@ -923,11 +925,14 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     assert summary["payout_feature_candidate_roi"] == 1.08
     assert summary["payout_feature_candidate_profit_yen"] == 8_000
     assert summary["payout_feature_candidate_stake_yen"] == 100_000
+    assert summary["payout_feature_candidate_return_yen"] == 108_000
+    assert summary["payout_feature_candidate_max_drawdown_yen"] == 12_000
     assert (
         summary["payout_feature_candidate_schema"]
         == "conditional_payout_tail_v1"
     )
     assert summary["payout_feature_roi_ci95_lower"] == 1.01
+    assert summary["payout_feature_probability_roi_above_one"] == 0.98
     assert summary["payout_feature_gate_pass"] is True
     assert summary["payout_feature_promotion_eligible"] is False
     assert (

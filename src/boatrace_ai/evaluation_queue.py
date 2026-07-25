@@ -1215,7 +1215,7 @@ METRIC_KEYS = (
     "cached", "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
     "entry_brier", "trifecta_log_loss", "calibrated_trifecta_log_loss",
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
-    "roi", "profit_yen", "stake_yen",
+    "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
     "promotion_eligible", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds",
 )
@@ -1243,13 +1243,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payout_walk_forward, dict):
         bankroll = payout_walk_forward.get("bankroll")
         if isinstance(bankroll, dict):
-            summary["payout_feature_candidate_roi"] = bankroll.get("roi")
-            summary["payout_feature_candidate_profit_yen"] = bankroll.get(
-                "profit_yen"
-            )
-            summary["payout_feature_candidate_stake_yen"] = bankroll.get(
-                "stake_yen"
-            )
+            for key in (
+                "roi", "profit_yen", "stake_yen", "return_yen",
+                "max_drawdown_yen",
+            ):
+                summary[f"payout_feature_candidate_{key}"] = bankroll.get(key)
             policy = bankroll.get("policy")
             if isinstance(policy, dict):
                 summary["payout_feature_candidate_schema"] = policy.get(
