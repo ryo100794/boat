@@ -535,6 +535,8 @@ def _select_conditional_payout_policy_state(
     minimum_hits: int,
     minimum_winning_days: int,
     minimum_roi: float,
+    minimum_roi_ci95_lower: float = 1.0,
+    minimum_probability_roi_above_one: float = 0.95,
     min_daily_exposure_candidates: tuple[float, ...] = (
         MIN_DAILY_EXPOSURE_CANDIDATES
     ),
@@ -642,6 +644,11 @@ def _select_conditional_payout_policy_state(
         and int(row["hits"]) >= minimum_hits
         and int(row["winning_days"]) >= minimum_winning_days
         and float(row["roi"]) >= minimum_roi
+        and float(row.get("selection_roi_ci95_lower", float("-inf")))
+        > minimum_roi_ci95_lower
+        and float(
+            row.get("selection_probability_roi_above_one", float("-inf"))
+        ) >= minimum_probability_roi_above_one
         and int(row["profit_yen"]) > 0
     ]
     if eligible:
@@ -686,10 +693,15 @@ def _select_conditional_payout_policy_state(
         "selected_min_daily_exposure_fraction": selected_exposure,
         "selected_mean_correction_factor": selected_mean_correction,
         "selection_objective": (
-            "maximum daily-bootstrap ROI 95% lower bound, then probability "
-            "ROI>1, ROI, and profit"
+            "require daily-bootstrap ROI 95% lower bound above one and "
+            "P(ROI>1)>=0.95; then maximize lower bound, probability, ROI, "
+            "and profit"
         ),
         "selection_bootstrap_samples": SELECTION_BOOTSTRAP_SAMPLES,
+        "minimum_selection_roi_ci95_lower": float(minimum_roi_ci95_lower),
+        "minimum_selection_probability_roi_above_one": float(
+            minimum_probability_roi_above_one
+        ),
     }
     return (
         selected_ridge, selected_mean_correction,
@@ -745,6 +757,8 @@ def simulate_conditional_payout_walk_forward(
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
     minimum_selection_roi: float = 1.05,
+    minimum_selection_roi_ci95_lower: float = 1.0,
+    minimum_selection_probability_roi_above_one: float = 0.95,
     state_output: MutableMapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_nondecreasing_race_dates(race_keys, name="race_keys")
@@ -800,6 +814,10 @@ def simulate_conditional_payout_walk_forward(
         minimum_hits=minimum_selection_hits,
         minimum_winning_days=minimum_selection_winning_days,
         minimum_roi=minimum_selection_roi,
+        minimum_roi_ci95_lower=minimum_selection_roi_ci95_lower,
+        minimum_probability_roi_above_one=(
+            minimum_selection_probability_roi_above_one
+        ),
         min_daily_exposure_candidates=min_daily_exposure_candidates,
     )
     selected_policy["ev_threshold"] = selected_threshold
