@@ -20,8 +20,8 @@ from boatrace_ai.listwise.feature_search import (
 
 EXPECTED_COMBINED_VARIANTS = (
     (
-        "drop_base_pastlog_research_correlates",
-        ("base_pastlog", "research_correlates"),
+        "drop_research_correlates_rolling_history",
+        ("research_correlates", "rolling_history"),
     ),
     (
         "drop_base_pastlog_series_cached",
@@ -84,13 +84,15 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
-    assert all(drops[0] == "base_pastlog" for _name, drops in COMBINED_FEATURE_VARIANTS)
-    assert {drops[1] for _name, drops in COMBINED_FEATURE_VARIANTS} == {
-        "research_correlates",
-        "series_cached",
-        "series_relative",
-        "rolling_history",
+    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 4
+    assert ("research_correlates", "rolling_history") in {
+        drops for _name, drops in COMBINED_FEATURE_VARIANTS
     }
+    assert {
+        drops[1]
+        for _name, drops in COMBINED_FEATURE_VARIANTS
+        if drops[0] == "base_pastlog"
+    } == {"series_cached", "series_relative", "rolling_history"}
     assert feature_variants() == defaults_before
     assert all(
         Path(name).name == name and ".." not in name
