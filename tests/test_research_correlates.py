@@ -9,7 +9,10 @@ from boatrace_ai.bankroll_optimizer import _validated_pretrained_bundle
 from boatrace_ai.base_features import is_home_branch, race_relative_features
 from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
 from boatrace_ai.contextual_features import RollingState
-from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
+from boatrace_ai.feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    LIGHTGBM_FEATURE_SCHEMA_VERSION,
+)
 from boatrace_ai.feature_tuning import build_race_features
 from boatrace_ai.standard_evaluation import race_set_sha256
 
@@ -150,6 +153,33 @@ def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
     assert "local_win_rate" in dropped[0]["features"]
     assert "motor_2_rate" in dropped[0]["features"]
     assert "boat_2_rate" in dropped[0]["features"]
+
+
+def test_lightgbm_schema_retains_sparse_card_values_with_missing_flags() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    rows[0]["avg_st"] = None
+    rows[0]["national_3_rate"] = None
+
+    current = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+    lightgbm = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+
+    assert "avg_st" not in current
+    assert "national_3_rate" not in current
+    assert lightgbm["avg_st"] == -1.0
+    assert lightgbm["national_3_rate"] == -1.0
+    assert lightgbm["has_avg_st"] == 0
+    assert lightgbm["has_national_3_rate"] == 0
+    assert lightgbm["has_national_win_rate"] == 1
 
 
 def test_postgresql_series_cache_check_is_read_only() -> None:

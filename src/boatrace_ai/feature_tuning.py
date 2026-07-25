@@ -26,8 +26,14 @@ from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
 from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
 from .contextual_features import RollingState, _race_sort_key
-from .feature_schema import FEATURE_SCHEMA_VERSION
-from .series_features_form import base_pastlog_features
+from .feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    uses_explicit_card_missing_flags,
+)
+from .series_features_form import (
+    base_pastlog_features,
+    base_v1 as raw_base_pastlog_features,
+)
 from .operational_features import cached_series_features, series_relative_features
 from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
@@ -46,6 +52,29 @@ LEGACY_COMPOSITE_FEATURES = (
     "ability_score",
     "ability_lane_score",
     "best_count",
+)
+EXPLICIT_CARD_MISSING_ROOTS = (
+    "age",
+    "weight_kg",
+    "f_count",
+    "l_count",
+    "avg_st",
+    "national_win_rate",
+    "national_2_rate",
+    "national_3_rate",
+    "local_win_rate",
+    "local_2_rate",
+    "local_3_rate",
+    "motor_2_rate",
+    "motor_3_rate",
+    "boat_2_rate",
+    "boat_3_rate",
+    "series_starts",
+    "series_avg_finish",
+    "series_latest_finish",
+    "series_win_rate",
+    "series_top2_rate",
+    "series_top3_rate",
 )
 HASH_FEATURES = 1 << 20
 RACE_DATE_CHUNK_SIZE = 31
@@ -636,11 +665,16 @@ def build_race_features(
         else {}
     )
     out = []
+    card_feature_builder = (
+        raw_base_pastlog_features
+        if uses_explicit_card_missing_flags(feature_schema_version)
+        else base_pastlog_features
+    )
     for row in race_rows:
         lane = int(row["lane"])
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
-            item.update(base_pastlog_features(row, relatives[lane]))
+            item.update(card_feature_builder(row, relatives[lane]))
         if "series_cached" not in dropped:
             item.update(
                 cached_series_features(
@@ -661,6 +695,8 @@ def build_race_features(
                 for key, value in item.items()
                 if not key.startswith(RESEARCH_FEATURE_PREFIX)
             }
+        if uses_explicit_card_missing_flags(feature_schema_version):
+            _add_explicit_card_missing_flags(item)
         out.append(
             {
                 "features": item,
@@ -676,6 +712,19 @@ def build_race_features(
             }
         )
     return out
+
+
+def _add_explicit_card_missing_flags(item: dict[str, Any]) -> None:
+    for root in EXPLICIT_CARD_MISSING_ROOTS:
+        if root not in item:
+            continue
+        value = item[root]
+        item[f"has_{root}"] = int(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+        )
 
 
 def iter_complete_races(conn) -> Iterable[list[Any]]:

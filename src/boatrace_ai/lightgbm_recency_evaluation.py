@@ -10,6 +10,7 @@ import numpy as np
 
 from .calibrated_shadow_model import recency_sample_weights
 from .db import connection
+from .feature_schema import LIGHTGBM_FEATURE_SCHEMA_VERSION
 from .hashed_feature_dataset import HashedRaceDataset
 from .recency_mlp_evaluation import (
     build_parser as build_recency_parser,
@@ -182,6 +183,7 @@ def evaluate_lightgbm_recency(
         model_name=MODEL_NAME,
         model_kind=MODEL_KIND,
         feature_set=FEATURE_SET,
+        feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
         bundle_trainer=train_lightgbm_bundle_from_dataset,
         trainer_kwargs=trainer_kwargs,
     )

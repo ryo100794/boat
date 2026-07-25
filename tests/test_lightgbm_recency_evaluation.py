@@ -161,6 +161,9 @@ def test_lightgbm_wrapper_injects_model_contract(monkeypatch: pytest.MonkeyPatch
     assert result["model"] == lightgbm_eval.MODEL_NAME
     assert captured["model_kind"] == "lightgbm"
     assert captured["feature_set"] == lightgbm_eval.FEATURE_SET
+    assert captured["feature_schema_version"] == (
+        lightgbm_eval.LIGHTGBM_FEATURE_SCHEMA_VERSION
+    )
     assert captured["bundle_trainer"] is (
         lightgbm_eval.train_lightgbm_bundle_from_dataset
     )

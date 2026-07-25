@@ -11,6 +11,7 @@ from scipy import sparse
 
 from boatrace_ai import calibrated_shadow_model as calibrated
 from boatrace_ai import recency_mlp_evaluation as recency
+from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
 from boatrace_ai.listwise.conditional_order import identity_model
 from boatrace_ai.standard_evaluation import race_set_sha256
@@ -618,13 +619,16 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         *,
         include_races: set[str],
         drop_feature_groups: tuple[str, ...],
+        feature_schema_version: str,
     ):
         del include_races
         feature_contract["rows"] = drop_feature_groups
+        feature_contract["rows_schema"] = feature_schema_version
         return iter(())
 
     def fake_load_dataset(**kwargs: object):
         feature_contract["cache"] = kwargs["drop_feature_groups"]
+        feature_contract["cache_schema"] = kwargs["feature_schema_version"]
         list(kwargs["race_rows"]())
         return dataset, "disk"
 
@@ -769,7 +773,12 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert final_score_calls == [(training_count, dataset.race_count)]
     assert result["model"] == "calibrated_mlp_recency_selected"
     assert result["drop_feature_groups"] == ["research_correlates"]
-    assert feature_contract == {"rows": ("research_correlates",), "cache": ("research_correlates",)}
+    assert feature_contract == {
+        "rows": ("research_correlates",),
+        "rows_schema": FEATURE_SCHEMA_VERSION,
+        "cache": ("research_correlates",),
+        "cache_schema": FEATURE_SCHEMA_VERSION,
+    }
     assert result["selected_recency_half_life_days"] == 365.0
     assert result["entry_log_loss"] == 0.25
     assert result["entry_brier"] == 0.08

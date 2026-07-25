@@ -29,6 +29,7 @@ from .calibrated_shadow_model import (
 from .db import connection
 from .hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
 from .fast_math import plackett_luce_probabilities
+from .feature_schema import FEATURE_SCHEMA_VERSION
 from .feature_tuning import normalize_drop_feature_groups
 from .listwise.conditional_order import (
     DEFAULT_REGULARIZATIONS,
@@ -772,6 +773,7 @@ def evaluate_recency_mlp(
     model_name: str = MODEL_NAME,
     model_kind: str = "mlp",
     feature_set: str = FEATURE_SET,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     trainer_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -816,11 +818,13 @@ def evaluate_recency_mlp(
                 conn,
                 include_races={str(row[0]) for row in race_keys},
                 drop_feature_groups=resolved_drop_feature_groups,
+                feature_schema_version=feature_schema_version,
             ),
             hasher=hasher,
             to_hashable=to_hashable,
             ensure_sparse_index32=_ensure_sparse_index32,
             drop_feature_groups=resolved_drop_feature_groups,
+            feature_schema_version=feature_schema_version,
             batch_size=batch_size,
         )
         validate_dataset_races(
