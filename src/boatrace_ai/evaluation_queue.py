@@ -53,6 +53,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 65536, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -60,6 +61,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
@@ -448,6 +450,7 @@ def _timeout_retry_parameters(
             "standardized_365d",
             "historical_coverage_safe",
             "calibrated_mlp_recency_search",
+            "lightgbm_recency_search",
         }
         else 21600
     )
@@ -485,6 +488,14 @@ def claim_job(
         WHERE jobs.status = 'queued'
           AND jobs.available_at <= CURRENT_TIMESTAMP
           AND jobs.attempt < jobs.max_attempts
+          AND (
+            jobs.parent_job_id IS NULL
+            OR EXISTS (
+              SELECT 1 FROM model_evaluation_jobs parent
+              WHERE parent.job_id = jobs.parent_job_id
+                AND parent.status = 'completed'
+            )
+          )
           AND jobs.min_free_memory_mb <= ?
           AND jobs.min_free_disk_mb <= ?
           AND jobs.min_idle_cpu_percent <= ?
@@ -680,6 +691,7 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
         "series_cached",
         "series_relative",
         "rolling_history",
+        "legacy_composites",
     )
     requested = {value.strip() for value in raw.split(",") if value.strip()}
     unknown = sorted(requested.difference(allowed))
@@ -932,6 +944,101 @@ def build_command(
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
         ], output
+    if task_type == "racer_stats_backfill":
+        allowed = {"from_year", "to_year", "sleep_seconds", "timeout_seconds"}
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported racer_stats_backfill parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        from_year = _integer(params, "from_year", 2016, 2000, 2100)
+        to_year = _integer(params, "to_year", 2026, 2000, 2100)
+        if from_year > to_year or to_year - from_year > 20:
+            raise ValueError("invalid racer statistics year range")
+        sleep_seconds = _number(params, "sleep_seconds", 1.5, 0.0, 10.0)
+        _integer(params, "timeout_seconds", 3600, 300, 86400)
+        return [
+            str(python), "-m", "boatrace_ai.racer_stats_backfill",
+            "--db", db,
+            "--output", str(output),
+            "--raw-dir", str(app_root / "data/raw"),
+            "--from-year", str(from_year),
+            "--to-year", str(to_year),
+            "--sleep-seconds", str(sleep_seconds),
+        ], output
+
+
+    if task_type == "lightgbm_recency_search":
+        allowed = {
+            "evaluation_date", "timeout_seconds", "half_lives",
+            "calibration_days", "drop_feature_groups", "n_estimators",
+            "num_leaves", "max_depth", "min_child_samples",
+            "feature_fraction", "max_bin", "n_jobs",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported lightgbm_recency_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "evaluation_date" not in params:
+            raise ValueError("evaluation_date is required")
+        evaluation_date = _date(params, "evaluation_date")
+        _integer(params, "timeout_seconds", 86400, 300, 86400)
+        half_life_params = dict(params)
+        half_life_params.setdefault("half_lives", "none,365")
+        half_lives = _half_lives(half_life_params)
+        calibration_days = _integer(params, "calibration_days", 180, 30, 730)
+        drop_params = dict(params)
+        drop_params.setdefault("drop_feature_groups", "legacy_composites")
+        drop_feature_groups = _drop_feature_groups(drop_params)
+        n_estimators = _integer(params, "n_estimators", 300, 10, 2000)
+        num_leaves = _integer(params, "num_leaves", 31, 2, 512)
+        max_depth = _integer(params, "max_depth", -1, -1, 20)
+        if max_depth == 0:
+            raise ValueError("max_depth must be -1 or in [1, 20]")
+        min_child_samples = _integer(
+            params, "min_child_samples", 100, 1, 100000
+        )
+        feature_fraction = _number(
+            params, "feature_fraction", 0.6, 0.05, 1.0
+        )
+        max_bin = _integer(params, "max_bin", 63, 15, 255)
+        n_jobs = _integer(params, "n_jobs", 16, 1, 128)
+        cache_name = (
+            "lightgbm_v6_features_16384_drop_"
+            + drop_feature_groups.replace(",", "_")
+        )
+        feature_cache = app_root / "data" / "models" / cache_name
+        return [
+            str(python), "-m", "boatrace_ai.lightgbm_recency_evaluation",
+            "--db", db,
+            "--output", str(output),
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--deployment-model-output", str(
+                output.with_name(output.stem + ".deployment.joblib")
+            ),
+            "--incumbent-prediction", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
+            ),
+            "--incumbent-bankroll", str(
+                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_bankroll.json"
+            ),
+            "--evaluation-date", evaluation_date,
+            "--feature-cache", str(feature_cache),
+            "--drop-feature-groups", drop_feature_groups,
+            "--half-lives", half_lives,
+            "--calibration-days", str(calibration_days),
+            "--n-estimators", str(n_estimators),
+            "--num-leaves", str(num_leaves),
+            "--max-depth", str(max_depth),
+            "--min-child-samples", str(min_child_samples),
+            "--feature-fraction", str(feature_fraction),
+            "--max-bin", str(max_bin),
+            "--n-jobs", str(n_jobs),
+        ], output
+
     if task_type == "market_curvature":
         cache = app_root / "data" / "models" / "stagewise_blend_market_shadow.races.joblib"
         clip = _number(params, "disagreement_clip", 4.0, 0.1, 12.0)
@@ -1332,6 +1439,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         "repository_hygiene",
         "repository_sync",
         "series_feature_cache",
+        "racer_stats_backfill",
         "persist_standard_selected_cache",
     }:
         return "maintenance_complete"
@@ -1583,6 +1691,7 @@ def execute_job(
             "standardized_365d",
             "historical_coverage_safe",
             "calibrated_mlp_recency_search",
+            "lightgbm_recency_search",
         }
         else 21600
     )
@@ -2083,11 +2192,18 @@ def run_worker(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PostgreSQL-backed model evaluation queue")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "seed", "retry", "reprioritize", "status", "run"):
+    for name in ("init", "seed", "enqueue", "retry", "reprioritize", "status", "run"):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
             command.add_argument("--evaluation-date", required=True)
+        if name == "enqueue":
+            command.add_argument("--task-type", choices=sorted(TASK_PROFILES), required=True)
+            command.add_argument("--model-key", required=True)
+            command.add_argument("--parameters-file", type=Path, required=True)
+            command.add_argument("--priority", type=int, default=0)
+            command.add_argument("--max-attempts", type=int, default=2)
+            command.add_argument("--parent-job-id", type=int)
         if name == "retry":
             command.add_argument("--include-failed", action="store_true")
             command.add_argument("--include-running", action="store_true")
@@ -2109,6 +2225,16 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--schedule-periodic", action="store_true")
             command.add_argument("--once", action="store_true")
     return parser
+
+
+def load_job_parameters(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid parameters file {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("parameters file must contain one JSON object")
+    return value
 
 
 def status_rows(conn: Any) -> list[dict[str, Any]]:
@@ -2186,6 +2312,17 @@ def main(argv: list[str] | None = None) -> int:
         ensure_schema(conn)
         if args.command == "seed":
             print(_json({"inserted": seed_default_jobs(conn, evaluation_date=args.evaluation_date)}))
+        elif args.command == "enqueue":
+            job_id = enqueue_job(
+                conn,
+                task_type=args.task_type,
+                model_key=args.model_key,
+                parameters=load_job_parameters(args.parameters_file),
+                priority=args.priority,
+                max_attempts=args.max_attempts,
+                parent_job_id=args.parent_job_id,
+            )
+            print(_json({"job_id": job_id, "inserted": job_id is not None}))
         elif args.command == "retry":
             print(
                 _json(

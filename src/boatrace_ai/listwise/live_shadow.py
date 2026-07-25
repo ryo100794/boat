@@ -22,6 +22,11 @@ from ..feature_tuning import (
     iter_complete_races,
     to_hashable,
 )
+from ..feature_schema import uses_racer_period_stats
+from ..racer_period_features import (
+    enrich_racer_period_rows,
+    load_racer_period_lookup,
+)
 from ..modeling import trifecta_predictions
 from .model import stable_softmax
 
@@ -35,7 +40,11 @@ def score_date(conn, *, artifact: dict[str, Any], race_date: str) -> dict[str, A
     hasher = artifact["hasher"]
     dropped = tuple(artifact.get("drop_feature_groups") or ())
     state = historical_state(conn, race_date=race_date)
-    rows_by_race = load_date_races(conn, race_date=race_date)
+    rows_by_race = load_date_races(
+        conn,
+        race_date=race_date,
+        feature_schema_version=artifact.get("feature_schema_version"),
+    )
     actual_by_race = load_actual_orders(conn, race_date=race_date)
     race_predictions = []
 
@@ -133,7 +142,12 @@ def historical_state(conn, *, race_date: str) -> RollingState:
     return state
 
 
-def load_date_races(conn, *, race_date: str) -> dict[str, list[Any]]:
+def load_date_races(
+    conn,
+    *,
+    race_date: str,
+    feature_schema_version: str | None = None,
+) -> dict[str, list[Any]]:
     ensure_series_cache_table(conn)
     rows = conn.execute(
         f"""
@@ -156,6 +170,8 @@ def load_date_races(conn, *, race_date: str) -> dict[str, list[Any]]:
         """,
         (race_date,),
     ).fetchall()
+    if uses_racer_period_stats(feature_schema_version):
+        rows = enrich_racer_period_rows(rows, load_racer_period_lookup(conn))
     grouped: dict[str, list[Any]] = defaultdict(list)
     for row in rows:
         grouped[str(row["race_id"])].append(row)

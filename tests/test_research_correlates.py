@@ -9,7 +9,10 @@ from boatrace_ai.bankroll_optimizer import _validated_pretrained_bundle
 from boatrace_ai.base_features import is_home_branch, race_relative_features
 from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
 from boatrace_ai.contextual_features import RollingState
-from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
+from boatrace_ai.feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    LIGHTGBM_FEATURE_SCHEMA_VERSION,
+)
 from boatrace_ai.feature_tuning import build_race_features
 from boatrace_ai.standard_evaluation import race_set_sha256
 
@@ -127,6 +130,73 @@ def test_course_change_and_research_group_ablation() -> None:
     )
     assert any(key.startswith("research_") for key in full[0]["features"])
     assert not any(key.startswith("research_") for key in dropped[0]["features"])
+
+
+def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    full = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+    )
+    dropped = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=(
+            "legacy_composites", "series_cached", "series_relative"
+        ),
+    )
+    composites = {"ability_score", "ability_lane_score", "best_count"}
+    assert composites <= set(full[0]["features"])
+    assert not composites & set(dropped[0]["features"])
+    assert "national_win_rate" in dropped[0]["features"]
+    assert "local_win_rate" in dropped[0]["features"]
+    assert "motor_2_rate" in dropped[0]["features"]
+    assert "boat_2_rate" in dropped[0]["features"]
+
+
+def test_lightgbm_schema_rejects_temporal_availability_leaks() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    rows[0]["avg_st"] = None
+    rows[0]["national_3_rate"] = None
+
+    current = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+    lightgbm = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+
+    assert "avg_st" not in current
+    assert "national_3_rate" not in current
+    assert "avg_st" not in lightgbm
+    assert "national_3_rate" not in lightgbm
+    assert "origin" not in lightgbm
+    assert lightgbm["has_national_win_rate"] == 1
+    assert lightgbm["has_racer_period_stats"] == 0
+
+    rows[0]["_racer_period"] = {
+        "available_from": date(2026, 6, 30),
+        "avg_st": 0.14,
+        "ability_index": 72.0,
+        "origin": "東京",
+    }
+    enriched = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+        feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+    assert enriched["has_racer_period_stats"] == 1
+    assert enriched["period_avg_st"] == 0.14
+    assert enriched["period_ability_index"] == 72.0
+    assert enriched["period_origin"] == "東京"
 
 
 def test_postgresql_series_cache_check_is_read_only() -> None:

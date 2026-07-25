@@ -26,9 +26,18 @@ from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
 from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
 from .contextual_features import RollingState, _race_sort_key
-from .feature_schema import FEATURE_SCHEMA_VERSION
+from .feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    uses_explicit_card_missing_flags,
+    uses_racer_period_stats,
+)
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
+from .racer_period_features import (
+    enrich_racer_period_rows,
+    load_racer_period_lookup,
+    racer_period_feature_values,
+)
 from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
 
@@ -40,6 +49,28 @@ FEATURE_GROUPS = (
     "series_cached",
     "series_relative",
     "rolling_history",
+    "legacy_composites",
+)
+LEGACY_COMPOSITE_FEATURES = (
+    "ability_score",
+    "ability_lane_score",
+    "best_count",
+)
+EXPLICIT_CARD_MISSING_ROOTS = (
+    "age",
+    "weight_kg",
+    "national_win_rate",
+    "national_2_rate",
+    "local_win_rate",
+    "local_2_rate",
+    "motor_2_rate",
+    "boat_2_rate",
+    "series_starts",
+    "series_avg_finish",
+    "series_latest_finish",
+    "series_win_rate",
+    "series_top2_rate",
+    "series_top3_rate",
 )
 HASH_FEATURES = 1 << 20
 RACE_DATE_CHUNK_SIZE = 31
@@ -580,7 +611,9 @@ def iter_race_feature_rows(
     state = RollingState()
     current_date: str | None = None
     day_updates: list[list[Any]] = []
-    for race_rows in iter_complete_races(conn):
+    for race_rows in iter_complete_races(
+        conn, feature_schema_version=feature_schema_version
+    ):
         race_id_value = str(race_rows[0]["race_id"])
         race_date_value = str(race_rows[0]["race_date"])
         if current_date is None:
@@ -635,6 +668,8 @@ def build_race_features(
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
+        if uses_racer_period_stats(feature_schema_version):
+            item.update(racer_period_feature_values(row))
         if "series_cached" not in dropped:
             item.update(
                 cached_series_features(
@@ -646,12 +681,18 @@ def build_race_features(
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))
+        if "legacy_composites" in dropped:
+            for key in LEGACY_COMPOSITE_FEATURES:
+                item.pop(key, None)
         if "research_correlates" in dropped:
             item = {
                 key: value
                 for key, value in item.items()
                 if not key.startswith(RESEARCH_FEATURE_PREFIX)
             }
+        if uses_explicit_card_missing_flags(feature_schema_version):
+            item.pop("origin", None)
+            _add_explicit_card_missing_flags(item)
         out.append(
             {
                 "features": item,
@@ -669,8 +710,30 @@ def build_race_features(
     return out
 
 
-def iter_complete_races(conn) -> Iterable[list[Any]]:
+def _add_explicit_card_missing_flags(item: dict[str, Any]) -> None:
+    for root in EXPLICIT_CARD_MISSING_ROOTS:
+        if root not in item:
+            continue
+        value = item[root]
+        item[f"has_{root}"] = int(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+        )
+
+
+def iter_complete_races(
+    conn,
+    *,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> Iterable[list[Any]]:
     ensure_series_cache_table(conn)
+    period_lookup = (
+        load_racer_period_lookup(conn)
+        if uses_racer_period_stats(feature_schema_version)
+        else {}
+    )
     max_race_date = os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     date_filter = "WHERE race_date <= ?" if max_race_date else ""
     params = (max_race_date,) if max_race_date else ()
@@ -713,6 +776,8 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
             """,
             (date_chunk[0], date_chunk[-1]),
         )
+        if period_lookup:
+            rows = enrich_racer_period_rows(rows, period_lookup)
         yield from _group_complete_rows(rows)
 
 

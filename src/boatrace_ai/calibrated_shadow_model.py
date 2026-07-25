@@ -150,7 +150,7 @@ def score_dataset_fold(
     matrix = dataset.matrix[row_slice]
     raw_parts = []
     for start, end in matrix_batch_ranges(matrix.shape[0], batch_size):
-        transformed = bundle["scaler"].transform(matrix[start:end])
+        transformed = transform_bundle_matrix(bundle, matrix[start:end])
         raw_parts.append(bundle["classifier"].predict_proba(transformed)[:, 1])
     if not raw_parts:
         return
@@ -301,12 +301,17 @@ def normalize_model_kind(value: str) -> str:
     return model_kind
 
 
+def transform_bundle_matrix(bundle: dict[str, Any], matrix: Any) -> Any:
+    scaler = bundle.get("scaler")
+    return matrix if scaler is None else scaler.transform(matrix)
+
+
 def predict_probabilities(bundle: dict[str, Any], features: list[dict[str, Any]]) -> list[float]:
     matrix = hash_features(
         bundle["hasher"],
         [to_hashable(feature) for feature in features],
     )
-    matrix = bundle["scaler"].transform(matrix)
+    matrix = transform_bundle_matrix(bundle, matrix)
     probabilities = bundle["classifier"].predict_proba(matrix)[:, 1]
     return [float(value) for value in probabilities]
 

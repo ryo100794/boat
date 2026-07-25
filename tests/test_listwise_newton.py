@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
@@ -12,7 +13,7 @@ from boatrace_ai.listwise.newton import (
     refine_newton_cg,
 )
 from boatrace_ai.listwise.model import train_listwise_model
-from boatrace_ai.listwise.newton_refine import _result_contract_metadata
+from boatrace_ai.listwise.newton_refine import evaluation_result_contract
 
 
 def dataset() -> HashedRaceDataset:
@@ -35,18 +36,24 @@ def dataset() -> HashedRaceDataset:
     )
 
 
-def test_newton_result_contract_includes_schema_and_policy_copy() -> None:
+def test_newton_evaluation_result_contract_preserves_schema_and_policy() -> None:
     policy = {"daily_budget_yen": 10_000, "ev_threshold": 1.2}
 
-    metadata = _result_contract_metadata(
-        {"feature_schema_version": "schema-v1"}, policy
+    contract = evaluation_result_contract(
+        {"feature_schema_version": "schema-v1"},
+        policy,
     )
-    policy["ev_threshold"] = 2.0
+    policy["ev_threshold"] = 9.9
 
-    assert metadata == {
+    assert contract == {
         "feature_schema_version": "schema-v1",
         "policy": {"daily_budget_yen": 10_000, "ev_threshold": 1.2},
     }
+
+
+def test_newton_evaluation_result_contract_requires_schema() -> None:
+    with pytest.raises(ValueError, match="feature schema"):
+        evaluation_result_contract({}, {"daily_budget_yen": 10_000})
 
 
 def test_score_hessian_product_matches_gradient_difference() -> None:

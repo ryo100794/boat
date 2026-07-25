@@ -94,6 +94,19 @@ def validate_search_race_universe(
         )
 
 
+def evaluation_result_contract(
+    search_result: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    schema = search_result.get("feature_schema_version")
+    if not isinstance(schema, str) or not schema:
+        raise ValueError("search result lacks a feature schema version")
+    return {
+        "feature_schema_version": schema,
+        "policy": dict(policy),
+    }
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -401,7 +414,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     after_metrics["evaluation_race_set_sha256"] = evaluation_hash
     result: dict[str, Any] = {
         "model": "pastlog_listwise_newton_cg_v1",
-        **_result_contract_metadata(search_result, policy),
+        **evaluation_result_contract(search_result, policy),
         "comparison_role": "selected_feature_teacher_newton_refinement_holdout",
         "source_search_result": args.search_result,
         "selected": selected,
