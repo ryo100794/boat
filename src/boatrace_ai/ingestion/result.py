@@ -200,6 +200,8 @@ def _result_reason(
 ) -> str | None:
     if trifecta_state.get("state") == "not_established":
         return "trifecta_not_established"
+    if trifecta_state.get("state") == "evaluable" and len(rows) < 3:
+        return None
     if len(rows) < 3 and refund_lanes:
         return "refund_with_insufficient_finishers"
     if len(rows) < 3 and incidents:
@@ -215,6 +217,8 @@ def _trifecta_evaluable(
 ) -> bool:
     if trifecta_state.get("state") == "not_established":
         return False
+    if trifecta_state.get("state") == "evaluable":
+        return True
     if len(rows) < 3 and (refund_lanes or incidents):
         return False
     return True
