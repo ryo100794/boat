@@ -971,6 +971,30 @@ def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     assert summary["staging_files"] == 0
 
 
+def test_repository_sync_summary_preserves_deferred_reason() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "action": "deferred_active_evaluation",
+        "ahead": 48,
+        "behind": 0,
+        "active_evaluations": 1,
+    })
+
+    assert summary == {
+        "action": "deferred_active_evaluation",
+        "ahead": 48,
+        "behind": 0,
+        "active_evaluations": 1,
+        "status": "completed",
+    }
+    assert result_decision("repository_sync", summary) == (
+        "repository_sync_deferred"
+    )
+    assert result_decision(
+        "repository_sync", {"action": "fast_forwarded"}
+    ) == "maintenance_complete"
+
+
 def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     summary = summarize_result({
         "model": "venue",

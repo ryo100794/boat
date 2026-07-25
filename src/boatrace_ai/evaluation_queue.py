@@ -1467,7 +1467,8 @@ METRIC_KEYS = (
     "promotion_eligible", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
     "source_bytes_before", "source_bytes_after", "archived_files_removed",
-    "archived_bytes_removed", "staging_files",
+    "archived_bytes_removed", "staging_files", "action", "ahead", "behind",
+    "active_evaluations",
 )
 
 
@@ -1582,9 +1583,12 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "aggregation_complete"
     if task_type in {"gdrive_raw_archive", "gdrive_model_cache_archive"}:
         return "backup_complete"
+    if task_type == "repository_sync":
+        if str(summary.get("action") or "").startswith("deferred_"):
+            return "repository_sync_deferred"
+        return "maintenance_complete"
     if task_type in {
         "repository_hygiene",
-        "repository_sync",
         "series_feature_cache",
         "racer_stats_backfill",
         "persist_standard_selected_cache",
