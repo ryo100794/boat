@@ -61,6 +61,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
@@ -935,6 +936,31 @@ def build_command(
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
         ], output
+    if task_type == "racer_stats_backfill":
+        allowed = {"from_year", "to_year", "sleep_seconds", "timeout_seconds"}
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported racer_stats_backfill parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        from_year = _integer(params, "from_year", 2016, 2000, 2100)
+        to_year = _integer(params, "to_year", 2026, 2000, 2100)
+        if from_year > to_year or to_year - from_year > 20:
+            raise ValueError("invalid racer statistics year range")
+        sleep_seconds = _number(params, "sleep_seconds", 1.5, 0.0, 10.0)
+        _integer(params, "timeout_seconds", 3600, 300, 86400)
+        return [
+            str(python), "-m", "boatrace_ai.racer_stats_backfill",
+            "--db", db,
+            "--output", str(output),
+            "--raw-dir", str(app_root / "data/raw"),
+            "--from-year", str(from_year),
+            "--to-year", str(to_year),
+            "--sleep-seconds", str(sleep_seconds),
+        ], output
+
+
     if task_type == "lightgbm_recency_search":
         allowed = {
             "evaluation_date", "timeout_seconds", "half_lives",
@@ -1405,6 +1431,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         "repository_hygiene",
         "repository_sync",
         "series_feature_cache",
+        "racer_stats_backfill",
         "persist_standard_selected_cache",
     }:
         return "maintenance_complete"
