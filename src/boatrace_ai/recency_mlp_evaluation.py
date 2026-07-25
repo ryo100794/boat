@@ -777,8 +777,19 @@ def evaluate_recency_mlp(
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     trainer_kwargs: dict[str, Any] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+
+    def report_progress(stage: str, **details: Any) -> None:
+        if progress_callback is None:
+            return
+        progress_callback({
+            "stage": stage,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            **details,
+        })
+
     trainer = bundle_trainer or train_bundle_from_dataset
     extra_trainer_kwargs = dict(trainer_kwargs or {})
     resolved_drop_feature_groups = normalize_drop_feature_groups(
@@ -796,6 +807,11 @@ def evaluate_recency_mlp(
         verify_protocol_against_database(conn, protocol)
         race_keys, training_hash = validated_protocol_race_keys(conn, protocol)
         training_count = int(protocol["training_races"])
+        report_progress(
+            "protocol_validated",
+            training_races=training_count,
+            holdout_races=int(protocol["prediction_races"]),
+        )
         if (incumbent_prediction_path is None) != (incumbent_bankroll_path is None):
             raise ValueError("both incumbent evaluation paths are required")
         incumbent_prediction: dict[str, Any] | None = None
@@ -835,6 +851,12 @@ def evaluate_recency_mlp(
             protocol=protocol,
             training_hash=training_hash,
         )
+        report_progress(
+            "dataset_ready",
+            cache_source=cache_source,
+            races=dataset.race_count,
+            examples=dataset.example_count,
+        )
 
         calibration_predictions: dict[str, list[dict[str, Any]]] = {}
         selected_half_life, candidates, split = select_recency_half_life(
@@ -849,6 +871,11 @@ def evaluate_recency_mlp(
             bundle_trainer=trainer,
             model_kind=model_kind,
             trainer_kwargs=extra_trainer_kwargs,
+        )
+        report_progress(
+            "recency_selected",
+            candidates=len(candidates),
+            selected_half_life_days=selected_half_life,
         )
         final_bundle = trainer(
             dataset,
@@ -867,6 +894,10 @@ def evaluate_recency_mlp(
             race_end=dataset.race_count,
             batch_size=batch_size,
         )
+        report_progress(
+            "holdout_scored",
+            evaluated_races=int(prediction_metrics["evaluated_races"]),
+        )
         calibration_start = int(split["inner_train_races"])
         conditional_order_model, conditional_order_selection = (
             fit_conditional_order_layer(
@@ -874,6 +905,10 @@ def evaluate_recency_mlp(
                 race_keys[calibration_start:training_count],
                 dataset.ranks[calibration_start:training_count],
             )
+        )
+        report_progress(
+            "conditional_order_fitted",
+            regularization=conditional_order_selection["selected_regularization"],
         )
         holdout_trifecta_probabilities = trifecta_probability_matrix(
             predictions,
@@ -908,6 +943,12 @@ def evaluate_recency_mlp(
             model_name=model_name,
             feature_set=feature_set,
         )
+        report_progress(
+            "bankroll_evaluated",
+            stake_yen=bankroll["stake_yen"],
+            profit_yen=bankroll["profit_yen"],
+            roi=bankroll["roi"],
+        )
         conditional_payout = conditional_payout_summary(
             conn,
             race_keys=race_keys,
@@ -919,6 +960,10 @@ def evaluate_recency_mlp(
             baseline_daily=(incumbent_bankroll or {}).get("daily") or daily,
             protocol=protocol,
             conditional_order_model=conditional_order_model,
+        )
+        report_progress(
+            "conditional_payout_evaluated",
+            promotion_eligible=conditional_payout["promotion_eligible"],
         )
         prediction_gate = prediction_promotion_gate(
             prediction_metrics,
@@ -1168,6 +1213,11 @@ def main(argv: list[str] | None = None) -> int:
             deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
+            progress_callback=lambda row: print(
+                "RECENCY_PROGRESS "
+                + json.dumps(row, ensure_ascii=True, sort_keys=True),
+                flush=True,
+            ),
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0

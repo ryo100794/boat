@@ -761,6 +761,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         path.write_bytes(b"joblib")
 
     monkeypatch.setattr(recency, "dump_joblib_atomic", fake_dump)
+    progress: list[dict[str, object]] = []
 
     result = recency.evaluate_recency_mlp(
         None,
@@ -770,6 +771,7 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         write_feature_cache=False,
         model_output_path=model_output,
         deployment_model_output_path=deployment_output,
+        progress_callback=progress.append,
     )
 
     assert final_score_calls == [(training_count, dataset.race_count)]
@@ -817,6 +819,16 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()
     assert "BOATRACE_EVAL_MAX_RACE_DATE" not in os.environ
+    assert [row["stage"] for row in progress] == [
+        "protocol_validated",
+        "dataset_ready",
+        "recency_selected",
+        "holdout_scored",
+        "conditional_order_fitted",
+        "bankroll_evaluated",
+        "conditional_payout_evaluated",
+    ]
+    assert all(float(row["elapsed_seconds"]) >= 0.0 for row in progress)
 
 
 def test_bankroll_summary_completes_and_validates_fixed_standard_policy(
