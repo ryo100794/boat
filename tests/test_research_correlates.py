@@ -129,6 +129,29 @@ def test_course_change_and_research_group_ablation() -> None:
     assert not any(key.startswith("research_") for key in dropped[0]["features"])
 
 
+def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    full = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=("series_cached", "series_relative"),
+    )
+    dropped = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=(
+            "legacy_composites", "series_cached", "series_relative"
+        ),
+    )
+    composites = {"ability_score", "ability_lane_score", "best_count"}
+    assert composites <= set(full[0]["features"])
+    assert not composites & set(dropped[0]["features"])
+    assert "national_win_rate" in dropped[0]["features"]
+    assert "local_win_rate" in dropped[0]["features"]
+    assert "motor_2_rate" in dropped[0]["features"]
+    assert "boat_2_rate" in dropped[0]["features"]
+
+
 def test_postgresql_series_cache_check_is_read_only() -> None:
     class FakePostgresql:
         dialect = "postgresql"

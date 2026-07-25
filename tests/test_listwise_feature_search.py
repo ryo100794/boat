@@ -397,5 +397,6 @@ def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None
         '["drop_research_correlates",["research_correlates"]],'
         '["drop_series_cached",["series_cached"]],'
         '["drop_series_relative",["series_relative"]],'
-        '["drop_rolling_history",["rolling_history"]]]}'
+        '["drop_rolling_history",["rolling_history"]],'
+        '["drop_legacy_composites",["legacy_composites"]]]}'
     )

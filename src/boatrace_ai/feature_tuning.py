@@ -40,6 +40,12 @@ FEATURE_GROUPS = (
     "series_cached",
     "series_relative",
     "rolling_history",
+    "legacy_composites",
+)
+LEGACY_COMPOSITE_FEATURES = (
+    "ability_score",
+    "ability_lane_score",
+    "best_count",
 )
 HASH_FEATURES = 1 << 20
 RACE_DATE_CHUNK_SIZE = 31
@@ -646,6 +652,9 @@ def build_race_features(
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))
+        if "legacy_composites" in dropped:
+            for key in LEGACY_COMPOSITE_FEATURES:
+                item.pop(key, None)
         if "research_correlates" in dropped:
             item = {
                 key: value
