@@ -58,6 +58,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "repository_hygiene": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
@@ -1160,6 +1161,12 @@ def build_command(
             "repository-hygiene", "--app-root", str(app_root),
             "--output", str(output),
         ], output
+    if task_type == "repository_sync":
+        return [
+            str(python), "-m", "boatrace_ai.maintenance_tasks",
+            "repository-sync", "--db", db,
+            "--app-root", str(app_root), "--output", str(output),
+        ], output
     if task_type == "series_feature_cache":
         return [
             str(python), "-m", "boatrace_ai.cache_entry_series_features",
@@ -1208,7 +1215,7 @@ METRIC_KEYS = (
     "cached", "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
     "entry_brier", "trifecta_log_loss", "calibrated_trifecta_log_loss",
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
-    "roi", "profit_yen", "stake_yen",
+    "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
     "promotion_eligible", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds",
 )
@@ -1236,13 +1243,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payout_walk_forward, dict):
         bankroll = payout_walk_forward.get("bankroll")
         if isinstance(bankroll, dict):
-            summary["payout_feature_candidate_roi"] = bankroll.get("roi")
-            summary["payout_feature_candidate_profit_yen"] = bankroll.get(
-                "profit_yen"
-            )
-            summary["payout_feature_candidate_stake_yen"] = bankroll.get(
-                "stake_yen"
-            )
+            for key in (
+                "roi", "profit_yen", "stake_yen", "return_yen",
+                "max_drawdown_yen",
+            ):
+                summary[f"payout_feature_candidate_{key}"] = bankroll.get(key)
             policy = bankroll.get("policy")
             if isinstance(policy, dict):
                 summary["payout_feature_candidate_schema"] = policy.get(
@@ -1325,6 +1330,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "backup_complete"
     if task_type in {
         "repository_hygiene",
+        "repository_sync",
         "series_feature_cache",
         "persist_standard_selected_cache",
     }:
@@ -1678,6 +1684,7 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
         ("gdrive_raw_archive", "raw-data", 600, 10, 1800),
         ("evaluation_aggregate", "all-models", 900, 30, 900),
         ("series_feature_cache", "official-series", 1800, 45, 600),
+        ("repository_sync", "repository", 1800, 25, 300),
         ("repository_hygiene", "repository", 21600, 20, 300),
     )
     epoch = int(now.timestamp())
@@ -1712,6 +1719,7 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
 DEFAULT_WORK_TICKETS = (
     ("OPS-QUEUE-001", "DBジョブ基盤と資源監視", "運用基盤", "評価・集計・バックアップをDBキューから実行する", "4ランナーが資源条件付きで取得し完了履歴をDBへ残す", 100, "in_progress", 70),
     ("OPS-BACKUP-001", "GDriveバックアップのキュー移行", "バックアップ", "生データ転送を定期DBジョブとして管理する", "排他付き転送が完了し元データ削除と結果記録を確認する", 90, "in_progress", 65),
+    ("OPS-REPO-SYNC-001", "Gitリポジトリの定期確認と安全な更新", "運用基盤", "DB定期ジョブでoriginを確認し安全条件を満たす時だけfast-forwardする", "dirty・履歴分岐・評価実行中は更新せず監査結果を残し、cleanかつidle時だけff-onlyで更新する", 92, "in_progress", 20),
     ("MODEL-OPT-001", "モデル再設計と収益ゲート収束", "モデル", "特徴量・教師・構造を同一評価軸で反復検証する", "未使用holdoutでROI・損益・確率指標の昇格基準を満たす", 100, "in_progress", 55),
     ("UI-MODEL-001", "モデル性能ページの評価表現統一", "WebUI", "評価母集団と指標表現を統一する", "全モデルが同じ列定義と評価群で比較できる", 70, "queued", 20),
     ("UI-PRED-001", "タイムラインとGantt的中判定の統一", "WebUI", "主系予測と購入的中を別指標として表示する", "同一レースで各表示の意味と判定が一致する", 80, "queued", 25),
@@ -1831,18 +1839,17 @@ DEFAULT_WORK_TICKETS = (
 def seed_work_tickets(conn: Any) -> int:
     changed = 0
     for key, title, area, description, acceptance, priority, status, progress in DEFAULT_WORK_TICKETS:
-        row = conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO work_tickets(
               ticket_key, title, area, description, acceptance_criteria,
               priority, status, progress, source
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'codex')
             ON CONFLICT(ticket_key) DO NOTHING
-            RETURNING ticket_key
             """,
             (key, title, area, description, acceptance, priority, status, progress),
-        ).fetchone()
-        changed += int(row is not None)
+        )
+        changed += max(0, int(cursor.rowcount or 0))
     return changed
 
 

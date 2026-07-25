@@ -43,17 +43,37 @@ def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> Non
     weak = bankroll_promotion_gate(
         candidate,
         baseline,
-        {"roi_ci95_lower": 0.99, "roi_delta_ci95_lower": 0.01},
+        {
+            "roi_ci95_lower": 0.99,
+            "roi_delta_ci95_lower": 0.01,
+            "probability_roi_above_one": 0.99,
+        },
+    )
+    weak_probability = bankroll_promotion_gate(
+        candidate,
+        baseline,
+        {
+            "roi_ci95_lower": 1.01,
+            "roi_delta_ci95_lower": 0.01,
+            "probability_roi_above_one": 0.94,
+        },
     )
     strong = bankroll_promotion_gate(
         candidate,
         baseline,
-        {"roi_ci95_lower": 1.01, "roi_delta_ci95_lower": 0.01},
+        {
+            "roi_ci95_lower": 1.01,
+            "roi_delta_ci95_lower": 0.01,
+            "probability_roi_above_one": 0.95,
+        },
     )
 
     assert weak["roi_pass"] is True
     assert weak["roi_ci_lower_above_one"] is False
     assert weak["pass"] is False
+    assert weak_probability["probability_roi_above_one_pass"] is False
+    assert weak_probability["pass"] is False
+    assert strong["probability_roi_above_one_pass"] is True
     assert strong["pass"] is True
 
 

@@ -797,6 +797,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
     assert {
         "OPS-EVAL-MEM-001",
         "OPS-GITHUB-SYNC-001",
+        "OPS-REPO-SYNC-001",
         "DOCS-HIERARCHY-001",
         "MODEL-FEATURE-COMBINE-001",
         "MODEL-SERIES-CACHE-001",
@@ -903,6 +904,8 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
                 "roi": 1.08,
                 "profit_yen": 8_000,
                 "stake_yen": 100_000,
+                "return_yen": 108_000,
+                "max_drawdown_yen": 12_000,
                 "policy": {
                     "payout_tail_schema": "conditional_payout_tail_v1",
                     "payout_feature_schema": "conditional_payout_interactions_v2",
@@ -922,11 +925,14 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     assert summary["payout_feature_candidate_roi"] == 1.08
     assert summary["payout_feature_candidate_profit_yen"] == 8_000
     assert summary["payout_feature_candidate_stake_yen"] == 100_000
+    assert summary["payout_feature_candidate_return_yen"] == 108_000
+    assert summary["payout_feature_candidate_max_drawdown_yen"] == 12_000
     assert (
         summary["payout_feature_candidate_schema"]
         == "conditional_payout_tail_v1"
     )
     assert summary["payout_feature_roi_ci95_lower"] == 1.01
+    assert summary["payout_feature_probability_roi_above_one"] == 0.98
     assert summary["payout_feature_gate_pass"] is True
     assert summary["payout_feature_promotion_eligible"] is False
     assert (
@@ -1029,14 +1035,16 @@ def test_periodic_seed_uses_low_backup_priority_and_skips_completed_bucket(
     monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
     now = datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
 
-    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3, 4]
+    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3, 4, 5]
     assert seed_periodic_jobs(conn, now=now) == []
-    assert len(calls) == 4
+    assert len(calls) == 5
     backup = next(row for row in calls if row["task_type"] == "gdrive_raw_archive")
     assert backup["priority"] == 10
     series = next(row for row in calls if row["task_type"] == "series_feature_cache")
     assert series["priority"] == 45
     assert series["parameters"]["from_date"] == "2026-07-09"
+    sync = next(row for row in calls if row["task_type"] == "repository_sync")
+    assert sync["priority"] == 25
 
 
 def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:

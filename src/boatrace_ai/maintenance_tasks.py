@@ -300,6 +300,112 @@ def repository_hygiene(
     return payload
 
 
+def _git_command(app_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(app_root), *args],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _git_value(app_root: Path, *args: str) -> str:
+    completed = _git_command(app_root, *args)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {detail}")
+    return completed.stdout.strip()
+
+
+def repository_sync(
+    app_root: Path,
+    output: Path,
+    *,
+    db: str,
+    remote: str = "origin",
+) -> dict[str, Any]:
+    """Fetch and safely fast-forward a clean, idle deployment checkout."""
+    app_root = app_root.resolve()
+    before_head = _git_value(app_root, "rev-parse", "HEAD")
+    branch = _git_value(
+        app_root, "symbolic-ref", "--quiet", "--short", "HEAD"
+    )
+    dirty_paths = [
+        line
+        for line in _git_value(
+            app_root, "status", "--porcelain=v1"
+        ).splitlines()
+        if line
+    ]
+    with connection(db) as conn:
+        active_row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM model_evaluation_jobs
+            WHERE category = 'evaluation' AND status = 'running'
+            """
+        ).fetchone()
+    active_evaluations = int(active_row["count"] if active_row else 0)
+
+    fetched = _git_command(app_root, "fetch", "--prune", remote)
+    if fetched.returncode != 0:
+        detail = fetched.stderr.strip() or fetched.stdout.strip()
+        raise RuntimeError(f"git fetch failed: {detail}")
+    upstream = _git_value(
+        app_root,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+    )
+    counts = _git_value(
+        app_root,
+        "rev-list",
+        "--left-right",
+        "--count",
+        "HEAD...@{upstream}",
+    ).split()
+    if len(counts) != 2:
+        raise RuntimeError("git rev-list returned an invalid ahead/behind count")
+    ahead, behind = (int(value) for value in counts)
+
+    action = "up_to_date"
+    if dirty_paths:
+        action = "deferred_dirty_worktree"
+    elif active_evaluations:
+        action = "deferred_active_evaluation"
+    elif ahead and behind:
+        action = "deferred_diverged"
+    elif behind:
+        merged = _git_command(
+            app_root, "merge", "--ff-only", "@{upstream}"
+        )
+        if merged.returncode != 0:
+            detail = merged.stderr.strip() or merged.stdout.strip()
+            raise RuntimeError(f"git fast-forward failed: {detail}")
+        action = "fast_forwarded"
+
+    after_head = _git_value(app_root, "rev-parse", "HEAD")
+    payload = {
+        "status": "completed",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "app_root": str(app_root),
+        "remote": remote,
+        "branch": branch,
+        "upstream": upstream,
+        "action": action,
+        "before_head": before_head,
+        "after_head": after_head,
+        "ahead": ahead,
+        "behind": behind,
+        "active_evaluations": active_evaluations,
+        "dirty_paths": dirty_paths,
+    }
+    _json_file(output, payload)
+    return payload
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Allowlisted queued maintenance tasks")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -317,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_TRACKED_FILE_BYTES,
     )
+    sync = sub.add_parser("repository-sync")
+    sync.add_argument("--db", required=True)
+    sync.add_argument("--app-root", type=Path, required=True)
+    sync.add_argument("--output", type=Path, required=True)
+    sync.add_argument("--remote", default="origin")
     return parser
 
 
@@ -331,6 +442,13 @@ def main(argv: list[str] | None = None) -> int:
             args.app_root,
             args.output,
             max_file_bytes=args.max_file_bytes,
+        )
+    elif args.command == "repository-sync":
+        repository_sync(
+            args.app_root,
+            args.output,
+            db=args.db,
+            remote=args.remote,
         )
     return 0
 

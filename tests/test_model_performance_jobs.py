@@ -57,6 +57,10 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert 'id="candidateRows"' in MODEL_REPORT_HTML
     assert "基準1着" in MODEL_REPORT_HTML
     assert "evaluation_jobs" in MODEL_REPORT_HTML
+    assert "新損益" in MODEL_REPORT_HTML
+    assert "新最大DD" in MODEL_REPORT_HTML
+    assert "新ROI下限" in MODEL_REPORT_HTML
+    assert "P(新ROI&gt;1)" in MODEL_REPORT_HTML
 
 
 def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -> None:

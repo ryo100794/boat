@@ -73,11 +73,12 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
         _IdleQueue(), now=datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
     )
 
-    assert inserted == [1, 2, 3, 4]
+    assert inserted == [1, 2, 3, 4, 5]
     assert [row["task_type"] for row in calls] == [
         "gdrive_raw_archive",
         "evaluation_aggregate",
         "series_feature_cache",
+        "repository_sync",
         "repository_hygiene",
     ]
     assert all("schedule_bucket" in row["parameters"] for row in calls)
@@ -85,6 +86,9 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
     assert hygiene["model_key"] == "repository"
     assert hygiene["parameters"]["timeout_seconds"] == 300
     assert hygiene["priority"] == 20
+    sync = next(row for row in calls if row["task_type"] == "repository_sync")
+    assert sync["parameters"]["timeout_seconds"] == 300
+    assert sync["priority"] == 25
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
@@ -132,9 +136,32 @@ def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
         "--output",
         str(root / "data/models/evaluation_queue/job-00000014.json"),
     ]
+    sync, sync_output = build_command(
+        {
+            "job_id": 15,
+            "task_type": "repository_sync",
+            "parameters": {},
+        },
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
     assert aggregate_output.name == "job-00000012.json"
     assert backup_output.name == "job-00000013.json"
     assert hygiene_output.name == "job-00000014.json"
+    assert sync == [
+        str(root / ".venv/bin/python"),
+        "-m",
+        "boatrace_ai.maintenance_tasks",
+        "repository-sync",
+        "--db",
+        "postgresql://test",
+        "--app-root",
+        str(root),
+        "--output",
+        str(root / "data/models/evaluation_queue/job-00000015.json"),
+    ]
+    assert sync_output.name == "job-00000015.json"
 
 
 def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
