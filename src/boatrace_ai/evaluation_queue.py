@@ -1948,18 +1948,22 @@ DEFAULT_WORK_TICKETS = (
 def seed_work_tickets(conn: Any) -> int:
     changed = 0
     for key, title, area, description, acceptance, priority, status, progress in DEFAULT_WORK_TICKETS:
-        cursor = conn.execute(
+        if conn.execute(
+            "SELECT 1 FROM work_tickets WHERE ticket_key = ?",
+            (key,),
+        ).fetchone() is not None:
+            continue
+        conn.execute(
             """
             INSERT INTO work_tickets(
               ticket_key, title, area, description, acceptance_criteria,
               priority, status, progress, source
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'codex')
             ON CONFLICT(ticket_key) DO NOTHING
-            RETURNING ticket_key
             """,
             (key, title, area, description, acceptance, priority, status, progress),
         )
-        changed += int(cursor.fetchone() is not None)
+        changed += 1
     return changed
 
 
