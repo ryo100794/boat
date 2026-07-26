@@ -824,6 +824,8 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                             model_performance_report(db_path, query)
                         ),
                     )
+                elif parsed.path == "/api/reports/genetic-evolution":
+                    send_json(self, genetic_evolution_report(db_path))
                 elif parsed.path == "/reports/roadmap":
                     send_html(self, ROADMAP_REPORT_HTML)
                 elif parsed.path == "/api/reports/roadmap-status":
@@ -1273,6 +1275,17 @@ def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:
     public = dict(report)
     public.pop("bankroll_daily", None)
     return public
+
+
+def genetic_evolution_report(db_path: Path) -> dict[str, Any]:
+    status = _database_evaluation_status(db_path)
+    jobs = [
+        row
+        for row in status["jobs"]
+        if row.get("kind") == "genetic_island_search"
+        or str(row.get("name") or "").startswith("genetic-champion-")
+    ]
+    return {"generated_at": status["generated_at"], "jobs": jobs}
 
 
 def _model_performance_report_contract(

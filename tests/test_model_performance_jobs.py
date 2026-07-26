@@ -6,6 +6,7 @@ from boatrace_ai.web.dashboard import (
     _database_evaluation_artifacts,
     _database_evaluation_status,
     _remote_evaluation_job_summaries,
+    genetic_evolution_report,
 )
 
 
@@ -70,6 +71,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "drawGeneticEvolutionChart" in MODEL_REPORT_HTML
     assert "世代別fitness・アイランド内分散" in MODEL_REPORT_HTML
     assert "row.genetic_fitness==null?NaN" in MODEL_REPORT_HTML
+    assert "/api/reports/genetic-evolution" in MODEL_REPORT_HTML
+    assert "setInterval(refreshGeneticEvolution,10000)" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
 
 

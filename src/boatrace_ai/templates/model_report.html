@@ -69,7 +69,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let selectedModelKey="", currentReport=null;
+let selectedModelKey="", currentReport=null, gaRefreshing=false;
 const esc = v => String(v ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const fmt = v => v == null ? "-" : Number(v).toLocaleString("ja-JP");
 const pct = v => v == null ? "-" : `${(Number(v)*100).toFixed(2)}%`;
@@ -78,6 +78,7 @@ const ratio = v => v == null ? "-" : Number(v).toFixed(3);
 const corr = v => v == null ? "-" : Number(v).toFixed(4);
 function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").replace(/^bankroll_backtest_/,"").replace(/_10000$/,"").replace(/pastlog_/,"pl_").replace(/\.json$/,""); }
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
+async function refreshGeneticEvolution(){ if(gaRefreshing||document.hidden) return; gaRefreshing=true; try{ const res=await fetch("/api/reports/genetic-evolution",{cache:"no-store"}); if(res.ok){ const data=await res.json(); renderGeneticEvolution(data.jobs||[]); } } finally { gaRefreshing=false; } }
 function render(data){
   const bank=data.bankroll||[], tests=data.backtests||[], folds=data.fold_metrics||[], features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
   const v2Ready=Boolean(data.standardized_evaluation&&data.standardized_evaluation.ready);
@@ -336,6 +337,7 @@ document.addEventListener("keydown",event=>{
   activateModel(row.dataset.modelKey);
 });
 loadReport();
+setInterval(refreshGeneticEvolution,10000);
 </script>
 </body>
 </html>
