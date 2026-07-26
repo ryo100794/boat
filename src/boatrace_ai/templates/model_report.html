@@ -18,6 +18,9 @@
     .table-scroll { overflow-x:auto; } .model-track-groups { display:grid; gap:7px; } .model-table { table-layout:auto; min-width:1780px; } .model-table .name-cell { min-width:145px; max-width:220px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .model-table .model-file { min-width:190px; } .model-table .detail-cell { min-width:220px; max-width:300px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .wide-name-table { table-layout:auto; min-width:850px; } .wide-name-table .name-cell { min-width:190px; max-width:320px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .comparison-table { min-width:1280px; } .comparison-table .name-cell { min-width:210px; max-width:310px; } .axis-cell { min-width:150px; white-space:normal; text-align:left; }
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
     .model-select-row { cursor:pointer; } .model-select-row:hover td { background:#eef6f6; } .model-select-row[aria-selected="true"] td { background:#d8eeee; box-shadow:inset 0 1px 0 var(--accent),inset 0 -1px 0 var(--accent); } .model-select-row:focus { outline:2px solid var(--accent); outline-offset:-2px; }
+    .ga-panel { margin-top:5px; border-top-color:#a76300; } .ga-summary { display:grid; grid-template-columns:repeat(7,minmax(74px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
+    .ga-summary div { min-width:0; padding:2px 4px; background:#fff; } .ga-summary b { display:block; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ga-summary span { color:var(--muted); font-size:8px; }
+    .ga-table { table-layout:auto; min-width:980px; } .ga-table th:first-child,.ga-table td:first-child { width:38px; text-align:right; }
     @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-heading .scope-note{max-width:none;text-align:left;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;} }
   </style>
 </head>
@@ -26,6 +29,7 @@
 <main>
   <div id="kpis" class="kpis"></div>
   <div id="standardProtocol" class="panel"></div>
+  <div id="geneticEvolution" class="panel ga-panel"></div>
   <section id="allModelsGroup" class="report-group">
     <div class="group-heading"><h2>統一365日 共通評価</h2><span class="scope-note">同一holdout・同一対象R・同一日額10,000円ポリシーだけを横比較</span></div>
     <div class="panel"><h2><span>モデル別 統合性能</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table comparison-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>購入R</th><th>点数</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th><th>収益状態</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
@@ -87,13 +91,27 @@ function render(data){
   const evaluationR=baseline&&baseline.prediction?baseline.prediction.evaluated_races:null;
   const kpis=[["統一評価モデル",comparisonRows.length,""],["統一評価R",fmt(evaluationR),""],["基準1着",baseline?pct(baseline.prediction&&baseline.prediction.winner_top1_accuracy):"-",""],["基準3T5",baseline?pct(baseline.prediction&&baseline.prediction.trifecta_top5_hit_rate):"-",""],["最高ROI",bestRoi?`${ratio(bestRoi.bankroll.roi)} ${shortName(bestRoi.name)}`:"-",bestRoi?(Number(bestRoi.bankroll.roi)>=1?"good":"bad"):""],["評価実行中",running,running?"":""]];
   $("kpis").innerHTML=kpis.map(([label,value,cls])=>`<div class="kpi ${cls}"><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("");
-  currentReport=data; renderStandardProtocol(data.standardized_evaluation||{}); renderModelTracks(tracks); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
+  currentReport=data; renderStandardProtocol(data.standardized_evaluation||{}); renderGeneticEvolution(jobs); renderModelTracks(tracks); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
   drawGroupedBars($("hitChart"),comparisonRows.filter(x=>x.prediction).map(x=>({label:shortName(x.name),a:x.prediction.winner_top1_accuracy,b:x.prediction.trifecta_top5_hit_rate})),{a:"1着",b:"3T5",percent:true});
   drawLines($("lossChart"),groupFoldSeries(comparisonFolds,"entry_log_loss"),{baseline:null});
   drawBars($("roiChart"),comparisonRows.filter(x=>x.bankroll).map(x=>({label:shortName(x.name),value:x.bankroll.roi})),{baseline:1});
   $("summaryRows").innerHTML=comparisonRows.map(comparisonRow).join("")||'<tr><td colspan="14" class="muted">統一365日評価を実行中</td></tr>';
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>';
   configureModelSelection(data,comparisonRows); renderSelectedModel(data);
+}
+function renderGeneticEvolution(jobs){
+  const islands=(jobs||[]).filter(row=>row.kind==="genetic_island_search"&&row.cohort);
+  const validations=(jobs||[]).filter(row=>String(row.name||"").startsWith("genetic-champion-"));
+  if(!islands.length){ $("geneticEvolution").innerHTML='<h2><span>GAアイランド ライブ進化</span><span class="tag">未開始</span></h2><div class="muted">互換する日次特徴キャッシュの確定後に自動投入</div>'; return; }
+  const cohorts=[...new Set(islands.map(row=>String(row.cohort)))].sort();
+  const cohort=cohorts[cohorts.length-1], cohortRows=islands.filter(row=>String(row.cohort)===cohort);
+  const generation=Math.max(...cohortRows.map(row=>Number(row.generation||0))), current=cohortRows.filter(row=>Number(row.generation||0)===generation).sort((a,b)=>Number(a.island_id)-Number(b.island_id));
+  const running=current.filter(row=>row.running).length, completed=current.filter(row=>row.status==="完了").length, queued=current.filter(row=>row.status==="待機中").length, failed=current.filter(row=>row.status==="失敗").length;
+  const evaluated=cohortRows.reduce((sum,row)=>sum+Number(row.genetic_evaluated_individuals||0),0), fitness=current.map(row=>Number(row.genetic_fitness)).filter(Number.isFinite), best=fitness.length?Math.max(...fitness):null;
+  const state=failed?{label:"要確認",cls:"failed"}:running||queued?{label:"進化中",cls:"running"}:{label:"世代回収中",cls:"done"};
+  const summary=[["コホート",cohort],["世代",`G${generation}`],["島",`${completed}完 / ${running}実 / ${queued}待`],["評価個体",fmt(evaluated)],["最高fitness",best==null?"-":best.toFixed(6)],["重評価",`${validations.filter(row=>row.running).length}実 / ${validations.filter(row=>row.status==="完了").length}完`],["正式昇格","365日ゲート後"]];
+  const rows=current.map(row=>`<tr><td>${fmt(row.island_id)}</td><td title="${esc(row.name)}">${esc(shortName(row.name))}</td><td><span class="tag ${row.running?"running":row.status==="完了"?"done":row.status==="失敗"?"failed":""}">${esc(row.status)}</span></td><td>${fmt(row.immigrant_count)}</td><td>${fmt(row.population_size)}×${fmt(row.local_generations)}</td><td>${row.genetic_fitness==null?"-":Number(row.genetic_fitness).toFixed(6)}</td><td>${ratio(row.entry_log_loss)}</td><td>${pct(row.winner_top1_accuracy)}</td><td>${pct(row.trifecta_top5_hit_rate)}</td><td>${fmt(row.evaluated_races)}</td><td>${esc(row.elapsed||"-")}</td></tr>`).join("");
+  $("geneticEvolution").innerHTML=`<h2><span>GAアイランド ライブ進化</span><span class="tag ${state.cls}">${state.label}</span></h2><div class="ga-summary">${summary.map(([label,value])=>`<div><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("")}</div><div class="table-scroll"><table class="ga-table"><thead><tr><th>島</th><th>生成日時付きモデル</th><th>状態</th><th>移住</th><th>個体×局所世代</th><th>投機fitness</th><th>Entry LL</th><th>1着</th><th>3T5</th><th>検証R</th><th>経過</th></tr></thead><tbody>${rows}</tbody></table></div><div class="muted">投機fitnessは候補削減専用。本番反映は統一365日ROI・損益・LogLoss・1着・3T5・DD監査を通過した成果物のみ。</div>`;
 }
 function renderStandardProtocol(row){
   const policy=row.policy||{}, decision=row.promotion_decision||{};

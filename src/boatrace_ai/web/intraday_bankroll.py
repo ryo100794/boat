@@ -56,6 +56,8 @@ def day_bankroll_simulation(
     now: datetime | None = None,
     starting_bankroll_yen: int = STARTING_BANKROLL_YEN,
     _feature_cache: dict[str, list[dict[str, Any]]] | None = None,
+    _odds_cache: dict[str, tuple[dict[str, Any] | None, int]] | None = None,
+    _historical_odds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     now_jst = (now or datetime.now(timezone.utc)).astimezone(JST)
     models = _available_models(model_dir)
@@ -94,7 +96,11 @@ def day_bankroll_simulation(
     selected_model = next(row for row in models if row["id"] == selected)
     results = _results_by_race(conn, race_date)
     payouts = _payouts_by_race(conn, race_date)
-    historical_odds = _historical_payout_odds(conn, race_date)
+    historical_odds = (
+        _historical_payout_odds(conn, race_date)
+        if _historical_odds is None
+        else _historical_odds
+    )
     bankroll = starting_bankroll_yen
     peak = bankroll
     max_drawdown = 0
@@ -121,11 +127,17 @@ def day_bankroll_simulation(
             continue
         evaluated_races += 1
         decision_at = start_at - timedelta(minutes=DECISION_MINUTES_BEFORE_START)
-        snapshot, rejected = _latest_valid_odds_snapshot(
-            conn,
-            race_id=str(race["race_id"]),
-            cutoff=decision_at,
-        )
+        race_id = str(race["race_id"])
+        cached_odds = _odds_cache.get(race_id) if _odds_cache is not None else None
+        if cached_odds is None:
+            cached_odds = _latest_valid_odds_snapshot(
+                conn,
+                race_id=race_id,
+                cutoff=decision_at,
+            )
+            if _odds_cache is not None:
+                _odds_cache[race_id] = cached_odds
+        snapshot, rejected = cached_odds
         rejected_snapshots += rejected
         if _feature_cache is None:
             predictions = _score_model(
@@ -134,7 +146,6 @@ def day_bankroll_simulation(
                 model_path=Path(selected_model["path"]),
             )
         else:
-            race_id = str(race["race_id"])
             features = _feature_cache.get(race_id)
             if features is None:
                 features = prediction_features(conn, race_id=race_id, include_odds=False)
@@ -334,6 +345,8 @@ def top_model_day_simulations(
     ranked = ranked_deployable_models(model_dir, limit=limit)
     simulations = []
     feature_cache: dict[str, list[dict[str, Any]]] = {}
+    odds_cache: dict[str, tuple[dict[str, Any] | None, int]] = {}
+    historical_odds = _historical_payout_odds(conn, race_date)
     for rank, model in enumerate(ranked, start=1):
         result = day_bankroll_simulation(
             conn,
@@ -342,6 +355,8 @@ def top_model_day_simulations(
             model_dir=model_dir,
             now=now,
             _feature_cache=feature_cache,
+            _odds_cache=odds_cache,
+            _historical_odds=historical_odds,
         )
         simulations.append({
             "rank": rank,

@@ -1014,6 +1014,35 @@ def test_standardized_manifest_summary_reports_selected_and_best_candidate() -> 
     }
 
 
+def test_genetic_island_summary_exposes_live_champion_metrics() -> None:
+    summary = summarize_result({
+        "model": "genetic_listwise_island_v1-20260726T010000Z-g00-i00",
+        "cohort": "20260726T010000Z",
+        "generation": 0,
+        "island_id": 0,
+        "population_size": 8,
+        "history": [{"local_generation": 0}, {"local_generation": 1}],
+        "champion": {
+            "fitness": -1.23,
+            "metrics": {
+                "entry_log_loss": 0.34,
+                "winner_top1_accuracy": 0.56,
+                "trifecta_top5_hit_rate": 0.31,
+                "evaluated_races": 3000,
+            },
+        },
+    })
+
+    assert summary["genetic_fitness"] == -1.23
+    assert summary["genetic_cohort"] == "20260726T010000Z"
+    assert summary["genetic_generation"] == 0
+    assert summary["genetic_island_id"] == 0
+    assert summary["genetic_evaluated_individuals"] == 16
+    assert summary["entry_log_loss"] == 0.34
+    assert summary["winner_top1_accuracy"] == 0.56
+    assert summary["trifecta_top5_hit_rate"] == 0.31
+
+
 def test_repository_sync_summary_preserves_deferred_reason() -> None:
     summary = summarize_result({
         "status": "completed",

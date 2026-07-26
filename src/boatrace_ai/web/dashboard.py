@@ -2365,7 +2365,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         with connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT j.job_id, j.task_type, j.model_key, j.status,
+                SELECT j.job_id, j.task_type, j.model_key, j.status, j.parameters,
                        j.attempt, j.max_attempts, j.started_at, j.completed_at,
                        j.decision, j.result_summary, j.result_path, j.error,
                        c.metrics AS candidate_metrics,
@@ -2393,6 +2393,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
     for source in rows:
         row = {key: source[key] for key in source.keys()}
         metrics = _json_mapping(row.get("result_summary"))
+        parameters = _json_mapping(row.get("parameters"))
         status = str(row.get("status") or "")
         jobs.append(
             {
@@ -2402,6 +2403,25 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "kind": row.get("task_type"),
                 "status": status_labels.get(status, status or "-"),
                 "decision": row.get("decision"),
+                "parameters": parameters,
+                "cohort": parameters.get("cohort") or metrics.get("genetic_cohort"),
+                "generation": parameters.get("generation"),
+                "island_id": parameters.get("island_id"),
+                "island_count": parameters.get("island_count"),
+                "population_size": parameters.get("population_size"),
+                "local_generations": parameters.get("local_generations"),
+                "immigrant_count": len(parameters.get("immigrants") or []),
+                "genetic_fitness": _float_or_none(metrics.get("genetic_fitness")),
+                "genetic_evaluated_individuals": (
+                    metrics.get("genetic_evaluated_individuals")
+                    or (
+                        int(parameters.get("population_size") or 0)
+                        * int(parameters.get("local_generations") or 0)
+                        if status == "completed"
+                        and row.get("task_type") == "genetic_island_search"
+                        else 0
+                    )
+                ),
                 "evaluation_days": metrics.get("evaluation_days"),
                 "promotion_eligible": metrics.get("promotion_eligible"),
                 "running": status == "running",

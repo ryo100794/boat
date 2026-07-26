@@ -64,6 +64,9 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "新最大DD" in MODEL_REPORT_HTML
     assert "新ROI下限" in MODEL_REPORT_HTML
     assert "P(新ROI&gt;1)" in MODEL_REPORT_HTML
+    assert 'id="geneticEvolution"' in MODEL_REPORT_HTML
+    assert "renderGeneticEvolution(jobs)" in MODEL_REPORT_HTML
+    assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
 
 
 def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -> None:
@@ -73,7 +76,8 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         """
         CREATE TABLE model_evaluation_jobs (
           job_id INTEGER PRIMARY KEY, task_type TEXT, category TEXT,
-          model_key TEXT, status TEXT, attempt INTEGER, max_attempts INTEGER,
+          model_key TEXT, status TEXT, parameters TEXT,
+          attempt INTEGER, max_attempts INTEGER,
           started_at TEXT, completed_at TEXT, decision TEXT,
           result_summary TEXT, result_path TEXT, error TEXT
         );
@@ -104,10 +108,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "payout_feature_probability_roi_delta_above_zero": 0.99,
     }
     conn.execute(
-        "INSERT INTO model_evaluation_jobs VALUES (273, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO model_evaluation_jobs VALUES (273, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             "venue_conditional_order", "evaluation", "venue-v1", "completed",
-            2, 2, "2026-07-23T00:00:00+00:00", "2026-07-23T01:00:00+00:00",
+            "{}", 2, 2, "2026-07-23T00:00:00+00:00", "2026-07-23T01:00:00+00:00",
             "confirm_on_new_holdout", json.dumps(metrics), "result.json", None,
         ),
     )

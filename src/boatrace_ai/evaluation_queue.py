@@ -1559,6 +1559,23 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if payload.get("model") and str(payload.get("model")).startswith(
+        "genetic_listwise_island_v1-"
+    ):
+        champion = payload.get("champion")
+        if isinstance(champion, dict):
+            champion_metrics = champion.get("metrics")
+            if isinstance(champion_metrics, dict):
+                visit(champion_metrics, 1)
+            if champion.get("fitness") is not None:
+                summary["genetic_fitness"] = champion["fitness"]
+        summary["genetic_cohort"] = payload.get("cohort")
+        summary["genetic_generation"] = payload.get("generation")
+        summary["genetic_island_id"] = payload.get("island_id")
+        summary["genetic_evaluated_individuals"] = (
+            int(len(payload.get("history") or []))
+            * int((payload.get("population_size") or 0))
+        )
     if payload.get("protocol_id") == "standard_365d_v2":
         models = payload.get("models")
         promotion = payload.get("promotion_decision")
