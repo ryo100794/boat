@@ -40,6 +40,7 @@ from .flat_policy import (
     summarize_flat_candidates,
 )
 from .market_edge_diagnostics import edge_records, summarize_edge_records
+from .odds_path_operational import attach_odds_path_model, fit_odds_path_model
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .closing_odds import decision_odds
 from .closing_odds_momentum import (
@@ -66,7 +67,7 @@ MODEL_NAME = "listwise_newton_market_calibrated_v1"
 MARKET_EVALUATION_VERSION = 19
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-24"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
-SCORED_CACHE_VERSION = 10
+SCORED_CACHE_VERSION = 11
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -337,7 +338,12 @@ def simulate_policy(
             for combination, probability in calibrated.items():
                 odds = float(decision_odds(race)[combination])
                 market_probability = float(race["market_probabilities"][combination])
-                estimated_ev = probability * odds
+                return_multiplier = float(
+                    (race.get("historical_return_multipliers") or {}).get(
+                        combination, 1.0
+                    )
+                )
+                estimated_ev = probability * odds * return_multiplier
                 if estimated_ev < float(policy["ev_threshold"]):
                     continue
                 if policy.get("max_odds") is not None and odds > float(policy["max_odds"]):
@@ -357,6 +363,7 @@ def simulate_policy(
                         "model_probability": float(race["model_probabilities"][combination]),
                         "estimated_odds": odds,
                         "estimated_ev": estimated_ev,
+                        "historical_return_multiplier": return_multiplier,
                         "estimated_payout_yen": odds * STAKE_YEN,
                         "payout_history_count": 0,
                         "odds_source": (
@@ -805,7 +812,11 @@ def waiting_walk_forward_result(
         "no_lookahead_pass": True,
     }
     return {
-        "model": MODEL_NAME,
+        "model": (
+            "odds_path_operational_v1"
+            if calibrator_strategy == "odds_path_return"
+            else MODEL_NAME
+        ),
         "status": "waiting_for_clean_evaluation_day",
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
@@ -880,7 +891,22 @@ def fit_deployment_configuration(
     dates = sorted({str(race["race_date"]) for race in races})
     calibrator_selection: dict[str, Any] | None = None
     calibrator_candidates = 0
-    if calibrator_strategy == "newton_residual":
+    operational_model = None
+    if calibrator_strategy == "odds_path_return":
+        operational_model = fit_odds_path_model(races)
+        races = attach_odds_path_model(races, operational_model)
+        from .market_residual import (
+            fit_fixed_regularization,
+            select_regularization_prequential,
+        )
+
+        calibrator_selection = (
+            select_regularization_prequential(races)
+            if len({str(race["race_date"]) for race in races}) >= 2
+            else fit_fixed_regularization(races)
+        )
+        calibrator = dict(calibrator_selection["final_calibrator"])
+    elif calibrator_strategy == "newton_residual":
         from .market_residual import (
             fit_fixed_regularization,
             select_regularization_prequential,
@@ -922,6 +948,7 @@ def fit_deployment_configuration(
         "trained_through_date": dates[-1],
         "training_races": len(races),
         "calibrator": calibrator,
+        "operational_model": operational_model,
         "calibrator_selection": calibrator_selection,
         "calibrator_candidates": calibrator_candidates,
         "closing_odds_selection": closing_odds_selection,
@@ -975,7 +1002,26 @@ def walk_forward_evaluate(
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
         holdout = by_day[evaluation_date]
         calibrator_selection = None
-        if calibrator_strategy == "newton_residual":
+        operational_model = None
+        if calibrator_strategy == "odds_path_return":
+            operational_model = fit_odds_path_model(calibration_races)
+            calibration_races = attach_odds_path_model(
+                calibration_races, operational_model
+            )
+            holdout = attach_odds_path_model(holdout, operational_model)
+            from .market_residual import (
+                fit_fixed_regularization,
+                select_regularization_prequential,
+            )
+
+            calibrator_selection = (
+                select_regularization_prequential(calibration_races)
+                if len(calibration_dates) >= 2
+                else fit_fixed_regularization(calibration_races)
+            )
+            calibrator = dict(calibrator_selection["final_calibrator"])
+            calibrator_grid = []
+        elif calibrator_strategy == "newton_residual":
             from .market_residual import (
                 fit_fixed_regularization,
                 select_regularization_prequential,
@@ -1068,6 +1114,7 @@ def walk_forward_evaluate(
                 "calibrator": calibrator,
                 "calibrator_strategy": calibrator_strategy,
                 "calibrator_selection": calibrator_selection,
+                "operational_model": operational_model,
                 "closing_odds_model": closing_odds_model,
                 "closing_odds_selection": closing_odds_selection,
                 "closing_odds_evaluation": closing_odds_evaluation,
@@ -1143,7 +1190,11 @@ def walk_forward_evaluate(
         calibrator_strategy=calibrator_strategy,
     )
     return {
-        "model": MODEL_NAME,
+        "model": (
+            "odds_path_operational_v1"
+            if calibrator_strategy == "odds_path_return"
+            else MODEL_NAME
+        ),
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
         "calibrator_strategy": calibrator_strategy,
         "validation_design": (
@@ -1370,6 +1421,12 @@ def score_real_odds_races(
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "captured_at": snapshot.get("captured_at"),
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
+                **odds_path_fields(
+                    conn,
+                    race_id,
+                    current_snapshot=snapshot,
+                    max_snapshot_age_seconds=max_snapshot_age_seconds,
+                ),
                 **(momentum_fields or {}),
             }
         )
@@ -1389,6 +1446,12 @@ def score_real_odds_races(
             "mismatch", 0
         ),
         "skipped_no_payout": skipped_no_payout,
+        "odds_path_two_point_races": sum(
+            int(int(race.get("odds_path_points") or 0) >= 2) for race in races
+        ),
+        "odds_path_four_point_races": sum(
+            int(int(race.get("odds_path_points") or 0) >= 4) for race in races
+        ),
     }
 
 
@@ -1439,6 +1502,59 @@ def earlier_market_fields(
         "momentum_interval_seconds": gap_seconds,
         "momentum_scale": 300.0 / gap_seconds,
     }, "ok"
+
+
+def odds_path_fields(
+    conn,
+    race_id: str,
+    *,
+    current_snapshot: dict[str, Any],
+    max_snapshot_age_seconds: float,
+) -> dict[str, Any]:
+    points = []
+    seen = set()
+    for lead in (30, 20, 10, 7):
+        snapshot = latest_trifecta_odds_before_deadline(
+            conn,
+            race_id,
+            min_combinations=120,
+            decision_lead_minutes=lead,
+        )
+        if snapshot is None or snapshot.get("snapshot_id") in seen:
+            continue
+        age = snapshot_age_seconds(snapshot)
+        if age is None or age < 0.0 or age > max_snapshot_age_seconds:
+            continue
+        odds = {
+            key: float(value)
+            for key, value in (snapshot.get("odds") or {}).items()
+        }
+        if len(odds) != 120:
+            continue
+        seen.add(snapshot.get("snapshot_id"))
+        points.append(
+            {
+                "minutes_before_decision": float(
+                    lead - MODEL_DECISION_LEAD_MINUTES
+                ),
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "captured_at": snapshot.get("captured_at"),
+                "market_probabilities": normalized_market_probabilities(odds),
+            }
+        )
+    current_odds = {
+        key: float(value)
+        for key, value in (current_snapshot.get("odds") or {}).items()
+    }
+    points.append(
+        {
+            "minutes_before_decision": 0.0,
+            "snapshot_id": current_snapshot.get("snapshot_id"),
+            "captured_at": current_snapshot.get("captured_at"),
+            "market_probabilities": normalized_market_probabilities(current_odds),
+        }
+    )
+    return {"odds_path": points, "odds_path_points": len(points)}
 
 
 def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:
@@ -1776,7 +1892,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-calibration-days", type=int, default=2)
     parser.add_argument(
         "--calibrator-strategy",
-        choices=("grid", "newton_residual"),
+        choices=("grid", "newton_residual", "odds_path_return"),
         default="grid",
     )
     parser.add_argument("--scored-cache")

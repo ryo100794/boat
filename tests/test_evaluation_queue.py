@@ -2108,6 +2108,24 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[command.index("--through-date") + 1] == "2026-07-24"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
+    odds_path_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": "odds_path_return",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert odds_path_command[
+        odds_path_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_return"
+
     with pytest.raises(ValueError, match="inside data/models"):
         build_command(
             _job(

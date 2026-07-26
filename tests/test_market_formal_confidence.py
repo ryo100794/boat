@@ -108,4 +108,4 @@ def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> N
 
     assert MARKET_EVALUATION_VERSION == 19
     assert MARKET_MAX_SNAPSHOT_AGE_SECONDS == 65.0
-    assert contract["version"] == SCORED_CACHE_VERSION == 10
+    assert contract["version"] == SCORED_CACHE_VERSION == 11
