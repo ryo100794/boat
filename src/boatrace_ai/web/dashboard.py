@@ -2410,6 +2410,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "island_count": parameters.get("island_count"),
                 "population_size": parameters.get("population_size"),
                 "local_generations": parameters.get("local_generations"),
+                "max_generations": parameters.get("max_generations"),
                 "immigrant_count": len(parameters.get("immigrants") or []),
                 "genetic_fitness": _float_or_none(metrics.get("genetic_fitness")),
                 "genetic_evaluated_individuals": (
@@ -2421,6 +2422,11 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                         and row.get("task_type") == "genetic_island_search"
                         else 0
                     )
+                ),
+                "genetic_history": (
+                    metrics.get("genetic_history")
+                    if isinstance(metrics.get("genetic_history"), list)
+                    else []
                 ),
                 "evaluation_days": metrics.get("evaluation_days"),
                 "promotion_eligible": metrics.get("promotion_eligible"),

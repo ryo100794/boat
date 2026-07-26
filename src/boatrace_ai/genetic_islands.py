@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import random
+import statistics
 from typing import Any, Callable
 
 from .db import connection
@@ -112,6 +113,30 @@ def speculative_fitness(metrics: dict[str, Any], genome: Genome) -> float:
     return -ranking - 0.35 * entry + 0.35 * winner + 0.20 * top5 - complexity
 
 
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    position = (len(sorted_values) - 1) * fraction
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return sorted_values[lower]
+    weight = position - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _fitness_distribution(ranked: list[dict[str, Any]]) -> dict[str, float]:
+    values = sorted(float(row["fitness"]) for row in ranked)
+    return {
+        "min_fitness": values[0],
+        "q1_fitness": _percentile(values, 0.25),
+        "median_fitness": _percentile(values, 0.5),
+        "q3_fitness": _percentile(values, 0.75),
+        "max_fitness": values[-1],
+        "std_fitness": statistics.pstdev(values),
+    }
+
+
 def evolve_island(
     *,
     rng: random.Random,
@@ -151,8 +176,8 @@ def evolve_island(
         history.append({
             "local_generation": local_generation,
             "best_fitness": ranked[0]["fitness"],
-            "median_fitness": ranked[len(ranked) // 2]["fitness"],
             "best_genome": ranked[0]["genome"],
+            **_fitness_distribution(ranked),
         })
         elites = [genome_from_dict(row["genome"]) for row in ranked[:elite_count]]
         population = list(elites)

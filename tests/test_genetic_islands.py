@@ -65,3 +65,8 @@ def test_island_evolution_is_reproducible_and_preserves_immigrant() -> None:
     assert len(elites) == 2
     assert len(history) == 2
     assert elites[0]["fitness"] >= elites[1]["fitness"]
+    assert history[0]["min_fitness"] <= history[0]["q1_fitness"]
+    assert history[0]["q1_fitness"] <= history[0]["median_fitness"]
+    assert history[0]["median_fitness"] <= history[0]["q3_fitness"]
+    assert history[0]["q3_fitness"] <= history[0]["max_fitness"]
+    assert history[0]["std_fitness"] >= 0

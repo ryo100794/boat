@@ -65,7 +65,10 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "新ROI下限" in MODEL_REPORT_HTML
     assert "P(新ROI&gt;1)" in MODEL_REPORT_HTML
     assert 'id="geneticEvolution"' in MODEL_REPORT_HTML
+    assert 'id="gaEvolutionChart"' in MODEL_REPORT_HTML
     assert "renderGeneticEvolution(jobs)" in MODEL_REPORT_HTML
+    assert "drawGeneticEvolutionChart" in MODEL_REPORT_HTML
+    assert "世代別fitness・アイランド内分散" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
 
 

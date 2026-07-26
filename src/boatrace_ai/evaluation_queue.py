@@ -1576,6 +1576,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             int(len(payload.get("history") or []))
             * int((payload.get("population_size") or 0))
         )
+        summary["genetic_history"] = [
+            {
+                key: row.get(key)
+                for key in (
+                    "local_generation", "best_fitness", "min_fitness",
+                    "q1_fitness", "median_fitness", "q3_fitness",
+                    "max_fitness", "std_fitness",
+                )
+                if row.get(key) is not None
+            }
+            for row in (payload.get("history") or [])
+            if isinstance(row, dict)
+        ]
     if payload.get("protocol_id") == "standard_365d_v2":
         models = payload.get("models")
         promotion = payload.get("promotion_decision")
@@ -2122,7 +2135,9 @@ def advance_genetic_islands(
     )
     for rank, champion in enumerate(champions[:island_count], start=1):
         genome = dict(champion["genome"])
-        model_key = f"genetic-champion-{cohort}-r{rank:02d}"
+        model_key = (
+            f"genetic-champion-{cohort}-g{generation:02d}-r{rank:02d}"
+        )
         validation_id = enqueue_job(
             conn,
             task_type="listwise_feature_search",
@@ -2508,6 +2523,7 @@ def seed_daily_genetic_jobs(
     evaluation_date: str,
     now: datetime | None = None,
     island_count: int = 4,
+    max_generations: int = 12,
 ) -> list[int]:
     existing = conn.execute(
         """
@@ -2535,7 +2551,7 @@ def seed_daily_genetic_jobs(
                 "generation": 0,
                 "island_id": island_id,
                 "island_count": island_count,
-                "max_generations": 3,
+                "max_generations": max_generations,
                 "seed": base_seed + island_id,
                 "population_size": 8,
                 "local_generations": 3,

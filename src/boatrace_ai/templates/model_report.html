@@ -21,6 +21,7 @@
     .ga-panel { margin-top:5px; border-top-color:#a76300; } .ga-summary { display:grid; grid-template-columns:repeat(7,minmax(74px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .ga-summary div { min-width:0; padding:2px 4px; background:#fff; } .ga-summary b { display:block; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ga-summary span { color:var(--muted); font-size:8px; }
     .ga-table { table-layout:auto; min-width:980px; } .ga-table th:first-child,.ga-table td:first-child { width:38px; text-align:right; }
+    .ga-chart-wrap { margin-top:4px; } .ga-chart-wrap h3 { display:flex; justify-content:space-between; gap:8px; margin:0 0 2px; font-size:10px; } .ga-chart { height:230px; }
     @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-heading .scope-note{max-width:none;text-align:left;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;} }
   </style>
 </head>
@@ -105,13 +106,45 @@ function renderGeneticEvolution(jobs){
   if(!islands.length){ $("geneticEvolution").innerHTML='<h2><span>GAアイランド ライブ進化</span><span class="tag">未開始</span></h2><div class="muted">互換する日次特徴キャッシュの確定後に自動投入</div>'; return; }
   const cohorts=[...new Set(islands.map(row=>String(row.cohort)))].sort();
   const cohort=cohorts[cohorts.length-1], cohortRows=islands.filter(row=>String(row.cohort)===cohort);
-  const generation=Math.max(...cohortRows.map(row=>Number(row.generation||0))), current=cohortRows.filter(row=>Number(row.generation||0)===generation).sort((a,b)=>Number(a.island_id)-Number(b.island_id));
+  const generation=Math.max(...cohortRows.map(row=>Number(row.generation||0))), current=cohortRows.filter(row=>Number(row.generation||0)===generation).sort((a,b)=>Number(a.island_id)-Number(b.island_id)), maxGenerations=Math.max(...cohortRows.map(row=>Number(row.max_generations||1)));
   const running=current.filter(row=>row.running).length, completed=current.filter(row=>row.status==="完了").length, queued=current.filter(row=>row.status==="待機中").length, failed=current.filter(row=>row.status==="失敗").length;
   const evaluated=cohortRows.reduce((sum,row)=>sum+Number(row.genetic_evaluated_individuals||0),0), fitness=current.map(row=>Number(row.genetic_fitness)).filter(Number.isFinite), best=fitness.length?Math.max(...fitness):null;
-  const state=failed?{label:"要確認",cls:"failed"}:running||queued?{label:"進化中",cls:"running"}:{label:"世代回収中",cls:"done"};
-  const summary=[["コホート",cohort],["世代",`G${generation}`],["島",`${completed}完 / ${running}実 / ${queued}待`],["評価個体",fmt(evaluated)],["最高fitness",best==null?"-":best.toFixed(6)],["重評価",`${validations.filter(row=>row.running).length}実 / ${validations.filter(row=>row.status==="完了").length}完`],["正式昇格","365日ゲート後"]];
+  const terminal=generation+1>=maxGenerations&&completed===current.length;
+  const state=failed?{label:"要確認",cls:"failed"}:running||queued?{label:"進化中",cls:"running"}:terminal?{label:"探索完了",cls:"done"}:{label:"次世代投入待ち",cls:"running"};
+  const summary=[["コホート",cohort],["世代",`G${generation} / G${Math.max(0,maxGenerations-1)}`],["島",`${completed}完 / ${running}実 / ${queued}待`],["評価個体",fmt(evaluated)],["最高fitness",best==null?"-":best.toFixed(6)],["重評価",`${validations.filter(row=>row.running).length}実 / ${validations.filter(row=>row.status==="完了").length}完`],["正式昇格","365日ゲート後"]];
   const rows=current.map(row=>`<tr><td>${fmt(row.island_id)}</td><td title="${esc(row.name)}">${esc(shortName(row.name))}</td><td><span class="tag ${row.running?"running":row.status==="完了"?"done":row.status==="失敗"?"failed":""}">${esc(row.status)}</span></td><td>${fmt(row.immigrant_count)}</td><td>${fmt(row.population_size)}×${fmt(row.local_generations)}</td><td>${row.genetic_fitness==null?"-":Number(row.genetic_fitness).toFixed(6)}</td><td>${ratio(row.entry_log_loss)}</td><td>${pct(row.winner_top1_accuracy)}</td><td>${pct(row.trifecta_top5_hit_rate)}</td><td>${fmt(row.evaluated_races)}</td><td>${esc(row.elapsed||"-")}</td></tr>`).join("");
-  $("geneticEvolution").innerHTML=`<h2><span>GAアイランド ライブ進化</span><span class="tag ${state.cls}">${state.label}</span></h2><div class="ga-summary">${summary.map(([label,value])=>`<div><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("")}</div><div class="table-scroll"><table class="ga-table"><thead><tr><th>島</th><th>生成日時付きモデル</th><th>状態</th><th>移住</th><th>個体×局所世代</th><th>投機fitness</th><th>Entry LL</th><th>1着</th><th>3T5</th><th>検証R</th><th>経過</th></tr></thead><tbody>${rows}</tbody></table></div><div class="muted">投機fitnessは候補削減専用。本番反映は統一365日ROI・損益・LogLoss・1着・3T5・DD監査を通過した成果物のみ。</div>`;
+  $("geneticEvolution").innerHTML=`<h2><span>GAアイランド ライブ進化</span><span class="tag ${state.cls}">${state.label}</span></h2><div class="ga-summary">${summary.map(([label,value])=>`<div><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("")}</div><div class="table-scroll"><table class="ga-table"><thead><tr><th>島</th><th>生成日時付きモデル</th><th>状態</th><th>移住</th><th>個体×局所世代</th><th>投機fitness</th><th>Entry LL</th><th>1着</th><th>3T5</th><th>検証R</th><th>経過</th></tr></thead><tbody>${rows}</tbody></table></div><div class="ga-chart-wrap"><h3><span>世代別fitness・アイランド内分散</span><span class="muted">点: best / 太線: Q1–Q3 / 細線: min–max / 帯: 島間best範囲</span></h3><canvas id="gaEvolutionChart" class="ga-chart" width="1200" height="300"></canvas></div><div class="muted">投機fitnessは候補削減専用。本番反映は統一365日ROI・損益・LogLoss・1着・3T5・DD監査を通過した成果物のみ。</div>`;
+  drawGeneticEvolutionChart($("gaEvolutionChart"),cohortRows);
+}
+
+function drawGeneticEvolutionChart(canvas,rows){
+  if(!canvas) return;
+  const ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height,plot={l:64,r:w-18,t:34,b:h-36};
+  const generations=[...new Set(rows.map(row=>Number(row.generation||0)))].sort((a,b)=>a-b);
+  const islandIds=[...new Set(rows.map(row=>Number(row.island_id||0)))].sort((a,b)=>a-b);
+  const colors=["#006d77","#8f2d56","#247a4b","#a76300","#1769c2","#c83232","#6950a1","#202529"];
+  const points=rows.map(row=>{
+    const history=Array.isArray(row.genetic_history)?row.genetic_history:[],last=history[history.length-1]||{};
+    const best=Number(row.genetic_fitness),median=Number(last.median_fitness);
+    return {generation:Number(row.generation||0),island:Number(row.island_id||0),best,min:Number.isFinite(Number(last.min_fitness))?Number(last.min_fitness):(Number.isFinite(median)?median:best),q1:Number.isFinite(Number(last.q1_fitness))?Number(last.q1_fitness):(Number.isFinite(median)?median:best),q3:Number.isFinite(Number(last.q3_fitness))?Number(last.q3_fitness):best,max:Number.isFinite(Number(last.max_fitness))?Number(last.max_fitness):best};
+  }).filter(point=>Number.isFinite(point.best));
+  const values=points.flatMap(point=>[point.min,point.max]).filter(Number.isFinite);
+  ctx.clearRect(0,0,w,h);
+  if(!values.length){ ctx.fillStyle="#637279"; ctx.font="11px sans-serif"; ctx.fillText("fitness履歴を収集中",plot.l,90); return; }
+  let min=Math.min(...values),max=Math.max(...values),pad=Math.max((max-min)*0.12,0.0005); min-=pad; max+=pad;
+  const x=g=>plot.l+(plot.r-plot.l)*(generations.indexOf(g)/Math.max(1,generations.length-1));
+  const y=v=>plot.b-(Number(v)-min)/(max-min)*(plot.b-plot.t);
+  ctx.font="10px sans-serif"; ctx.textBaseline="middle";
+  for(let i=0;i<=4;i++){ const value=min+(max-min)*i/4,py=y(value); ctx.strokeStyle="#edf1f2"; ctx.beginPath();ctx.moveTo(plot.l,py);ctx.lineTo(plot.r,py);ctx.stroke();ctx.fillStyle="#637279";ctx.textAlign="right";ctx.fillText(value.toFixed(4),plot.l-7,py); }
+  ctx.strokeStyle="#d8e0e3";ctx.beginPath();ctx.moveTo(plot.l,plot.t);ctx.lineTo(plot.l,plot.b);ctx.lineTo(plot.r,plot.b);ctx.stroke();
+  const lows=[],highs=[];
+  generations.forEach(g=>{ const group=points.filter(point=>point.generation===g); if(group.length){ lows.push({g,v:Math.min(...group.map(point=>point.best))}); highs.push({g,v:Math.max(...group.map(point=>point.best))}); } });
+  if(lows.length){ ctx.fillStyle="rgba(167,99,0,.12)";ctx.beginPath();highs.forEach((point,i)=>i?ctx.lineTo(x(point.g),y(point.v)):ctx.moveTo(x(point.g),y(point.v)));[...lows].reverse().forEach(point=>ctx.lineTo(x(point.g),y(point.v)));ctx.closePath();ctx.fill(); }
+  const offsetWidth=Math.min(30,(plot.r-plot.l)/Math.max(1,generations.length)/Math.max(2,islandIds.length));
+  islandIds.forEach((island,colorIndex)=>{ const series=points.filter(point=>point.island===island).sort((a,b)=>a.generation-b.generation),color=colors[colorIndex%colors.length],centered=(islandIds.indexOf(island)-(islandIds.length-1)/2)*offsetWidth; ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();series.forEach((point,i)=>{const px=x(point.generation)+centered;if(i)ctx.lineTo(px,y(point.best));else ctx.moveTo(px,y(point.best));});ctx.stroke();series.forEach(point=>{const px=x(point.generation)+centered;ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(px,y(point.min));ctx.lineTo(px,y(point.max));ctx.stroke();ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(px,y(point.q1));ctx.lineTo(px,y(point.q3));ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.arc(px,y(point.best),3.5,0,Math.PI*2);ctx.fill();}); });
+  generations.forEach(g=>{const px=x(g);ctx.strokeStyle="#d8e0e3";ctx.beginPath();ctx.moveTo(px,plot.b);ctx.lineTo(px,plot.b+4);ctx.stroke();ctx.fillStyle="#172126";ctx.textAlign="center";ctx.fillText(`G${g}`,px,plot.b+15);});
+  islandIds.forEach((island,i)=>{const lx=plot.l+i*75;ctx.fillStyle=colors[i%colors.length];ctx.fillRect(lx,10,12,3);ctx.fillStyle="#172126";ctx.textAlign="left";ctx.fillText(`島 ${island}`,lx+16,11);});
+  ctx.save();ctx.translate(12,(plot.t+plot.b)/2);ctx.rotate(-Math.PI/2);ctx.fillStyle="#637279";ctx.textAlign="center";ctx.fillText("投機fitness（高いほど良い）",0,0);ctx.restore();
 }
 function renderStandardProtocol(row){
   const policy=row.policy||{}, decision=row.promotion_decision||{};
