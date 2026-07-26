@@ -972,6 +972,48 @@ def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     assert summary["staging_files"] == 0
 
 
+def test_standardized_manifest_summary_reports_selected_and_best_candidate() -> None:
+    summary = summarize_result({
+        "protocol_id": "standard_365d_v2",
+        "comparison_ready": True,
+        "valid_model_count": 3,
+        "models": [
+            {
+                "model_id": "incumbent",
+                "entry_log_loss": 0.37,
+                "winner_top1_accuracy": 0.56,
+                "trifecta_top5_hit_rate": 0.31,
+                "roi": 0.76,
+                "profit_yen": -300,
+            },
+            {"model_id": "candidate-a", "roi": 0.83, "profit_yen": -100},
+            {"model_id": "candidate-b", "roi": 0.80, "profit_yen": -200},
+        ],
+        "promotion_decision": {
+            "incumbent_model_id": "incumbent",
+            "selected_model_id": "incumbent",
+            "eligible_candidate_ids": [],
+            "status": "retain_incumbent",
+        },
+    })
+
+    assert summary == {
+        "entry_log_loss": 0.37,
+        "winner_top1_accuracy": 0.56,
+        "trifecta_top5_hit_rate": 0.31,
+        "roi": 0.76,
+        "profit_yen": -300,
+        "model": "incumbent",
+        "best_candidate_model": "candidate-a",
+        "best_candidate_roi": 0.83,
+        "best_candidate_profit_yen": -100,
+        "comparison_ready": True,
+        "valid_model_count": 3,
+        "promotion_eligible": False,
+        "status": "retain_incumbent",
+    }
+
+
 def test_repository_sync_summary_preserves_deferred_reason() -> None:
     summary = summarize_result({
         "status": "completed",

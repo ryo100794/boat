@@ -1497,6 +1497,36 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if payload.get("protocol_id") == "standard_365d_v2":
+        models = payload.get("models")
+        promotion = payload.get("promotion_decision")
+        if isinstance(models, list) and isinstance(promotion, dict):
+            model_rows = {
+                str(row.get("model_id")): row
+                for row in models
+                if isinstance(row, dict) and row.get("model_id")
+            }
+            selected_id = str(promotion.get("selected_model_id") or "")
+            selected = model_rows.get(selected_id)
+            if selected is not None:
+                visit(selected, 1)
+                summary["model"] = selected_id
+            incumbent_id = str(promotion.get("incumbent_model_id") or "")
+            candidates = [
+                row for model_id, row in model_rows.items()
+                if model_id != incumbent_id and row.get("roi") is not None
+            ]
+            if candidates:
+                best = max(candidates, key=lambda row: float(row["roi"]))
+                summary["best_candidate_model"] = best.get("model_id")
+                summary["best_candidate_roi"] = best.get("roi")
+                summary["best_candidate_profit_yen"] = best.get("profit_yen")
+            summary["comparison_ready"] = payload.get("comparison_ready")
+            summary["valid_model_count"] = payload.get("valid_model_count")
+            summary["promotion_eligible"] = bool(
+                promotion.get("eligible_candidate_ids")
+            )
+            summary["status"] = promotion.get("status")
     payout_walk_forward = payload.get("conditional_payout_walk_forward")
     if isinstance(payout_walk_forward, dict):
         bankroll = payout_walk_forward.get("bankroll")
@@ -1560,8 +1590,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["payout_feature_legacy_schema"] = payout_comparison.get(
             "legacy_schema"
         )
-    summary["model"] = payload.get("model")
-    summary["status"] = payload.get("status")
+    summary.setdefault("model", payload.get("model"))
+    summary.setdefault("status", payload.get("status"))
     return {key: value for key, value in summary.items() if value is not None}
 
 
