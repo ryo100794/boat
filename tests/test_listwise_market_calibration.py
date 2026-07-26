@@ -183,6 +183,7 @@ def test_vectorized_policy_candidates_match_reference_simulation() -> None:
         "max_tickets_per_race": 3,
         "min_model_market_ratio": 1.0,
         "staking_mode": "kelly_025",
+        "max_estimated_ev": 1.10,
     }
 
     reference = simulate_policy(

@@ -74,6 +74,7 @@ BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
 EV_THRESHOLDS = (1.05, 1.10, 1.15, 1.20, 1.30, 1.50)
 MAX_ODDS = (20.0, 40.0, 80.0, None)
+MAX_ESTIMATED_EV = (1.10, 1.20)
 MAX_TICKETS_PER_RACE = (1, 2, 3, 5)
 MIN_MODEL_MARKET_RATIOS = (1.0, 1.05, 1.10, 1.20)
 STAKING_MODES = {
@@ -364,24 +365,31 @@ def select_calibrator(races: list[dict[str, Any]]) -> tuple[dict[str, float], li
 def default_policy_grid() -> list[dict[str, Any]]:
     policies: list[dict[str, Any]] = [{"name": "no_bet", "no_bet": True}]
     for ev_threshold in EV_THRESHOLDS:
-        for max_odds in MAX_ODDS:
-            for max_tickets in MAX_TICKETS_PER_RACE:
-                for min_ratio in MIN_MODEL_MARKET_RATIOS:
-                    for staking_mode in STAKING_MODES:
-                        odds_name = "none" if max_odds is None else str(int(max_odds))
-                        policies.append(
-                            {
-                                "name": (
-                                    f"ev{ev_threshold:.2f}_odds{odds_name}_"
-                                    f"r{max_tickets}_ratio{min_ratio:.2f}_{staking_mode}"
-                                ),
-                                "ev_threshold": ev_threshold,
-                                "max_odds": max_odds,
-                                "max_tickets_per_race": max_tickets,
-                                "min_model_market_ratio": min_ratio,
-                                "staking_mode": staking_mode,
-                            }
-                        )
+        ev_caps = (None,) + tuple(
+            cap for cap in MAX_ESTIMATED_EV if cap > ev_threshold
+        )
+        for max_ev in ev_caps:
+            for max_odds in MAX_ODDS:
+                for max_tickets in MAX_TICKETS_PER_RACE:
+                    for min_ratio in MIN_MODEL_MARKET_RATIOS:
+                        for staking_mode in STAKING_MODES:
+                            odds_name = "none" if max_odds is None else str(int(max_odds))
+                            cap_name = "" if max_ev is None else f"_evcap{int(max_ev * 100)}"
+                            policies.append(
+                                {
+                                    "name": (
+                                        f"ev{ev_threshold:.2f}_odds{odds_name}_"
+                                        f"r{max_tickets}_ratio{min_ratio:.2f}"
+                                        f"{cap_name}_{staking_mode}"
+                                    ),
+                                    "ev_threshold": ev_threshold,
+                                    "max_estimated_ev": max_ev,
+                                    "max_odds": max_odds,
+                                    "max_tickets_per_race": max_tickets,
+                                    "min_model_market_ratio": min_ratio,
+                                    "staking_mode": staking_mode,
+                                }
+                            )
     return policies
 
 
@@ -405,6 +413,8 @@ def simulate_policy(
         if policy.get("max_odds") is not None:
             mask &= odds_matrix <= float(policy["max_odds"])
         mask &= ratio_matrix >= float(policy["min_model_market_ratio"])
+        if policy.get("max_estimated_ev") is not None:
+            mask &= estimated_ev <= float(policy["max_estimated_ev"])
         order = prepared_policy_matrix["order"]
         ordered_mask = np.take_along_axis(mask, order, axis=1)
         selected_mask = ordered_mask & (
@@ -475,6 +485,10 @@ def simulate_policy(
                     continue
                 ratio = probability / max(EPSILON, market_probability)
                 if ratio < float(policy["min_model_market_ratio"]):
+                    continue
+                if policy.get("max_estimated_ev") is not None and estimated_ev > float(
+                    policy["max_estimated_ev"]
+                ):
                     continue
                 candidates.append(
                     policy_candidate(
