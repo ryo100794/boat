@@ -55,6 +55,7 @@ def day_bankroll_simulation(
     model_dir: Path = Path("data/models"),
     now: datetime | None = None,
     starting_bankroll_yen: int = STARTING_BANKROLL_YEN,
+    _feature_cache: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     now_jst = (now or datetime.now(timezone.utc)).astimezone(JST)
     models = _available_models(model_dir)
@@ -126,11 +127,22 @@ def day_bankroll_simulation(
             cutoff=decision_at,
         )
         rejected_snapshots += rejected
-        predictions = _score_model(
-            conn,
-            race_id=str(race["race_id"]),
-            model_path=Path(selected_model["path"]),
-        )
+        if _feature_cache is None:
+            predictions = _score_model(
+                conn,
+                race_id=str(race["race_id"]),
+                model_path=Path(selected_model["path"]),
+            )
+        else:
+            race_id = str(race["race_id"])
+            features = _feature_cache.get(race_id)
+            if features is None:
+                features = prediction_features(conn, race_id=race_id, include_odds=False)
+                _feature_cache[race_id] = features
+            predictions = _score_model_features(
+                features=features,
+                model_path=Path(selected_model["path"]),
+            )
         if predictions:
             prediction_races += 1
         if snapshot:
@@ -321,6 +333,7 @@ def top_model_day_simulations(
 ) -> dict[str, Any]:
     ranked = ranked_deployable_models(model_dir, limit=limit)
     simulations = []
+    feature_cache: dict[str, list[dict[str, Any]]] = {}
     for rank, model in enumerate(ranked, start=1):
         result = day_bankroll_simulation(
             conn,
@@ -328,6 +341,7 @@ def top_model_day_simulations(
             model_id=str(model["id"]),
             model_dir=model_dir,
             now=now,
+            _feature_cache=feature_cache,
         )
         simulations.append({
             "rank": rank,
@@ -459,8 +473,16 @@ def _score_model(
     race_id: str,
     model_path: Path,
 ) -> dict[str, float]:
-    bundle = _load_cached_model(model_path)
     features = prediction_features(conn, race_id=race_id, include_odds=False)
+    return _score_model_features(features=features, model_path=model_path)
+
+
+def _score_model_features(
+    *,
+    features: list[dict[str, Any]],
+    model_path: Path,
+) -> dict[str, float]:
+    bundle = _load_cached_model(model_path)
     if len(features) != 6:
         return {}
     raw = positive_probs(bundle["pipeline"], features)
