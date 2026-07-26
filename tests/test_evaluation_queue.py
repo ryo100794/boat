@@ -1502,7 +1502,10 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         evaluation_queue,
         "genetic_cache_evaluation_date",
-        lambda _root: "2026-07-25",
+        lambda _root: (
+            evaluation_queue.datetime.now(evaluation_queue.JST).date()
+            - evaluation_queue.timedelta(days=1)
+        ).isoformat(),
     )
     monkeypatch.setattr(
         evaluation_queue,
@@ -1639,6 +1642,7 @@ class _ClaimConnection:
         self.state = state
         self.saved_timeouts = []
         self.candidate_sql = ""
+        self.update_sql = ""
 
     def execute(self, statement, parameters=()):
         sql = " ".join(statement.split())
@@ -1648,6 +1652,7 @@ class _ClaimConnection:
             self.candidate_sql = sql
             return _QueryResult(dict(self.state))
         if "UPDATE model_evaluation_jobs" in sql and "RETURNING *" in sql:
+            self.update_sql = sql
             saved = json.loads(parameters[1])
             self.saved_timeouts.append(saved["timeout_seconds"])
             self.state.update({
@@ -1724,6 +1729,7 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
     assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
+    assert "started_at = CURRENT_TIMESTAMP" in conn.update_sql
 
     state.update({
         "status": "queued",

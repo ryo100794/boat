@@ -619,7 +619,7 @@ def claim_job(
         """
         UPDATE model_evaluation_jobs
         SET status = 'running', worker_id = ?, locked_at = CURRENT_TIMESTAMP,
-            started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+            started_at = CURRENT_TIMESTAMP,
             attempt = attempt + 1, updated_at = CURRENT_TIMESTAMP,
             parameters = CAST(? AS JSONB), error = NULL,
             last_resource_snapshot = CAST(? AS JSONB)
