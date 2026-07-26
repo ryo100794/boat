@@ -265,9 +265,17 @@ def select_recency_half_life(
     model_kind: str = "mlp",
     trainer_kwargs: dict[str, Any] | None = None,
     trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
+    selection_entry_log_loss_tolerance: float = 0.0,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
+    if (
+        not np.isfinite(selection_entry_log_loss_tolerance)
+        or not 0.0 <= selection_entry_log_loss_tolerance <= 0.05
+    ):
+        raise ValueError(
+            "selection entry log loss tolerance must be between 0 and 0.05"
+        )
     inner_train_end, calibration_start, calibration_end = inner_calibration_boundary(
         dataset.race_keys,
         outer_train_end=outer_train_end,
@@ -327,7 +335,44 @@ def select_recency_half_life(
                 selected_key = candidate_key
                 selected_predictions = candidate_predictions
 
-    selected = min(
+    if selection_entry_log_loss_tolerance > 0.0:
+        best_loss = min(float(row["entry_log_loss"]) for row in candidates)
+        eligible = [
+            row
+            for row in candidates
+            if float(row["entry_log_loss"])
+            <= best_loss + selection_entry_log_loss_tolerance
+        ]
+        selected = min(
+            eligible,
+            key=lambda row: (
+                -float(row["trifecta_top5_hit_rate"]),
+                -float(row["winner_top1_accuracy"]),
+                float(row["entry_log_loss"]),
+                int(row["trainer_parameter_index"]),
+            ),
+        )
+        selection_criterion = (
+            "highest calibration trifecta_top5_hit_rate among candidates within "
+            f"{selection_entry_log_loss_tolerance:g} of best entry_log_loss; "
+            "winner_top1_accuracy tie-break"
+        )
+    else:
+        selected = min(
+            candidates,
+            key=lambda row: (
+                float(row["entry_log_loss"]),
+                0 if row["recency_half_life_days"] is None else 1,
+                -float(row["recency_half_life_days"] or 0.0),
+                int(row["trainer_parameter_index"]),
+            ),
+        )
+        selection_criterion = "minimum calibration entry_log_loss"
+    selected_signature = (
+        selected["recency_half_life_days"],
+        int(selected["trainer_parameter_index"]),
+    )
+    provisional = min(
         candidates,
         key=lambda row: (
             float(row["entry_log_loss"]),
@@ -336,6 +381,28 @@ def select_recency_half_life(
             int(row["trainer_parameter_index"]),
         ),
     )
+    provisional_signature = (
+        provisional["recency_half_life_days"],
+        int(provisional["trainer_parameter_index"]),
+    )
+    if prediction_output is not None and selected_signature != provisional_signature:
+        selected_bundle = trainer(
+            dataset,
+            train_race_count=inner_train_end,
+            model_kind=model_kind,
+            batch_size=batch_size,
+            epochs=epochs,
+            alpha=alpha,
+            recency_half_life_days=selected["recency_half_life_days"],
+            **dict(selected["trainer_parameters"]),
+        )
+        _, selected_predictions = score_range(
+            dataset,
+            bundle=selected_bundle,
+            race_start=inner_train_end,
+            race_end=outer_train_end,
+            batch_size=batch_size,
+        )
     if prediction_output is not None:
         prediction_output.clear()
         prediction_output.update(selected_predictions)
@@ -346,6 +413,10 @@ def select_recency_half_life(
         "calibration_end": calibration_end,
         "selected_trainer_parameters": dict(selected["trainer_parameters"]),
         "trainer_parameter_candidate_count": len(parameter_candidates),
+        "selection_criterion": selection_criterion,
+        "selection_entry_log_loss_tolerance": float(
+            selection_entry_log_loss_tolerance
+        ),
     }
     return selected["recency_half_life_days"], candidates, split
 
@@ -793,6 +864,7 @@ def evaluate_recency_mlp(
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     trainer_kwargs: dict[str, Any] | None = None,
     trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
+    selection_entry_log_loss_tolerance: float = 0.0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -888,6 +960,9 @@ def evaluate_recency_mlp(
             model_kind=model_kind,
             trainer_kwargs=extra_trainer_kwargs,
             trainer_parameter_candidates=trainer_parameter_candidates,
+            selection_entry_log_loss_tolerance=(
+                selection_entry_log_loss_tolerance
+            ),
         )
         report_progress(
             "recency_selected",
@@ -1051,7 +1126,9 @@ def evaluate_recency_mlp(
             dict(row) for row in (trainer_parameter_candidates or [extra_trainer_kwargs])
         ],
         "selection": {
-            "criterion": "inner calibration entry_log_loss",
+            "criterion": split.get(
+                "selection_criterion", "minimum calibration entry_log_loss"
+            ),
             "tie_break": "None first, otherwise longer half-life",
             "scope": "outer training only; final 365-day holdout untouched",
             "calibration_days": int(calibration_days),

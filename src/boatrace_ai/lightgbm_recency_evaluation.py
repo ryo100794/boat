@@ -20,6 +20,7 @@ from .recency_mlp_evaluation import (
 
 MODEL_NAME = "calibrated_lightgbm_recency_selected"
 STRUCTURAL_MODEL_NAME = "calibrated_lightgbm_structural_v3"
+MULTIMETRIC_MODEL_NAME = "calibrated_lightgbm_multimetric_v4"
 MODEL_KIND = "lightgbm"
 FEATURE_SET = "pastlog_lightgbm_hash_v3_period_coverage_safe"
 DEFAULT_DROP_FEATURE_GROUPS = ("legacy_composites",)
@@ -207,6 +208,7 @@ def evaluate_lightgbm_recency(
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
     architecture_presets: Sequence[str] = (),
+    selection_entry_log_loss_tolerance: float = 0.0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     **trainer_kwargs: Any,
 ) -> dict[str, Any]:
@@ -234,13 +236,20 @@ def evaluate_lightgbm_recency(
         deployment_model_output_path=deployment_model_output_path,
         incumbent_prediction_path=incumbent_prediction_path,
         incumbent_bankroll_path=incumbent_bankroll_path,
-        model_name=(STRUCTURAL_MODEL_NAME if parameter_candidates else MODEL_NAME),
+        model_name=(
+            MULTIMETRIC_MODEL_NAME
+            if selection_entry_log_loss_tolerance > 0.0
+            else STRUCTURAL_MODEL_NAME
+            if parameter_candidates
+            else MODEL_NAME
+        ),
         model_kind=MODEL_KIND,
         feature_set=FEATURE_SET,
         feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
         bundle_trainer=train_lightgbm_bundle_from_dataset,
         trainer_kwargs=trainer_kwargs,
         trainer_parameter_candidates=parameter_candidates,
+        selection_entry_log_loss_tolerance=selection_entry_log_loss_tolerance,
         progress_callback=progress_callback,
     )
 
@@ -262,6 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature-fraction", type=float, default=0.6)
     parser.add_argument("--max-bin", type=int, default=63)
     parser.add_argument("--n-jobs", type=int, default=4)
+    parser.add_argument(
+        "--selection-entry-log-loss-tolerance",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument(
         "--architecture-presets",
         type=parse_architecture_presets,
@@ -297,6 +311,9 @@ def main(argv: list[str] | None = None) -> int:
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
             architecture_presets=args.architecture_presets or (),
+            selection_entry_log_loss_tolerance=(
+                args.selection_entry_log_loss_tolerance
+            ),
             progress_callback=lambda row: print(
                 "LIGHTGBM_PROGRESS "
                 + json.dumps(row, ensure_ascii=True, sort_keys=True),

@@ -189,6 +189,62 @@ def test_architecture_presets_are_bounded_and_validated() -> None:
         lightgbm_eval.parse_architecture_presets("unbounded")
 
 
+def test_multimetric_selection_protects_top5_within_loss_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _dataset()
+
+    def fake_trainer(
+        _dataset: HashedRaceDataset,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        return {"leaves": int(kwargs["num_leaves"])}
+
+    def fake_score(
+        _dataset: HashedRaceDataset,
+        *,
+        bundle: dict[str, object],
+        race_start: int,
+        race_end: int,
+        batch_size: int,
+    ) -> tuple[dict[str, float | int], dict[str, list[dict[str, object]]]]:
+        del batch_size
+        interaction = bundle["leaves"] == 63
+        return (
+            {
+                "entry_log_loss": 0.3205 if interaction else 0.3208,
+                "entry_brier": 0.1,
+                "winner_top1_accuracy": 0.56 if interaction else 0.57,
+                "trifecta_top1_hit_rate": 0.1,
+                "trifecta_top5_hit_rate": 0.318 if interaction else 0.322,
+                "evaluated_races": race_end - race_start,
+            },
+            {"calibration": [{"leaves": bundle["leaves"]}]},
+        )
+
+    monkeypatch.setattr(
+        "boatrace_ai.recency_mlp_evaluation.score_range",
+        fake_score,
+    )
+    _, _, split = select_recency_half_life(
+        dataset,
+        outer_train_end=30,
+        half_lives=(None,),
+        calibration_days=10,
+        bundle_trainer=fake_trainer,
+        model_kind="lightgbm",
+        trainer_parameter_candidates=[
+            {"num_leaves": 31},
+            {"num_leaves": 63},
+        ],
+        selection_entry_log_loss_tolerance=0.0005,
+    )
+
+    assert split["selected_trainer_parameters"] == {"num_leaves": 31}
+    assert "trifecta_top5_hit_rate" in split["selection_criterion"]
+    assert split["selection_entry_log_loss_tolerance"] == 0.0005
+
+
 def test_lightgbm_trainer_rejects_wrong_model_kind() -> None:
     with pytest.raises(ValueError, match="requires model_kind"):
         lightgbm_eval.train_lightgbm_bundle_from_dataset(
@@ -271,3 +327,24 @@ def test_lightgbm_wrapper_forwards_progress_callback(
     )
 
     assert captured["progress_callback"] is callback
+
+
+def test_multimetric_wrapper_uses_versioned_model_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_evaluate(_conn: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"model": kwargs["model_name"]}
+
+    monkeypatch.setattr(lightgbm_eval, "evaluate_recency_mlp", fake_evaluate)
+    result = lightgbm_eval.evaluate_lightgbm_recency(
+        None,
+        output_path=lightgbm_eval.Path("result.json"),
+        evaluation_date=date(2026, 7, 24),
+        architecture_presets=("balanced",),
+        selection_entry_log_loss_tolerance=0.0005,
+    )
+
+    assert result["model"] == lightgbm_eval.MULTIMETRIC_MODEL_NAME

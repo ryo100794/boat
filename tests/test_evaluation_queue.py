@@ -2014,6 +2014,7 @@ def test_lightgbm_structural_presets_are_forwarded(tmp_path: Path) -> None:
             {
                 "evaluation_date": "2026-07-24",
                 "architecture_presets": "compact,balanced,interaction",
+                "selection_entry_log_loss_tolerance": 0.0005,
                 "incumbent_result": (
                     "data/models/evaluation_queue/job-00002707.json"
                 ),
@@ -2027,6 +2028,9 @@ def test_lightgbm_structural_presets_are_forwarded(tmp_path: Path) -> None:
     assert command[command.index("--architecture-presets") + 1] == (
         "compact,balanced,interaction"
     )
+    assert command[
+        command.index("--selection-entry-log-loss-tolerance") + 1
+    ] == "0.0005"
     assert command[command.index("--incumbent-prediction") + 1] == str(
         incumbent
     )

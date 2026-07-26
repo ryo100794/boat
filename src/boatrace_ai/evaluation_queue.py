@@ -1105,6 +1105,7 @@ def build_command(
             "num_leaves", "max_depth", "min_child_samples",
             "feature_fraction", "max_bin", "n_jobs", "architecture_presets",
             "incumbent_result",
+            "selection_entry_log_loss_tolerance",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1136,6 +1137,9 @@ def build_command(
         )
         max_bin = _integer(params, "max_bin", 63, 15, 255)
         n_jobs = _integer(params, "n_jobs", 4, 1, 128)
+        selection_tolerance = _number(
+            params, "selection_entry_log_loss_tolerance", 0.0, 0.0, 0.05
+        )
         architecture_presets = params.get("architecture_presets")
         if architecture_presets is not None:
             if not isinstance(architecture_presets, str):
@@ -1209,6 +1213,7 @@ def build_command(
             "--feature-fraction", str(feature_fraction),
             "--max-bin", str(max_bin),
             "--n-jobs", str(n_jobs),
+            "--selection-entry-log-loss-tolerance", str(selection_tolerance),
         ]
         if architecture_presets is not None:
             command.extend(["--architecture-presets", architecture_presets])
