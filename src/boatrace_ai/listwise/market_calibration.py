@@ -65,8 +65,8 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 19
-MARKET_FORMAL_EVALUATION_FROM = "2026-07-24"
+MARKET_EVALUATION_VERSION = 20
+MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 11
 STAKE_YEN = 100
@@ -2281,6 +2281,45 @@ def filter_clean_market_days(
     }
 
 
+def fixed_benchmark_population(
+    races: list[dict[str, Any]],
+    *,
+    day_targets: dict[str, dict[str, int]],
+    evaluation_dates: Iterable[str],
+    target_days: int = 7,
+) -> dict[str, Any]:
+    """Describe the provisional/final holdout denominator independently of odds."""
+    if target_days < 1:
+        raise ValueError("benchmark target_days must be positive")
+    dates = sorted({str(value) for value in evaluation_dates})[-int(target_days):]
+    date_set = set(dates)
+    eligible_by_day: dict[str, int] = defaultdict(int)
+    for race in races:
+        race_date = str(race.get("race_date") or "")
+        if race_date in date_set:
+            eligible_by_day[race_date] += 1
+    population = sum(
+        int(day_targets[date].get("complete_race_count") or 0) for date in dates
+    )
+    payouts = sum(
+        int(day_targets[date].get("payout_race_count") or 0) for date in dates
+    )
+    odds_eligible = sum(eligible_by_day.values())
+    return {
+        "benchmark_target_days": int(target_days),
+        "benchmark_days": len(dates),
+        "benchmark_status": "final" if len(dates) >= target_days else "provisional",
+        "benchmark_dates": dates,
+        "benchmark_from": dates[0] if dates else None,
+        "benchmark_through": dates[-1] if dates else None,
+        "benchmark_population_races": population,
+        "benchmark_payout_races": payouts,
+        "benchmark_odds_eligible_races": odds_eligible,
+        "benchmark_missing_odds_races": max(0, population - odds_eligible),
+        "benchmark_odds_coverage": odds_eligible / population if population else 0.0,
+    }
+
+
 def scored_cache_contract(
     *,
     model_path: Path,
@@ -2449,6 +2488,12 @@ def main(argv: list[str] | None = None) -> int:
     formal_races = [
         race for race in clean_races if str(race["race_date"]) in formal_dates
     ]
+    benchmark = fixed_benchmark_population(
+        races,
+        day_targets=day_targets,
+        evaluation_dates=formal_dates,
+        target_days=7,
+    )
     coverage_gate.update(
         {
             "calibration_eligible_races": len(races),
@@ -2461,6 +2506,7 @@ def main(argv: list[str] | None = None) -> int:
                 set(coverage_gate["clean_dates"]) - set(formal_dates)
             ),
             "formal_evaluation_eligible_races": len(formal_races),
+            **benchmark,
         }
     )
     result = walk_forward_evaluate(
@@ -2469,6 +2515,19 @@ def main(argv: list[str] | None = None) -> int:
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
         evaluation_dates=formal_dates,
+    )
+    benchmark_evaluated = sum(
+        str(race["race_date"]) in set(benchmark["benchmark_dates"])
+        for race in formal_races
+    )
+    benchmark["benchmark_evaluated_races"] = benchmark_evaluated
+    benchmark["benchmark_evaluation_coverage"] = (
+        benchmark_evaluated / benchmark["benchmark_population_races"]
+        if benchmark["benchmark_population_races"] else 0.0
+    )
+    benchmark["population_race_selection_rate"] = (
+        int(result.get("selected_races") or 0) / benchmark["benchmark_population_races"]
+        if benchmark["benchmark_population_races"] else 0.0
     )
     result.update(
         {
@@ -2484,6 +2543,7 @@ def main(argv: list[str] | None = None) -> int:
             "coverage_gate": coverage_gate,
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
+            **benchmark,
         }
     )
     write_json_atomic(output_path, result)

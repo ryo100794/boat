@@ -12,6 +12,7 @@ from boatrace_ai.listwise.market_calibration import (
     artifact_model_probabilities,
     blend_probabilities,
     filter_clean_market_days,
+    fixed_benchmark_population,
     fit_deployment_configuration,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
@@ -476,12 +477,48 @@ def test_partial_t5_days_calibrate_only_clean_evaluation_day() -> None:
     assert result["folds"][0]["evaluation_date"] == "2026-07-22"
     assert result["deployment_configuration"]["training_races"] == 9
     assert max(result["folds"][0]["calibration_dates"]) < "2026-07-22"
+def test_fixed_benchmark_population_is_provisional_until_seven_days() -> None:
 
 
-def test_formal_evaluation_dates_exclude_pre_registration_days() -> None:
+    targets = {
+        f"2026-07-{day:02d}": {
+            "complete_race_count": 100,
+            "payout_race_count": 100,
+        }
+        for day in range(22, 29)
+    }
+    races = [
+        {"race_date": f"2026-07-{day:02d}"}
+        for day in range(22, 29)
+        for _ in range(10)
+    ]
+
+    provisional = fixed_benchmark_population(
+        races,
+        day_targets=targets,
+        evaluation_dates=[f"2026-07-{day:02d}" for day in range(22, 26)],
+    )
+    final = fixed_benchmark_population(
+        races,
+        day_targets=targets,
+        evaluation_dates=[f"2026-07-{day:02d}" for day in range(22, 29)],
+    )
+
+    assert provisional["benchmark_status"] == "provisional"
+    assert provisional["benchmark_days"] == 4
+    assert provisional["benchmark_population_races"] == 400
+    assert provisional["benchmark_odds_eligible_races"] == 40
+    assert final["benchmark_status"] == "final"
+    assert final["benchmark_days"] == 7
+    assert final["benchmark_population_races"] == 700
+
+
+
+
+def test_provisional_evaluation_starts_with_first_four_clean_days() -> None:
     assert registered_evaluation_dates(
         ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
-    ) == ["2026-07-24", "2026-07-25"]
+    ) == ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         registered_evaluation_dates(["2026-07-24"], valid_from="bad")
 

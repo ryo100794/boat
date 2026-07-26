@@ -1619,6 +1619,11 @@ METRIC_KEYS = (
     "selected_races", "hit_races", "tickets", "hit_tickets",
     "race_selection_rate", "avg_tickets_per_selected_race",
     "ticket_hit_rate", "ticket_hit_rate_ci95_lower", "ticket_hit_rate_ci95_upper",
+    "benchmark_target_days", "benchmark_days", "benchmark_status",
+    "benchmark_population_races", "benchmark_payout_races",
+    "benchmark_odds_eligible_races", "benchmark_missing_odds_races",
+    "benchmark_odds_coverage", "benchmark_evaluated_races",
+    "benchmark_evaluation_coverage", "population_race_selection_rate",
     "race_hit_rate", "race_hit_rate_ci95_lower", "race_hit_rate_ci95_upper",
     "largest_hit_return_share", "effective_hit_count", "roi_without_largest_hit",
     "profit_without_largest_hit_yen",
@@ -2766,11 +2771,19 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_mlp_recency_selected",
         "calibrated_mlp_recency_search",
         "calibrated_mlp_recency_card_features",
+        "newton_residual",
     ),
     (
         "calibrated_lightgbm_recency_selected",
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
+        "newton_residual",
+    ),
+    (
+        "odds_path_operational_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_return",
     ),
 )
 
@@ -2787,7 +2800,7 @@ def seed_daily_market_jobs(
         return []
     model_root = (app_root / "data" / "models").resolve()
     inserted: list[int] = []
-    for label, task_type, source_key in MARKET_EVALUATION_SOURCES:
+    for label, task_type, source_key, calibrator_strategy in MARKET_EVALUATION_SOURCES:
         source = conn.execute(
             """
             SELECT result_path
@@ -2813,9 +2826,9 @@ def seed_daily_market_jobs(
             "through_date": through.isoformat(),
             "daily_budget_yen": 10000,
             "min_calibration_days": 2,
-            "calibrator_strategy": "newton_residual",
+            "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
-            "timeout_seconds": 3600,
+            "timeout_seconds": 7200 if calibrator_strategy == "odds_path_return" else 3600,
         }
         range_key = formal_from.strftime("%Y%m%d") + f"-{through.day:02d}"
         job_id = enqueue_job(
@@ -2823,7 +2836,7 @@ def seed_daily_market_jobs(
             task_type="market_residual_walk_forward",
             model_key=f"{label}:market_residual:{range_key}",
             parameters=parameters,
-            priority=96,
+            priority=98 if calibrator_strategy == "odds_path_return" else 96,
             max_attempts=2,
         )
         if job_id is not None:

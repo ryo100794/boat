@@ -1236,17 +1236,23 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2]
+    assert inserted == [1, 2, 3]
     assert {row["model_key"] for row in calls} == {
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
         "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
+        "odds_path_operational_daily:market_residual:20260718-25",
     }
     assert all(
         row["parameters"]["through_date"] == "2026-07-25"
         and row["parameters"]["from_date"] == "2026-07-18"
-        and row["priority"] == 96
         for row in calls
     )
+    odds_path = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"] == "odds_path_return"
+    )
+    assert odds_path["priority"] == 98
+    assert odds_path["parameters"]["timeout_seconds"] == 7200
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
