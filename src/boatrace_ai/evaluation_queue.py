@@ -1265,6 +1265,12 @@ def build_command(
         _integer(params, "timeout_seconds", 3600, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         model_input = (app_root / str(params["model_input"])).resolve()
+        cache_period = f"{from_date}_{through_date or 'latest'}"
+        scored_cache = (
+            app_root
+            / "data/models/evaluation_cache/market_scored"
+            / f"{model_input.stem}_{cache_period}.races.joblib"
+        )
         if model_root not in model_input.parents or model_input.suffix != ".joblib":
             raise ValueError("model_input must be a joblib artifact inside data/models")
         if not model_input.is_file():
@@ -1279,7 +1285,7 @@ def build_command(
             "--db", db,
             "--model", str(model_input),
             "--output", str(output),
-            "--scored-cache", str(output.with_suffix(".races.joblib")),
+            "--scored-cache", str(scored_cache),
             "--from-date", from_date,
             "--daily-budget-yen", str(
                 _integer(params, "daily_budget_yen", 10000, 100, 1000000)

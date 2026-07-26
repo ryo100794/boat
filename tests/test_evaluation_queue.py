@@ -2126,6 +2126,11 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         "-m",
         "boatrace_ai.listwise.market_calibration",
     ]
+    expected_cache = (
+        root / "data/models/evaluation_cache/market_scored"
+        / "job-00002606_2026-07-18_2026-07-24.races.joblib"
+    )
+    assert command[command.index("--scored-cache") + 1] == str(expected_cache)
     assert command[command.index("--model") + 1] == str(model)
     assert command[command.index("--calibrator-strategy") + 1] == "newton_residual"
     assert command[command.index("--through-date") + 1] == "2026-07-24"
@@ -2145,6 +2150,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         python=python,
         db="postgresql://test",
     )
+    assert odds_path_command[
+        odds_path_command.index("--scored-cache") + 1
+    ] == str(expected_cache)
     assert odds_path_command[
         odds_path_command.index("--calibrator-strategy") + 1
     ] == "odds_path_return"
