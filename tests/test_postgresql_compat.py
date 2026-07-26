@@ -47,6 +47,18 @@ def test_evaluator_connection_can_receive_bounded_work_mem(monkeypatch) -> None:
     }
 
 
+def test_standardized_child_uses_evaluator_memory_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("BOATRACE_PG_APPLICATION_NAME", raising=False)
+    monkeypatch.delenv("BOATRACE_PG_WORK_MEM", raising=False)
+    monkeypatch.setenv("BOATRACE_EVAL_MAX_RACE_DATE", "2026-07-25")
+
+    assert _connection_options() == {
+        "connect_timeout": 30,
+        "application_name": "boatrace_evaluator",
+        "options": "-c work_mem=128MB",
+    }
+
+
 @pytest.mark.parametrize("value", ["0MB", "128", "128MB -c fsync=off", "-1GB"])
 def test_work_mem_rejects_unsafe_or_ambiguous_values(monkeypatch, value) -> None:
     monkeypatch.setenv("BOATRACE_PG_WORK_MEM", value)

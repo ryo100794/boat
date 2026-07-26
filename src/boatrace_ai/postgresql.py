@@ -128,14 +128,18 @@ class Connection:
 
 
 def _connection_options() -> dict[str, Any]:
-    work_mem = os.environ.get("BOATRACE_PG_WORK_MEM", "").strip()
+    evaluation_process = bool(os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE"))
+    default_work_mem = "128MB" if evaluation_process else ""
+    work_mem = os.environ.get("BOATRACE_PG_WORK_MEM", default_work_mem).strip()
     if work_mem and _MEMORY_SETTING.fullmatch(work_mem) is None:
         raise ValueError("BOATRACE_PG_WORK_MEM must be a positive kB, MB, or GB value")
     options: dict[str, Any] = {
         "connect_timeout": 30,
         "application_name": os.environ.get(
             "BOATRACE_PG_APPLICATION_NAME",
-            "boatrace_realtime_collector",
+            "boatrace_evaluator"
+            if evaluation_process
+            else "boatrace_realtime_collector",
         ),
     }
     if work_mem:
