@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from boatrace_ai.adaptive_allocation import allocate_adaptive_day
+from boatrace_ai.packed_bankroll import evaluate_packed_policy, pack_candidates
+
+
+POLICY = {
+    "daily_budget_yen": 10_000,
+    "fractional_kelly": 0.25,
+    "max_daily_exposure_fraction": 0.60,
+    "min_daily_exposure_fraction": 0.40,
+    "race_cap_fraction": 0.10,
+    "ticket_cap_fraction": 0.03,
+    "max_daily_tickets": 4,
+    "allocation_mode": "normalized_kelly",
+    "stake_granularity_yen": 100,
+    "min_stake_yen": 100,
+}
+
+
+def _candidate(race_id: str, combination: str, probability: float, odds: float, *, hit: bool = False):
+    return {
+        "race_id": race_id,
+        "combination": combination,
+        "probability": probability,
+        "estimated_odds": odds,
+        "estimated_ev": probability * odds,
+        "actual_payout_yen": int(odds * 100),
+        "hit": hit,
+    }
+
+
+def test_packed_policy_matches_reference_allocator() -> None:
+    candidates = [
+        _candidate("r1", "1-2-3", 0.20, 8.0, hit=True),
+        _candidate("r1", "1-3-2", 0.18, 7.0),
+        _candidate("r1", "2-1-3", 0.12, 10.0),
+        _candidate("r2", "1-2-3", 0.25, 5.0),
+        _candidate("r2", "2-1-3", 0.08, 15.0),
+        _candidate("r2", "3-1-2", 0.01, 20.0),
+    ]
+    reference = allocate_adaptive_day(
+        "2026-07-01",
+        candidates,
+        {"r1", "r2"},
+        **POLICY,
+    )
+    packed = pack_candidates({"2026-07-01": candidates}, {"2026-07-01": 2})
+    result = evaluate_packed_policy(packed, POLICY)
+    day = result["daily"][0]
+    assert day["tickets"] == reference["tickets"]
+    assert day["selected_races"] == reference["races_bet"]
+    assert day["hit_tickets"] == reference["hit_tickets"]
+    assert day["hit_races"] == reference["hit_races"]
+    assert day["stake_yen"] == reference["stake_yen"]
+    assert day["return_yen"] == reference["return_yen"]
+
+
+def test_packed_policy_keeps_empty_days() -> None:
+    packed = pack_candidates({}, {"2026-07-01": 12})
+    result = evaluate_packed_policy(packed, POLICY)
+    assert result["evaluated_races"] == 12
+    assert result["tickets"] == 0
+    assert result["daily"][0]["race_date"] == "2026-07-01"
