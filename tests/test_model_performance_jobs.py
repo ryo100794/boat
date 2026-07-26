@@ -69,6 +69,7 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "renderGeneticEvolution(jobs)" in MODEL_REPORT_HTML
     assert "drawGeneticEvolutionChart" in MODEL_REPORT_HTML
     assert "世代別fitness・アイランド内分散" in MODEL_REPORT_HTML
+    assert "row.genetic_fitness==null?NaN" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
 
 
