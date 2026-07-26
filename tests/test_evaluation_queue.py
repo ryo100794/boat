@@ -1747,6 +1747,38 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert conn.saved_timeouts == [43200, 43200]
 
 
+def test_recover_worker_closes_interrupted_attempt() -> None:
+    events = []
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            sql = " ".join(statement.split())
+            events.append((sql, parameters))
+            if "UPDATE model_evaluation_jobs" in sql:
+                return Result([{"job_id": 3566, "attempt": 2}])
+            if "UPDATE model_evaluation_job_runs" in sql:
+                return Result()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    recovered = evaluation_queue.recover_worker_job(
+        Connection(),
+        worker_id="evaluator-02",
+    )
+
+    assert recovered == 1
+    run_sql, run_parameters = events[1]
+    assert "status = 'failed'" in run_sql
+    assert "completed_at = CURRENT_TIMESTAMP" in run_sql
+    assert run_parameters == (3566, 2)
+
+
 def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:
     parameters = evaluation_queue._timeout_retry_parameters(
         {"timeout_seconds": 86400},

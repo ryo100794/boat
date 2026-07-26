@@ -711,10 +711,20 @@ def recover_worker_job(conn: Any, *, worker_id: str) -> int:
             worker_id = NULL, locked_at = NULL, updated_at = CURRENT_TIMESTAMP,
             error = COALESCE(error, 'worker restarted before completion update')
         WHERE status = 'running' AND worker_id = ?
-        RETURNING job_id
+        RETURNING job_id, attempt
         """,
         (worker_id,),
     ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            UPDATE model_evaluation_job_runs
+            SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
+                error = COALESCE(error, 'worker restarted before completion update')
+            WHERE job_id = ? AND attempt = ? AND status = 'running'
+            """,
+            (int(row["job_id"]), int(row["attempt"])),
+        )
     return len(rows)
 
 
