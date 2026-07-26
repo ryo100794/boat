@@ -1,7 +1,7 @@
 LEGACY_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v1"
 MISSING_SAFE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing-safe"
 SPARSE_MISSING_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v3-series-sparse-missing"
-FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v4-series-trend-direction"
+FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v5-low-coverage-guard"
 LIGHTGBM_FEATURE_SCHEMA_VERSION = (
     "pastlog-lightgbm-hashed-v6-period-coverage-safe"
 )
