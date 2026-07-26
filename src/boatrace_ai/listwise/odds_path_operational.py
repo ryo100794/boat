@@ -114,14 +114,16 @@ def _feature_matrix(race: dict[str, Any], priors: dict[str, Any]) -> tuple[list[
     return combinations, np.asarray(rows, dtype=np.float64), np.asarray(multipliers, dtype=np.float64)
 
 
-def _objective(prepared, weights, prior_weights, regularization):
-    loss = 0.0
-    for matrix, actual_index in prepared:
-        logits = matrix @ weights
-        maximum = float(np.max(logits))
-        loss += maximum + math.log(float(np.exp(logits - maximum).sum())) - float(logits[actual_index])
+def _objective(matrix, actual_indices, weights, prior_weights, regularization):
+    logits = matrix @ weights
+    maximum = np.max(logits, axis=1, keepdims=True)
+    log_partitions = maximum[:, 0] + np.log(
+        np.exp(logits - maximum).sum(axis=1)
+    )
+    actual_logits = logits[np.arange(len(matrix)), actual_indices]
+    loss = float(np.mean(log_partitions - actual_logits))
     delta = weights - prior_weights
-    return loss / len(prepared) + 0.5 * regularization * float(delta @ delta)
+    return loss + 0.5 * regularization * float(delta @ delta)
 
 
 def fit_odds_path_model(races: list[dict[str, Any]], *, regularization: float = 0.1, max_iterations: int = 40) -> dict[str, Any]:
@@ -129,38 +131,62 @@ def fit_odds_path_model(races: list[dict[str, Any]], *, regularization: float = 
         raise ValueError("odds-path model requires races")
     priors = fit_performance_priors(races)
     prepared = []
+    actual_indices = []
     for race in races:
         combinations, matrix, _multipliers = _feature_matrix(race, priors)
         actual = str(race["actual_combination"])
         if len(combinations) == 120 and actual in combinations:
-            prepared.append((matrix, combinations.index(actual)))
+            prepared.append(matrix)
+            actual_indices.append(combinations.index(actual))
     if not prepared:
         raise ValueError("odds-path model requires complete 120-combination races")
     prior_weights = np.zeros(len(FEATURE_NAMES), dtype=np.float64)
     prior_weights[2] = 1.0
+    feature_tensor = np.stack(prepared)
+    actual_index_array = np.asarray(actual_indices, dtype=np.int64)
     weights = prior_weights.copy()
     converged, objective = False, math.inf
     for iteration in range(1, max_iterations + 1):
         gradient = np.zeros_like(weights)
         hessian = np.zeros((len(weights), len(weights)), dtype=np.float64)
-        for matrix, actual_index in prepared:
-            logits = matrix @ weights
-            logits -= float(np.max(logits))
-            probabilities = np.exp(logits)
-            probabilities /= float(probabilities.sum())
-            mean = probabilities @ matrix
-            gradient += mean - matrix[actual_index]
-            hessian += (matrix.T * probabilities) @ matrix - np.outer(mean, mean)
+        logits = feature_tensor @ weights
+        logits -= np.max(logits, axis=1, keepdims=True)
+        probabilities = np.exp(logits)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+        means = np.einsum("rc,rcf->rf", probabilities, feature_tensor, optimize=True)
+        actual_features = feature_tensor[
+            np.arange(len(feature_tensor)), actual_index_array
+        ]
+        gradient = np.sum(means - actual_features, axis=0)
+        hessian = np.einsum(
+            "rc,rcf,rcg->fg",
+            probabilities,
+            feature_tensor,
+            feature_tensor,
+            optimize=True,
+        ) - np.einsum("rf,rg->fg", means, means, optimize=True)
         count = len(prepared)
         delta = weights - prior_weights
         gradient = gradient / count + regularization * delta
         hessian = hessian / count + regularization * np.eye(len(weights))
-        objective = _objective(prepared, weights, prior_weights, regularization)
+        objective = _objective(
+            feature_tensor,
+            actual_index_array,
+            weights,
+            prior_weights,
+            regularization,
+        )
         step = np.linalg.solve(hessian + 1e-9 * np.eye(len(weights)), gradient)
         scale, accepted = 1.0, False
         while scale >= 1e-7:
             candidate = weights - scale * step
-            candidate_objective = _objective(prepared, candidate, prior_weights, regularization)
+            candidate_objective = _objective(
+                feature_tensor,
+                actual_index_array,
+                candidate,
+                prior_weights,
+                regularization,
+            )
             if candidate_objective <= objective + 1e-12:
                 accepted = True
                 break
