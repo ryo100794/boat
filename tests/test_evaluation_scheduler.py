@@ -182,9 +182,14 @@ def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
     assert "WHERE github_issue_number IS NOT NULL" in SCHEMA
 
 
-def test_supervisor_enables_periodic_scheduler() -> None:
-    config = Path(
+def test_supervisor_separates_periodic_scheduler_from_workers() -> None:
+    runner = Path(
         "scripts/deployment/supervisor-boatrace-evaluation-runner.ini"
     ).read_text(encoding="utf-8")
+    scheduler = Path(
+        "scripts/deployment/supervisor-boatrace-evaluation-scheduler.ini"
+    ).read_text(encoding="utf-8")
 
-    assert "--schedule-periodic" in config
+    assert "--schedule-periodic" not in runner
+    assert "boatrace_ai.evaluation_queue schedule" in scheduler
+    assert "--seed-defaults" in scheduler
