@@ -21,6 +21,7 @@ from boatrace_ai.listwise.market_calibration import (
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
+    summarize_registered_policy_daily,
     load_scored_cache,
     score_real_odds_races,
     select_calibrator,
@@ -254,6 +255,7 @@ def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     assert result["available_days"] == 2
     assert result["required_additional_days"] == 1
     assert result["evaluation_races"] == 0
+    assert result["registered_ev_band_walk_forward"]["evaluation_days"] == 0
     assert result["promotion_eligible"] is False
     assert result["promotion_gate"]["no_lookahead_pass"] is True
     assert all(
@@ -537,3 +539,35 @@ def test_clean_day_gate_validates_coverage_threshold() -> None:
             day_targets={},
             minimum_day_coverage=0.0,
         )
+
+
+def test_empty_registered_policy_summary_waits_for_unseen_day() -> None:
+    result = summarize_registered_policy_daily([], evaluated_races=0)
+
+    assert result["status"] == "waiting_for_first_unseen_day"
+    assert result["evaluation_days"] == 0
+    assert result["evaluated_races"] == 0
+
+
+def test_registered_ev_band_uses_only_days_after_hypothesis_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-23",
+            "2026-07-24",
+            "2026-07-25",
+            "2026-07-26",
+        )
+        for rno in range(1, 4)
+    ]
+
+    result = walk_forward_evaluate(races, min_calibration_days=2)
+    registered = result["registered_ev_band_walk_forward"]
+
+    assert registered["registered_after"] == "2026-07-25"
+    assert registered["status"] == "evaluating"
+    assert registered["evaluation_days"] == 1
+    assert registered["evaluated_races"] == 3
+    assert [row["race_date"] for row in registered["daily"]] == ["2026-07-26"]
+    assert result["folds"][0]["registered_ev_band_bankroll"] is None
+    assert result["folds"][1]["registered_ev_band_bankroll"] is not None

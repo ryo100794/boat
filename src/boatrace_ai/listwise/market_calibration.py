@@ -67,6 +67,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
 MARKET_EVALUATION_VERSION = 20
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
+EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 11
 STAKE_YEN = 100
@@ -95,6 +96,15 @@ STAKING_MODES = {
     },
 }
 EPSILON = 1e-12
+REGISTERED_EV_BAND_POLICY: dict[str, Any] = {
+    "name": "registered_ev1.00_to1.10_r3_kelly100",
+    "ev_threshold": 1.0,
+    "max_estimated_ev": 1.10,
+    "max_odds": None,
+    "max_tickets_per_race": 3,
+    "min_model_market_ratio": 1.0,
+    "staking_mode": "kelly_100",
+}
 
 
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
@@ -738,6 +748,31 @@ def bankroll_reliability_metrics(
     }
 
 
+def summarize_registered_policy_daily(
+    daily: list[dict[str, Any]],
+    *,
+    evaluated_races: int,
+) -> dict[str, Any]:
+    stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily)
+    return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
+    return {
+        "status": "evaluating" if daily else "waiting_for_first_unseen_day",
+        "comparison_role": "prospective_only_pre_registered_policy_shadow",
+        "registered_after": EV_BAND_HYPOTHESIS_REGISTERED_AFTER,
+        "policy": dict(REGISTERED_EV_BAND_POLICY),
+        "evaluation_days": len(daily),
+        "evaluated_races": evaluated_races,
+        "tickets": sum(int(row.get("tickets") or 0) for row in daily),
+        "hit_tickets": sum(int(row.get("hit_tickets") or 0) for row in daily),
+        "stake_yen": stake_yen,
+        "return_yen": return_yen,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else 0.0,
+        **bankroll_reliability_metrics(daily, evaluated_races=evaluated_races),
+        "daily": daily,
+    }
+
+
 def select_policy(
     races: list[dict[str, Any]],
     *,
@@ -1186,6 +1221,10 @@ def waiting_walk_forward_result(
             "winning_days": 0,
             "daily": [],
         },
+        "registered_ev_band_walk_forward": summarize_registered_policy_daily(
+            [],
+            evaluated_races=0,
+        ),
         "promotion_gate": promotion_gate,
         "promotion_eligible": False,
     }
@@ -1309,6 +1348,8 @@ def walk_forward_evaluate(
     market_cluster_labels: list[str] = []
     daily_rows = []
     flat_daily_rows = []
+    registered_daily_rows = []
+    registered_evaluated_races = 0
     edge_diagnostic_records = []
     for calibration_dates, evaluation_date in fold_dates:
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
@@ -1388,6 +1429,14 @@ def walk_forward_evaluate(
             policy=policy,
             daily_budget_yen=daily_budget_yen,
         )
+        registered_bankroll = None
+        if evaluation_date > EV_BAND_HYPOTHESIS_REGISTERED_AFTER:
+            registered_bankroll = simulate_policy(
+                holdout_policy_races,
+                calibrator=calibrator,
+                policy=REGISTERED_EV_BAND_POLICY,
+                daily_budget_yen=daily_budget_yen,
+            )
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
             calibrator=calibrator,
@@ -1460,10 +1509,22 @@ def walk_forward_evaluate(
                     ),
                 },
                 "bankroll": {key: value for key, value in bankroll.items() if key != "daily"},
+                "registered_ev_band_bankroll": (
+                    {
+                        key: value
+                        for key, value in registered_bankroll.items()
+                        if key != "daily"
+                    }
+                    if registered_bankroll is not None
+                    else None
+                ),
             }
         )
         daily_rows.extend(bankroll["daily"])
         flat_daily_rows.extend(flat_bankroll["daily"])
+        if registered_bankroll is not None:
+            registered_daily_rows.extend(registered_bankroll["daily"])
+            registered_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
 
@@ -1590,6 +1651,10 @@ def walk_forward_evaluate(
             "winning_days": sum(int(row["profit_yen"] > 0) for row in flat_daily_rows),
             "daily": flat_daily_rows,
         },
+        "registered_ev_band_walk_forward": summarize_registered_policy_daily(
+            registered_daily_rows,
+            evaluated_races=registered_evaluated_races,
+        ),
         "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(
