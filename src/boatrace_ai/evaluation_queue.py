@@ -3089,10 +3089,64 @@ def run_worker(args: argparse.Namespace) -> int:
             time.sleep(args.poll_seconds)
 
 
+def run_scheduler(args: argparse.Namespace) -> int:
+    """Seed maintenance work independently from long-running evaluations."""
+    _configure_worker_database_memory()
+    app_root = Path(args.app_root).resolve()
+    last_seed = 0.0
+    last_schedule = 0.0
+    with connection(args.db) as conn:
+        ensure_schema(conn)
+        seed_work_tickets(conn)
+    while True:
+        try:
+            now = time.monotonic()
+            seeded_defaults = False
+            scheduled_periodic = False
+            with connection(args.db) as conn:
+                requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                if args.seed_defaults and now - last_seed >= args.seed_interval:
+                    evaluation_date = (
+                        datetime.now(JST).date() - timedelta(days=1)
+                    ).isoformat()
+                    seed_default_jobs(conn, evaluation_date=evaluation_date)
+                    seed_daily_market_jobs(
+                        conn,
+                        app_root=app_root,
+                        evaluation_date=evaluation_date,
+                    )
+                    if genetic_cache_evaluation_date(app_root) == evaluation_date:
+                        seed_daily_genetic_jobs(
+                            conn,
+                            evaluation_date=evaluation_date,
+                        )
+                    seeded_defaults = True
+                if now - last_schedule >= args.schedule_interval:
+                    seed_periodic_jobs(conn)
+                    scheduled_periodic = True
+            if seeded_defaults:
+                last_seed = now
+            if scheduled_periodic:
+                last_schedule = now
+            if args.once:
+                return 0
+            time.sleep(args.poll_seconds)
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:
+            print(f"evaluation scheduler error: {type(exc).__name__}: {exc}", flush=True)
+            if args.once:
+                raise
+            time.sleep(args.poll_seconds)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PostgreSQL-backed model evaluation queue")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "seed", "enqueue", "retry", "reprioritize", "status", "run"):
+    for name in (
+        "init", "seed", "enqueue", "retry", "reprioritize", "status",
+        "run", "schedule",
+    ):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
         if name == "seed":
@@ -3123,6 +3177,14 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--nice", type=int, default=10)
             command.add_argument("--seed-defaults", action="store_true")
             command.add_argument("--schedule-periodic", action="store_true")
+            command.add_argument("--once", action="store_true")
+        if name == "schedule":
+            command.add_argument("--app-root", default="/workspace/boat")
+            command.add_argument("--poll-seconds", type=float, default=5.0)
+            command.add_argument("--schedule-interval", type=float, default=60.0)
+            command.add_argument("--seed-interval", type=float, default=3600.0)
+            command.add_argument("--stale-minutes", type=int, default=180)
+            command.add_argument("--seed-defaults", action="store_true")
             command.add_argument("--once", action="store_true")
     return parser
 
@@ -3208,6 +3270,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
         return run_worker(args)
+    if args.command == "schedule":
+        return run_scheduler(args)
     with connection(args.db) as conn:
         ensure_schema(conn)
         if args.command == "seed":

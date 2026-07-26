@@ -1539,6 +1539,71 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert events.index("enter:claim") < events.index("claim")
 
 
+def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
+    events = []
+
+    class Scope:
+        def __enter__(self):
+            events.append("enter")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("commit")
+
+    monkeypatch.setattr(evaluation_queue, "connection", lambda _db: Scope())
+    monkeypatch.setattr(evaluation_queue, "ensure_schema", lambda _conn: None)
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_work_tickets",
+        lambda _conn: events.append("seed-work"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "requeue_stale_jobs",
+        lambda *_a, **_k: events.append("requeue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_default_jobs",
+        lambda *_a, **_k: events.append("seed-defaults"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_daily_market_jobs",
+        lambda *_a, **_k: events.append("seed-market"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "genetic_cache_evaluation_date",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_periodic_jobs",
+        lambda *_a, **_k: events.append("seed-periodic"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "claim_job",
+        lambda *_a, **_k: pytest.fail("scheduler must not claim evaluation jobs"),
+    )
+    monkeypatch.setattr(evaluation_queue.time, "monotonic", lambda: 10000.0)
+    args = evaluation_queue.build_parser().parse_args([
+        "schedule",
+        "--db", "postgresql://test",
+        "--app-root", str(tmp_path),
+        "--seed-defaults",
+        "--once",
+    ])
+
+    assert evaluation_queue.run_scheduler(args) == 0
+    assert events == [
+        "enter", "seed-work", "commit",
+        "enter", "requeue", "seed-defaults", "seed-market",
+        "seed-periodic", "commit",
+    ]
+
+
 def test_supervisor_runs_four_postgresql_queue_workers() -> None:
     config = Path(
         "scripts/deployment/supervisor-boatrace-evaluation-runner.ini"
@@ -1546,10 +1611,19 @@ def test_supervisor_runs_four_postgresql_queue_workers() -> None:
 
     assert "boatrace_ai.evaluation_queue run" in config
     assert "numprocs=4" in config
-    assert "--seed-defaults" in config
+    assert "--seed-defaults" not in config
+    assert "--schedule-periodic" not in config
     assert "--vm-limit-gib 0" in config
     assert 'BOATRACE_PG_APPLICATION_NAME="boatrace_evaluator"' in config
     assert 'BOATRACE_PG_WORK_MEM="128MB"' in config
+
+    scheduler = Path(
+        "scripts/deployment/supervisor-boatrace-evaluation-scheduler.ini"
+    ).read_text(encoding="utf-8")
+    assert "boatrace_ai.evaluation_queue schedule" in scheduler
+    assert "--seed-defaults" in scheduler
+    assert "--schedule-interval 60" in scheduler
+    assert 'BOATRACE_PG_APPLICATION_NAME="boatrace_scheduler"' in scheduler
 
 
 def test_worker_sets_database_memory_defaults_without_overriding(monkeypatch) -> None:
