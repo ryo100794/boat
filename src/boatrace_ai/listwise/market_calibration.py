@@ -1487,6 +1487,30 @@ def walk_forward_evaluate(
         daily_budget_yen=daily_budget_yen,
         calibrator_strategy=calibrator_strategy,
     )
+    deployment_gate = {
+        "minimum_evaluation_days": 7,
+        "evaluation_days": len(daily_rows),
+        "evaluation_races": len(evaluation_races),
+        "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "profitable_folds": profitable_folds,
+        "required_profitable_folds": math.ceil(len(folds) * 0.60),
+        "days_pass": len(daily_rows) >= 7,
+        "roi_pass": return_yen > stake_yen and stake_yen > 0,
+        "fold_stability_pass": profitable_folds >= math.ceil(len(folds) * 0.60),
+    }
+    deployment_gate["pass"] = all(
+        deployment_gate[key]
+        for key in ("days_pass", "roi_pass", "fold_stability_pass")
+    )
+    deployment_configuration["walk_forward_gate"] = deployment_gate
+    if not deployment_gate["pass"]:
+        deployment_configuration["candidate_policy"] = deployment_configuration[
+            "selected_policy"
+        ]
+        deployment_configuration["selected_policy"] = {"name": "no_bet", "no_bet": True}
+        deployment_configuration["operational_status"] = "shadow_only_insufficient_evidence"
+    else:
+        deployment_configuration["operational_status"] = "eligible_for_shadow_promotion"
     reliability = bankroll_reliability_metrics(
         daily_rows,
         evaluated_races=len(evaluation_races),

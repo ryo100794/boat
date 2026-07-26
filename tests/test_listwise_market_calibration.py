@@ -231,6 +231,12 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     assert deployment["training_races"] == 48
     assert deployment["calibrator_strategy"] == "grid"
     assert result["promotion_gate"]["sample_size_pass"] is False
+    assert deployment["walk_forward_gate"]["evaluation_days"] == 2
+    assert deployment["walk_forward_gate"]["days_pass"] is False
+    assert deployment["walk_forward_gate"]["pass"] is False
+    assert deployment["selected_policy"] == {"name": "no_bet", "no_bet": True}
+    assert deployment["candidate_policy"]
+    assert deployment["operational_status"] == "shadow_only_insufficient_evidence"
     assert result["promotion_eligible"] is False
 
 
