@@ -56,7 +56,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
-    "bankroll_policy_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
+    "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -225,6 +225,16 @@ def ensure_schema(conn: Any) -> None:
           AND min_free_memory_mb = ?
         """,
         (14336, "lightgbm_recency_search", 65536),
+    )
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET min_free_memory_mb = ?
+        WHERE status = 'queued'
+          AND task_type = ?
+          AND min_free_memory_mb = ?
+        """,
+        (9216, "bankroll_policy_search", 14336),
     )
     conn.execute(
         """
@@ -537,6 +547,10 @@ def claim_job(
     resources: ResourceSnapshot,
 ) -> dict[str, Any] | None:
     snapshot = _json(resource_snapshot_dict(resources))
+    evaluation_reservation_mb = max(
+        8192,
+        int(resources.memory_limit_mb or resources.available_memory_mb) - 4096,
+    )
     conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
     candidate = conn.execute(
         """
@@ -565,17 +579,14 @@ def claim_job(
             jobs.category <> 'evaluation'
             OR jobs.min_free_memory_mb < 8192
             OR (
-              CASE WHEN jobs.min_free_memory_mb >= 14336 THEN 2 ELSE 1 END
-              + COALESCE((
-                SELECT SUM(
-                  CASE WHEN running.min_free_memory_mb >= 14336 THEN 2 ELSE 1 END
-                )
+              jobs.min_free_memory_mb + COALESCE((
+                SELECT SUM(running.min_free_memory_mb)
                 FROM model_evaluation_jobs running
                 WHERE running.status = 'running'
                   AND running.category = 'evaluation'
                   AND running.min_free_memory_mb >= 8192
               ), 0)
-            ) <= 2
+            ) <= ?
           )
         ORDER BY jobs.priority DESC, jobs.job_id
         FOR UPDATE SKIP LOCKED
@@ -585,6 +596,7 @@ def claim_job(
             resources.available_memory_mb,
             resources.available_disk_mb,
             resources.idle_cpu_percent,
+            evaluation_reservation_mb,
         ),
     ).fetchone()
     if candidate is None:

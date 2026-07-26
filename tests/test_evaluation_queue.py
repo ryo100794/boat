@@ -1723,6 +1723,7 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert conn.saved_timeouts == [43200]
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
+    assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
 
     state.update({
         "status": "queued",

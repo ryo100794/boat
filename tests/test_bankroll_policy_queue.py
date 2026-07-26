@@ -54,7 +54,7 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     )
     assert TASK_PROFILES["bankroll_policy_search"] == {
         "category": "evaluation",
-        "memory_mb": 14336,
+        "memory_mb": 9216,
         "idle_cpu": 15.0,
         "max_parallel": 1,
         "disk_mb": 1024,
