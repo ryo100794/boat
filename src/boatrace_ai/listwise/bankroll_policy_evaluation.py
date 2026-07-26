@@ -15,7 +15,11 @@ from ..bankroll_backtest import (
     _candidate_tickets,
     _load_trifecta_payouts,
 )
-from ..bankroll_policy_search import promotion_gate, successive_halving_search
+from ..bankroll_policy_search import (
+    promotion_gate,
+    recent_allocation_diagnostics,
+    successive_halving_search,
+)
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, race_ids_sha256
@@ -223,9 +227,11 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         samples=args.bootstrap_samples,
         seed=args.seed,
     )
+    recent_allocation = recent_allocation_diagnostics(holdout_bankroll["daily"])
     holdout_gate = promotion_gate({
         "metrics": holdout_bankroll,
         "confidence": holdout_confidence,
+        "recent_allocation": recent_allocation,
     })
     result = {
         "model": "bankroll_policy_optimized_v1",
@@ -265,6 +271,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll": holdout_bankroll,
         "bankroll_confidence": holdout_confidence,
         "promotion_gate": holdout_gate,
+        "recent_allocation": recent_allocation,
         "research_only": args.research_only == "true",
         "promotion_eligible": (
             args.research_only != "true" and all(holdout_gate.values())

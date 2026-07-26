@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from boatrace_ai.bankroll_policy_search import (
     policy_candidates,
+    recent_allocation_diagnostics,
     slice_day_range,
     successive_halving_search,
 )
@@ -96,3 +97,31 @@ def test_slice_day_range_rebases_offsets() -> None:
     assert sliced.offsets.tolist() == [0, 2, 4, 6]
     assert sliced.tickets == 6
     assert sliced.evaluated_races.tolist() == [1, 1, 1]
+
+
+def test_recent_allocation_diagnostics_flags_purchase_spike() -> None:
+    daily = [
+        {"stake_yen": 100, "tickets": 1}
+        for _ in range(21)
+    ] + [
+        {"stake_yen": 800, "tickets": 8}
+        for _ in range(7)
+    ]
+
+    diagnostics = recent_allocation_diagnostics(daily)
+
+    assert diagnostics["stake_multiplier"] == 8.0
+    assert diagnostics["ticket_multiplier"] == 8.0
+    assert diagnostics["stable"] is False
+
+
+def test_recent_allocation_diagnostics_accepts_normal_variation() -> None:
+    daily = [
+        {"stake_yen": 200, "tickets": 2}
+        for _ in range(21)
+    ] + [
+        {"stake_yen": 300, "tickets": 3}
+        for _ in range(7)
+    ]
+
+    assert recent_allocation_diagnostics(daily)["stable"] is True

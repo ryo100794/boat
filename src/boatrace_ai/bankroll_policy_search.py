@@ -231,6 +231,42 @@ def compact_metrics(result: Mapping[str, Any]) -> dict[str, Any]:
     return {key: result[key] for key in keys}
 
 
+def recent_allocation_diagnostics(
+    daily: Sequence[Mapping[str, Any]],
+    *,
+    window_days: int = 7,
+) -> dict[str, Any]:
+    if window_days < 1 or len(daily) <= window_days:
+        raise ValueError("recent allocation diagnostics require a baseline window")
+    baseline = daily[:-window_days]
+    recent = daily[-window_days:]
+
+    def average(rows: Sequence[Mapping[str, Any]], key: str) -> float:
+        return float(sum(float(row[key]) for row in rows) / len(rows))
+
+    baseline_stake = average(baseline, "stake_yen")
+    recent_stake = average(recent, "stake_yen")
+    baseline_tickets = average(baseline, "tickets")
+    recent_tickets = average(recent, "tickets")
+
+    def ratio(current: float, previous: float) -> float:
+        return current / previous if previous > 0.0 else (float("inf") if current else 1.0)
+
+    stake_multiplier = ratio(recent_stake, baseline_stake)
+    ticket_multiplier = ratio(recent_tickets, baseline_tickets)
+    return {
+        "window_days": window_days,
+        "baseline_days": len(baseline),
+        "baseline_average_stake_yen": baseline_stake,
+        "recent_average_stake_yen": recent_stake,
+        "stake_multiplier": stake_multiplier,
+        "baseline_average_tickets": baseline_tickets,
+        "recent_average_tickets": recent_tickets,
+        "ticket_multiplier": ticket_multiplier,
+        "stable": stake_multiplier <= 3.0 and ticket_multiplier <= 3.0,
+    }
+
+
 def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
     metrics = row["metrics"]
     confidence = row["confidence"]
@@ -251,6 +287,9 @@ def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
         gate["minimum_temporal_roi_above_one"] = (
             float(stability["minimum_roi"]) > 1.0
         )
+    recent = row.get("recent_allocation")
+    if isinstance(recent, Mapping):
+        gate["recent_allocation_stable"] = bool(recent["stable"])
     return gate
 
 
