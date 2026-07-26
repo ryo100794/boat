@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from boatrace_ai.web.dashboard import (
     MODEL_REPORT_HTML,
@@ -236,3 +237,57 @@ def test_database_evaluation_artifact_rejects_paths_outside_model_dir(
         {"candidates": [{"model_key": "outside", "result_path": str(outside)}]},
         tmp_path / "models",
     ) == ([], [], {})
+
+
+def test_database_evaluation_status_uses_current_attempt_elapsed(tmp_path) -> None:
+    db_path = tmp_path / "queue.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE model_evaluation_jobs (
+          job_id INTEGER PRIMARY KEY, task_type TEXT, category TEXT,
+          model_key TEXT, status TEXT, parameters TEXT,
+          attempt INTEGER, max_attempts INTEGER,
+          started_at TEXT, completed_at TEXT, decision TEXT,
+          result_summary TEXT, result_path TEXT, error TEXT
+        );
+        CREATE TABLE model_improvement_candidates (
+          job_id INTEGER PRIMARY KEY, metrics TEXT, parameters TEXT,
+          created_at TEXT
+        );
+        CREATE TABLE model_evaluation_job_runs (
+          job_id INTEGER, attempt INTEGER, status TEXT, started_at TEXT
+        );
+        """
+    )
+    original_started = datetime.now(timezone.utc) - timedelta(hours=8)
+    current_started = datetime.now(timezone.utc) - timedelta(minutes=5)
+    conn.execute(
+        "INSERT INTO model_evaluation_jobs VALUES (3564, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "listwise_feature_search",
+            "evaluation",
+            "retrying-search",
+            "running",
+            "{}",
+            4,
+            4,
+            original_started.isoformat(),
+            None,
+            None,
+            "{}",
+            None,
+            None,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO model_evaluation_job_runs VALUES (?, ?, ?, ?)",
+        (3564, 4, "running", current_started.isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+    row = _database_evaluation_status(db_path)["jobs"][0]
+
+    assert row["running"] is True
+    assert row["elapsed"].startswith("00:")

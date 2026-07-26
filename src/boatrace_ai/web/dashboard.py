@@ -2391,6 +2391,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 LIMIT 100
                 """
             ).fetchall()
+            current_attempt_started = {}
+            try:
+                run_rows = conn.execute(
+                    """
+                    SELECT r.job_id, r.started_at
+                    FROM model_evaluation_job_runs r
+                    JOIN model_evaluation_jobs j ON j.job_id = r.job_id
+                    WHERE r.attempt = j.attempt AND r.status = 'running'
+                    """
+                ).fetchall()
+                current_attempt_started = {
+                    int(row["job_id"]): row["started_at"] for row in run_rows
+                }
+            except Exception:
+                pass
     except Exception:
         return {"generated_at": generated_at, "jobs": [], "candidates": []}
 
@@ -2449,7 +2464,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "evaluation_days": metrics.get("evaluation_days"),
                 "promotion_eligible": metrics.get("promotion_eligible"),
                 "running": status == "running",
-                "elapsed": _database_job_elapsed(row.get("started_at"), status),
+                "elapsed": _database_job_elapsed(
+                    current_attempt_started.get(
+                        int(row["job_id"]), row.get("started_at")
+                    ),
+                    status,
+                ),
                 "completed_folds": None,
                 "expected_folds": None,
                 "roi": _float_or_none(metrics.get("roi")),
