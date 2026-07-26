@@ -251,7 +251,10 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll": holdout_bankroll,
         "bankroll_confidence": holdout_confidence,
         "promotion_gate": holdout_gate,
-        "promotion_eligible": all(holdout_gate.values()),
+        "research_only": args.research_only == "true",
+        "promotion_eligible": (
+            args.research_only != "true" and all(holdout_gate.values())
+        ),
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     _write_json_atomic(Path(args.output), result)
@@ -286,6 +289,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--evaluation-days", type=int, default=365)
     parser.add_argument("--db", required=True)
+    parser.add_argument(
+        "--research-only",
+        choices=("true", "false"),
+        default="false",
+    )
     parser.add_argument("--search-result", required=True)
     parser.add_argument("--cache-prefix", required=True)
     parser.add_argument("--output", required=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from boatrace_ai.bankroll_policy_search import (
     policy_candidates,
+    slice_day_range,
     successive_halving_search,
 )
 from boatrace_ai.packed_bankroll import pack_candidates
@@ -78,3 +79,17 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
     assert len(result["finalists"]) == 2
     assert result["selected"] == result["finalists"][0]
     assert "roi_ci95_lower" in result["selected"]["confidence"]
+    assert len(result["selected"]["temporal_stability"]["folds"]) == 3
+    assert (
+        "minimum_temporal_roi_above_one"
+        in result["selected"]["promotion_gate"]
+    )
+
+
+def test_slice_day_range_rebases_offsets() -> None:
+    packed = _packed_days()
+    sliced = slice_day_range(packed, 2, 5)
+    assert sliced.dates == ("2026-07-03", "2026-07-04", "2026-07-05")
+    assert sliced.offsets.tolist() == [0, 2, 4, 6]
+    assert sliced.tickets == 6
+    assert sliced.evaluated_races.tolist() == [1, 1, 1]

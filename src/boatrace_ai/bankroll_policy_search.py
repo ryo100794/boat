@@ -63,6 +63,28 @@ def slice_days(packed: PackedCandidates, stop_day: int) -> PackedCandidates:
         hit=packed.hit[:ticket_stop],
     )
 
+def slice_day_range(
+    packed: PackedCandidates,
+    start_day: int,
+    stop_day: int,
+) -> PackedCandidates:
+    start_day = max(0, min(int(start_day), len(packed.dates)))
+    stop_day = max(start_day, min(int(stop_day), len(packed.dates)))
+    ticket_start = int(packed.offsets[start_day])
+    ticket_stop = int(packed.offsets[stop_day])
+    return PackedCandidates(
+        dates=packed.dates[start_day:stop_day],
+        offsets=packed.offsets[start_day : stop_day + 1].copy() - ticket_start,
+        evaluated_races=packed.evaluated_races[start_day:stop_day].copy(),
+        race_codes=packed.race_codes[ticket_start:ticket_stop],
+        estimated_odds=packed.estimated_odds[ticket_start:ticket_stop],
+        estimated_ev=packed.estimated_ev[ticket_start:ticket_stop],
+        probability=packed.probability[ticket_start:ticket_stop],
+        actual_payout_yen=packed.actual_payout_yen[ticket_start:ticket_stop],
+        hit=packed.hit[ticket_start:ticket_stop],
+    )
+
+
 
 def successive_halving_search(
     packed: PackedCandidates,
@@ -119,13 +141,18 @@ def successive_halving_search(
         confidence = bootstrap_daily_bankroll(
             result["daily"], samples=bootstrap_samples, seed=seed
         )
+        stability = temporal_stability(packed, policy)
         final_rows.append({
             "policy": policy,
             "metrics": compact_metrics(result),
             "confidence": confidence,
+            "temporal_stability": stability,
         })
     final_rows.sort(
         key=lambda row: (
+            row["temporal_stability"]["all_minimum_evidence"],
+            row["temporal_stability"]["minimum_roi"],
+            row["temporal_stability"]["mean_roi_minus_std"],
             row["confidence"]["roi_ci95_lower"],
             row["confidence"]["probability_roi_above_one"],
             row["metrics"]["profit_yen"],
@@ -143,6 +170,42 @@ def successive_halving_search(
         "finalists": final_rows,
         "selected": selected,
         "promotion_eligible": all(selected["promotion_gate"].values()),
+    }
+
+
+def temporal_stability(
+    packed: PackedCandidates,
+    policy: Mapping[str, Any],
+    *,
+    folds: int = 3,
+) -> dict[str, Any]:
+    if folds < 2 or len(packed.dates) < folds:
+        raise ValueError("temporal stability requires at least two folds")
+    boundaries = np.linspace(0, len(packed.dates), folds + 1, dtype=int)
+    rows = []
+    for fold in range(folds):
+        fold_data = slice_day_range(
+            packed, int(boundaries[fold]), int(boundaries[fold + 1])
+        )
+        metrics = compact_metrics(evaluate_packed_policy(fold_data, policy))
+        metrics["fold"] = fold + 1
+        metrics["date_from"] = fold_data.dates[0]
+        metrics["date_through"] = fold_data.dates[-1]
+        metrics["minimum_evidence"] = (
+            int(metrics["tickets"]) >= 100
+            and int(metrics["hit_tickets"]) >= 10
+        )
+        rows.append(metrics)
+    rois = np.asarray([row["roi"] for row in rows], dtype=np.float64)
+    return {
+        "folds": rows,
+        "minimum_roi": float(rois.min()),
+        "mean_roi": float(rois.mean()),
+        "roi_std": float(rois.std()),
+        "mean_roi_minus_std": float(rois.mean() - rois.std()),
+        "all_minimum_evidence": all(
+            bool(row["minimum_evidence"]) for row in rows
+        ),
     }
 
 
@@ -169,7 +232,7 @@ def compact_metrics(result: Mapping[str, Any]) -> dict[str, Any]:
 def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
     metrics = row["metrics"]
     confidence = row["confidence"]
-    return {
+    gate = {
         "minimum_tickets": int(metrics["tickets"]) >= 300,
         "minimum_hits": int(metrics["hit_tickets"]) >= 20,
         "roi_above_one": float(metrics["roi"]) > 1.0,
@@ -178,6 +241,15 @@ def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
             float(confidence["probability_roi_above_one"]) >= 0.95
         ),
     }
+    stability = row.get("temporal_stability")
+    if isinstance(stability, Mapping):
+        gate["temporal_fold_evidence"] = bool(
+            stability["all_minimum_evidence"]
+        )
+        gate["minimum_temporal_roi_above_one"] = (
+            float(stability["minimum_roi"]) > 1.0
+        )
+    return gate
 
 
 def _valid_caps(policy: Mapping[str, Any]) -> bool:

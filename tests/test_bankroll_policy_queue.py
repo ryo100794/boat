@@ -46,6 +46,7 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
             "bootstrap_samples": 20000,
             "payout_prior_weights": "10,30,100",
             "timeout_seconds": 43200,
+            "research_only": True,
         }),
         app_root=root,
         python=python,
@@ -69,6 +70,7 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     assert command[command.index("--candidate-count") + 1] == "24"
     assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
     assert command[command.index("--evaluation-days") + 1] == "365"
+    assert command[command.index("--research-only") + 1] == "true"
 
 
 def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:
