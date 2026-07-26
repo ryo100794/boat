@@ -1981,6 +1981,23 @@ def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
         "-m",
         "boatrace_ai.lightgbm_recency_evaluation",
     ]
+
+    single_half_life_command, _ = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "half_lives": "none",
+                "architecture_presets": "compact,balanced,interaction",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert single_half_life_command[
+        single_half_life_command.index("--half-lives") + 1
+    ] == "none"
     assert command[command.index("--feature-cache") + 1].endswith(
         "lightgbm_v6_features_16384_drop_legacy_composites"
     )

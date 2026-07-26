@@ -759,7 +759,7 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
     return ",".join(selected)
 
 
-def _half_lives(params: dict[str, Any]) -> str:
+def _half_lives(params: dict[str, Any], *, minimum_candidates: int = 2) -> str:
     raw = params.get("half_lives", "none,180,365,730")
     if not isinstance(raw, str):
         raise ValueError("half_lives must be a comma-separated string")
@@ -785,8 +785,11 @@ def _half_lives(params: dict[str, Any]) -> str:
         if value not in seen:
             seen.add(value)
             candidates.append(normalized)
-    if len(candidates) < 2:
-        raise ValueError("half_lives must contain at least 2 distinct candidates")
+    if len(candidates) < minimum_candidates:
+        raise ValueError(
+            "half_lives must contain at least "
+            f"{minimum_candidates} distinct candidates"
+        )
     return ",".join(candidates)
 
 
@@ -1119,7 +1122,7 @@ def build_command(
         _integer(params, "timeout_seconds", 86400, 300, 86400)
         half_life_params = dict(params)
         half_life_params.setdefault("half_lives", "none,365")
-        half_lives = _half_lives(half_life_params)
+        half_lives = _half_lives(half_life_params, minimum_candidates=1)
         calibration_days = _integer(params, "calibration_days", 180, 30, 730)
         drop_params = dict(params)
         drop_params.setdefault("drop_feature_groups", "legacy_composites")
