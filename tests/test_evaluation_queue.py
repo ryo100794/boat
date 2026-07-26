@@ -1442,6 +1442,16 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "seed_daily_genetic_jobs",
+        lambda *_a, **_k: events.append("seed-genetic"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "genetic_cache_evaluation_date",
+        lambda _root: "2026-07-25",
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_periodic_jobs",
         lambda *_a, **_k: events.append("seed-periodic"),
     )
@@ -1467,6 +1477,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_worker(args) == 0
     assert events.index("commit:maintenance") < events.index("enter:claim")
     assert events.index("seed-market") < events.index("commit:maintenance")
+    assert events.index("seed-genetic") < events.index("commit:maintenance")
     assert events.index("seed-periodic") < events.index("commit:maintenance")
     assert events.index("enter:claim") < events.index("claim")
 

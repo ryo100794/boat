@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -253,18 +254,99 @@ def _available_models(model_dir: Path) -> list[dict[str, Any]]:
         path = model_dir / file_name
         if not path.is_file():
             continue
+        generated_at = datetime.fromtimestamp(
+            path.stat().st_mtime, timezone.utc
+        ).replace(microsecond=0)
+        generated_token = generated_at.strftime("%Y%m%dT%H%M%SZ")
         rows.append(
             {
                 "id": model_id,
-                "label": label,
+                "label": f"{label} @{generated_token}",
                 "path": str(path),
                 "model_file": file_name,
-                "modified_at": datetime.fromtimestamp(
-                    path.stat().st_mtime, timezone.utc
-                ).isoformat(timespec="seconds"),
+                "generated_at": generated_at.isoformat(timespec="seconds"),
+                "modified_at": generated_at.isoformat(timespec="seconds"),
             }
         )
     return rows
+
+
+def ranked_deployable_models(model_dir: Path, *, limit: int = 10) -> list[dict[str, Any]]:
+    models = _available_models(model_dir)
+    manifest_path = model_dir / "standardized_365d_v2" / "manifest.json"
+    metrics: dict[str, dict[str, Any]] = {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        metrics = {
+            str(row["model_id"]): row
+            for row in manifest.get("models") or []
+            if isinstance(row, dict) and row.get("model_id")
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    for model in models:
+        evaluation = metrics.get(str(model["id"])) or {}
+        model["evaluation"] = {
+            key: evaluation.get(key)
+            for key in (
+                "roi", "profit_yen", "entry_log_loss", "winner_top1_accuracy",
+                "trifecta_top5_hit_rate", "evaluated_races",
+            )
+        }
+        model["promotion_eligible"] = bool(
+            (evaluation.get("promotion") or {}).get("eligible")
+        )
+        model["unified_evaluation"] = bool(evaluation)
+    models.sort(
+        key=lambda row: (
+            not row["promotion_eligible"],
+            not row["unified_evaluation"],
+            -float((row["evaluation"].get("roi") or -1.0)),
+            -float((row["evaluation"].get("trifecta_top5_hit_rate") or -1.0)),
+            -float((row["evaluation"].get("winner_top1_accuracy") or -1.0)),
+            float((row["evaluation"].get("entry_log_loss") or 999.0)),
+            str(row["id"]),
+        )
+    )
+    return models[: max(1, min(10, int(limit)))]
+
+
+def top_model_day_simulations(
+    conn,
+    *,
+    race_date: str,
+    model_dir: Path = Path("data/models"),
+    now: datetime | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    ranked = ranked_deployable_models(model_dir, limit=limit)
+    simulations = []
+    for rank, model in enumerate(ranked, start=1):
+        result = day_bankroll_simulation(
+            conn,
+            race_date=race_date,
+            model_id=str(model["id"]),
+            model_dir=model_dir,
+            now=now,
+        )
+        simulations.append({
+            "rank": rank,
+            "model": model,
+            "stats": result["stats"],
+            "through_race_time_at": result.get("through_race_time_at"),
+            "warnings": result.get("warnings") or [],
+        })
+    return {
+        "date": race_date,
+        "generated_at": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
+        "ranking_basis": (
+            "unified_365d: promotion eligible, ROI, 3T5, winner top1, entry LogLoss; "
+            "deployable inference artifacts only"
+        ),
+        "requested_models": min(10, max(1, int(limit))),
+        "available_models": len(ranked),
+        "simulations": simulations,
+    }
 
 
 def _race_rows(conn, race_date: str) -> list[dict[str, Any]]:

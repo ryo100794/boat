@@ -48,6 +48,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "standardized_365d": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 8192},
     "historical_coverage_safe": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
@@ -958,6 +959,63 @@ def build_command(
             "--model-dir", str(app_root / "data" / "models"),
             "--output", str(output),
         ], output
+    if task_type == "genetic_island_search":
+        allowed = {
+            "evaluation_date", "cohort", "generation", "island_id",
+            "island_count", "max_generations", "seed", "population_size",
+            "local_generations", "elite_count", "train_races",
+            "validation_races", "batch_races", "immigrants", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported genetic_island_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        evaluation_date = _date(params, "evaluation_date")
+        cohort = str(params.get("cohort") or "").strip()
+        if not cohort or len(cohort) > 80:
+            raise ValueError("genetic cohort is required and must be at most 80 characters")
+        generation = _integer(params, "generation", 0, 0, 20)
+        island_id = _integer(params, "island_id", 0, 0, 63)
+        island_count = _integer(params, "island_count", 4, 2, 64)
+        if island_id >= island_count:
+            raise ValueError("genetic island_id must be lower than island_count")
+        max_generations = _integer(params, "max_generations", 3, 1, 20)
+        seed = _integer(params, "seed", 1, 0, 2_147_483_647)
+        population_size = _integer(params, "population_size", 8, 4, 32)
+        local_generations = _integer(params, "local_generations", 3, 1, 10)
+        elite_count = _integer(params, "elite_count", 2, 1, 8)
+        train_races = _integer(params, "train_races", 12000, 2000, 50000)
+        validation_races = _integer(params, "validation_races", 3000, 500, 15000)
+        batch_races = _integer(params, "batch_races", 500, 100, 2000)
+        _integer(params, "timeout_seconds", 7200, 300, 43200)
+        immigrants = params.get("immigrants") or []
+        if not isinstance(immigrants, list) or len(immigrants) > 8:
+            raise ValueError("genetic immigrants must be a list of at most 8 genomes")
+        return [
+            str(python), "-m", "boatrace_ai.genetic_islands",
+            "--db", db,
+            "--output", str(output),
+            "--cache-prefix", str(
+                app_root / "data/models/standardized_365d_v2/selected_cache"
+                / "listwise_search_8192_drop_base_pastlog"
+            ),
+            "--evaluation-date", evaluation_date,
+            "--cohort", cohort,
+            "--generation", str(generation),
+            "--island-id", str(island_id),
+            "--island-count", str(island_count),
+            "--max-generations", str(max_generations),
+            "--seed", str(seed),
+            "--population-size", str(population_size),
+            "--local-generations", str(local_generations),
+            "--elite-count", str(elite_count),
+            "--train-races", str(train_races),
+            "--validation-races", str(validation_races),
+            "--batch-races", str(batch_races),
+            "--immigrants-json", _json(immigrants),
+        ], output
     if task_type == "calibrated_mlp_recency_search":
         unsupported = set(params) - {
             "evaluation_date", "timeout_seconds", "half_lives", "calibration_days",
@@ -1201,13 +1259,17 @@ def build_command(
         targets = str(params.get("targets", "winner,top3_pl"))
         if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
             raise ValueError("unsupported targets")
-        alphas = str(params.get("alphas", "0.00001,0.0001"))
-        if alphas not in {
-            "0.000001,0.00001",
-            "0.00001,0.0001",
-            "0.0001,0.001",
-        }:
-            raise ValueError("unsupported alphas")
+        alpha_values = [
+            float(value) for value in str(
+                params.get("alphas", "0.00001,0.0001")
+            ).split(",") if value.strip()
+        ]
+        if not 1 <= len(alpha_values) <= 4 or not all(
+            math.isfinite(value) and 1e-7 <= value <= 1e-2
+            for value in alpha_values
+        ):
+            raise ValueError("alphas must contain 1-4 values between 1e-7 and 1e-2")
+        alphas = ",".join(f"{value:.12g}" for value in alpha_values)
         evaluation_date = _date(params, "evaluation_date")
         cache_root = Path("/tmp/boatrace-evaluation") / f"job-{job_id:08d}"
         combined = task_type == "combined_feature_search"
@@ -1596,6 +1658,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
+    if task_type == "genetic_island_search":
+        return "speculative_generation_complete"
     if task_type == "market_residual_walk_forward":
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
@@ -1961,6 +2025,111 @@ def enqueue_refinement(
     )
 
 
+def advance_genetic_islands(
+    conn: Any,
+    job: dict[str, Any],
+    *,
+    app_root: Path,
+) -> list[int]:
+    if job.get("task_type") != "genetic_island_search":
+        return []
+    params = dict(job.get("parameters") or {})
+    cohort = str(params["cohort"])
+    generation = int(params["generation"])
+    island_count = int(params["island_count"])
+    max_generations = int(params["max_generations"])
+    conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID + 100,))
+    rows = conn.execute(
+        """
+        SELECT job_id, parameters, result_path
+        FROM model_evaluation_jobs
+        WHERE task_type = 'genetic_island_search'
+          AND status = 'completed'
+          AND parameters->>'cohort' = ?
+          AND CAST(parameters->>'generation' AS INTEGER) = ?
+        ORDER BY CAST(parameters->>'island_id' AS INTEGER)
+        """,
+        (cohort, generation),
+    ).fetchall()
+    by_island = {int(row["parameters"]["island_id"]): row for row in rows}
+    if set(by_island) != set(range(island_count)):
+        return []
+    results: dict[int, dict[str, Any]] = {}
+    for island_id, row in by_island.items():
+        result_path = Path(str(row["result_path"]))
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise JobDependencyUnavailable(
+                f"genetic island result is unavailable: {result_path}"
+            ) from exc
+        if not isinstance(result, dict) or not isinstance(result.get("elites"), list):
+            raise ValueError(f"invalid genetic island result: {result_path}")
+        results[island_id] = result
+
+    inserted: list[int] = []
+    if generation + 1 < max_generations:
+        for island_id in range(island_count):
+            donor = results[(island_id - 1) % island_count]
+            immigrants = [
+                row["genome"] for row in donor["elites"][:2]
+                if isinstance(row, dict) and isinstance(row.get("genome"), dict)
+            ]
+            next_params = dict(params)
+            next_params.update({
+                "generation": generation + 1,
+                "island_id": island_id,
+                "seed": int(params["seed"]) + 1_000_003 + island_id,
+                "immigrants": immigrants,
+            })
+            job_id = enqueue_job(
+                conn,
+                task_type="genetic_island_search",
+                model_key=(
+                    f"genetic-listwise-{cohort}-g{generation + 1:02d}"
+                    f"-i{island_id:02d}"
+                ),
+                parameters=next_params,
+                priority=int(job.get("priority") or 50),
+                max_attempts=3,
+                parent_job_id=int(by_island[island_id]["job_id"]),
+            )
+            if job_id is not None:
+                inserted.append(job_id)
+        return inserted
+
+    champions = sorted(
+        (result["champion"] for result in results.values()),
+        key=lambda row: float(row["fitness"]),
+        reverse=True,
+    )
+    for rank, champion in enumerate(champions[:island_count], start=1):
+        genome = dict(champion["genome"])
+        model_key = f"genetic-champion-{cohort}-r{rank:02d}"
+        validation_id = enqueue_job(
+            conn,
+            task_type="listwise_feature_search",
+            model_key=model_key,
+            parameters={
+                "evaluation_date": params["evaluation_date"],
+                "n_features": 8192,
+                "epochs": int(genome["epochs"]),
+                "batch_races": 1000,
+                "learning_rate": float(genome["learning_rate"]),
+                "targets": str(genome["target"]),
+                "alphas": f"{float(genome['alpha']):.12g}",
+                "ev_threshold": float(genome["ev_threshold"]),
+                "timeout_seconds": 43200,
+            },
+            priority=max(1, int(job.get("priority") or 50) + 10 - rank),
+            max_attempts=3,
+            parent_job_id=int(job["job_id"]),
+        )
+        if validation_id is not None:
+            inserted.append(validation_id)
+    return inserted
+
+
 def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
     now = now or datetime.now(timezone.utc)
     inserted: list[int] = []
@@ -2018,6 +2187,16 @@ DEFAULT_WORK_TICKETS = (
     ("OPS-BACKUP-001", "GDriveバックアップのキュー移行", "バックアップ", "生データ転送を定期DBジョブとして管理する", "排他付き転送が完了し元データ削除と結果記録を確認する", 90, "in_progress", 65),
     ("OPS-REPO-SYNC-001", "Gitリポジトリの定期確認と安全な更新", "運用基盤", "DB定期ジョブでoriginを確認し安全条件を満たす時だけfast-forwardする", "dirty・履歴分岐・評価実行中は更新せず監査結果を残し、cleanかつidle時だけff-onlyで更新する", 92, "in_progress", 20),
     ("MODEL-OPT-001", "モデル再設計と収益ゲート収束", "モデル", "特徴量・教師・構造を同一評価軸で反復検証する", "未使用holdoutでROI・損益・確率指標の昇格基準を満たす", 100, "in_progress", 55),
+    (
+        "MODEL-GENETIC-001",
+        "日次遺伝的アイランド探索と監査付き昇格",
+        "モデル",
+        "最新確定データから複数の小型モデル島を並列評価し、移住と世代更新で候補を成長させる",
+        "投機評価と365日昇格評価を分離し、全ゲート合格候補だけを原子的に本番反映して監視・ロールバックできる",
+        100,
+        "in_progress",
+        30,
+    ),
     ("UI-MODEL-001", "モデル性能ページの評価表現統一", "WebUI", "評価母集団と指標表現を統一する", "全モデルが同じ列定義と評価群で比較できる", 70, "queued", 20),
     ("UI-PRED-001", "タイムラインとGantt的中判定の統一", "WebUI", "主系予測と購入的中を別指標として表示する", "同一レースで各表示の意味と判定が一致する", 80, "queued", 25),
     (
@@ -2306,6 +2485,74 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
     return inserted
 
 
+def seed_daily_genetic_jobs(
+    conn: Any,
+    *,
+    evaluation_date: str,
+    now: datetime | None = None,
+    island_count: int = 4,
+) -> list[int]:
+    existing = conn.execute(
+        """
+        SELECT 1 FROM model_evaluation_jobs
+        WHERE task_type = 'genetic_island_search'
+          AND parameters->>'evaluation_date' = ?
+        LIMIT 1
+        """,
+        (evaluation_date,),
+    ).fetchone()
+    if existing is not None:
+        return []
+    generated = (now or datetime.now(timezone.utc)).replace(microsecond=0)
+    cohort = generated.strftime("%Y%m%dT%H%M%SZ")
+    base_seed = int(generated.timestamp()) % 2_000_000_000
+    inserted: list[int] = []
+    for island_id in range(island_count):
+        job_id = enqueue_job(
+            conn,
+            task_type="genetic_island_search",
+            model_key=f"genetic-listwise-{cohort}-g00-i{island_id:02d}",
+            parameters={
+                "evaluation_date": evaluation_date,
+                "cohort": cohort,
+                "generation": 0,
+                "island_id": island_id,
+                "island_count": island_count,
+                "max_generations": 3,
+                "seed": base_seed + island_id,
+                "population_size": 8,
+                "local_generations": 3,
+                "elite_count": 2,
+                "train_races": 12000,
+                "validation_races": 3000,
+                "batch_races": 500,
+                "immigrants": [],
+                "timeout_seconds": 7200,
+            },
+            priority=55,
+            max_attempts=3,
+        )
+        if job_id is not None:
+            inserted.append(job_id)
+    return inserted
+
+
+def genetic_cache_evaluation_date(app_root: Path) -> str | None:
+    manifest_path = (
+        app_root / "data/models/standardized_365d_v2/selected_cache"
+        / "listwise_search_8192_drop_base_pastlog.manifest.json"
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    last_race_id = str(manifest.get("last_race_id") or "")
+    try:
+        return datetime.strptime(last_race_id[:10], "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
 MARKET_FORMAL_FROM_DATE = "2026-07-18"
 MARKET_EVALUATION_SOURCES = (
     (
@@ -2418,6 +2665,11 @@ def run_worker(args: argparse.Namespace) -> int:
                             app_root=app_root,
                             evaluation_date=evaluation_date,
                         )
+                        if genetic_cache_evaluation_date(app_root) == evaluation_date:
+                            seed_daily_genetic_jobs(
+                                conn,
+                                evaluation_date=evaluation_date,
+                            )
                         seeded_defaults = True
                     if (
                         args.schedule_periodic
@@ -2458,6 +2710,11 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         job,
                         decision,
+                        app_root=app_root,
+                    )
+                    advance_genetic_islands(
+                        conn,
+                        job,
                         app_root=app_root,
                     )
             except JobDependencyUnavailable as exc:

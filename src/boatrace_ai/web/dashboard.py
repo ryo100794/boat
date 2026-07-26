@@ -30,7 +30,7 @@ from ..standard_evaluation import (
     evaluate_promotions as evaluate_standard_promotions,
     protocol_sha256 as standard_protocol_sha256,
 )
-from .intraday_bankroll import day_bankroll_simulation
+from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulations
 from .prediction_summary import attach_latest_prediction_summaries
 
 
@@ -620,6 +620,9 @@ _DEFAULT_DATE_CACHE: dict[Path, tuple[float, str]] = {}
 _DAY_BANKROLL_CACHE: dict[
     tuple[Path, str, str], tuple[float, dict[str, Any]]
 ] = {}
+_TOP_MODEL_BANKROLL_CACHE: dict[
+    tuple[Path, str], tuple[float, dict[str, Any]]
+] = {}
 _VENUE_API_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
 _DAY_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
 _GUIDE_API_CACHE: dict[tuple[Path, str, int, int, int], tuple[float, dict[str, Any]]] = {}
@@ -651,6 +654,27 @@ def day_bankroll_cached(
             model_dir=db_path.parent / "models",
         )
     _DAY_BANKROLL_CACHE[key] = (now, payload)
+    return payload
+
+
+def top_model_bankroll_cached(
+    db_path: Path,
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    race_date = query_race_date(db_path, query)
+    key = (db_path, race_date)
+    now = time.monotonic()
+    cached = _TOP_MODEL_BANKROLL_CACHE.get(key)
+    if cached and now - cached[0] < 30.0:
+        return cached[1]
+    with connect(db_path) as conn:
+        payload = top_model_day_simulations(
+            conn,
+            race_date=race_date,
+            model_dir=db_path.parent / "models",
+            limit=10,
+        )
+    _TOP_MODEL_BANKROLL_CACHE[key] = (now, payload)
     return payload
 
 
@@ -775,6 +799,8 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_json(self, day_overview_fast(db_path, query))
                 elif parsed.path == "/api/day-bankroll":
                     send_json(self, day_bankroll_cached(db_path, query))
+                elif parsed.path == "/api/day-bankroll-top-models":
+                    send_json(self, top_model_bankroll_cached(db_path, query))
                 elif parsed.path == "/api/guide":
                     send_json(self, purchase_guide_fast(db_path, query))
                 elif parsed.path == "/api/live-wipe":
