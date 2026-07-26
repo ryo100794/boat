@@ -965,7 +965,8 @@ def build_command(
             "island_count", "max_generations", "seed", "population_size",
             "local_generations", "elite_count", "train_races",
             "validation_races", "batch_races", "immigrants", "mutation_rate",
-            "random_injections", "timeout_seconds",
+            "random_injections", "migration_interval", "migration_applied",
+            "diversity_rescue", "structural_elite_count", "timeout_seconds",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -991,6 +992,7 @@ def build_command(
         random_injections = _integer(
             params, "random_injections", 1, 0, population_size // 2
         )
+        _integer(params, "migration_interval", 3, 2, 10)
         train_races = _integer(params, "train_races", 12000, 2000, 50000)
         validation_races = _integer(params, "validation_races", 3000, 500, 15000)
         batch_races = _integer(params, "batch_races", 500, 100, 2000)
@@ -2150,14 +2152,49 @@ def advance_genetic_islands(
             if prior_best is not None and current_best <= prior_best + 1e-5
             else max(0.35, base_mutation - 0.10)
         )
+        structural_elites = {
+            (
+                result["champion"]["genome"].get("target"),
+                round(float(result["champion"]["genome"].get("learning_rate") or 0), 4),
+                int(result["champion"]["genome"].get("epochs") or 0),
+            )
+            for result in results.values()
+        }
+        diversity_rescue = len(structural_elites) <= max(2, island_count // 2)
+        migration_interval = int(params.get("migration_interval") or 3)
+        migration_applied = (
+            not diversity_rescue
+            and (generation + 1) % migration_interval == 0
+        )
+        random_injections = int(params.get("random_injections") or 1)
+        if diversity_rescue:
+            mutation_rate = max(mutation_rate, 0.80)
+            random_injections = max(
+                random_injections,
+                int(params.get("population_size") or 8) // 3,
+            )
         for island_id in range(island_count):
             donor = results[(island_id - 1) % island_count]
-            own_elite = results[island_id]["elites"][0]
-            donor_elite = donor["elites"][0]
-            immigrants = [
-                row["genome"] for row in (own_elite, donor_elite)
-                if isinstance(row, dict) and isinstance(row.get("genome"), dict)
-            ]
+            source_elites = list(results[island_id]["elites"][:2])
+            if migration_applied:
+                source_elites = [
+                    results[island_id]["elites"][0], donor["elites"][0]
+                ]
+            immigrants = []
+            seen_immigrants: set[tuple[Any, ...]] = set()
+            for row in source_elites:
+                if not isinstance(row, dict) or not isinstance(row.get("genome"), dict):
+                    continue
+                genome = row["genome"]
+                key = (
+                    genome.get("target"), float(genome.get("alpha") or 0),
+                    float(genome.get("learning_rate") or 0),
+                    int(genome.get("epochs") or 0),
+                )
+                if key in seen_immigrants:
+                    continue
+                seen_immigrants.add(key)
+                immigrants.append(genome)
             next_params = dict(params)
             next_params.update({
                 "generation": generation + 1,
@@ -2165,6 +2202,11 @@ def advance_genetic_islands(
                 "seed": int(params["seed"]) + 1_000_003 + island_id,
                 "immigrants": immigrants,
                 "mutation_rate": mutation_rate,
+                "random_injections": random_injections,
+                "migration_interval": migration_interval,
+                "migration_applied": migration_applied,
+                "diversity_rescue": diversity_rescue,
+                "structural_elite_count": len(structural_elites),
             })
             job_id = enqueue_job(
                 conn,
@@ -2628,6 +2670,7 @@ def seed_daily_genetic_jobs(
                 "elite_count": 2,
                 "mutation_rate": 0.35,
                 "random_injections": 1,
+                "migration_interval": 3,
                 "train_races": 12000,
                 "validation_races": 3000,
                 "batch_races": 500,

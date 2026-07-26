@@ -2426,6 +2426,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "max_generations": parameters.get("max_generations"),
                 "mutation_rate": parameters.get("mutation_rate", 0.35),
                 "random_injections": parameters.get("random_injections", 1),
+                "diversity_rescue": bool(parameters.get("diversity_rescue")),
+                "structural_elite_count": parameters.get("structural_elite_count"),
+                "migration_applied": bool(parameters.get("migration_applied")),
                 "immigrant_count": len(parameters.get("immigrants") or []),
                 "genetic_fitness": _float_or_none(metrics.get("genetic_fitness")),
                 "genetic_evaluated_individuals": (
