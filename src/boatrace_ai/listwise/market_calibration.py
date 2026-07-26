@@ -9,6 +9,7 @@ import os
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -123,44 +124,15 @@ def artifact_model_probabilities(
     hasher = artifact.get("hasher")
     if hasher is None:
         raise ValueError("model artifact lacks a feature hasher")
-    matrix = _ensure_sparse_index32(
-        hasher.transform([to_hashable(item["features"]) for item in feature_rows])
-    )
     classifier = artifact.get("classifier")
     model_kind = str(artifact.get("model_kind") or "").strip().lower()
     if model is None and classifier is not None:
-        if model_kind not in {"linear", "mlp", "lightgbm"}:
-            raise ValueError("unsupported classifier model kind for market scoring")
-        scaler = artifact.get("scaler")
-        transformed = matrix if scaler is None else scaler.transform(matrix)
-        raw = np.asarray(classifier.predict_proba(transformed), dtype=np.float64)
-        classes = np.asarray(getattr(classifier, "classes_", [0, 1]))
-        positive = np.flatnonzero(classes == 1)
-        if raw.ndim != 2 or raw.shape[0] != 6 or len(positive) != 1:
-            raise ValueError("classifier artifact must score six lanes for binary winner probability")
-        lane_scores = raw[:, int(positive[0])]
-        if not np.all(np.isfinite(lane_scores)) or np.any(lane_scores < 0.0):
-            raise ValueError("classifier artifact returned invalid winner probabilities")
-        total = float(lane_scores.sum())
-        if total <= 0.0:
-            raise ValueError("classifier artifact returned zero winner probability mass")
-        lane_probabilities = lane_scores / total
-        order_model = artifact.get("conditional_order_model")
-        trifecta_values = None
-        if order_model is not None:
-            if not isinstance(order_model, ConditionalOrderModel):
-                raise ValueError("classifier artifact has an invalid conditional order model")
-            trifecta_values = conditional_probabilities(
-                np.log(np.clip(lane_probabilities.reshape(1, 6), 1e-15, 1.0)),
-                order_model,
-            )[0]
-        return {
-            row["combination"]: float(row["probability"])
-            for row in trifecta_predictions(
-                {lane: float(lane_probabilities[lane - 1]) for lane in range(1, 7)},
-                trifecta_probabilities=trifecta_values,
-            )
-        }
+        return artifact_classifier_probabilities_batch(
+            artifact, [feature_rows]
+        )[0]
+    matrix = _ensure_sparse_index32(
+        hasher.transform([to_hashable(item["features"]) for item in feature_rows])
+    )
     if isinstance(model, ListwiseLinearModel):
         scores = np.asarray(model.scaler.transform(matrix).dot(model.weights)).reshape(6)
         lane_probabilities = stable_softmax(scores)
@@ -202,6 +174,105 @@ def artifact_model_probabilities(
             for combination, probability in zip(TRIFECTA_COMBINATIONS, probabilities)
         }
     raise ValueError("unsupported model artifact type for market scoring")
+
+
+def artifact_classifier_probabilities_batch(
+    artifact: dict[str, Any],
+    feature_races: list[list[dict[str, Any]]],
+) -> list[dict[str, float]]:
+    if not feature_races:
+        return []
+    classifier = artifact.get("classifier")
+    hasher = artifact.get("hasher")
+    model_kind = str(artifact.get("model_kind") or "").strip().lower()
+    if (
+        classifier is None
+        or hasher is None
+        or model_kind not in {"linear", "mlp", "lightgbm"}
+    ):
+        raise ValueError("unsupported classifier model kind for market scoring")
+    if any(len(feature_rows) != 6 for feature_rows in feature_races):
+        raise ValueError("classifier market scoring requires six lanes per race")
+    flattened = [row for feature_rows in feature_races for row in feature_rows]
+    matrix = _ensure_sparse_index32(
+        hasher.transform([to_hashable(item["features"]) for item in flattened])
+    )
+    scaler = artifact.get("scaler")
+    transformed = matrix if scaler is None else scaler.transform(matrix)
+    raw = np.asarray(classifier.predict_proba(transformed), dtype=np.float64)
+    classes = np.asarray(getattr(classifier, "classes_", [0, 1]))
+    positive = np.flatnonzero(classes == 1)
+    if (
+        raw.ndim != 2
+        or raw.shape[0] != len(feature_races) * 6
+        or len(positive) != 1
+    ):
+        raise ValueError(
+            "classifier artifact must score six lanes per race for binary winner probability"
+        )
+    lane_scores = raw[:, int(positive[0])].reshape(len(feature_races), 6)
+    if not np.all(np.isfinite(lane_scores)) or np.any(lane_scores < 0.0):
+        raise ValueError("classifier artifact returned invalid winner probabilities")
+    totals = lane_scores.sum(axis=1, keepdims=True)
+    if np.any(totals <= 0.0):
+        raise ValueError("classifier artifact returned zero winner probability mass")
+    lane_probabilities = lane_scores / totals
+    order_model = artifact.get("conditional_order_model")
+    trifecta_matrix = None
+    if order_model is not None:
+        if not isinstance(order_model, ConditionalOrderModel):
+            raise ValueError("classifier artifact has an invalid conditional order model")
+        trifecta_matrix = conditional_probabilities(
+            np.log(np.clip(lane_probabilities, 1e-15, 1.0)),
+            order_model,
+        )
+    result = []
+    for race_index, probabilities in enumerate(lane_probabilities):
+        trifecta_values = (
+            trifecta_matrix[race_index] if trifecta_matrix is not None else None
+        )
+        result.append(
+            {
+                row["combination"]: float(row["probability"])
+                for row in trifecta_predictions(
+                    {
+                        lane: float(probabilities[lane - 1])
+                        for lane in range(1, 7)
+                    },
+                    trifecta_probabilities=trifecta_values,
+                )
+            }
+        )
+    return result
+
+
+def iter_scored_artifact_feature_rows(
+    conn,
+    *,
+    target_ids: set[str],
+    artifact: dict[str, Any],
+    batch_races: int = 128,
+):
+    iterator = iter_artifact_feature_rows(
+        conn,
+        target_ids=target_ids,
+        artifact=artifact,
+    )
+    classifier_batch = bool(
+        artifact.get("classifier") is not None
+        and str(artifact.get("model_kind") or "").strip().lower()
+        in {"linear", "mlp", "lightgbm"}
+    )
+    while True:
+        batch = list(islice(iterator, batch_races if classifier_batch else 1))
+        if not batch:
+            return
+        probabilities = (
+            artifact_classifier_probabilities_batch(artifact, batch)
+            if classifier_batch
+            else [artifact_model_probabilities(artifact, batch[0])]
+        )
+        yield from zip(batch, probabilities)
 
 
 def normalized_market_probabilities(odds: dict[str, float]) -> dict[str, float]:
@@ -1565,7 +1636,7 @@ def score_real_odds_races(
     closing_odds_races = skipped_no_closing_odds = skipped_stale_closing_odds = 0
     momentum_races = 0
     momentum_skipped: dict[str, int] = defaultdict(int)
-    for feature_rows in iter_artifact_feature_rows(
+    for feature_rows, model_probabilities in iter_scored_artifact_feature_rows(
         conn,
         target_ids=target_ids,
         artifact=artifact,
@@ -1644,7 +1715,6 @@ def score_real_odds_races(
                     for key, value in closing_snapshot["odds"].items()
                 }
                 closing_odds_races += 1
-        model_probabilities = artifact_model_probabilities(artifact, feature_rows)
         odds = {key: float(value) for key, value in snapshot["odds"].items()}
         market_probabilities = normalized_market_probabilities(odds)
         if set(model_probabilities) != set(odds) or set(market_probabilities) != set(odds):

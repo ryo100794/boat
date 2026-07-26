@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from itertools import permutations
 
+import numpy as np
 import pytest
+from scipy import sparse
 
 from boatrace_ai.listwise.market_calibration import (
     artifact_drop_feature_groups,
+    artifact_classifier_probabilities_batch,
+    artifact_model_probabilities,
     blend_probabilities,
     filter_clean_market_days,
     fit_deployment_configuration,
@@ -78,6 +82,50 @@ def test_probability_metrics_include_winner_marginals() -> None:
     assert metrics["model_winner_top1_accuracy"] == 1.0
     assert metrics["market_winner_top1_accuracy"] == 1.0
     assert metrics["calibrated_winner_top1_accuracy"] == 1.0
+
+
+def test_classifier_market_probabilities_batch_matches_single_race_scoring() -> None:
+    class Hasher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def transform(self, rows):
+            self.calls += 1
+            return sparse.csr_matrix(
+                [[float(dict(row)["score"])] for row in rows],
+                dtype=np.float64,
+            )
+
+    class Classifier:
+        classes_ = np.asarray([0, 1])
+
+        def predict_proba(self, matrix):
+            positive = np.clip(matrix.toarray()[:, 0], 0.01, 0.99)
+            return np.column_stack((1.0 - positive, positive))
+
+    feature_races = [
+        [
+            {"features": {"score": 0.1 * lane}}
+            for lane in range(1, 7)
+        ]
+        for _race in range(3)
+    ]
+    artifact = {
+        "model": None,
+        "model_kind": "lightgbm",
+        "hasher": Hasher(),
+        "classifier": Classifier(),
+    }
+
+    batch = artifact_classifier_probabilities_batch(artifact, feature_races)
+    singles = [
+        artifact_model_probabilities(artifact, feature_rows)
+        for feature_rows in feature_races
+    ]
+
+    assert batch == singles
+    assert all(sum(row.values()) == pytest.approx(1.0) for row in batch)
+    assert artifact["hasher"].calls == 4
 
 
 def test_geometric_blend_has_exact_endpoints() -> None:
