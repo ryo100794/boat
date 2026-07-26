@@ -550,6 +550,36 @@ def test_load_incumbent_evaluation_enforces_frozen_protocol(tmp_path) -> None:
         )
 
 
+def test_optional_incumbent_mismatch_does_not_block_candidate_evaluation(
+    tmp_path,
+) -> None:
+    prediction_path = tmp_path / "prediction.json"
+    bankroll_path = tmp_path / "bankroll.json"
+    prediction_path.write_text(
+        __import__("json").dumps(
+            {"evaluation_race_set_sha256": "stale"}
+        ),
+        encoding="utf-8",
+    )
+    bankroll_path.write_text(
+        __import__("json").dumps(
+            {"evaluation_race_set_sha256": "stale"}
+        ),
+        encoding="utf-8",
+    )
+
+    prediction, bankroll, status = recency.load_compatible_incumbent_evaluation(
+        prediction_path,
+        bankroll_path,
+        protocol={"race_set_sha256": "current", "prediction_races": 10},
+    )
+
+    assert prediction is None
+    assert bankroll is None
+    assert status["available"] is False
+    assert status["reason"] == "incumbent evaluation race set hash mismatch"
+
+
 def test_protocol_race_validation_rejects_holdout_hash_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

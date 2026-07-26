@@ -724,6 +724,34 @@ def load_incumbent_evaluation(
     return prediction, bankroll
 
 
+def load_compatible_incumbent_evaluation(
+    prediction_path: Path,
+    bankroll_path: Path,
+    *,
+    protocol: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
+    """Load an optional incumbent without blocking absolute candidate evaluation."""
+    try:
+        prediction, bankroll = load_incumbent_evaluation(
+            prediction_path,
+            bankroll_path,
+            protocol=protocol,
+        )
+    except ValueError as exc:
+        return None, None, {
+            "available": False,
+            "reason": str(exc),
+            "prediction_path": str(prediction_path),
+            "bankroll_path": str(bankroll_path),
+        }
+    return prediction, bankroll, {
+        "available": True,
+        "reason": None,
+        "prediction_path": str(prediction_path),
+        "bankroll_path": str(bankroll_path),
+    }
+
+
 def prediction_promotion_gate(
     candidate: dict[str, Any],
     incumbent: dict[str, Any] | None,
@@ -904,8 +932,18 @@ def evaluate_recency_mlp(
             raise ValueError("both incumbent evaluation paths are required")
         incumbent_prediction: dict[str, Any] | None = None
         incumbent_bankroll: dict[str, Any] | None = None
+        incumbent_comparison = {
+            "available": False,
+            "reason": "incumbent evaluation paths were not provided",
+            "prediction_path": None,
+            "bankroll_path": None,
+        }
         if incumbent_prediction_path is not None and incumbent_bankroll_path is not None:
-            incumbent_prediction, incumbent_bankroll = load_incumbent_evaluation(
+            (
+                incumbent_prediction,
+                incumbent_bankroll,
+                incumbent_comparison,
+            ) = load_compatible_incumbent_evaluation(
                 incumbent_prediction_path,
                 incumbent_bankroll_path,
                 protocol=protocol,
@@ -1109,6 +1147,7 @@ def evaluate_recency_mlp(
         ),
         "promotion_gate": promotion_gate,
         "prediction_promotion_gate": prediction_gate,
+        "incumbent_comparison": incumbent_comparison,
         "protocol": protocol,
         "training_races": training_count,
         "training_race_set_sha256": training_hash,
