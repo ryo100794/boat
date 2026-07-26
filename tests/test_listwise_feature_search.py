@@ -17,9 +17,17 @@ from boatrace_ai.listwise.feature_search import (
     build_parser,
     day_boundary,
     feature_variants,
+    parse_ev_thresholds,
     search,
     selected_cache_candidates,
 )
+
+
+def test_ev_policy_thresholds_are_parsed_separately_from_model_search() -> None:
+    assert parse_ev_thresholds("1.0,1.2,1.5", 1.1) == (1.0, 1.2, 1.5)
+    assert parse_ev_thresholds(None, 1.1) == (1.1,)
+    with pytest.raises(ValueError, match="ev thresholds"):
+        parse_ev_thresholds("0.5,1.2", 1.1)
 
 
 def test_feature_search_covers_full_and_each_single_group_ablation() -> None:

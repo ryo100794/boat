@@ -44,6 +44,69 @@ from ..standard_evaluation import race_set_sha256
 
 
 FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
+DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
+
+
+def parse_ev_thresholds(value: str | None, fallback: float) -> tuple[float, ...]:
+    values = (
+        [float(item) for item in value.split(",") if item.strip()]
+        if value
+        else [float(fallback)]
+    )
+    if not 1 <= len(values) <= 10 or not all(0.8 <= item <= 3.0 for item in values):
+        raise ValueError("ev thresholds must contain 1-10 values between 0.8 and 3.0")
+    return tuple(dict.fromkeys(values))
+
+
+def select_ev_policy(
+    *,
+    rows_by_race: dict[str, Any],
+    race_keys: list[tuple[str, str, str, int]],
+    train_end: int,
+    selection_end: int,
+    payouts: dict[str, Any],
+    daily_budget_yen: int,
+    thresholds: tuple[float, ...],
+) -> tuple[float, list[dict[str, Any]]]:
+    train_races = {race_id for race_id, *_rest in race_keys[:train_end]}
+    selection_dates = {
+        race_date for _race_id, race_date, _jcd, _rno
+        in race_keys[train_end:selection_end]
+    }
+    results: list[dict[str, Any]] = []
+    for threshold in thresholds:
+        totals = zero_totals()
+        daily_rows: list[dict[str, Any]] = []
+        bankroll, profit_state = evaluate_bankroll_fold(
+            rows_by_race=rows_by_race,
+            train_races=train_races,
+            test_dates=selection_dates,
+            payouts=payouts,
+            policy=default_policy(
+                daily_budget_yen=daily_budget_yen,
+                ev_threshold=threshold,
+            ),
+            totals=totals,
+            daily_rows=daily_rows,
+            profit_state=(0, 0, 0),
+        )
+        results.append({
+            "ev_threshold": threshold,
+            "roi": bankroll["roi"],
+            "profit_yen": bankroll["profit_yen"],
+            "stake_yen": bankroll["stake_yen"],
+            "max_drawdown_yen": profit_state[2],
+        })
+    eligible = [row for row in results if float(row["stake_yen"] or 0) > 0]
+    selected = max(
+        eligible or results,
+        key=lambda row: (
+            float(row["roi"] or 0),
+            float(row["profit_yen"] or 0),
+            -float(row["max_drawdown_yen"] or 0),
+        ),
+    )
+    return float(selected["ev_threshold"]), results
 
 
 def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -> int:
@@ -695,6 +758,39 @@ def search(
             batch_races=args.batch_races,
             write_cache=args.cache_write_mode == "always",
         )
+    policy_scaler = fit_scaler(
+        dataset, race_end=train_end, batch_rows=args.batch_races * 6
+    )
+    policy_model, _policy_history = train_listwise_model(
+        dataset,
+        train_race_end=train_end,
+        target=str(selected["target"]),
+        alpha=float(selected["alpha"]),
+        learning_rate=args.learning_rate,
+        epochs=args.epochs,
+        batch_races=args.batch_races,
+        scaler=policy_scaler,
+    )
+    _selection_metrics, selection_rows = evaluate_range(
+        dataset,
+        policy_model,
+        race_start=train_end,
+        race_end=selection_end,
+        batch_races=args.batch_races,
+        keep_rows=True,
+    )
+    payouts = _load_trifecta_payouts(conn)
+    selected_ev_threshold, ev_policy_results = select_ev_policy(
+        rows_by_race=selection_rows,
+        race_keys=race_keys,
+        train_end=train_end,
+        selection_end=selection_end,
+        payouts=payouts,
+        daily_budget_yen=args.daily_budget_yen,
+        thresholds=parse_ev_thresholds(args.ev_thresholds, args.ev_threshold),
+    )
+    del policy_model, policy_scaler, selection_rows
+    gc.collect()
     scaler = fit_scaler(dataset, race_end=selection_end, batch_rows=args.batch_races * 6)
     final_model, final_history = train_listwise_model(
         dataset,
@@ -716,7 +812,7 @@ def search(
     )
     policy = default_policy(
         daily_budget_yen=args.daily_budget_yen,
-        ev_threshold=args.ev_threshold,
+        ev_threshold=selected_ev_threshold,
     )
     policy["feature_variant"] = selected["feature_variant"]
     policy["drop_feature_groups"] = list(selected_drops)
@@ -727,7 +823,7 @@ def search(
         rows_by_race=holdout_rows,
         train_races={race_id for race_id, *_rest in race_keys[:selection_end]},
         test_dates={race_date for _race_id, race_date, _jcd, _rno in race_keys[selection_end:]},
-        payouts=_load_trifecta_payouts(conn),
+        payouts=payouts,
         policy=policy,
         totals=totals,
         daily_rows=daily_rows,
@@ -781,6 +877,11 @@ def search(
         "final_training_history": final_history,
         "holdout": {**holdout_metrics, "evaluation_race_set_sha256": evaluation_hash, "bankroll": bankroll},
         "policy": policy,
+        "ev_policy_selection": {
+            "scope": "selection_window_only_before_untouched_holdout",
+            "selected_ev_threshold": selected_ev_threshold,
+            "candidates": ev_policy_results,
+        },
         "roi": bankroll["roi"],
         "profit_yen": bankroll["profit_yen"],
         "stake_yen": bankroll["stake_yen"],
@@ -838,6 +939,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--selection-fraction", type=float, default=0.90)
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--ev-threshold", type=float, default=1.20)
+    parser.add_argument("--ev-thresholds")
     parser.add_argument("--min-top1", type=float, default=0.5642)
     return parser
 

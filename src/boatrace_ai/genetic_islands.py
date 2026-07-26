@@ -18,9 +18,10 @@ from .hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .listwise.model import evaluate_range, fit_scaler, train_listwise_model
 
 
-MODEL = "genetic_listwise_island_v1"
-GENOME_VERSION = 1
+MODEL = "genetic_listwise_island_v2"
+GENOME_VERSION = 2
 TARGETS = ("winner", "top3_pl")
+POLICY_EV_THRESHOLD = 1.20
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ def genome_from_dict(value: dict[str, Any]) -> Genome:
     alpha = float(value["alpha"])
     learning_rate = float(value["learning_rate"])
     epochs = int(value["epochs"])
-    ev_threshold = float(value["ev_threshold"])
+    ev_threshold = POLICY_EV_THRESHOLD
     if not 1e-7 <= alpha <= 1e-2:
         raise ValueError("genetic alpha must be between 1e-7 and 1e-2")
     if not 0.001 <= learning_rate <= 0.2:
@@ -67,7 +68,7 @@ def random_genome(rng: random.Random) -> Genome:
         alpha=10 ** rng.uniform(-6.5, -2.5),
         learning_rate=10 ** rng.uniform(math.log10(0.004), math.log10(0.08)),
         epochs=rng.choice((1, 1, 1, 2)),
-        ev_threshold=rng.uniform(1.05, 1.8),
+        ev_threshold=POLICY_EV_THRESHOLD,
     )
 
 
@@ -77,7 +78,7 @@ def crossover(left: Genome, right: Genome, rng: random.Random) -> Genome:
         alpha=math.sqrt(left.alpha * right.alpha),
         learning_rate=math.sqrt(left.learning_rate * right.learning_rate),
         epochs=rng.choice((left.epochs, right.epochs)),
-        ev_threshold=(left.ev_threshold + right.ev_threshold) / 2.0,
+        ev_threshold=POLICY_EV_THRESHOLD,
     )
 
 
@@ -86,7 +87,6 @@ def mutate(genome: Genome, rng: random.Random, rate: float = 0.35) -> Genome:
     alpha = genome.alpha
     learning_rate = genome.learning_rate
     epochs = genome.epochs
-    ev_threshold = genome.ev_threshold
     if rng.random() < rate:
         target = rng.choice(TARGETS)
     if rng.random() < rate:
@@ -98,9 +98,7 @@ def mutate(genome: Genome, rng: random.Random, rate: float = 0.35) -> Genome:
         )
     if rng.random() < rate:
         epochs = rng.choice((1, 1, 2, 3))
-    if rng.random() < rate:
-        ev_threshold = min(3.0, max(1.0, ev_threshold + rng.gauss(0.0, 0.12)))
-    return Genome(target, alpha, learning_rate, epochs, ev_threshold)
+    return Genome(target, alpha, learning_rate, epochs, POLICY_EV_THRESHOLD)
 
 
 def speculative_fitness(metrics: dict[str, Any], genome: Genome) -> float:
@@ -294,6 +292,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         evaluator=evaluate,
         immigrants=immigrants,
         mutation_rate=args.mutation_rate,
+        random_injections=args.random_injections,
     )
     result = {
         "status": "completed",
@@ -304,6 +303,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "evaluation_scope": "speculative_recent_window_not_promotion_evidence",
         "promotion_eligible": False,
+        "genome_scope": "prediction_hyperparameters_only",
+        "excluded_policy_genes": ["ev_threshold"],
+        "policy_optimization_stage": "selection_window_before_formal_holdout",
         "cohort": args.cohort,
         "generation": args.generation,
         "island_id": args.island_id,
@@ -314,7 +316,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "local_generations": args.local_generations,
         "elite_count": args.elite_count,
         "base_mutation_rate": args.mutation_rate,
-        "random_injections_per_local_generation": 1,
+        "random_injections_per_local_generation": args.random_injections,
+        "configured_random_injections": args.random_injections,
         "train_races": args.train_races,
         "validation_races": args.validation_races,
         "cache_prefix": str(args.cache_prefix),
@@ -346,6 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-generations", type=int, default=3)
     parser.add_argument("--elite-count", type=int, default=2)
     parser.add_argument("--mutation-rate", type=float, default=0.35)
+    parser.add_argument("--random-injections", type=int, default=1)
     parser.add_argument("--train-races", type=int, default=12_000)
     parser.add_argument("--validation-races", type=int, default=3_000)
     parser.add_argument("--batch-races", type=int, default=500)

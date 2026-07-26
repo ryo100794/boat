@@ -6,8 +6,10 @@ import pytest
 
 from boatrace_ai.genetic_islands import (
     Genome,
+    POLICY_EV_THRESHOLD,
     evolve_island,
     genome_from_dict,
+    mutate,
     speculative_fitness,
 )
 
@@ -39,6 +41,16 @@ def test_speculative_fitness_is_not_a_promotion_flag() -> None:
     worse = dict(better, ranking_log_loss=1.5, winner_top1_accuracy=0.50)
 
     assert speculative_fitness(better, genome) > speculative_fitness(worse, genome)
+
+
+def test_policy_ev_threshold_is_not_evolved_with_prediction_genome() -> None:
+    source = Genome("winner", 1e-4, 0.02, 1, 2.75)
+
+    mutated = mutate(source, random.Random(3), rate=1.0)
+    restored = genome_from_dict({**source.as_dict(), "ev_threshold": 2.5})
+
+    assert mutated.ev_threshold == POLICY_EV_THRESHOLD
+    assert restored.ev_threshold == POLICY_EV_THRESHOLD
 
 
 def test_island_evolution_is_reproducible_and_preserves_immigrant() -> None:
@@ -73,3 +85,16 @@ def test_island_evolution_is_reproducible_and_preserves_immigrant() -> None:
     assert history[0]["random_injections"] == 1
     assert history[0]["mutation_rate"] >= 0.35
     assert history[0]["unique_genomes"] == 6
+
+
+def test_island_supports_multiple_random_injections() -> None:
+    _elites, history = evolve_island(
+        rng=random.Random(23),
+        population_size=8,
+        local_generations=2,
+        elite_count=2,
+        evaluator=_metrics,
+        random_injections=3,
+    )
+
+    assert history[0]["random_injections"] == 3

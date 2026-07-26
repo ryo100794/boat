@@ -821,6 +821,25 @@ def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
         )
 
 
+def test_feature_search_accepts_bounded_ev_policy_selection_grid(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "ev_thresholds": "1.0,1.2,1.5",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+
+    index = command.index("--ev-thresholds")
+    assert command[index + 1] == "1,1.2,1.5"
+    assert "--ev-threshold" not in command
+
+
 @pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
 def test_feature_search_rejects_injected_worker_or_path(tmp_path, parameter) -> None:
     with pytest.raises(

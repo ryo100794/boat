@@ -965,7 +965,7 @@ def build_command(
             "island_count", "max_generations", "seed", "population_size",
             "local_generations", "elite_count", "train_races",
             "validation_races", "batch_races", "immigrants", "mutation_rate",
-            "timeout_seconds",
+            "random_injections", "timeout_seconds",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -988,6 +988,9 @@ def build_command(
         local_generations = _integer(params, "local_generations", 3, 1, 10)
         elite_count = _integer(params, "elite_count", 2, 1, 8)
         mutation_rate = _number(params, "mutation_rate", 0.35, 0.10, 0.85)
+        random_injections = _integer(
+            params, "random_injections", 1, 0, population_size // 2
+        )
         train_races = _integer(params, "train_races", 12000, 2000, 50000)
         validation_races = _integer(params, "validation_races", 3000, 500, 15000)
         batch_races = _integer(params, "batch_races", 500, 100, 2000)
@@ -1014,6 +1017,7 @@ def build_command(
             "--local-generations", str(local_generations),
             "--elite-count", str(elite_count),
             "--mutation-rate", str(mutation_rate),
+            "--random-injections", str(random_injections),
             "--train-races", str(train_races),
             "--validation-races", str(validation_races),
             "--batch-races", str(batch_races),
@@ -1246,6 +1250,7 @@ def build_command(
             "targets",
             "alphas",
             "ev_threshold",
+            "ev_thresholds",
             "timeout_seconds",
         }
         unsupported = set(params) - allowed
@@ -1287,7 +1292,7 @@ def build_command(
             if combined
             else "boatrace_ai.listwise.feature_search"
         )
-        return [
+        command = [
             str(python), "-m", module,
             "--db", db,
             "--output", str(output),
@@ -1304,8 +1309,25 @@ def build_command(
             "--targets", targets,
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
-            "--ev-threshold", str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
-        ], output
+        ]
+        if params.get("ev_thresholds"):
+            thresholds = [
+                float(value) for value in str(params["ev_thresholds"]).split(",")
+                if value.strip()
+            ]
+            if not 1 <= len(thresholds) <= 10 or not all(
+                0.8 <= value <= 3.0 for value in thresholds
+            ):
+                raise ValueError("ev_thresholds must contain 1-10 values between 0.8 and 3.0")
+            command.extend([
+                "--ev-thresholds", ",".join(f"{value:.6g}" for value in thresholds)
+            ])
+        else:
+            command.extend([
+                "--ev-threshold",
+                str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
+            ])
+        return command, output
     if task_type == "conditional_payout_tail":
         allowed = {
             "training_through", "evaluation_from", "evaluation_through",
@@ -1526,7 +1548,10 @@ def build_command(
             "--gradient-tolerance", str(_number(params, "gradient_tolerance", 1e-4, 1e-7, 1e-2)),
             "--cg-tolerance", str(_number(params, "cg_tolerance", 1e-3, 1e-6, 1e-1)),
             "--daily-budget-yen", "10000",
-            "--ev-threshold", str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
+            "--ev-threshold", str(float(
+                (search_payload.get("policy") or {}).get("ev_threshold")
+                or _number(params, "ev_threshold", 1.2, 1.0, 3.0)
+            )),
         ], output
     raise ValueError(f"unsupported task_type: {task_type}")
 
@@ -1563,7 +1588,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
     visit(payload)
     if payload.get("model") and str(payload.get("model")).startswith(
-        "genetic_listwise_island_v1-"
+        "genetic_listwise_island_v"
     ):
         champion = payload.get("champion")
         if isinstance(champion, dict):
@@ -2157,15 +2182,31 @@ def advance_genetic_islands(
                 inserted.append(job_id)
         return inserted
 
-    champions = sorted(
+    ranked_champions = sorted(
         (result["champion"] for result in results.values()),
         key=lambda row: float(row["fitness"]),
         reverse=True,
     )
+    champions: list[dict[str, Any]] = []
+    seen_genomes: set[tuple[Any, ...]] = set()
+    for champion in ranked_champions:
+        genome = champion["genome"]
+        predictive_key = (
+            genome.get("target"),
+            float(genome.get("alpha") or 0),
+            float(genome.get("learning_rate") or 0),
+            int(genome.get("epochs") or 0),
+        )
+        if predictive_key in seen_genomes:
+            continue
+        seen_genomes.add(predictive_key)
+        champions.append(champion)
     for rank, champion in enumerate(champions[:island_count], start=1):
         genome = dict(champion["genome"])
+        genome_version = int(genome.get("genome_version") or 1)
         model_key = (
-            f"genetic-champion-{cohort}-g{generation:02d}-r{rank:02d}"
+            f"genetic-champion-v{genome_version}-{cohort}"
+            f"-g{generation:02d}-r{rank:02d}"
         )
         validation_id = enqueue_job(
             conn,
@@ -2179,7 +2220,7 @@ def advance_genetic_islands(
                 "learning_rate": float(genome["learning_rate"]),
                 "targets": str(genome["target"]),
                 "alphas": f"{float(genome['alpha']):.12g}",
-                "ev_threshold": float(genome["ev_threshold"]),
+                "ev_thresholds": "1.0,1.1,1.2,1.35,1.5",
                 "timeout_seconds": 43200,
             },
             priority=max(1, int(job.get("priority") or 50) + 10 - rank),
@@ -2586,6 +2627,7 @@ def seed_daily_genetic_jobs(
                 "local_generations": 3,
                 "elite_count": 2,
                 "mutation_rate": 0.35,
+                "random_injections": 1,
                 "train_races": 12000,
                 "validation_races": 3000,
                 "batch_races": 500,
