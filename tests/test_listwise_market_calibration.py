@@ -12,6 +12,7 @@ from boatrace_ai.listwise.market_calibration import (
     iter_artifact_feature_rows,
     normalized_market_probabilities,
     probability_metrics,
+    prepare_policy_matrix,
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
@@ -19,6 +20,7 @@ from boatrace_ai.listwise.market_calibration import (
     score_real_odds_races,
     select_calibrator,
     select_policy,
+    simulate_policy,
     snapshot_age_seconds,
     write_scored_cache,
     walk_forward_evaluate,
@@ -120,6 +122,35 @@ def test_policy_falls_back_to_no_bet_when_every_candidate_loses() -> None:
         ],
     )
     assert selected == {"name": "no_bet", "no_bet": True}
+
+
+def test_vectorized_policy_candidates_match_reference_simulation() -> None:
+    races = [_race("2026-07-18", index) for index in range(1, 7)]
+    calibrator = {"model_weight": 0.75, "temperature": 1.0}
+    policy = {
+        "name": "equivalence",
+        "ev_threshold": 1.05,
+        "max_odds": 40.0,
+        "max_tickets_per_race": 3,
+        "min_model_market_ratio": 1.0,
+        "staking_mode": "kelly_025",
+    }
+
+    reference = simulate_policy(
+        races,
+        calibrator=calibrator,
+        policy=policy,
+        daily_budget_yen=10_000,
+    )
+    vectorized = simulate_policy(
+        races,
+        calibrator=calibrator,
+        policy=policy,
+        daily_budget_yen=10_000,
+        prepared_policy_matrix=prepare_policy_matrix(races, calibrator),
+    )
+
+    assert vectorized == reference
 
 
 def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:

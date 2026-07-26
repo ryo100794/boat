@@ -320,10 +320,62 @@ def simulate_policy(
     calibrator: dict[str, float],
     policy: dict[str, Any],
     daily_budget_yen: int,
+    prepared_policy_matrix: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     evaluated_by_day: dict[str, set[str]] = defaultdict(set)
-    if not policy.get("no_bet"):
+    if not policy.get("no_bet") and prepared_policy_matrix is not None:
+        for race in races:
+            evaluated_by_day[str(race["race_date"])].add(str(race["race_id"]))
+        estimated_ev = prepared_policy_matrix["estimated_ev"]
+        odds_matrix = prepared_policy_matrix["odds"]
+        ratio_matrix = prepared_policy_matrix["model_market_ratio"]
+        mask = estimated_ev >= float(policy["ev_threshold"])
+        if policy.get("max_odds") is not None:
+            mask &= odds_matrix <= float(policy["max_odds"])
+        mask &= ratio_matrix >= float(policy["min_model_market_ratio"])
+        order = prepared_policy_matrix["order"]
+        ordered_mask = np.take_along_axis(mask, order, axis=1)
+        selected_mask = ordered_mask & (
+            np.cumsum(ordered_mask, axis=1)
+            <= int(policy["max_tickets_per_race"])
+        )
+        combinations = prepared_policy_matrix["combinations"]
+        probability_matrix = prepared_policy_matrix["probabilities"]
+        market_matrix = prepared_policy_matrix["market_probabilities"]
+        model_matrix = prepared_policy_matrix["model_probabilities"]
+        multiplier_matrix = prepared_policy_matrix["return_multipliers"]
+        for race_index, race in enumerate(races):
+            for ordered_index in np.flatnonzero(selected_mask[race_index]):
+                combination_index = int(order[race_index, ordered_index])
+                combination = combinations[combination_index]
+                odds = float(odds_matrix[race_index, combination_index])
+                probability = float(
+                    probability_matrix[race_index, combination_index]
+                )
+                market_probability = float(
+                    market_matrix[race_index, combination_index]
+                )
+                return_multiplier = float(
+                    multiplier_matrix[race_index, combination_index]
+                )
+                by_day[str(race["race_date"])].append(
+                    policy_candidate(
+                        race,
+                        combination=combination,
+                        probability=probability,
+                        market_probability=market_probability,
+                        model_probability=float(
+                            model_matrix[race_index, combination_index]
+                        ),
+                        odds=odds,
+                        estimated_ev=float(
+                            estimated_ev[race_index, combination_index]
+                        ),
+                        return_multiplier=return_multiplier,
+                    )
+                )
+    elif not policy.get("no_bet"):
         for race in races:
             race_id = str(race["race_id"])
             race_date = str(race["race_date"])
@@ -354,33 +406,18 @@ def simulate_policy(
                 if ratio < float(policy["min_model_market_ratio"]):
                     continue
                 candidates.append(
-                    {
-                        "race_id": race_id,
-                        "race_date": race_date,
-                        "jcd": race["jcd"],
-                        "rno": int(race["rno"]),
-                        "combination": combination,
-                        "probability": probability,
-                        "market_probability": market_probability,
-                        "model_probability": float(race["model_probabilities"][combination]),
-                        "estimated_odds": odds,
-                        "estimated_ev": estimated_ev,
-                        "historical_return_multiplier": return_multiplier,
-                        "estimated_payout_yen": odds * STAKE_YEN,
-                        "payout_history_count": 0,
-                        "odds_source": (
-                            "forecast_final_from_real_t5"
-                            if race.get("estimated_final_odds")
-                            else "real_t5"
+                    policy_candidate(
+                        race,
+                        combination=combination,
+                        probability=probability,
+                        market_probability=market_probability,
+                        model_probability=float(
+                            race["model_probabilities"][combination]
                         ),
-                        "actual_combination": race["actual_combination"],
-                        "actual_payout_yen": int(race["actual_payout_yen"]),
-                        "hit": combination == race["actual_combination"],
-                        "real_odds_snapshot_id": race.get("snapshot_id"),
-                        "real_odds_captured_at": race.get("captured_at"),
-                        "real_odds_deadline_at": race.get("odds_deadline_at"),
-                        "real_odds_combinations": len(race["odds"]),
-                    }
+                        odds=odds,
+                        estimated_ev=estimated_ev,
+                        return_multiplier=return_multiplier,
+                    )
                 )
             candidates.sort(
                 key=lambda item: (item["estimated_ev"], item["probability"]),
@@ -439,6 +476,106 @@ def simulate_policy(
         "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
         **reliability,
         "daily": daily,
+    }
+
+
+def policy_candidate(
+    race: dict[str, Any],
+    *,
+    combination: str,
+    probability: float,
+    market_probability: float,
+    model_probability: float,
+    odds: float,
+    estimated_ev: float,
+    return_multiplier: float,
+) -> dict[str, Any]:
+    return {
+        "race_id": str(race["race_id"]),
+        "race_date": str(race["race_date"]),
+        "jcd": race["jcd"],
+        "rno": int(race["rno"]),
+        "combination": combination,
+        "probability": probability,
+        "market_probability": market_probability,
+        "model_probability": model_probability,
+        "estimated_odds": odds,
+        "estimated_ev": estimated_ev,
+        "historical_return_multiplier": return_multiplier,
+        "estimated_payout_yen": odds * STAKE_YEN,
+        "payout_history_count": 0,
+        "odds_source": (
+            "forecast_final_from_real_t5"
+            if race.get("estimated_final_odds")
+            else "real_t5"
+        ),
+        "actual_combination": race["actual_combination"],
+        "actual_payout_yen": int(race["actual_payout_yen"]),
+        "hit": combination == race["actual_combination"],
+        "real_odds_snapshot_id": race.get("snapshot_id"),
+        "real_odds_captured_at": race.get("captured_at"),
+        "real_odds_deadline_at": race.get("odds_deadline_at"),
+        "real_odds_combinations": len(race["odds"]),
+    }
+
+
+def prepare_policy_matrix(
+    races: list[dict[str, Any]], calibrator: dict[str, float]
+) -> dict[str, Any]:
+    if not races:
+        return {}
+    combinations = sorted(
+        set(races[0]["model_probabilities"])
+        & set(races[0]["market_probabilities"])
+        & set(decision_odds(races[0]))
+    )
+    probabilities = []
+    market_probabilities = []
+    model_probabilities = []
+    odds_rows = []
+    multiplier_rows = []
+    for race in races:
+        calibrated = race.get("_policy_calibrated_probabilities")
+        if calibrated is None:
+            calibrated = blend_probabilities(
+                race["model_probabilities"],
+                race["market_probabilities"],
+                model_weight=float(calibrator["model_weight"]),
+                temperature=float(calibrator["temperature"]),
+            )
+        if set(calibrated) != set(combinations):
+            raise ValueError("policy races must share the same combinations")
+        decision = decision_odds(race)
+        multipliers = race.get("historical_return_multipliers") or {}
+        probabilities.append([float(calibrated[key]) for key in combinations])
+        market_probabilities.append(
+            [float(race["market_probabilities"][key]) for key in combinations]
+        )
+        model_probabilities.append(
+            [float(race["model_probabilities"][key]) for key in combinations]
+        )
+        odds_rows.append([float(decision[key]) for key in combinations])
+        multiplier_rows.append(
+            [float(multipliers.get(key, 1.0)) for key in combinations]
+        )
+    probability_matrix = np.asarray(probabilities, dtype=np.float64)
+    market_matrix = np.asarray(market_probabilities, dtype=np.float64)
+    model_matrix = np.asarray(model_probabilities, dtype=np.float64)
+    odds_matrix = np.asarray(odds_rows, dtype=np.float64)
+    multiplier_matrix = np.asarray(multiplier_rows, dtype=np.float64)
+    estimated_ev = probability_matrix * odds_matrix * multiplier_matrix
+    order = np.lexsort((-probability_matrix, -estimated_ev), axis=1)
+    return {
+        "combinations": combinations,
+        "probabilities": probability_matrix,
+        "market_probabilities": market_matrix,
+        "model_probabilities": model_matrix,
+        "odds": odds_matrix,
+        "return_multipliers": multiplier_matrix,
+        "estimated_ev": estimated_ev,
+        "model_market_ratio": probability_matrix
+        / np.maximum(EPSILON, market_matrix),
+        "order": order,
     }
 
 
@@ -534,6 +671,7 @@ def select_policy(
             temperature=float(calibrator["temperature"]),
         )
         prepared_races.append(item)
+    prepared_policy_matrix = prepare_policy_matrix(prepared_races, calibrator)
     minimum_tickets = max(10, math.ceil(len(races) * 0.05))
     minimum_stake = minimum_tickets * STAKE_YEN
     for policy in policies or default_policy_grid():
@@ -542,6 +680,7 @@ def select_policy(
             calibrator=calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
+            prepared_policy_matrix=prepared_policy_matrix,
         )
         eligible = bool(
             policy.get("no_bet")
