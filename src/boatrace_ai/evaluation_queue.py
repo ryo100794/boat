@@ -56,6 +56,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
+    "bankroll_policy_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -1389,6 +1390,83 @@ def build_command(
                 str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
             ])
         return command, output
+    if task_type == "bankroll_policy_search":
+        allowed = {
+            "source_job_id", "learning_rate", "epochs", "batch_races",
+            "candidate_count", "finalists", "bootstrap_samples",
+            "payout_prior_weights", "seed", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported bankroll_policy_search parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        source_job_id = _integer(
+            params, "source_job_id", 0, 1, 9_999_999_999
+        )
+        source_result = (
+            app_root / "data/models/evaluation_queue"
+            / f"job-{source_job_id:08d}.json"
+        ).resolve()
+        if not source_result.is_file():
+            raise JobDependencyUnavailable(
+                f"bankroll source result is not available yet: {source_result}"
+            )
+        source_payload = json.loads(source_result.read_text(encoding="utf-8"))
+        cache_value = source_payload.get("selected_cache_prefix")
+        if not cache_value:
+            raise ValueError("bankroll source result lacks selected_cache_prefix")
+        cache_prefix = Path(str(cache_value)).resolve()
+        cache_root = (app_root / "data/models/evaluation_cache").resolve()
+        if cache_root not in cache_prefix.parents:
+            raise ValueError("selected cache must be inside evaluation_cache")
+        learning_rate = _number(
+            params, "learning_rate", 0.02, 0.001, 0.2
+        )
+        epochs = _integer(params, "epochs", 2, 1, 6)
+        batch_races = _integer(params, "batch_races", 1000, 250, 5000)
+        candidate_count = _integer(
+            params, "candidate_count", 24, 8, 128
+        )
+        finalists = _integer(params, "finalists", 6, 2, 16)
+        if finalists > candidate_count:
+            raise ValueError("finalists must not exceed candidate_count")
+        bootstrap_samples = _integer(
+            params, "bootstrap_samples", 20000, 100, 100000
+        )
+        seed = _integer(params, "seed", 20260726, 0, 2_147_483_647)
+        _integer(params, "timeout_seconds", 43200, 300, 86400)
+        prior_values = [
+            float(value) for value in str(
+                params.get("payout_prior_weights", "10,30,100")
+            ).split(",") if value.strip()
+        ]
+        if not 1 <= len(prior_values) <= 5 or not all(
+            math.isfinite(value) and 1.0 <= value <= 1000.0
+            for value in prior_values
+        ):
+            raise ValueError(
+                "payout_prior_weights must contain 1-5 values in [1, 1000]"
+            )
+        return [
+            str(python), "-m",
+            "boatrace_ai.listwise.bankroll_policy_evaluation",
+            "--db", db,
+            "--search-result", str(source_result),
+            "--cache-prefix", str(cache_prefix),
+            "--output", str(output),
+            "--learning-rate", str(learning_rate),
+            "--epochs", str(epochs),
+            "--batch-races", str(batch_races),
+            "--candidate-count", str(candidate_count),
+            "--finalists", str(finalists),
+            "--bootstrap-samples", str(bootstrap_samples),
+            "--payout-prior-weights", ",".join(
+                f"{value:.12g}" for value in prior_values
+            ),
+            "--seed", str(seed),
+        ], output
     if task_type == "conditional_payout_tail":
         allowed = {
             "training_through", "evaluation_from", "evaluation_through",

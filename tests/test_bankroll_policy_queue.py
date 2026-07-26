@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
+
+
+def _job(parameters):
+    return {
+        "job_id": 99,
+        "task_type": "bankroll_policy_search",
+        "model_key": "policy",
+        "parameters": parameters,
+    }
+
+
+def _source(root, *, cache_prefix=None):
+    result = root / "data/models/evaluation_queue/job-00003565.json"
+    result.parent.mkdir(parents=True)
+    cache = cache_prefix or (
+        root
+        / "data/models/evaluation_cache/job-00003565"
+        / "listwise_search_8192_drop_research_correlates"
+    )
+    result.write_text(
+        json.dumps({"selected_cache_prefix": str(cache)}),
+        encoding="utf-8",
+    )
+    return result, cache
+
+
+def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
+    root = tmp_path / "boat"
+    source, cache = _source(root)
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job({
+            "source_job_id": 3565,
+            "learning_rate": 0.0075,
+            "epochs": 3,
+            "candidate_count": 24,
+            "finalists": 6,
+            "bootstrap_samples": 20000,
+            "payout_prior_weights": "10,30,100",
+            "timeout_seconds": 43200,
+        }),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert TASK_PROFILES["bankroll_policy_search"] == {
+        "category": "evaluation",
+        "memory_mb": 14336,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+        "disk_mb": 1024,
+    }
+    assert output == root / "data/models/evaluation_queue/job-00000099.json"
+    assert command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.bankroll_policy_evaluation",
+    ]
+    assert command[command.index("--search-result") + 1] == str(source)
+    assert command[command.index("--cache-prefix") + 1] == str(cache)
+    assert command[command.index("--candidate-count") + 1] == "24"
+    assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
+
+
+@pytest.mark.parametrize(
+    "parameters,message",
+    [
+        ({"source_job_id": 3565, "candidate_count": 7}, "candidate_count"),
+        (
+            {"source_job_id": 3565, "candidate_count": 8, "finalists": 9},
+            "finalists",
+        ),
+        (
+            {"source_job_id": 3565, "payout_prior_weights": "0,30"},
+            "payout_prior_weights",
+        ),
+        ({"source_job_id": 3565, "command": "sh"}, "unsupported"),
+    ],
+)
+def test_bankroll_policy_search_rejects_invalid_parameters(
+    tmp_path, parameters, message
+) -> None:
+    root = tmp_path / "boat"
+    _source(root)
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job(parameters),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )

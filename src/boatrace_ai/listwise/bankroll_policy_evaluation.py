@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+from sklearn.feature_extraction import FeatureHasher
+
+from ..bankroll_backtest import (
+    _build_payout_model,
+    _candidate_tickets,
+    _load_trifecta_payouts,
+)
+from ..bankroll_policy_search import promotion_gate, successive_halving_search
+from ..db import connection, init_db
+from ..feature_tuning import load_complete_race_ids
+from ..hashed_feature_dataset import load_hashed_dataset, race_ids_sha256
+from ..packed_bankroll import evaluate_packed_policy, pack_candidates
+from .direct_bankroll import bootstrap_daily_bankroll
+from .feature_search import _write_json_atomic
+from .model import evaluate_range, fit_scaler, train_listwise_model
+from .newton_refine import (
+    search_race_date_through,
+    validate_search_race_universe,
+)
+
+
+def packed_candidates_from_rows(
+    rows_by_race: dict[str, list[dict[str, Any]]],
+    *,
+    payouts: dict[str, dict[str, Any]],
+    train_races: set[str],
+    payout_prior_weight: float,
+) -> Any:
+    payout_model = _build_payout_model(
+        payouts,
+        train_races=train_races,
+        prior_weight=payout_prior_weight,
+    )
+    candidates_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    evaluated_by_date: dict[str, int] = defaultdict(int)
+    for race_id, rows in rows_by_race.items():
+        actual = payouts.get(race_id)
+        if len(rows) != 6 or actual is None:
+            continue
+        race_date = str(rows[0]["race_date"])
+        evaluated_by_date[race_date] += 1
+        candidates_by_date[race_date].extend(
+            _candidate_tickets(
+                rows,
+                actual=actual,
+                payout_model=payout_model,
+                ev_threshold=1.0,
+            )
+        )
+    return pack_candidates(candidates_by_date, evaluated_by_date)
+
+
+def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
+    started = time.perf_counter()
+    search_path = Path(args.search_result).resolve()
+    search = json.loads(search_path.read_text(encoding="utf-8"))
+    selected = search["selected"]
+    race_date_through = search_race_date_through(search)
+    race_keys = [
+        row
+        for row in load_complete_race_ids(conn)
+        if race_date_through is None or str(row[1]) <= race_date_through
+    ]
+    validate_search_race_universe(search, race_keys)
+    train_end = int(search["train_races"])
+    selection_end = train_end + int(search["selection_races"])
+    dropped = tuple(
+        str(value) for value in selected.get("drop_feature_groups") or ()
+    )
+    n_features = int(search["n_features"])
+    hasher = FeatureHasher(
+        n_features=n_features,
+        input_type="dict",
+        alternate_sign=False,
+    )
+    dataset = load_hashed_dataset(
+        Path(args.cache_prefix).resolve(),
+        race_keys=race_keys,
+        n_features=n_features,
+        drop_feature_groups=dropped,
+        hasher=hasher,
+    )
+    if dataset is None:
+        raise ValueError("strict selected feature cache validation failed")
+
+    selection_model, selection_history = _train_model(
+        dataset,
+        race_end=train_end,
+        selected=selected,
+        learning_rate=args.learning_rate,
+        epochs=args.epochs,
+        batch_races=args.batch_races,
+    )
+    selection_metrics, selection_rows = evaluate_range(
+        dataset,
+        selection_model,
+        race_start=train_end,
+        race_end=selection_end,
+        batch_races=args.batch_races,
+        keep_rows=True,
+    )
+    payouts = _load_trifecta_payouts(conn)
+    selection_train_races = {
+        race_id for race_id, *_rest in race_keys[:train_end]
+    }
+    base_policy = {
+        "daily_budget_yen": args.daily_budget_yen,
+        "ev_threshold": 1.20,
+        "payout_prior_weight": 30.0,
+        "fractional_kelly": 0.25,
+        "max_daily_exposure_fraction": 0.60,
+        "min_daily_exposure_fraction": 0.40,
+        "race_cap_fraction": 0.10,
+        "ticket_cap_fraction": 0.03,
+        "max_daily_tickets": 30,
+        "allocation_mode": "normalized_kelly",
+        "stake_granularity_yen": 100,
+        "min_stake_yen": 100,
+    }
+    prior_results = []
+    for index, prior_weight in enumerate(args.payout_prior_weights):
+        packed = packed_candidates_from_rows(
+            selection_rows,
+            payouts=payouts,
+            train_races=selection_train_races,
+            payout_prior_weight=prior_weight,
+        )
+        policy = {**base_policy, "payout_prior_weight": prior_weight}
+        search_result = successive_halving_search(
+            packed,
+            policy,
+            candidate_count=args.candidate_count,
+            finalists=args.finalists,
+            bootstrap_samples=args.bootstrap_samples,
+            seed=args.seed + index,
+        )
+        prior_results.append({
+            "payout_prior_weight": prior_weight,
+            "packed_tickets": packed.tickets,
+            **search_result,
+        })
+        print(json.dumps({
+            "phase": "policy_selection",
+            "payout_prior_weight": prior_weight,
+            "selected": search_result["selected"],
+        }, ensure_ascii=False), flush=True)
+    selected_search = max(
+        prior_results,
+        key=lambda row: (
+            row["selected"]["confidence"]["roi_ci95_lower"],
+            row["selected"]["confidence"]["probability_roi_above_one"],
+            row["selected"]["metrics"]["profit_yen"],
+        ),
+    )
+    selected_policy = dict(selected_search["selected"]["policy"])
+
+    final_model, final_history = _train_model(
+        dataset,
+        race_end=selection_end,
+        selected=selected,
+        learning_rate=args.learning_rate,
+        epochs=args.epochs,
+        batch_races=args.batch_races,
+    )
+    holdout_metrics, holdout_rows = evaluate_range(
+        dataset,
+        final_model,
+        race_start=selection_end,
+        race_end=len(race_keys),
+        batch_races=args.batch_races,
+        keep_rows=True,
+    )
+    holdout_packed = packed_candidates_from_rows(
+        holdout_rows,
+        payouts=payouts,
+        train_races={
+            race_id for race_id, *_rest in race_keys[:selection_end]
+        },
+        payout_prior_weight=float(selected_policy["payout_prior_weight"]),
+    )
+    holdout_bankroll = evaluate_packed_policy(holdout_packed, selected_policy)
+    holdout_confidence = bootstrap_daily_bankroll(
+        holdout_bankroll["daily"],
+        samples=args.bootstrap_samples,
+        seed=args.seed,
+    )
+    holdout_gate = promotion_gate({
+        "metrics": holdout_bankroll,
+        "confidence": holdout_confidence,
+    })
+    result = {
+        "model": "bankroll_policy_optimized_v1",
+        "comparison_role": "bankroll_policy_model",
+        "source_search_result": str(search_path),
+        "feature_schema_version": search["feature_schema_version"],
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "selected_prediction_model": selected,
+        "selection_protocol": (
+            "prediction model trained before selection interval; policy selected "
+            "on out-of-fold chronological predictions; final model retrained "
+            "through selection interval; holdout used once"
+        ),
+        "selection_races": len(selection_rows),
+        "selection_prediction_metrics": selection_metrics,
+        "selection_training_history": selection_history,
+        "policy_searches": prior_results,
+        "selected_policy": selected_policy,
+        "holdout_races": len(holdout_rows),
+        "holdout_prediction_metrics": holdout_metrics,
+        "holdout_training_history": final_history,
+        "evaluated_races": holdout_bankroll["evaluated_races"],
+        "selected_races": holdout_bankroll["selected_races"],
+        "tickets": holdout_bankroll["tickets"],
+        "hit_tickets": holdout_bankroll["hit_tickets"],
+        "hit_races": holdout_bankroll["hit_races"],
+        "stake_yen": holdout_bankroll["stake_yen"],
+        "return_yen": holdout_bankroll["return_yen"],
+        "profit_yen": holdout_bankroll["profit_yen"],
+        "roi": holdout_bankroll["roi"],
+        "max_drawdown_yen": holdout_bankroll["max_drawdown_yen"],
+        "ticket_hit_rate": holdout_bankroll["ticket_hit_rate"],
+        "race_hit_rate": holdout_bankroll["race_hit_rate"],
+        "bankroll": holdout_bankroll,
+        "bankroll_confidence": holdout_confidence,
+        "promotion_gate": holdout_gate,
+        "promotion_eligible": all(holdout_gate.values()),
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    _write_json_atomic(Path(args.output), result)
+    return result
+
+
+def _train_model(
+    dataset: Any,
+    *,
+    race_end: int,
+    selected: dict[str, Any],
+    learning_rate: float,
+    epochs: int,
+    batch_races: int,
+) -> tuple[Any, list[dict[str, Any]]]:
+    scaler = fit_scaler(dataset, race_end=race_end, batch_rows=batch_races * 6)
+    return train_listwise_model(
+        dataset,
+        train_race_end=race_end,
+        target=str(selected["target"]),
+        alpha=float(selected["alpha"]),
+        learning_rate=learning_rate,
+        epochs=epochs,
+        batch_races=batch_races,
+        scaler=scaler,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Leakage-safe listwise bankroll policy optimization."
+    )
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--search-result", required=True)
+    parser.add_argument("--cache-prefix", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--learning-rate", type=float, default=0.02)
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--batch-races", type=int, default=1_000)
+    parser.add_argument("--daily-budget-yen", type=int, default=10_000)
+    parser.add_argument("--candidate-count", type=int, default=24)
+    parser.add_argument("--finalists", type=int, default=6)
+    parser.add_argument("--bootstrap-samples", type=int, default=20_000)
+    parser.add_argument("--seed", type=int, default=20260726)
+    parser.add_argument(
+        "--payout-prior-weights",
+        type=lambda value: tuple(float(item) for item in value.split(",")),
+        default=(10.0, 30.0, 100.0),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    init_db(args.db)
+    with connection(args.db) as conn:
+        result = run(conn, args=args)
+    print(json.dumps({
+        key: value for key, value in result.items()
+        if key not in {
+            "bankroll", "policy_searches", "selection_training_history",
+            "holdout_training_history",
+        }
+    }, ensure_ascii=False, indent=2), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
