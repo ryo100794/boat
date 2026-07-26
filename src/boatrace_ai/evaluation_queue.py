@@ -964,7 +964,8 @@ def build_command(
             "evaluation_date", "cohort", "generation", "island_id",
             "island_count", "max_generations", "seed", "population_size",
             "local_generations", "elite_count", "train_races",
-            "validation_races", "batch_races", "immigrants", "timeout_seconds",
+            "validation_races", "batch_races", "immigrants", "mutation_rate",
+            "timeout_seconds",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -986,6 +987,7 @@ def build_command(
         population_size = _integer(params, "population_size", 8, 4, 32)
         local_generations = _integer(params, "local_generations", 3, 1, 10)
         elite_count = _integer(params, "elite_count", 2, 1, 8)
+        mutation_rate = _number(params, "mutation_rate", 0.35, 0.10, 0.85)
         train_races = _integer(params, "train_races", 12000, 2000, 50000)
         validation_races = _integer(params, "validation_races", 3000, 500, 15000)
         batch_races = _integer(params, "batch_races", 500, 100, 2000)
@@ -1011,6 +1013,7 @@ def build_command(
             "--population-size", str(population_size),
             "--local-generations", str(local_generations),
             "--elite-count", str(elite_count),
+            "--mutation-rate", str(mutation_rate),
             "--train-races", str(train_races),
             "--validation-races", str(validation_races),
             "--batch-races", str(batch_races),
@@ -1582,7 +1585,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 for key in (
                     "local_generation", "best_fitness", "min_fitness",
                     "q1_fitness", "median_fitness", "q3_fitness",
-                    "max_fitness", "std_fitness",
+                    "max_fitness", "std_fitness", "mutation_rate",
+                    "random_injections", "unique_genomes",
                 )
                 if row.get(key) is not None
             }
@@ -2099,10 +2103,34 @@ def advance_genetic_islands(
 
     inserted: list[int] = []
     if generation + 1 < max_generations:
+        current_best = max(
+            float(result["champion"]["fitness"]) for result in results.values()
+        )
+        prior = conn.execute(
+            """
+            SELECT MAX(CAST(result_summary->>'genetic_fitness' AS DOUBLE PRECISION))
+                   AS best_fitness
+            FROM model_evaluation_jobs
+            WHERE task_type = 'genetic_island_search'
+              AND status = 'completed'
+              AND parameters->>'cohort' = ?
+              AND CAST(parameters->>'generation' AS INTEGER) < ?
+            """,
+            (cohort, generation),
+        ).fetchone()
+        prior_best = float(prior["best_fitness"]) if prior and prior["best_fitness"] is not None else None
+        base_mutation = float(params.get("mutation_rate") or 0.35)
+        mutation_rate = (
+            min(0.80, base_mutation + 0.15)
+            if prior_best is not None and current_best <= prior_best + 1e-5
+            else max(0.35, base_mutation - 0.10)
+        )
         for island_id in range(island_count):
             donor = results[(island_id - 1) % island_count]
+            own_elite = results[island_id]["elites"][0]
+            donor_elite = donor["elites"][0]
             immigrants = [
-                row["genome"] for row in donor["elites"][:2]
+                row["genome"] for row in (own_elite, donor_elite)
                 if isinstance(row, dict) and isinstance(row.get("genome"), dict)
             ]
             next_params = dict(params)
@@ -2111,6 +2139,7 @@ def advance_genetic_islands(
                 "island_id": island_id,
                 "seed": int(params["seed"]) + 1_000_003 + island_id,
                 "immigrants": immigrants,
+                "mutation_rate": mutation_rate,
             })
             job_id = enqueue_job(
                 conn,
@@ -2556,6 +2585,7 @@ def seed_daily_genetic_jobs(
                 "population_size": 8,
                 "local_generations": 3,
                 "elite_count": 2,
+                "mutation_rate": 0.35,
                 "train_races": 12000,
                 "validation_races": 3000,
                 "batch_races": 500,

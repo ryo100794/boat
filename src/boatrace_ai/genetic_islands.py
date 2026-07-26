@@ -145,6 +145,8 @@ def evolve_island(
     elite_count: int,
     evaluator: Callable[[Genome], dict[str, Any]],
     immigrants: list[Genome] | None = None,
+    mutation_rate: float = 0.35,
+    random_injections: int = 1,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if population_size < 4:
         raise ValueError("population_size must be at least 4")
@@ -153,6 +155,8 @@ def evolve_island(
     population.extend(random_genome(rng) for _ in range(population_size - len(population)))
     history: list[dict[str, Any]] = []
     ranked: list[dict[str, Any]] = []
+    best_seen = -math.inf
+    stagnant_generations = 0
     for local_generation in range(local_generations):
         unique = {json.dumps(row.as_dict(), sort_keys=True): row for row in population}
         while len(unique) < population_size:
@@ -173,21 +177,40 @@ def evolve_island(
             key=lambda row: float(row["fitness"]),
             reverse=True,
         )
+        current_best = float(ranked[0]["fitness"])
+        if current_best > best_seen + 1e-7:
+            best_seen = current_best
+            stagnant_generations = 0
+        else:
+            stagnant_generations += 1
+        adaptive_rate = min(0.85, mutation_rate + 0.20 * stagnant_generations)
+        injection_count = (
+            min(max(0, random_injections), population_size - elite_count)
+            if local_generation + 1 < local_generations
+            else 0
+        )
         history.append({
             "local_generation": local_generation,
             "best_fitness": ranked[0]["fitness"],
             "best_genome": ranked[0]["genome"],
+            "mutation_rate": adaptive_rate,
+            "random_injections": injection_count,
+            "unique_genomes": len(unique),
             **_fitness_distribution(ranked),
         })
         elites = [genome_from_dict(row["genome"]) for row in ranked[:elite_count]]
         population = list(elites)
-        while len(population) < population_size:
+        offspring_target = population_size - injection_count
+        while len(population) < offspring_target:
             parents = (
                 rng.sample(elites, 2)
                 if len(elites) > 1
                 else [elites[0], elites[0]]
             )
-            population.append(mutate(crossover(*parents, rng), rng))
+            population.append(
+                mutate(crossover(*parents, rng), rng, rate=adaptive_rate)
+            )
+        population.extend(random_genome(rng) for _ in range(injection_count))
     return ranked[:elite_count], history
 
 
@@ -270,6 +293,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         elite_count=args.elite_count,
         evaluator=evaluate,
         immigrants=immigrants,
+        mutation_rate=args.mutation_rate,
     )
     result = {
         "status": "completed",
@@ -289,6 +313,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "population_size": args.population_size,
         "local_generations": args.local_generations,
         "elite_count": args.elite_count,
+        "base_mutation_rate": args.mutation_rate,
+        "random_injections_per_local_generation": 1,
         "train_races": args.train_races,
         "validation_races": args.validation_races,
         "cache_prefix": str(args.cache_prefix),
@@ -319,6 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--population-size", type=int, default=8)
     parser.add_argument("--local-generations", type=int, default=3)
     parser.add_argument("--elite-count", type=int, default=2)
+    parser.add_argument("--mutation-rate", type=float, default=0.35)
     parser.add_argument("--train-races", type=int, default=12_000)
     parser.add_argument("--validation-races", type=int, default=3_000)
     parser.add_argument("--batch-races", type=int, default=500)

@@ -70,3 +70,6 @@ def test_island_evolution_is_reproducible_and_preserves_immigrant() -> None:
     assert history[0]["median_fitness"] <= history[0]["q3_fitness"]
     assert history[0]["q3_fitness"] <= history[0]["max_fitness"]
     assert history[0]["std_fitness"] >= 0
+    assert history[0]["random_injections"] == 1
+    assert history[0]["mutation_rate"] >= 0.35
+    assert history[0]["unique_genomes"] == 6

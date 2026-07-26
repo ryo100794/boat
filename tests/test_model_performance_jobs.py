@@ -73,6 +73,7 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "row.genetic_fitness==null?NaN" in MODEL_REPORT_HTML
     assert "/api/reports/genetic-evolution" in MODEL_REPORT_HTML
     assert "setInterval(refreshGeneticEvolution,10000)" in MODEL_REPORT_HTML
+    assert "変異率" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
 
 
