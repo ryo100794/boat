@@ -32,7 +32,7 @@ from ..features import (
     stored_jst_timestamp_sql,
 )
 from ..modeling import trifecta_predictions
-from ..odds_quality import TRIFECTA_PARSER_VERSION
+from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
 from .flat_policy import (
     select_flat_policy,
@@ -328,12 +328,14 @@ def simulate_policy(
             race_id = str(race["race_id"])
             race_date = str(race["race_date"])
             evaluated_by_day[race_date].add(race_id)
-            calibrated = blend_probabilities(
-                race["model_probabilities"],
-                race["market_probabilities"],
-                model_weight=float(calibrator["model_weight"]),
-                temperature=float(calibrator["temperature"]),
-            )
+            calibrated = race.get("_policy_calibrated_probabilities")
+            if calibrated is None:
+                calibrated = blend_probabilities(
+                    race["model_probabilities"],
+                    race["market_probabilities"],
+                    model_weight=float(calibrator["model_weight"]),
+                    temperature=float(calibrator["temperature"]),
+                )
             candidates = []
             for combination, probability in calibrated.items():
                 odds = float(decision_odds(race)[combination])
@@ -423,6 +425,7 @@ def simulate_policy(
         return_yen += int(result["return_yen"])
         tickets += int(result["tickets"])
         hit_tickets += int(result["hit_tickets"])
+    reliability = bankroll_reliability_metrics(daily, evaluated_races=len(races))
     return {
         "evaluated_races": len(races),
         "race_days": len(daily),
@@ -434,7 +437,82 @@ def simulate_policy(
         "roi": return_yen / stake_yen if stake_yen else 0.0,
         "max_drawdown_yen": max_drawdown_yen,
         "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
+        **reliability,
         "daily": daily,
+    }
+
+
+def _wilson_interval(hits: int, trials: int, *, z: float = 1.96) -> tuple[float | None, float | None]:
+    if trials <= 0:
+        return None, None
+    probability = hits / trials
+    denominator = 1.0 + z * z / trials
+    center = (probability + z * z / (2.0 * trials)) / denominator
+    margin = (
+        z
+        * math.sqrt(
+            probability * (1.0 - probability) / trials
+            + z * z / (4.0 * trials * trials)
+        )
+        / denominator
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+def bankroll_reliability_metrics(
+    daily: list[dict[str, Any]], *, evaluated_races: int
+) -> dict[str, Any]:
+    tickets = sum(int(row.get("tickets") or 0) for row in daily)
+    hit_tickets = sum(int(row.get("hit_tickets") or 0) for row in daily)
+    selected_races = sum(int(row.get("races_bet") or 0) for row in daily)
+    hit_races = sum(int(row.get("hit_races") or 0) for row in daily)
+    stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily)
+    return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
+    largest_hit = max(
+        (int(row.get("largest_hit_return_yen") or 0) for row in daily),
+        default=0,
+    )
+    return_square_sum = sum(
+        int(row.get("hit_return_square_sum_yen2") or 0) for row in daily
+    )
+    ticket_lower, ticket_upper = _wilson_interval(hit_tickets, tickets)
+    race_lower, race_upper = _wilson_interval(hit_races, selected_races)
+    return_without_largest = max(0, return_yen - largest_hit)
+    concentration = (
+        largest_hit / return_yen if return_yen > 0 else None
+    )
+    hhi = (
+        return_square_sum / (return_yen * return_yen)
+        if return_yen > 0
+        else None
+    )
+    return {
+        "selected_races": selected_races,
+        "hit_races": hit_races,
+        "race_selection_rate": (
+            selected_races / evaluated_races if evaluated_races else None
+        ),
+        "avg_tickets_per_selected_race": (
+            tickets / selected_races if selected_races else None
+        ),
+        "ticket_hit_rate": hit_tickets / tickets if tickets else None,
+        "ticket_hit_rate_ci95_lower": ticket_lower,
+        "ticket_hit_rate_ci95_upper": ticket_upper,
+        "race_hit_rate": hit_races / selected_races if selected_races else None,
+        "race_hit_rate_ci95_lower": race_lower,
+        "race_hit_rate_ci95_upper": race_upper,
+        "evaluated_race_hit_rate": (
+            hit_races / evaluated_races if evaluated_races else None
+        ),
+        "largest_hit_return_yen": largest_hit,
+        "largest_hit_return_share": concentration,
+        "hit_return_hhi": hhi,
+        "effective_hit_count": 1.0 / hhi if hhi else None,
+        "return_without_largest_hit_yen": return_without_largest,
+        "profit_without_largest_hit_yen": return_without_largest - stake_yen,
+        "roi_without_largest_hit": (
+            return_without_largest / stake_yen if stake_yen else None
+        ),
     }
 
 
@@ -446,11 +524,21 @@ def select_policy(
     policies: Iterable[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rows = []
+    prepared_races = []
+    for race in races:
+        item = dict(race)
+        item["_policy_calibrated_probabilities"] = blend_probabilities(
+            race["model_probabilities"],
+            race["market_probabilities"],
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        prepared_races.append(item)
     minimum_tickets = max(10, math.ceil(len(races) * 0.05))
     minimum_stake = minimum_tickets * STAKE_YEN
     for policy in policies or default_policy_grid():
         result = simulate_policy(
-            races,
+            prepared_races,
             calibrator=calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
@@ -1189,6 +1277,10 @@ def walk_forward_evaluate(
         daily_budget_yen=daily_budget_yen,
         calibrator_strategy=calibrator_strategy,
     )
+    reliability = bankroll_reliability_metrics(
+        daily_rows,
+        evaluated_races=len(evaluation_races),
+    )
     return {
         "model": (
             "odds_path_operational_v1"
@@ -1234,6 +1326,7 @@ def walk_forward_evaluate(
         "roi": return_yen / stake_yen if stake_yen else 0.0,
         "max_drawdown_yen": max_drawdown_yen,
         "profitable_folds": profitable_folds,
+        **reliability,
         "folds": folds,
         "daily": daily_rows,
         "flat_policy_walk_forward": {
@@ -1322,6 +1415,11 @@ def score_real_odds_races(
         if str(race_date) >= from_date
         and (through_date is None or str(race_date) <= through_date)
     }
+    prefetched_snapshots = prefetch_trifecta_snapshots(
+        conn,
+        target_ids=target_ids,
+        max_snapshot_age_seconds=max_snapshot_age_seconds,
+    )
     payouts = _load_trifecta_payouts(conn)
     races = []
     skipped_no_odds = skipped_stale_odds = skipped_no_payout = 0
@@ -1339,11 +1437,17 @@ def score_real_odds_races(
         if payout is None:
             skipped_no_payout += 1
             continue
-        snapshot = latest_trifecta_odds_before_deadline(
-            conn,
-            race_id,
-            min_combinations=120,
-            decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
+        snapshot = (
+            (prefetched_snapshots.get(race_id) or {}).get(
+                MODEL_DECISION_LEAD_MINUTES
+            )
+            if prefetched_snapshots is not None
+            else latest_trifecta_odds_before_deadline(
+                conn,
+                race_id,
+                min_combinations=120,
+                decision_lead_minutes=MODEL_DECISION_LEAD_MINUTES,
+            )
         )
         if snapshot is None or len(snapshot.get("odds") or {}) != 120:
             skipped_no_odds += 1
@@ -1356,21 +1460,32 @@ def score_real_odds_races(
         ):
             skipped_stale_odds += 1
             continue
-        momentum_fields, momentum_reason = earlier_market_fields(
-            conn,
-            race_id,
-            current_snapshot=snapshot,
-            max_snapshot_age_seconds=max_snapshot_age_seconds,
-        )
+        if prefetched_snapshots is not None:
+            momentum_fields, momentum_reason = earlier_market_fields_from_snapshot(
+                (prefetched_snapshots.get(race_id) or {}).get(10),
+                current_snapshot=snapshot,
+                max_snapshot_age_seconds=max_snapshot_age_seconds,
+            )
+        else:
+            momentum_fields, momentum_reason = earlier_market_fields(
+                conn,
+                race_id,
+                current_snapshot=snapshot,
+                max_snapshot_age_seconds=max_snapshot_age_seconds,
+            )
         if momentum_fields is None:
             momentum_skipped[momentum_reason] += 1
         else:
             momentum_races += 1
-        closing_snapshot = latest_trifecta_odds_before_deadline(
-            conn,
-            race_id,
-            min_combinations=120,
-            decision_lead_minutes=0,
+        closing_snapshot = (
+            (prefetched_snapshots.get(race_id) or {}).get(0)
+            if prefetched_snapshots is not None
+            else latest_trifecta_odds_before_deadline(
+                conn,
+                race_id,
+                min_combinations=120,
+                decision_lead_minutes=0,
+            )
         )
         closing_odds = None
         if closing_snapshot is None or len(closing_snapshot.get("odds") or {}) != 120:
@@ -1421,11 +1536,18 @@ def score_real_odds_races(
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "captured_at": snapshot.get("captured_at"),
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
-                **odds_path_fields(
-                    conn,
-                    race_id,
-                    current_snapshot=snapshot,
-                    max_snapshot_age_seconds=max_snapshot_age_seconds,
+                **(
+                    odds_path_fields_from_snapshots(
+                        prefetched_snapshots.get(race_id) or {},
+                        current_snapshot=snapshot,
+                    )
+                    if prefetched_snapshots is not None
+                    else odds_path_fields(
+                        conn,
+                        race_id,
+                        current_snapshot=snapshot,
+                        max_snapshot_age_seconds=max_snapshot_age_seconds,
+                    )
                 ),
                 **(momentum_fields or {}),
             }
@@ -1468,6 +1590,19 @@ def earlier_market_fields(
         min_combinations=120,
         decision_lead_minutes=10,
     )
+    return earlier_market_fields_from_snapshot(
+        earlier,
+        current_snapshot=current_snapshot,
+        max_snapshot_age_seconds=max_snapshot_age_seconds,
+    )
+
+
+def earlier_market_fields_from_snapshot(
+    earlier: dict[str, Any] | None,
+    *,
+    current_snapshot: dict[str, Any],
+    max_snapshot_age_seconds: float,
+) -> tuple[dict[str, Any] | None, str]:
     if earlier is None or len(earlier.get("odds") or {}) != 120:
         return None, "missing"
     age = snapshot_age_seconds(earlier)
@@ -1542,6 +1677,43 @@ def odds_path_fields(
                 "market_probabilities": normalized_market_probabilities(odds),
             }
         )
+    return odds_path_fields_from_snapshots(
+        {},
+        current_snapshot=current_snapshot,
+        earlier_snapshots=points,
+    )
+
+
+def odds_path_fields_from_snapshots(
+    snapshots: dict[int, dict[str, Any]],
+    *,
+    current_snapshot: dict[str, Any],
+    earlier_snapshots: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    points = list(earlier_snapshots or [])
+    if earlier_snapshots is None:
+        seen = set()
+        for lead in (30, 20, 10, 7):
+            snapshot = snapshots.get(lead)
+            if snapshot is None or snapshot.get("snapshot_id") in seen:
+                continue
+            odds = {
+                key: float(value)
+                for key, value in (snapshot.get("odds") or {}).items()
+            }
+            if len(odds) != 120:
+                continue
+            seen.add(snapshot.get("snapshot_id"))
+            points.append(
+                {
+                    "minutes_before_decision": float(
+                        lead - MODEL_DECISION_LEAD_MINUTES
+                    ),
+                    "snapshot_id": snapshot.get("snapshot_id"),
+                    "captured_at": snapshot.get("captured_at"),
+                    "market_probabilities": normalized_market_probabilities(odds),
+                }
+            )
     current_odds = {
         key: float(value)
         for key, value in (current_snapshot.get("odds") or {}).items()
@@ -1555,6 +1727,104 @@ def odds_path_fields(
         }
     )
     return {"odds_path": points, "odds_path_points": len(points)}
+
+
+def prefetch_trifecta_snapshots(
+    conn,
+    *,
+    target_ids: set[str],
+    max_snapshot_age_seconds: float,
+) -> dict[str, dict[int, dict[str, Any]]] | None:
+    if getattr(conn, "dialect", "sqlite") != "postgresql":
+        return None
+    if not target_ids:
+        return {}
+    captured_at = stored_jst_timestamp_sql(conn, "os.captured_at")
+    start_at = stored_jst_timestamp_sql(conn, "r.deadline_at")
+    result: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    race_ids = sorted(target_ids)
+    for chunk_start in range(0, len(race_ids), 500):
+        chunk = race_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _race_id in chunk)
+        rows = conn.execute(
+            f"""
+            WITH leads(decision_lead_minutes) AS (
+              VALUES (0), (5), (7), (10), (20), (30)
+            )
+            SELECT
+              r.race_id,
+              leads.decision_lead_minutes,
+              selected.snapshot_id,
+              selected.captured_at,
+              selected.source_update_time,
+              selected.odds_deadline_at,
+              selected.betting_deadline_at,
+              ot.combination,
+              ot.odds
+            FROM races r
+            CROSS JOIN leads
+            JOIN LATERAL (
+              SELECT
+                os.snapshot_id,
+                os.captured_at,
+                os.source_update_time,
+                {start_at} - (
+                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
+                ) AS odds_deadline_at,
+                {start_at} - INTERVAL '5 minutes' AS betting_deadline_at
+              FROM odds_snapshots os
+              WHERE os.race_id = r.race_id
+                AND os.bet_type = 'trifecta'
+                AND os.parser_version = ?
+                AND {captured_at} <= {start_at} - (
+                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
+                )
+                AND {captured_at} >= {start_at} - (
+                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
+                ) - (? * INTERVAL '1 second')
+                AND (
+                  SELECT COUNT(*)
+                  FROM odds_trifecta complete_odds
+                  WHERE complete_odds.snapshot_id = os.snapshot_id
+                    AND complete_odds.odds IS NOT NULL
+                    AND complete_odds.odds > 0
+                ) = 120
+              ORDER BY {captured_at} DESC, os.snapshot_id DESC
+              LIMIT 1
+            ) selected ON TRUE
+            JOIN odds_trifecta ot ON ot.snapshot_id = selected.snapshot_id
+            WHERE r.race_id IN ({placeholders})
+              AND ot.odds IS NOT NULL
+              AND ot.odds > 0
+            ORDER BY r.race_id, leads.decision_lead_minutes, ot.combination
+            """,
+            [
+                TRIFECTA_PARSER_VERSION,
+                float(max_snapshot_age_seconds),
+                *chunk,
+            ],
+        ).fetchall()
+        grouped: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in rows:
+            key = (str(row["race_id"]), int(row["decision_lead_minutes"]))
+            snapshot = grouped.setdefault(
+                key,
+                {
+                    "snapshot_id": int(row["snapshot_id"]),
+                    "captured_at": str(row["captured_at"]),
+                    "source_update_time": row["source_update_time"],
+                    "odds_deadline_at": str(row["odds_deadline_at"]),
+                    "betting_deadline_at": str(row["betting_deadline_at"]),
+                    "decision_lead_minutes": key[1],
+                    "odds": {},
+                },
+            )
+            snapshot["odds"][str(row["combination"])] = float(row["odds"])
+        for (race_id, lead), snapshot in grouped.items():
+            if plausible_trifecta_odds(snapshot["odds"]):
+                snapshot["odds_count"] = 120
+                result[race_id][lead] = snapshot
+    return dict(result)
 
 
 def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:

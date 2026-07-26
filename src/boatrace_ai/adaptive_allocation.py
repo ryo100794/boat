@@ -184,6 +184,7 @@ def allocate_adaptive_day(
     profit_yen = return_yen - stake_yen
     selected_races = {str(item["race_id"]) for item in selected}
     hit_races = {str(item["race_id"]) for item in selected if item["hit"]}
+    hit_returns = [int(item["return_yen"]) for item in selected if item["hit"]]
     return {
         "race_date": race_date,
         "evaluated_races": len(evaluated_races),
@@ -194,6 +195,8 @@ def allocate_adaptive_day(
         "races_bet": len(selected_races),
         "hit_tickets": hit_tickets,
         "hit_races": len(hit_races),
+        "largest_hit_return_yen": max(hit_returns, default=0),
+        "hit_return_square_sum_yen2": sum(value * value for value in hit_returns),
         "stake_yen": stake_yen,
         "return_yen": return_yen,
         "profit_yen": profit_yen,
