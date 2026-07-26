@@ -6,6 +6,7 @@ import pytest
 
 from scripts.analyze_market_curvature import (
     attach_disagreement_curvature,
+    no_eligible_races_payload,
     standardized_payload,
 )
 from scripts.analyze_market_momentum import evaluate_momentum_candidate
@@ -89,4 +90,23 @@ def test_curvature_probe_uses_prior_days_and_never_promotes_directly() -> None:
     assert payload["status"] in {
         "candidate_requires_new_day_confirmation",
         "rejected_no_incremental_value",
+    }
+
+
+def test_curvature_probe_records_no_eligible_day_as_skipped() -> None:
+    payload = no_eligible_races_payload(
+        source_cache=Path("scores.joblib"),
+        evaluation_date="2026-07-26",
+        disagreement_clip=2.0,
+    )
+
+    assert payload == {
+        "status": "skipped_no_eligible_races",
+        "promotion_eligible": False,
+        "source_cache": "scores.joblib",
+        "feature": "clipped_log_model_market_disagreement_times_absolute",
+        "disagreement_clip": 2.0,
+        "evaluation_date": "2026-07-26",
+        "evaluated_races": 0,
+        "skip_reason": "evaluation date has no eligible momentum races",
     }
