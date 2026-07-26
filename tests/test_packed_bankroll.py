@@ -15,6 +15,7 @@ POLICY = {
     "allocation_mode": "normalized_kelly",
     "stake_granularity_yen": 100,
     "min_stake_yen": 100,
+    "ev_threshold": 1.0,
 }
 
 
@@ -43,7 +44,7 @@ def test_packed_policy_matches_reference_allocator() -> None:
         "2026-07-01",
         candidates,
         {"r1", "r2"},
-        **POLICY,
+        **{key: value for key, value in POLICY.items() if key != "ev_threshold"},
     )
     packed = pack_candidates({"2026-07-01": candidates}, {"2026-07-01": 2})
     result = evaluate_packed_policy(packed, POLICY)
@@ -62,3 +63,13 @@ def test_packed_policy_keeps_empty_days() -> None:
     assert result["evaluated_races"] == 12
     assert result["tickets"] == 0
     assert result["daily"][0]["race_date"] == "2026-07-01"
+
+
+def test_ev_threshold_is_applied_without_repacking() -> None:
+    candidates = [
+        _candidate("r1", "1-2-3", 0.20, 8.0, hit=True),
+        _candidate("r1", "1-3-2", 0.11, 10.0),
+    ]
+    packed = pack_candidates({"2026-07-01": candidates}, {"2026-07-01": 1})
+    result = evaluate_packed_policy(packed, {**POLICY, "ev_threshold": 1.2})
+    assert result["candidate_tickets"] == 1

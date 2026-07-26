@@ -95,7 +95,8 @@ def evaluate_packed_policy(
     )
 
     totals = {
-        "candidate_tickets": packed.tickets,
+        "raw_candidate_tickets": packed.tickets,
+        "candidate_tickets": 0,
         "positive_edge_tickets": 0,
         "allocation_candidate_tickets": 0,
         "evaluated_races": int(packed.evaluated_races.sum()),
@@ -127,7 +128,7 @@ def evaluate_packed_policy(
         result["cumulative_profit_yen"] = cumulative_profit
         daily.append(result)
         for key in (
-            "positive_edge_tickets", "allocation_candidate_tickets", "tickets",
+            "candidate_tickets", "positive_edge_tickets", "allocation_candidate_tickets", "tickets",
             "selected_races", "hit_tickets", "hit_races", "stake_yen", "return_yen",
         ):
             totals[key] += int(result[key])
@@ -143,6 +144,8 @@ def evaluate_packed_policy(
         ticket_hit_rate=(totals["hit_tickets"] / totals["tickets"] if totals["tickets"] else 0.0),
         race_hit_rate=(totals["hit_races"] / totals["selected_races"] if totals["selected_races"] else 0.0),
         max_drawdown_yen=max_drawdown,
+        races_bet=totals["selected_races"],
+        selected_tickets=totals["tickets"],
         daily=daily,
     )
     return totals
@@ -161,11 +164,14 @@ def _evaluate_day(
     hit = packed.hit[start:stop]
     payout = packed.actual_payout_yen[start:stop]
     edge = ev - 1.0
-    valid = (odds > 1.0) & (edge > 0.0) & np.isfinite(odds) & np.isfinite(edge)
+    threshold = float(policy.get("ev_threshold", 1.0))
+    candidate_mask = (ev >= threshold) & np.isfinite(ev)
+    candidate_count = int(candidate_mask.sum())
+    valid = candidate_mask & (odds > 1.0) & (edge > 0.0) & np.isfinite(odds)
     indices = np.flatnonzero(valid)
     positive_count = int(indices.size)
     if not positive_count:
-        return _empty_day(stop - start)
+        return _empty_day(candidate_count)
 
     kelly = edge[indices] / (odds[indices] - 1.0)
     valid_kelly = (kelly > 0.0) & np.isfinite(kelly)
@@ -210,7 +216,7 @@ def _evaluate_day(
     returns = np.where(hit[indices], stakes * payout[indices] // 100, 0)
     hit_mask = hit[indices]
     return {
-        "candidate_tickets": stop - start,
+        "candidate_tickets": candidate_count,
         "positive_edge_tickets": positive_count,
         "allocation_candidate_tickets": int(len(fractions)),
         "tickets": int(len(indices)),

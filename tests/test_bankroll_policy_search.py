@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from boatrace_ai.bankroll_policy_search import (
+    policy_candidates,
+    successive_halving_search,
+)
+from boatrace_ai.packed_bankroll import pack_candidates
+
+
+POLICY = {
+    "daily_budget_yen": 10_000,
+    "ev_threshold": 1.0,
+    "payout_prior_weight": 30.0,
+    "fractional_kelly": 0.25,
+    "max_daily_exposure_fraction": 0.60,
+    "min_daily_exposure_fraction": 0.40,
+    "race_cap_fraction": 0.10,
+    "ticket_cap_fraction": 0.03,
+    "max_daily_tickets": 30,
+    "allocation_mode": "normalized_kelly",
+    "stake_granularity_yen": 100,
+    "min_stake_yen": 100,
+}
+
+
+def _packed_days():
+    candidates_by_date = {}
+    evaluated = {}
+    for day in range(1, 9):
+        date = f"2026-07-{day:02d}"
+        candidates_by_date[date] = [
+            {
+                "race_id": f"r{day}",
+                "estimated_odds": 8.0,
+                "estimated_ev": 1.6,
+                "probability": 0.2,
+                "actual_payout_yen": 800,
+                "hit": day % 2 == 0,
+            },
+            {
+                "race_id": f"r{day}",
+                "estimated_odds": 10.0,
+                "estimated_ev": 1.1,
+                "probability": 0.11,
+                "actual_payout_yen": 1000,
+                "hit": False,
+            },
+        ]
+        evaluated[date] = 1
+    return pack_candidates(candidates_by_date, evaluated)
+
+
+def test_policy_candidates_are_unique_and_reproducible() -> None:
+    first = policy_candidates(POLICY, count=16, seed=7)
+    second = policy_candidates(POLICY, count=16, seed=7)
+    assert first == second
+    assert first[0] == POLICY
+    assert len({
+        tuple(candidate[key] for key in (
+            "ev_threshold", "fractional_kelly", "max_daily_exposure_fraction",
+            "min_daily_exposure_fraction", "race_cap_fraction",
+            "ticket_cap_fraction", "max_daily_tickets",
+        ))
+        for candidate in first
+    }) == 16
+
+
+def test_successive_halving_bootstraps_only_finalists() -> None:
+    result = successive_halving_search(
+        _packed_days(),
+        POLICY,
+        candidate_count=9,
+        finalists=2,
+        bootstrap_samples=100,
+        seed=7,
+    )
+    assert [row["evaluated_candidates"] for row in result["stages"]] == [9, 3, 2]
+    assert len(result["finalists"]) == 2
+    assert result["selected"] == result["finalists"][0]
+    assert "roi_ci95_lower" in result["selected"]["confidence"]
