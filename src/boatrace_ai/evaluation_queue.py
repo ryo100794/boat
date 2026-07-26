@@ -1394,7 +1394,7 @@ def build_command(
         allowed = {
             "source_job_id", "learning_rate", "epochs", "batch_races",
             "candidate_count", "finalists", "bootstrap_samples",
-            "payout_prior_weights", "seed", "timeout_seconds",
+            "payout_prior_weights", "evaluation_days", "seed", "timeout_seconds",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1436,6 +1436,9 @@ def build_command(
             params, "bootstrap_samples", 20000, 100, 100000
         )
         seed = _integer(params, "seed", 20260726, 0, 2_147_483_647)
+        evaluation_days = _integer(
+            params, "evaluation_days", 365, 365, 365
+        )
         _integer(params, "timeout_seconds", 43200, 300, 86400)
         prior_values = [
             float(value) for value in str(
@@ -1466,6 +1469,7 @@ def build_command(
                 f"{value:.12g}" for value in prior_values
             ),
             "--seed", str(seed),
+            "--evaluation-days", str(evaluation_days),
         ], output
     if task_type == "conditional_payout_tail":
         allowed = {

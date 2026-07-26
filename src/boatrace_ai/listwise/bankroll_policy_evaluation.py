@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,21 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
     validate_search_race_universe(search, race_keys)
     train_end = int(search["train_races"])
     selection_end = train_end + int(search["selection_races"])
+    if race_date_through is None:
+        raise ValueError("search result lacks race_date_through")
+    evaluation_through = date.fromisoformat(str(race_date_through))
+    evaluation_from = evaluation_through - timedelta(
+        days=args.evaluation_days - 1
+    )
+    holdout_start = next(
+        (
+            index for index in range(selection_end, len(race_keys))
+            if date.fromisoformat(str(race_keys[index][1])) >= evaluation_from
+        ),
+        len(race_keys),
+    )
+    if holdout_start >= len(race_keys):
+        raise ValueError("standard evaluation window contains no holdout races")
     dropped = tuple(
         str(value) for value in selected.get("drop_feature_groups") or ()
     )
@@ -174,7 +190,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
     holdout_metrics, holdout_rows = evaluate_range(
         dataset,
         final_model,
-        race_start=selection_end,
+        race_start=holdout_start,
         race_end=len(race_keys),
         batch_races=args.batch_races,
         keep_rows=True,
@@ -204,6 +220,9 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "feature_schema_version": search["feature_schema_version"],
         "race_universe_sha256": race_ids_sha256(race_keys),
         "selected_prediction_model": selected,
+        "evaluation_from": evaluation_from.isoformat(),
+        "evaluation_through": evaluation_through.isoformat(),
+        "evaluation_days": args.evaluation_days,
         "selection_protocol": (
             "prediction model trained before selection interval; policy selected "
             "on out-of-fold chronological predictions; final model retrained "
@@ -265,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Leakage-safe listwise bankroll policy optimization."
     )
+    parser.add_argument("--evaluation-days", type=int, default=365)
     parser.add_argument("--db", required=True)
     parser.add_argument("--search-result", required=True)
     parser.add_argument("--cache-prefix", required=True)

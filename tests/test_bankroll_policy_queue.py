@@ -5,6 +5,7 @@ import json
 import pytest
 
 from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
+from boatrace_ai.listwise.bankroll_policy_evaluation import build_parser
 
 
 def _job(parameters):
@@ -67,6 +68,13 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     assert command[command.index("--cache-prefix") + 1] == str(cache)
     assert command[command.index("--candidate-count") + 1] == "24"
     assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
+    assert command[command.index("--evaluation-days") + 1] == "365"
+
+
+def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--db", "x", "--search-result", "x", "--cache-prefix", "x", "--output", "x"])
+    assert args.evaluation_days == 365
 
 
 @pytest.mark.parametrize(
