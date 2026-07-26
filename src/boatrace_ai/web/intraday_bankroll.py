@@ -58,6 +58,7 @@ def day_bankroll_simulation(
     _feature_cache: dict[str, list[dict[str, Any]]] | None = None,
     _odds_cache: dict[str, tuple[dict[str, Any] | None, int]] | None = None,
     _historical_odds: dict[str, float] | None = None,
+    _prediction_cache: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     now_jst = (now or datetime.now(timezone.utc)).astimezone(JST)
     models = _available_models(model_dir)
@@ -139,7 +140,9 @@ def day_bankroll_simulation(
                 _odds_cache[race_id] = cached_odds
         snapshot, rejected = cached_odds
         rejected_snapshots += rejected
-        if _feature_cache is None:
+        if _prediction_cache is not None:
+            predictions = _prediction_cache.get(race_id, {})
+        elif _feature_cache is None:
             predictions = _score_model(
                 conn,
                 race_id=str(race["race_id"]),
@@ -347,7 +350,18 @@ def top_model_day_simulations(
     feature_cache: dict[str, list[dict[str, Any]]] = {}
     odds_cache: dict[str, tuple[dict[str, Any] | None, int]] = {}
     historical_odds = _historical_payout_odds(conn, race_date)
+    for race in _race_rows(conn, race_date):
+        race_id = str(race["race_id"])
+        feature_cache[race_id] = prediction_features(
+            conn,
+            race_id=race_id,
+            include_odds=False,
+        )
     for rank, model in enumerate(ranked, start=1):
+        predictions = _batch_score_model(
+            feature_cache=feature_cache,
+            model_path=Path(model["path"]),
+        )
         result = day_bankroll_simulation(
             conn,
             race_date=race_date,
@@ -357,6 +371,7 @@ def top_model_day_simulations(
             _feature_cache=feature_cache,
             _odds_cache=odds_cache,
             _historical_odds=historical_odds,
+            _prediction_cache=predictions,
         )
         simulations.append({
             "rank": rank,
@@ -508,6 +523,36 @@ def _score_model_features(
         str(row["combination"]): float(row["probability"])
         for row in trifecta_predictions(lane_probabilities)
     }
+
+
+def _batch_score_model(
+    *,
+    feature_cache: dict[str, list[dict[str, Any]]],
+    model_path: Path,
+) -> dict[str, dict[str, float]]:
+    valid = [
+        (race_id, features)
+        for race_id, features in feature_cache.items()
+        if len(features) == 6
+    ]
+    if not valid:
+        return {}
+    bundle = _load_cached_model(model_path)
+    raw = positive_probs(
+        bundle["pipeline"],
+        [feature for _race_id, features in valid for feature in features],
+    )
+    scored: dict[str, dict[str, float]] = {}
+    for index, (race_id, _features) in enumerate(valid):
+        offset = index * 6
+        lane_probabilities = _normalize_lane_probs(
+            {lane: raw[offset + lane - 1] for lane in range(1, 7)}
+        )
+        scored[race_id] = {
+            str(row["combination"]): float(row["probability"])
+            for row in trifecta_predictions(lane_probabilities)
+        }
+    return scored
 
 
 def _load_cached_model(model_path: Path) -> Any:
