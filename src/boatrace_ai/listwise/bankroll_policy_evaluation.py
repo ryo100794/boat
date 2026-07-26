@@ -60,6 +60,22 @@ def packed_candidates_from_rows(
     return pack_candidates(candidates_by_date, evaluated_by_date)
 
 
+def prior_selection_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    selected = row["selected"]
+    stability = selected["temporal_stability"]
+    confidence = selected["confidence"]
+    metrics = selected["metrics"]
+    return (
+        bool(stability["all_minimum_evidence"]),
+        float(stability["minimum_roi"]),
+        float(stability["mean_roi_minus_std"]),
+        float(confidence["roi_ci95_lower"]),
+        float(confidence["probability_roi_above_one"]),
+        int(metrics["profit_yen"]),
+        int(metrics["hit_tickets"]),
+    )
+
+
 def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     search_path = Path(args.search_result).resolve()
@@ -171,11 +187,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         }, ensure_ascii=False), flush=True)
     selected_search = max(
         prior_results,
-        key=lambda row: (
-            row["selected"]["confidence"]["roi_ci95_lower"],
-            row["selected"]["confidence"]["probability_roi_above_one"],
-            row["selected"]["metrics"]["profit_yen"],
-        ),
+        key=prior_selection_key,
     )
     selected_policy = dict(selected_search["selected"]["policy"])
 

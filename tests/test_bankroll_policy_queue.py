@@ -5,7 +5,10 @@ import json
 import pytest
 
 from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
-from boatrace_ai.listwise.bankroll_policy_evaluation import build_parser
+from boatrace_ai.listwise.bankroll_policy_evaluation import (
+    build_parser,
+    prior_selection_key,
+)
 
 
 def _job(parameters):
@@ -77,6 +80,40 @@ def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:
     parser = build_parser()
     args = parser.parse_args(["--db", "x", "--search-result", "x", "--cache-prefix", "x", "--output", "x"])
     assert args.evaluation_days == 365
+
+
+def test_prior_selection_prefers_temporal_stability_before_bootstrap_ci() -> None:
+    def row(prior, *, minimum_roi, stable_score, ci_lower):
+        return {
+            "payout_prior_weight": prior,
+            "selected": {
+                "temporal_stability": {
+                    "all_minimum_evidence": True,
+                    "minimum_roi": minimum_roi,
+                    "mean_roi_minus_std": stable_score,
+                },
+                "confidence": {
+                    "roi_ci95_lower": ci_lower,
+                    "probability_roi_above_one": 0.55,
+                },
+                "metrics": {"profit_yen": 1000, "hit_tickets": 80},
+            },
+        }
+
+    unstable = row(
+        5,
+        minimum_roi=0.991,
+        stable_score=0.989,
+        ci_lower=0.803,
+    )
+    stable = row(
+        100,
+        minimum_roi=1.024,
+        stable_score=1.024,
+        ci_lower=0.795,
+    )
+
+    assert max([unstable, stable], key=prior_selection_key) is stable
 
 
 @pytest.mark.parametrize(
