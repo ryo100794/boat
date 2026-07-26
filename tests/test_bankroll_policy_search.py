@@ -11,6 +11,8 @@ from boatrace_ai.packed_bankroll import pack_candidates
 POLICY = {
     "daily_budget_yen": 10_000,
     "ev_threshold": 1.0,
+    "min_ticket_probability": 0.0,
+    "max_estimated_odds": None,
     "payout_prior_weight": 30.0,
     "fractional_kelly": 0.25,
     "max_daily_exposure_fraction": 0.60,
@@ -58,7 +60,8 @@ def test_policy_candidates_are_unique_and_reproducible() -> None:
     assert first[0] == POLICY
     assert len({
         tuple(candidate[key] for key in (
-            "ev_threshold", "fractional_kelly", "max_daily_exposure_fraction",
+            "ev_threshold", "min_ticket_probability", "max_estimated_odds",
+            "fractional_kelly", "max_daily_exposure_fraction",
             "min_daily_exposure_fraction", "race_cap_fraction",
             "ticket_cap_fraction", "max_daily_tickets",
         ))

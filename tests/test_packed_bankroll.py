@@ -73,3 +73,22 @@ def test_ev_threshold_is_applied_without_repacking() -> None:
     packed = pack_candidates({"2026-07-01": candidates}, {"2026-07-01": 1})
     result = evaluate_packed_policy(packed, {**POLICY, "ev_threshold": 1.2})
     assert result["candidate_tickets"] == 1
+
+
+def test_probability_and_odds_tail_filters_apply_without_repacking() -> None:
+    candidates = [
+        _candidate("r1", "1-2-3", 0.20, 8.0, hit=True),
+        _candidate("r1", "1-3-2", 0.01, 150.0),
+        _candidate("r1", "2-1-3", 0.005, 250.0),
+    ]
+    packed = pack_candidates(
+        {"2026-07-01": candidates},
+        {"2026-07-01": 1},
+    )
+    result = evaluate_packed_policy(packed, {
+        **POLICY,
+        "min_ticket_probability": 0.01,
+        "max_estimated_odds": 100.0,
+    })
+
+    assert result["candidate_tickets"] == 1

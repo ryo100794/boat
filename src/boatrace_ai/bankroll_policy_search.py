@@ -10,6 +10,8 @@ from .packed_bankroll import PackedCandidates, evaluate_packed_policy
 
 SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
     "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50),
+    "min_ticket_probability": (0.0, 0.002, 0.005, 0.01),
+    "max_estimated_odds": (None, 30.0, 50.0, 100.0, 200.0),
     "fractional_kelly": (0.10, 0.25, 0.50),
     "max_daily_exposure_fraction": (0.30, 0.60, 0.80),
     "min_daily_exposure_fraction": (0.0, 0.20, 0.40),

@@ -147,6 +147,8 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
     base_policy = {
         "daily_budget_yen": args.daily_budget_yen,
         "ev_threshold": 1.20,
+        "min_ticket_probability": 0.0,
+        "max_estimated_odds": None,
         "payout_prior_weight": 30.0,
         "fractional_kelly": 0.25,
         "max_daily_exposure_fraction": 0.60,

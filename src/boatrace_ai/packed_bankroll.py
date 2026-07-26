@@ -165,7 +165,15 @@ def _evaluate_day(
     payout = packed.actual_payout_yen[start:stop]
     edge = ev - 1.0
     threshold = float(policy.get("ev_threshold", 1.0))
-    candidate_mask = (ev >= threshold) & np.isfinite(ev)
+    minimum_probability = float(policy.get("min_ticket_probability", 0.0))
+    maximum_odds = policy.get("max_estimated_odds")
+    candidate_mask = (
+        (ev >= threshold)
+        & (probability >= minimum_probability)
+        & np.isfinite(ev)
+    )
+    if maximum_odds is not None:
+        candidate_mask &= odds <= float(maximum_odds)
     candidate_count = int(candidate_mask.sum())
     valid = candidate_mask & (odds > 1.0) & (edge > 0.0) & np.isfinite(odds)
     indices = np.flatnonzero(valid)
