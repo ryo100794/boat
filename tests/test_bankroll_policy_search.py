@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from boatrace_ai.bankroll_policy_search import (
+    CONSERVATIVE_POLICY_ANCHORS,
     policy_candidates,
     recent_allocation_diagnostics,
     slice_day_range,
@@ -88,6 +89,13 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
         "minimum_temporal_roi_above_one"
         in result["selected"]["promotion_gate"]
     )
+
+
+def test_policy_candidates_preserve_conservative_anchors() -> None:
+    candidates = policy_candidates(POLICY, count=4, seed=7)
+
+    for overrides in CONSERVATIVE_POLICY_ANCHORS:
+        assert {**POLICY, **overrides} in candidates
 
 
 def test_slice_day_range_rebases_offsets() -> None:

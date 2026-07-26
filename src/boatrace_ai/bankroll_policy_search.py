@@ -21,6 +21,33 @@ SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
 }
 
 
+# Preserve the sparse, conservative region when new search dimensions are added.
+CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
+    {
+        "ev_threshold": 1.35,
+        "min_ticket_probability": 0.0,
+        "max_estimated_odds": None,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.03,
+        "max_daily_tickets": 30,
+    },
+    {
+        "ev_threshold": 1.35,
+        "min_ticket_probability": 0.0,
+        "max_estimated_odds": 100.0,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.02,
+        "max_daily_tickets": 30,
+    },
+)
+
+
 def policy_candidates(
     base_policy: Mapping[str, Any],
     *,
@@ -32,6 +59,14 @@ def policy_candidates(
     rng = np.random.default_rng(seed)
     candidates = [dict(base_policy)]
     seen = {_policy_key(candidates[0])}
+    for overrides in CONSERVATIVE_POLICY_ANCHORS:
+        if len(candidates) >= count:
+            break
+        candidate = {**base_policy, **overrides}
+        key = _policy_key(candidate)
+        if _valid_caps(candidate) and key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
     attempts = 0
     while len(candidates) < count and attempts < count * 100:
         attempts += 1
