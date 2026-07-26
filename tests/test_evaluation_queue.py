@@ -2003,6 +2003,38 @@ def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_lightgbm_structural_presets_are_forwarded(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    incumbent = root / "data/models/evaluation_queue/job-00002707.json"
+    incumbent.parent.mkdir(parents=True)
+    incumbent.write_text("{}", encoding="utf-8")
+    command, _ = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "architecture_presets": "compact,balanced,interaction",
+                "incumbent_result": (
+                    "data/models/evaluation_queue/job-00002707.json"
+                ),
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--architecture-presets") + 1] == (
+        "compact,balanced,interaction"
+    )
+    assert command[command.index("--incumbent-prediction") + 1] == str(
+        incumbent
+    )
+    assert command[command.index("--incumbent-bankroll") + 1] == str(
+        incumbent
+    )
+
+
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [

@@ -19,6 +19,7 @@ from .recency_mlp_evaluation import (
 
 
 MODEL_NAME = "calibrated_lightgbm_recency_selected"
+STRUCTURAL_MODEL_NAME = "calibrated_lightgbm_structural_v3"
 MODEL_KIND = "lightgbm"
 FEATURE_SET = "pastlog_lightgbm_hash_v3_period_coverage_safe"
 DEFAULT_DROP_FEATURE_GROUPS = ("legacy_composites",)
@@ -26,6 +27,46 @@ DEFAULT_FEATURE_CACHE = Path(
     "data/models/lightgbm_v6_features_16384_drop_legacy_composites"
 )
 DEFAULT_HALF_LIVES: tuple[float | None, ...] = (None, 365.0)
+ARCHITECTURE_PRESETS: dict[str, dict[str, Any]] = {
+    "compact": {
+        "n_estimators": 400,
+        "num_leaves": 15,
+        "max_depth": 6,
+        "min_child_samples": 200,
+        "feature_fraction": 0.7,
+        "max_bin": 63,
+    },
+    "balanced": {
+        "n_estimators": 400,
+        "num_leaves": 31,
+        "max_depth": 8,
+        "min_child_samples": 100,
+        "feature_fraction": 0.7,
+        "max_bin": 63,
+    },
+    "interaction": {
+        "n_estimators": 500,
+        "num_leaves": 63,
+        "max_depth": 10,
+        "min_child_samples": 100,
+        "feature_fraction": 0.8,
+        "max_bin": 127,
+    },
+}
+
+
+def parse_architecture_presets(value: str) -> tuple[str, ...]:
+    names = tuple(
+        dict.fromkeys(part.strip() for part in value.split(",") if part.strip())
+    )
+    unknown = sorted(set(names) - set(ARCHITECTURE_PRESETS))
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            "unknown LightGBM architecture preset: " + ", ".join(unknown)
+        )
+    if not names:
+        raise argparse.ArgumentTypeError("at least one architecture preset is required")
+    return names
 
 
 def train_lightgbm_bundle_from_dataset(
@@ -165,8 +206,18 @@ def evaluate_lightgbm_recency(
     deployment_model_output_path: Path | None = None,
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
+    architecture_presets: Sequence[str] = (),
     **trainer_kwargs: Any,
 ) -> dict[str, Any]:
+    parameter_candidates: list[dict[str, Any]] | None = None
+    if architecture_presets:
+        parameter_candidates = []
+        for name in architecture_presets:
+            if name not in ARCHITECTURE_PRESETS:
+                raise ValueError(f"unknown LightGBM architecture preset: {name}")
+            parameter_candidates.append(
+                {**trainer_kwargs, **ARCHITECTURE_PRESETS[name]}
+            )
     return evaluate_recency_mlp(
         conn,
         output_path=output_path,
@@ -182,12 +233,13 @@ def evaluate_lightgbm_recency(
         deployment_model_output_path=deployment_model_output_path,
         incumbent_prediction_path=incumbent_prediction_path,
         incumbent_bankroll_path=incumbent_bankroll_path,
-        model_name=MODEL_NAME,
+        model_name=(STRUCTURAL_MODEL_NAME if parameter_candidates else MODEL_NAME),
         model_kind=MODEL_KIND,
         feature_set=FEATURE_SET,
         feature_schema_version=LIGHTGBM_FEATURE_SCHEMA_VERSION,
         bundle_trainer=train_lightgbm_bundle_from_dataset,
         trainer_kwargs=trainer_kwargs,
+        trainer_parameter_candidates=parameter_candidates,
     )
 
 
@@ -208,6 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature-fraction", type=float, default=0.6)
     parser.add_argument("--max-bin", type=int, default=63)
     parser.add_argument("--n-jobs", type=int, default=4)
+    parser.add_argument(
+        "--architecture-presets",
+        type=parse_architecture_presets,
+        help="comma-separated nested-selection presets: compact,balanced,interaction",
+    )
     return parser
 
 
@@ -237,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
             deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
+            architecture_presets=args.architecture_presets or (),
             **trainer_kwargs,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)

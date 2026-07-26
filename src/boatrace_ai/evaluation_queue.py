@@ -1103,7 +1103,8 @@ def build_command(
             "evaluation_date", "timeout_seconds", "half_lives",
             "calibration_days", "drop_feature_groups", "n_estimators",
             "num_leaves", "max_depth", "min_child_samples",
-            "feature_fraction", "max_bin", "n_jobs",
+            "feature_fraction", "max_bin", "n_jobs", "architecture_presets",
+            "incumbent_result",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1135,12 +1136,53 @@ def build_command(
         )
         max_bin = _integer(params, "max_bin", 63, 15, 255)
         n_jobs = _integer(params, "n_jobs", 4, 1, 128)
+        architecture_presets = params.get("architecture_presets")
+        if architecture_presets is not None:
+            if not isinstance(architecture_presets, str):
+                raise ValueError("architecture_presets must be a string")
+            from .lightgbm_recency_evaluation import parse_architecture_presets
+
+            try:
+                architecture_presets = ",".join(
+                    parse_architecture_presets(architecture_presets)
+                )
+            except argparse.ArgumentTypeError as exc:
+                raise ValueError(str(exc)) from exc
+        incumbent_prediction = (
+            app_root
+            / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
+        )
+        incumbent_bankroll = (
+            app_root
+            / "data/models/standardized_365d_v2/raw/no_odds_v8_bankroll.json"
+        )
+        if params.get("incumbent_result") is not None:
+            incumbent_result = (
+                app_root / str(params["incumbent_result"])
+            ).resolve()
+            result_root = (
+                app_root / "data/models/evaluation_queue"
+            ).resolve()
+            if (
+                result_root not in incumbent_result.parents
+                or incumbent_result.suffix != ".json"
+            ):
+                raise ValueError(
+                    "incumbent_result must be a JSON artifact inside "
+                    "data/models/evaluation_queue"
+                )
+            if not incumbent_result.is_file():
+                raise JobDependencyUnavailable(
+                    f"incumbent result is not available yet: {incumbent_result}"
+                )
+            incumbent_prediction = incumbent_result
+            incumbent_bankroll = incumbent_result
         cache_name = (
             "lightgbm_v6_features_16384_drop_"
             + drop_feature_groups.replace(",", "_")
         )
         feature_cache = app_root / "data" / "models" / cache_name
-        return [
+        command = [
             str(python), "-m", "boatrace_ai.lightgbm_recency_evaluation",
             "--db", db,
             "--output", str(output),
@@ -1149,10 +1191,10 @@ def build_command(
                 output.with_name(output.stem + ".deployment.joblib")
             ),
             "--incumbent-prediction", str(
-                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_prediction.json"
+                incumbent_prediction
             ),
             "--incumbent-bankroll", str(
-                app_root / "data/models/standardized_365d_v2/raw/no_odds_v8_bankroll.json"
+                incumbent_bankroll
             ),
             "--evaluation-date", evaluation_date,
             "--feature-cache", str(feature_cache),
@@ -1167,7 +1209,10 @@ def build_command(
             "--feature-fraction", str(feature_fraction),
             "--max-bin", str(max_bin),
             "--n-jobs", str(n_jobs),
-        ], output
+        ]
+        if architecture_presets is not None:
+            command.extend(["--architecture-presets", architecture_presets])
+        return command, output
 
     if task_type == "market_curvature":
         cache = app_root / "data" / "models" / "stagewise_blend_market_shadow.races.joblib"

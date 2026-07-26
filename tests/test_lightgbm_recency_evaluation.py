@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import date, timedelta
 
 import numpy as np
@@ -109,6 +110,83 @@ def test_lightgbm_recency_selection_uses_injected_trainer() -> None:
     assert len(candidates) == 2
     assert split["calibration_races"] == 10
     assert all(np.isfinite(row["entry_log_loss"]) for row in candidates)
+
+
+def test_lightgbm_structural_selection_is_nested_inside_training_fold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _dataset()
+    trained: list[tuple[int, int, float | None]] = []
+
+    def fake_trainer(
+        _dataset: HashedRaceDataset,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        leaves = int(kwargs["num_leaves"])
+        trained.append(
+            (
+                int(kwargs["train_race_count"]),
+                leaves,
+                kwargs["recency_half_life_days"],
+            )
+        )
+        return {"leaves": leaves}
+
+    def fake_score(
+        _dataset: HashedRaceDataset,
+        *,
+        bundle: dict[str, object],
+        race_start: int,
+        race_end: int,
+        batch_size: int,
+    ) -> tuple[dict[str, float | int], dict[str, list[dict[str, object]]]]:
+        del batch_size
+        loss = 0.3 if bundle["leaves"] == 31 else 0.4
+        return (
+            {
+                "entry_log_loss": loss,
+                "entry_brier": 0.1,
+                "winner_top1_accuracy": 0.5,
+                "trifecta_top1_hit_rate": 0.1,
+                "trifecta_top5_hit_rate": 0.3,
+                "evaluated_races": race_end - race_start,
+            },
+            {"calibration": [{"leaves": bundle["leaves"]}]},
+        )
+
+    monkeypatch.setattr(
+        "boatrace_ai.recency_mlp_evaluation.score_range",
+        fake_score,
+    )
+    selected, candidates, split = select_recency_half_life(
+        dataset,
+        outer_train_end=30,
+        half_lives=(None, 20.0),
+        calibration_days=10,
+        bundle_trainer=fake_trainer,
+        model_kind="lightgbm",
+        trainer_parameter_candidates=[
+            {"num_leaves": 15},
+            {"num_leaves": 31},
+        ],
+    )
+
+    assert selected is None
+    assert len(candidates) == 4
+    assert split["selected_trainer_parameters"] == {"num_leaves": 31}
+    assert split["trainer_parameter_candidate_count"] == 2
+    assert {row[0] for row in trained} == {20}
+
+
+def test_architecture_presets_are_bounded_and_validated() -> None:
+    assert lightgbm_eval.parse_architecture_presets(
+        "compact,balanced,compact"
+    ) == ("compact", "balanced")
+    with pytest.raises(
+        argparse.ArgumentTypeError,
+        match="unknown LightGBM architecture preset",
+    ):
+        lightgbm_eval.parse_architecture_presets("unbounded")
 
 
 def test_lightgbm_trainer_rejects_wrong_model_kind() -> None:

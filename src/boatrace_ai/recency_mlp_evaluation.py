@@ -264,6 +264,7 @@ def select_recency_half_life(
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     model_kind: str = "mlp",
     trainer_kwargs: dict[str, Any] | None = None,
+    trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
@@ -273,47 +274,58 @@ def select_recency_half_life(
         calibration_days=calibration_days,
     )
     candidates: list[dict[str, Any]] = []
-    selected_key: tuple[float, int, float] | None = None
+    selected_key: tuple[float, int, float, int] | None = None
     selected_predictions: dict[str, list[dict[str, Any]]] = {}
     trainer = bundle_trainer or train_bundle_from_dataset
-    extra_trainer_kwargs = dict(trainer_kwargs or {})
-    for half_life in half_lives:
-        bundle = trainer(
-            dataset,
-            train_race_count=inner_train_end,
-            model_kind=model_kind,
-            batch_size=batch_size,
-            epochs=epochs,
-            alpha=alpha,
-            recency_half_life_days=half_life,
-            **extra_trainer_kwargs,
-        )
-        metrics, candidate_predictions = score_range(
-            dataset,
-            bundle=bundle,
-            race_start=inner_train_end,
-            race_end=outer_train_end,
-            batch_size=batch_size,
-        )
-        if not np.isfinite(float(metrics["entry_log_loss"])):
-            raise ValueError("candidate calibration log loss is not finite")
-        candidate = {
-            "recency_half_life_days": half_life,
-            "inner_train_races": inner_train_end,
-            "calibration_races": outer_train_end - inner_train_end,
-            "calibration_start": calibration_start,
-            "calibration_end": calibration_end,
-            **metrics,
-        }
-        candidates.append(candidate)
-        candidate_key = (
-            float(candidate["entry_log_loss"]),
-            0 if half_life is None else 1,
-            -float(half_life or 0.0),
-        )
-        if selected_key is None or candidate_key < selected_key:
-            selected_key = candidate_key
-            selected_predictions = candidate_predictions
+    default_trainer_kwargs = dict(trainer_kwargs or {})
+    parameter_candidates = (
+        [dict(row) for row in trainer_parameter_candidates]
+        if trainer_parameter_candidates is not None
+        else [default_trainer_kwargs]
+    )
+    if not parameter_candidates:
+        raise ValueError("at least one trainer parameter candidate is required")
+    for parameter_index, candidate_trainer_kwargs in enumerate(parameter_candidates):
+        for half_life in half_lives:
+            bundle = trainer(
+                dataset,
+                train_race_count=inner_train_end,
+                model_kind=model_kind,
+                batch_size=batch_size,
+                epochs=epochs,
+                alpha=alpha,
+                recency_half_life_days=half_life,
+                **candidate_trainer_kwargs,
+            )
+            metrics, candidate_predictions = score_range(
+                dataset,
+                bundle=bundle,
+                race_start=inner_train_end,
+                race_end=outer_train_end,
+                batch_size=batch_size,
+            )
+            if not np.isfinite(float(metrics["entry_log_loss"])):
+                raise ValueError("candidate calibration log loss is not finite")
+            candidate = {
+                "recency_half_life_days": half_life,
+                "trainer_parameters": dict(candidate_trainer_kwargs),
+                "trainer_parameter_index": parameter_index,
+                "inner_train_races": inner_train_end,
+                "calibration_races": outer_train_end - inner_train_end,
+                "calibration_start": calibration_start,
+                "calibration_end": calibration_end,
+                **metrics,
+            }
+            candidates.append(candidate)
+            candidate_key = (
+                float(candidate["entry_log_loss"]),
+                0 if half_life is None else 1,
+                -float(half_life or 0.0),
+                parameter_index,
+            )
+            if selected_key is None or candidate_key < selected_key:
+                selected_key = candidate_key
+                selected_predictions = candidate_predictions
 
     selected = min(
         candidates,
@@ -321,6 +333,7 @@ def select_recency_half_life(
             float(row["entry_log_loss"]),
             0 if row["recency_half_life_days"] is None else 1,
             -float(row["recency_half_life_days"] or 0.0),
+            int(row["trainer_parameter_index"]),
         ),
     )
     if prediction_output is not None:
@@ -331,6 +344,8 @@ def select_recency_half_life(
         "calibration_races": outer_train_end - inner_train_end,
         "calibration_start": calibration_start,
         "calibration_end": calibration_end,
+        "selected_trainer_parameters": dict(selected["trainer_parameters"]),
+        "trainer_parameter_candidate_count": len(parameter_candidates),
     }
     return selected["recency_half_life_days"], candidates, split
 
@@ -777,6 +792,7 @@ def evaluate_recency_mlp(
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     trainer_kwargs: dict[str, Any] | None = None,
+    trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -871,11 +887,15 @@ def evaluate_recency_mlp(
             bundle_trainer=trainer,
             model_kind=model_kind,
             trainer_kwargs=extra_trainer_kwargs,
+            trainer_parameter_candidates=trainer_parameter_candidates,
         )
         report_progress(
             "recency_selected",
             candidates=len(candidates),
             selected_half_life_days=selected_half_life,
+        )
+        selected_trainer_kwargs = dict(
+            split.get("selected_trainer_parameters", extra_trainer_kwargs)
         )
         final_bundle = trainer(
             dataset,
@@ -885,7 +905,7 @@ def evaluate_recency_mlp(
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
-            **extra_trainer_kwargs,
+            **selected_trainer_kwargs,
         )
         prediction_metrics, predictions = score_range(
             dataset,
@@ -989,11 +1009,16 @@ def evaluate_recency_mlp(
     bankroll_flat = {
         key: value for key, value in bankroll.items() if key != "evaluated_races"
     }
+    generated_at = datetime.now(timezone.utc).isoformat()
+    model_instance = (
+        f"{model_name}_{datetime.fromisoformat(generated_at).strftime('%Y%m%dT%H%M%SZ')}"
+    )
     result = {
         "status": "completed",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": generated_at,
         "evaluation_date": evaluation_date.isoformat(),
         "model": model_name,
+        "model_instance": model_instance,
         "model_kind": model_kind,
         "role": "shadow",
         "feature_set": feature_set,
@@ -1021,7 +1046,10 @@ def evaluate_recency_mlp(
         "n_features": N_FEATURES,
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
-        "trainer_parameters": extra_trainer_kwargs,
+        "trainer_parameters": selected_trainer_kwargs,
+        "trainer_parameter_candidates": [
+            dict(row) for row in (trainer_parameter_candidates or [extra_trainer_kwargs])
+        ],
         "selection": {
             "criterion": "inner calibration entry_log_loss",
             "tie_break": "None first, otherwise longer half-life",
@@ -1059,6 +1087,7 @@ def evaluate_recency_mlp(
             "metadata": {
                 "trained_at": result["generated_at"],
                 "model": model_name,
+                "model_instance": model_instance,
                 "role": "shadow",
                 "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
@@ -1101,7 +1130,7 @@ def evaluate_recency_mlp(
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
-            **extra_trainer_kwargs,
+            **selected_trainer_kwargs,
         )
         deployment_training_hash = race_set_sha256(
             row[0] for row in race_keys
@@ -1119,6 +1148,7 @@ def evaluate_recency_mlp(
             "metadata": {
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "model": model_name,
+                "model_instance": model_instance,
                 "role": "production_candidate",
                 "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
