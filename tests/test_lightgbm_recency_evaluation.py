@@ -249,3 +249,25 @@ def test_lightgbm_wrapper_injects_model_contract(monkeypatch: pytest.MonkeyPatch
         lightgbm_eval.train_lightgbm_bundle_from_dataset
     )
     assert captured["trainer_kwargs"] == {"n_estimators": 20}
+
+
+def test_lightgbm_wrapper_forwards_progress_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_evaluate(_conn: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"status": "completed"}
+
+    callback = lambda _row: None
+    monkeypatch.setattr(lightgbm_eval, "evaluate_recency_mlp", fake_evaluate)
+
+    lightgbm_eval.evaluate_lightgbm_recency(
+        None,
+        output_path=lightgbm_eval.Path("result.json"),
+        evaluation_date=date(2026, 7, 24),
+        progress_callback=callback,
+    )
+
+    assert captured["progress_callback"] is callback

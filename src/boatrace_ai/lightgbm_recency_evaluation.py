@@ -4,7 +4,7 @@ import argparse
 from datetime import date
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -207,6 +207,7 @@ def evaluate_lightgbm_recency(
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
     architecture_presets: Sequence[str] = (),
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     **trainer_kwargs: Any,
 ) -> dict[str, Any]:
     parameter_candidates: list[dict[str, Any]] | None = None
@@ -240,6 +241,7 @@ def evaluate_lightgbm_recency(
         bundle_trainer=train_lightgbm_bundle_from_dataset,
         trainer_kwargs=trainer_kwargs,
         trainer_parameter_candidates=parameter_candidates,
+        progress_callback=progress_callback,
     )
 
 
@@ -295,6 +297,11 @@ def main(argv: list[str] | None = None) -> int:
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
             architecture_presets=args.architecture_presets or (),
+            progress_callback=lambda row: print(
+                "LIGHTGBM_PROGRESS "
+                + json.dumps(row, ensure_ascii=True, sort_keys=True),
+                flush=True,
+            ),
             **trainer_kwargs,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
