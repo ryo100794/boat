@@ -2461,6 +2461,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "benchmark_population_races": metrics.get("benchmark_population_races"),
                 "benchmark_odds_eligible_races": metrics.get("benchmark_odds_eligible_races"),
                 "benchmark_evaluated_races": metrics.get("benchmark_evaluated_races"),
+                "registered_ev_band_status": metrics.get("registered_ev_band_status"),
+                "registered_ev_band_registered_after": metrics.get(
+                    "registered_ev_band_registered_after"
+                ),
+                "registered_ev_band_evaluation_days": metrics.get(
+                    "registered_ev_band_evaluation_days"
+                ),
+                "registered_ev_band_tickets": metrics.get("registered_ev_band_tickets"),
+                "registered_ev_band_hit_tickets": metrics.get(
+                    "registered_ev_band_hit_tickets"
+                ),
+                "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
                 "winner_log_loss": _float_or_none(
                     metrics.get("winner_log_loss")

@@ -2181,3 +2181,23 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
             python=python,
             db="postgresql://test",
         )
+
+
+def test_result_summary_exposes_registered_ev_band_separately() -> None:
+    summary = summarize_result({
+        "roi": 0.33,
+        "registered_ev_band_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-25",
+            "evaluation_days": 1,
+            "evaluated_races": 132,
+            "tickets": 4,
+            "hit_tickets": 1,
+            "roi": 1.25,
+            "profit_yen": 100,
+        },
+    })
+
+    assert summary["roi"] == 0.33
+    assert summary["registered_ev_band_roi"] == 1.25
+    assert summary["registered_ev_band_evaluation_days"] == 1

@@ -1659,6 +1659,20 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    registered_policy = payload.get("registered_ev_band_walk_forward")
+    if isinstance(registered_policy, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "roi",
+            "profit_yen",
+        ):
+            if key in registered_policy:
+                summary[f"registered_ev_band_{key}"] = registered_policy[key]
     if payload.get("model") and str(payload.get("model")).startswith(
         "genetic_listwise_island_v"
     ):
