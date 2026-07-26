@@ -61,10 +61,9 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "<th>判定</th>" in MODEL_REPORT_HTML
     assert "<th>予測</th>" in MODEL_REPORT_HTML
     assert "winner_log_loss" in MODEL_REPORT_HTML
-    assert "新損益" in MODEL_REPORT_HTML
-    assert "新最大DD" in MODEL_REPORT_HTML
-    assert "新ROI下限" in MODEL_REPORT_HTML
-    assert "P(新ROI&gt;1)" in MODEL_REPORT_HTML
+    assert "候補損益" in MODEL_REPORT_HTML
+    assert "候補最大DD" in MODEL_REPORT_HTML
+    assert "P(ROI&gt;1)" in MODEL_REPORT_HTML
     assert 'id="geneticEvolution"' in MODEL_REPORT_HTML
     assert 'id="gaEvolutionChart"' in MODEL_REPORT_HTML
     assert "renderGeneticEvolution(jobs)" in MODEL_REPORT_HTML

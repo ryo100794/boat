@@ -15,14 +15,14 @@
     .report-group { margin-top:7px; padding-top:4px; border-top:2px solid var(--ink); } .report-group.research { border-top-color:var(--accent2); } .group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px; } .group-heading h2 { margin:0; font-size:12px; } .group-heading .scope-note { max-width:68%; color:var(--muted); text-align:right; } .group-controls { display:flex; align-items:center; gap:4px; } .group-controls label { color:var(--muted); } .group-controls select { min-width:270px; max-width:52vw; }
     .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } canvas { width:100%; height:170px; border:1px solid var(--line); background:#fff; }
     table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:3px; } th,td { border-bottom:1px solid var(--line); padding:1px 3px; line-height:1.12; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } th { color:var(--muted); background:#fafbfb; } th:first-child,td:first-child { text-align:left; }
-    .table-scroll { overflow-x:auto; } .model-track-groups { display:grid; gap:7px; } .model-table { table-layout:auto; min-width:1780px; } .model-table .name-cell { min-width:145px; max-width:220px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .model-table .model-file { min-width:190px; } .model-table .detail-cell { min-width:220px; max-width:300px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .wide-name-table { table-layout:auto; min-width:850px; } .wide-name-table .name-cell { min-width:190px; max-width:320px; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; text-align:left; } .comparison-table { min-width:1280px; } .comparison-table .name-cell { min-width:210px; max-width:310px; } .axis-cell { min-width:150px; white-space:normal; text-align:left; }
+    .table-scroll { overflow-x:visible; } .table-stack,.model-track-groups { display:grid; grid-template-columns:minmax(0,1fr); gap:7px; } .metric-table,.model-table,.wide-name-table,.comparison-table { width:100%; min-width:0; table-layout:fixed; } .metric-table th,.metric-table td,.model-table th,.model-table td,.wide-name-table th,.wide-name-table td { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; } .metric-table .name-cell,.model-table .name-cell,.wide-name-table .name-cell { width:20%; white-space:normal; overflow:visible; overflow-wrap:anywhere; text-align:left; } .metric-table .axis-cell,.model-table .axis-cell { width:13%; white-space:normal; text-align:left; } .model-table .detail-cell { width:24%; white-space:normal; overflow:visible; overflow-wrap:anywhere; text-align:left; } .metric-table .mono,.model-table .mono { white-space:nowrap; }
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
     .model-select-row { cursor:pointer; } .model-select-row:hover td { background:#eef6f6; } .model-select-row[aria-selected="true"] td { background:#d8eeee; box-shadow:inset 0 1px 0 var(--accent),inset 0 -1px 0 var(--accent); } .model-select-row:focus { outline:2px solid var(--accent); outline-offset:-2px; }
     .ga-panel { margin-top:5px; border-top-color:#a76300; } .ga-summary { display:grid; grid-template-columns:repeat(8,minmax(68px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .ga-summary div { min-width:0; padding:2px 4px; background:#fff; } .ga-summary b { display:block; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ga-summary span { color:var(--muted); font-size:8px; }
     .ga-table { table-layout:auto; min-width:980px; } .ga-table th:first-child,.ga-table td:first-child { width:38px; text-align:right; }
     .ga-chart-wrap { margin-top:4px; } .ga-chart-wrap h3 { display:flex; justify-content:space-between; gap:8px; margin:0 0 2px; font-size:10px; } .ga-chart { height:260px; }
-    @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-heading .scope-note{max-width:none;text-align:left;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;} }
+    @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(120px,1fr));}.grid,.grid.three{grid-template-columns:1fr;}.group-heading{align-items:flex-start;flex-direction:column;}.group-heading .scope-note{max-width:none;text-align:left;}.group-controls{width:100%;}.group-controls select{flex:1;max-width:none;min-width:0;}.metric-table .name-cell,.model-table .name-cell{width:17%;} }
   </style>
 </head>
 <body>
@@ -33,7 +33,11 @@
   <div id="geneticEvolution" class="panel ga-panel"></div>
   <section id="allModelsGroup" class="report-group">
     <div class="group-heading"><h2>統一365日 共通評価</h2><span class="scope-note">同一holdout・同一対象R・同一日額10,000円ポリシーだけを横比較</span></div>
-    <div class="panel"><h2><span>モデル別 統合性能</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table comparison-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>購入R</th><th>点数</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th><th>収益状態</th></tr></thead><tbody id="summaryRows"></tbody></table></div></div>
+    <div class="table-stack">
+      <div class="panel"><h2><span>予測モデル</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>Brier</th><th>3連単LL</th><th>1着</th><th>3T1</th><th>3T5</th></tr></thead><tbody id="predictionSummaryRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>運用モデル</span><span class="muted">同一日額10,000円ポリシー</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>対象R</th><th>購入R</th><th>点数</th><th>的中R率</th><th>ROI</th><th>ROI 95%CI</th><th>損益</th><th>最大DD</th><th>投資</th></tr></thead><tbody id="operationSummaryRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>予測＋運用 複合モデル</span><span class="muted">昇格判断用</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
+    </div>
     <div class="grid three">
       <div class="panel"><h2><span>統一評価 的中率</span><span class="muted">1着 / 3連単Top5</span></h2><canvas id="hitChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>統一評価 fold別 艇Entry LL</span><span class="muted">低いほど良い</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
@@ -41,21 +45,21 @@
     </div>
   </section>
   <section class="report-group research">
-    <div class="group-heading"><h2>研究・運用モデル</h2><span class="scope-note">評価期間や損失定義が異なるため、共通365日表とは分離して個別に判定</span></div>
+    <div class="group-heading"><h2>研究モデル 個別評価</h2><span class="scope-note">評価期間や損失定義が異なるため、統一365日表とは分離して判定</span></div>
     <div class="model-track-groups">
-      <div class="panel"><h2><span>過去ログモデル</span><span class="muted">実oddsなし / 各行のholdout条件で評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="pastModelTrackRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>完全日 T-5実odds walk-forward</span><span class="muted">全レースT-5取得100%の日だけを正式評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="marketModelTrackRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>開発・暫定診断</span><span class="muted">期間・標本・評価目的が異なり本番昇格比較には使用しない</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>系統</th><th>成果物</th><th>評価軸</th><th>教師データ</th><th>学習方式・主要パラメータ</th><th>役割</th><th>状態</th><th>評価量</th><th>データ充足</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th></tr></thead><tbody id="diagnosticModelTrackRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>予測モデル</span><span class="muted">確率精度のみを評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>教師・学習方式</th><th>状態</th><th>評価量</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th></tr></thead><tbody id="predictionTrackRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>運用モデル</span><span class="muted">購入判断・資金効率のみを評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>状態</th><th>評価量</th><th>データ充足</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationTrackRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>予測＋運用 複合モデル</span><span class="muted">確率精度と資金成績を同時評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>状態</th><th>評価量</th><th>損失</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
     </div>
-    <div class="grid">
+    <div class="table-stack">
       <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>評価R/実od</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
       <div class="panel"><h2><span>候補スイープ</span><span class="muted">同一探索内のみ比較</span></h2><div class="table-scroll"><table><thead><tr><th>variant</th><th>艇Entry LL</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div></div>
     </div>
-    <div class="panel"><h2><span>完了候補・昇格判定</span><span class="muted">同一holdoutの新旧払戻特徴量比較を優先表示</span></h2><div class="table-scroll"><table class="wide-name-table comparison-table"><thead><tr><th>Job / モデル</th><th>種別</th><th>判定</th><th>ROI</th><th>損益</th><th>3連単LL</th><th>3T5</th><th>新schema</th><th>新ROI</th><th>新損益</th><th>新最大DD</th><th>新ROI下限</th><th>P(新ROI&gt;1)</th><th>旧schema</th><th>旧ROI</th><th>ROI差 95%CI</th><th>P(差&gt;0)</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>完了候補・昇格判定</span><span class="muted">同一holdoutの予測＋運用判定</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>現ROI</th><th>現損益</th><th>候補ROI</th><th>候補損益</th><th>候補最大DD</th><th>P(ROI&gt;1)</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
   </section>
   <section id="selectedModelGroup" class="report-group">
     <div class="group-heading"><h2>モデル個別集計</h2><span id="selectedModelName" class="scope-note">対象モデルなし</span></div>
-    <div class="panel"><h2><span>選択モデル 統合性能</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table comparison-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>購入R</th><th>点数</th><th>ROI</th><th>ROI 95%CI</th><th>基準差95%CI</th><th>損益</th><th>投資</th><th>収益状態</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>選択モデル 予測＋運用</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
     <div class="grid three">
       <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>累積損益率</span><span class="muted">累積損益 ÷ 累積投資 / 0%が損益分岐</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
@@ -97,7 +101,9 @@ function render(data){
   drawGroupedBars($("hitChart"),comparisonRows.filter(x=>x.prediction).map(x=>({label:shortName(x.name),a:x.prediction.winner_top1_accuracy,b:x.prediction.trifecta_top5_hit_rate})),{a:"1着",b:"3T5",percent:true});
   drawLines($("lossChart"),groupFoldSeries(comparisonFolds,"entry_log_loss"),{baseline:null});
   drawBars($("roiChart"),comparisonRows.filter(x=>x.bankroll).map(x=>({label:shortName(x.name),value:x.bankroll.roi})),{baseline:1});
-  $("summaryRows").innerHTML=comparisonRows.map(comparisonRow).join("")||'<tr><td colspan="14" class="muted">統一365日評価を実行中</td></tr>';
+  $("predictionSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction).map(predictionRow).join("")||'<tr><td colspan="9" class="muted">予測評価を実行中</td></tr>';
+  $("operationSummaryRows").innerHTML=comparisonRows.filter(x=>x.bankroll).map(operationRow).join("")||'<tr><td colspan="11" class="muted">運用評価を実行中</td></tr>';
+  $("compositeSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction&&x.bankroll).map(compositeRow).join("")||'<tr><td colspan="9" class="muted">複合評価を実行中</td></tr>';
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>';
   configureModelSelection(data,comparisonRows); renderSelectedModel(data);
 }
@@ -201,16 +207,30 @@ function mergeComparisonRows(tests,bankroll){
   (bankroll||[]).forEach(item=>add(item,"bankroll"));
   return [...rows.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
 }
-function comparisonRow(row){
+function predictionRow(row){
+  const p=row.prediction||{};
+  const name=esc(row.name), scope=esc(scopeText(row.scope));
+  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+fmt(p.evaluated_races)+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+ratio(p.entry_brier)+'</td><td>'+ratio(p.trifecta_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top1_hit_rate)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td></tr>';
+}
+function operationState(b){
+  if(b.roi==null) return {label:"資金未評価",cls:"running"};
+  if(Number(b.roi)>=1&&Number(b.profit_yen)>0) return {label:"収益プラス",cls:"done"};
+  return {label:"要改善",cls:"failed"};
+}
+function operationRow(row){
+  const b=row.bankroll||{}, selectedR=b.selected_races??b.races_bet;
+  const profitCls=b.profit_yen==null?"":Number(b.profit_yen)>=0?"pos":"neg";
+  const rawName=b.file||b.name||row.name, name=esc(shortName(rawName)), scope=esc(scopeText(row.scope));
+  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+fmt(b.evaluated_races)+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+'</td><td>'+pct(b.race_hit_rate)+'</td><td>'+ratio(b.roi)+'</td><td class="mono">'+roiInterval(b.roi_ci95_lower,b.roi_ci95_upper)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td><td>'+(b.stake_yen==null?"-":yen(b.stake_yen))+'</td></tr>';
+}
+function compositeRow(row){
   const p=row.prediction||{}, b=row.bankroll||{};
   const predictionR=p.evaluated_races, bankrollR=b.evaluated_races;
   const evaluationR=predictionR!=null&&bankrollR!=null&&Number(predictionR)!==Number(bankrollR)?fmt(predictionR)+" / "+fmt(bankrollR):fmt(predictionR??bankrollR);
-  const selectedR=b.selected_races??b.races_bet;
-  const status=b.roi==null?"資金未評価":Number(b.roi)>=1&&Number(b.profit_yen)>0?"収益プラス":"要改善";
-  const statusCls=b.roi==null?"running":status==="収益プラス"?"done":"failed";
+  const state=operationState(b);
   const profitCls=b.profit_yen==null?"":Number(b.profit_yen)>=0?"pos":"neg";
-  const name=esc(row.name), scope=esc(scopeText(row.scope));
-  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+evaluationR+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+'</td><td>'+ratio(b.roi)+'</td><td class="mono">'+roiInterval(b.roi_ci95_lower,b.roi_ci95_upper)+'</td><td class="mono">'+roiInterval(b.roi_delta_ci95_lower,b.roi_delta_ci95_upper)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.stake_yen==null?"-":yen(b.stake_yen))+'</td><td><span class="tag '+statusCls+'">'+status+'</span></td></tr>';
+  const name=esc(row.name);
+  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="mono">'+evaluationR+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td><td>'+ratio(b.roi)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td><td><span class="tag '+state.cls+'">'+state.label+'</span></td></tr>';
 }
 function configureModelSelection(data,comparisonRows){
   const catalog=data.model_catalog||[], available=new Set(catalog.map(row=>row.model_key));
@@ -237,7 +257,7 @@ function renderSelectedModel(data){
   $("selectedModelName").textContent=label;
   const tests=(data.backtests||[]).filter(x=>modelMatches(x,key));
   const bank=(data.bankroll||[]).filter(x=>modelMatches(x,key));
-  $("modelDetailRows").innerHTML=mergeComparisonRows(tests,bank).map(comparisonRow).join("") || '<tr><td colspan="14" class="muted">選択モデルの集計結果なし</td></tr>';
+  $("modelDetailRows").innerHTML=mergeComparisonRows(tests,bank).filter(x=>x.prediction&&x.bankroll).map(compositeRow).join("") || '<tr><td colspan="9" class="muted">選択モデルの複合評価なし</td></tr>';
   renderDaily(data,key);
   const daily=(data.model_daily||{})[key]||{};
   $("selectedModelMeta").textContent=daily.source?label+" / "+shortName(daily.source):label;
@@ -274,23 +294,32 @@ function trackCoverage(x){
   const calibration=x.calibration_eligible_races==null?"":`較正 ${fmt(x.calibration_eligible_races)}R/${fmt(x.calibration_eligible_days)}日 / `;
   return `${calibration}評価完全日 ${fmt(clean)}/${fmt(clean+excluded)} / 最新 ${pct(x.coverage_latest_rate)} / 必須 ${pct(x.coverage_minimum)}`;
 }
-function trackRows(rows,emptyText){
-  return rows.map(x=>{ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":status.includes("失敗")?"failed":""; const marketTitle=x.market_comparison_date?`${x.market_comparison_date} / ${fmt(x.market_comparison_races)}R / 負値は市場より改善 / 改善確率 ${pct(x.market_improvement_probability)}`:"市場比較未実施"; const loss=trackLoss(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell">${esc(x.label)}</td><td class="name-cell model-file">${esc(x.model_file||"-")}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td class="detail-cell">${esc(x.teacher||"-")}</td><td class="detail-cell">${esc(x.training||"-")}</td><td>${esc(x.role||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td class="mono">${esc(trackCoverage(x))}</td><td title="${esc(marketTitle)}">${esc(loss.label)} ${ratio(loss.value)}</td><td class="mono" title="${esc(marketTitle)}">${marketCi(x)}</td><td>${pct(x.winner_top1_accuracy)}</td><td title="${esc(marketTitle)}">${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td></tr>`; }).join("") || `<tr><td colspan="15" class="muted">${esc(emptyText)}</td></tr>`;
+function trackState(x){ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":status.includes("失敗")?"failed":""; return {status,cls}; }
+function trackHasPrediction(x){ return [x.entry_log_loss,x.trifecta_log_loss,x.market_probe_log_loss,x.model_trifecta_log_loss,x.winner_top1_accuracy,x.trifecta_top5_hit_rate].some(v=>v!=null); }
+function trackHasOperation(x){ return [x.roi,x.profit_yen,x.stake_yen,x.max_drawdown_yen].some(v=>v!=null); }
+function predictionTrackRows(rows){
+  return rows.map(x=>{ const state=trackState(x), loss=trackLoss(x), marketTitle=x.market_comparison_date?`${x.market_comparison_date} / ${fmt(x.market_comparison_races)}R / 改善確率 ${pct(x.market_improvement_probability)}`:"市場比較未実施", training=`${x.teacher||"-"} / ${x.training||"-"}`; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td class="detail-cell" title="${esc(training)}">${esc(training)}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td title="${esc(marketTitle)}">${esc(loss.label)} ${ratio(loss.value)}</td><td class="mono" title="${esc(marketTitle)}">${marketCi(x)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td></tr>`; }).join("") || '<tr><td colspan="9" class="muted">予測モデル情報なし</td></tr>';
+}
+function operationTrackRows(rows){
+  return rows.map(x=>{ const state=trackState(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td>${esc(trackCoverage(x))}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)}</td></tr>`; }).join("") || '<tr><td colspan="8" class="muted">運用モデル情報なし</td></tr>';
+}
+function compositeTrackRows(rows){
+  return rows.map(x=>{ const state=trackState(x), loss=trackLoss(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td>${esc(loss.label)} ${ratio(loss.value)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)}</td></tr>`; }).join("") || '<tr><td colspan="10" class="muted">複合モデル情報なし</td></tr>';
 }
 function renderModelTracks(tracks){
-  const past=tracks.filter(x=>x.include_odds!==true);
-  const market=tracks.filter(x=>x.evaluation_group==="t5_formal");
-  const diagnostic=tracks.filter(x=>x.include_odds===true&&x.evaluation_group!=="t5_formal");
-  $("pastModelTrackRows").innerHTML=trackRows(past,"過去ログモデル情報なし");
-  $("marketModelTrackRows").innerHTML=trackRows(market,"完全日T-5評価情報なし");
-  $("diagnosticModelTrackRows").innerHTML=trackRows(diagnostic,"開発診断情報なし");
+  const prediction=tracks.filter(x=>trackHasPrediction(x)&&!trackHasOperation(x));
+  const operation=tracks.filter(x=>!trackHasPrediction(x)&&trackHasOperation(x));
+  const composite=tracks.filter(x=>trackHasPrediction(x)&&trackHasOperation(x));
+  $("predictionTrackRows").innerHTML=predictionTrackRows(prediction);
+  $("operationTrackRows").innerHTML=operationTrackRows(operation);
+  $("compositeTrackRows").innerHTML=compositeTrackRows(composite);
 }
 function renderEvaluationJobs(jobs,generatedAt){
   $("remoteMeta").textContent=`更新 ${String(generatedAt||"").replace("T"," ").slice(0,19)} / 実行中 ${jobs.filter(x=>x.running).length}`;
   $("evaluationRows").innerHTML=jobs.map(x=>{ const status=String(x.status||"-"); const cls=status==="完了"?"done":status==="失敗"?"failed":x.running?"running":""; const fold=x.expected_folds?`${x.completed_folds||0}/${x.expected_folds}`:(x.completed_folds||"-"); const metric=x.real_odds_races!=null?`${fmt(x.evaluated_races)}/${fmt(x.real_odds_races)}`:fmt(x.evaluated_races); const prediction=x.winner_log_loss==null&&x.winner_top1_accuracy==null&&x.trifecta_top5_hit_rate==null?"-":`LL ${ratio(x.winner_log_loss)} / 1着 ${pct(x.winner_top1_accuracy)} / 3T5 ${pct(x.trifecta_top5_hit_rate)}`; return `<tr><td class="name-cell" title="${esc(x.name)}">${esc(x.name||"-")}</td><td>${esc(x.milestone||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td>${esc(x.decision||"-")}</td><td class="mono">${fold}</td><td class="mono">${esc(x.elapsed||"-")}</td><td class="mono">${prediction}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${metric}</td></tr>`; }).join("") || `<tr><td colspan="10" class="muted">評価ジョブ情報なし</td></tr>`;
 }
 function renderCandidates(rows){
-  $("candidateRows").innerHTML=rows.map(x=>{ const delta=x.payout_feature_roi_delta, lo=x.payout_feature_roi_delta_ci95_lower, hi=x.payout_feature_roi_delta_ci95_upper; const interval=delta==null?"-":`${ratio(delta)} [${ratio(lo)}, ${ratio(hi)}]`; const cls=delta==null?"":Number(delta)>=0?"pos":"neg"; return `<tr><td class="name-cell" title="${esc(x.result_path||x.model_key)}">#${fmt(x.job_id)} ${esc(x.model_key||"-")}</td><td>${esc(x.task_type||"-")}</td><td>${esc(x.decision||"-")}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${ratio(x.trifecta_log_loss)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td title="${esc(x.payout_feature_candidate_schema)}">${esc(x.payout_feature_candidate_schema||"-")}</td><td>${ratio(x.payout_feature_candidate_roi)}</td><td class="${Number(x.payout_feature_candidate_profit_yen||0)>=0?"pos":"neg"}">${x.payout_feature_candidate_profit_yen==null?"-":yen(x.payout_feature_candidate_profit_yen)}</td><td>${x.payout_feature_candidate_max_drawdown_yen==null?"-":yen(x.payout_feature_candidate_max_drawdown_yen)}</td><td>${ratio(x.payout_feature_roi_ci95_lower)}</td><td>${pct(x.payout_feature_probability_roi_above_one)}</td><td title="${esc(x.payout_feature_legacy_schema)}">${esc(x.payout_feature_legacy_schema||"-")}</td><td>${ratio(x.payout_feature_legacy_roi)}</td><td class="mono ${cls}">${interval}</td><td>${pct(x.payout_feature_probability_roi_delta_above_zero)}</td></tr>`; }).join("") || '<tr><td colspan="17" class="muted">完了した評価候補なし</td></tr>';
+  $("candidateRows").innerHTML=rows.map(x=>`<tr><td class="name-cell" title="${esc(x.result_path||x.model_key)}">#${fmt(x.job_id)} ${esc(x.model_key||"-")}</td><td>${esc(x.task_type||"-")} / ${esc(x.decision||"-")}</td><td>${ratio(x.trifecta_log_loss)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${ratio(x.payout_feature_candidate_roi)}</td><td class="${Number(x.payout_feature_candidate_profit_yen||0)>=0?"pos":"neg"}">${x.payout_feature_candidate_profit_yen==null?"-":yen(x.payout_feature_candidate_profit_yen)}</td><td>${x.payout_feature_candidate_max_drawdown_yen==null?"-":yen(x.payout_feature_candidate_max_drawdown_yen)}</td><td>${pct(x.payout_feature_probability_roi_above_one)}</td></tr>`).join("") || '<tr><td colspan="10" class="muted">完了した評価候補なし</td></tr>';
 }
 function scopeText(value){ const text=String(value||"legacy:unknown"); if(text==="standard_365d_v2") return "統一365日 v2"; if(text==="standard_365d") return "統一365日 v1"; const parts=text.split(":"); return parts[0]==="legacy"&&parts.length===4 ? parts[1]+".."+parts[2]+" / "+parts[3]+"日" : "個別期間"; }
 function roiInterval(lower,upper){ return lower==null||upper==null?"-":"["+ratio(lower)+", "+ratio(upper)+"]"; }

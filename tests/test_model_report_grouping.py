@@ -53,10 +53,15 @@ def test_unified_summary_and_promotion_display_are_explicit() -> None:
     assert "comparisonBank=v2Ready?v2Bank:v1Bank" in render_source
     assert "comparisonTests=v2Ready?v2Tests:v1Tests" in render_source
     assert "mergeComparisonRows(comparisonTests,comparisonBank)" in render_source
-    assert "comparisonRows.map(comparisonRow)" in render_source
+    assert "map(predictionRow)" in render_source
+    assert "map(operationRow)" in render_source
+    assert "map(compositeRow)" in render_source
     assert "summaryTests.map" not in render_source
     assert "summaryBank.map" not in render_source
     assert "function mergeComparisonRows" in MODEL_REPORT_HTML
+    assert "function predictionRow" in MODEL_REPORT_HTML
+    assert "function operationRow" in MODEL_REPORT_HTML
+    assert "function compositeRow" in MODEL_REPORT_HTML
     assert "function trackLoss" in MODEL_REPORT_HTML
     assert "row.name||row.file||row.model" in MODEL_REPORT_HTML
     assert 'status==="retain_incumbent"' in protocol_source
@@ -65,6 +70,25 @@ def test_unified_summary_and_promotion_display_are_explicit() -> None:
         assert text in protocol_source
     for reason in ("ROI<1", "損益<=0", "艇Entry LL悪化", "1着悪化", "3T5悪化"):
         assert reason in protocol_source
+
+
+def test_model_metrics_are_split_into_vertical_full_width_tables() -> None:
+    for row_id in (
+        "predictionSummaryRows",
+        "operationSummaryRows",
+        "compositeSummaryRows",
+        "predictionTrackRows",
+        "operationTrackRows",
+        "compositeTrackRows",
+    ):
+        assert f'id="{row_id}"' in MODEL_REPORT_HTML
+
+    assert 'class="table-stack"' in MODEL_REPORT_HTML
+    assert ".table-stack,.model-track-groups" in MODEL_REPORT_HTML
+    assert "grid-template-columns:minmax(0,1fr)" in MODEL_REPORT_HTML
+    assert ".table-scroll { overflow-x:visible; }" in MODEL_REPORT_HTML
+    assert "min-width:1780px" not in MODEL_REPORT_HTML
+    assert "min-width:1280px" not in MODEL_REPORT_HTML
 
 
 def test_model_tracks_include_listwise_search_and_newton(tmp_path) -> None:
