@@ -676,14 +676,19 @@ def build_race_features(
 ) -> list[dict[str, Any]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     dropped = set(drop_feature_groups)
+    empty_relatives = {lane: {} for lane in range(1, 7)}
+    needs_card_relatives = (
+        "card_relative" not in dropped
+        or "research_correlates" not in dropped
+    )
     relatives = (
         race_relative_features(
             race_rows,
-            {lane: {} for lane in range(1, 7)},
+            empty_relatives,
             include_research="research_correlates" not in dropped,
         )
-        if "base_pastlog" not in dropped
-        else {}
+        if "base_pastlog" not in dropped and needs_card_relatives
+        else empty_relatives
     )
     series_relatives = (
         series_relative_features(
