@@ -9,7 +9,7 @@ from typing import Any
 
 from ..constants import RACES_PER_DAY, VENUES
 from ..ingestion.program import load_daily_program
-from ..db import connection, ensure_odds_signature_schema, init_db
+from ..db import connection, init_db
 from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
@@ -38,8 +38,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     init_db(args.db)
-    with connection(args.db) as conn:
-        ensure_odds_signature_schema(conn)
     fixed_date = date.fromisoformat(args.date) if args.date else None
     raw_dir = Path(args.raw_dir)
     model_path = Path(args.model)
