@@ -39,7 +39,7 @@ def evaluation_due(
 ) -> bool:
     if not output_exists:
         return True
-    if state.get("status") == "error":
+    if state.get("status") in {"error", "deferred_resource_busy"}:
         return True
     if model_sha256 and state.get("model_sha256") != model_sha256:
         return True
@@ -260,6 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=2,
     )
+    parser.add_argument(
+        "--deferred-retry-interval",
+        type=float,
+        default=60.0,
+    )
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--once", action="store_true")
     return parser
@@ -287,7 +292,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(event, ensure_ascii=False), flush=True)
         if args.once:
             return 0 if event.get("status") != "error" else 1
-        time.sleep(max(60.0, float(args.interval)))
+        retry_delay = (
+            args.deferred_retry_interval
+            if event.get("status") == "deferred_resource_busy"
+            else args.interval
+        )
+        time.sleep(max(60.0, float(retry_delay)))
 
 
 if __name__ == "__main__":
