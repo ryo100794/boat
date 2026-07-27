@@ -82,6 +82,12 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
     )
     assert [row["evaluated_candidates"] for row in result["stages"]] == [9, 3, 2]
     assert len(result["finalists"]) == 2
+    finalist_policies = [row["policy"] for row in result["finalists"]]
+    for overrides in CONSERVATIVE_POLICY_ANCHORS:
+        assert {**POLICY, **overrides} in finalist_policies
+    assert [
+        row["protected_anchor_count"] for row in result["stages"]
+    ] == [2, 2, 2]
     assert result["selected"] == result["finalists"][0]
     assert "roi_ci95_lower" in result["selected"]["confidence"]
     assert len(result["selected"]["temporal_stability"]["folds"]) == 3

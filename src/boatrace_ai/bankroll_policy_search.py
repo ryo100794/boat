@@ -48,6 +48,20 @@ CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _conservative_anchor_policies(
+    base_policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    anchors = []
+    seen = set()
+    for overrides in CONSERVATIVE_POLICY_ANCHORS:
+        candidate = {**base_policy, **overrides}
+        key = _policy_key(candidate)
+        if _valid_caps(candidate) and key not in seen:
+            seen.add(key)
+            anchors.append(candidate)
+    return anchors
+
+
 def policy_candidates(
     base_policy: Mapping[str, Any],
     *,
@@ -59,12 +73,11 @@ def policy_candidates(
     rng = np.random.default_rng(seed)
     candidates = [dict(base_policy)]
     seen = {_policy_key(candidates[0])}
-    for overrides in CONSERVATIVE_POLICY_ANCHORS:
+    for candidate in _conservative_anchor_policies(base_policy):
         if len(candidates) >= count:
             break
-        candidate = {**base_policy, **overrides}
         key = _policy_key(candidate)
-        if _valid_caps(candidate) and key not in seen:
+        if key not in seen:
             seen.add(key)
             candidates.append(candidate)
     attempts = 0
@@ -83,6 +96,37 @@ def policy_candidates(
     if len(candidates) != count:
         raise RuntimeError("could not generate enough unique policy candidates")
     return candidates
+
+
+def _retain_conservative_anchors(
+    rows: Sequence[dict[str, Any]],
+    *,
+    keep: int,
+    base_policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    selected = list(rows[:keep])
+    anchor_keys = {
+        _policy_key(policy)
+        for policy in _conservative_anchor_policies(base_policy)
+    }
+    selected_keys = {_policy_key(row["policy"]) for row in selected}
+    for row in rows:
+        key = _policy_key(row["policy"])
+        if key not in anchor_keys or key in selected_keys:
+            continue
+        replace_at = next(
+            (
+                index for index in range(len(selected) - 1, -1, -1)
+                if _policy_key(selected[index]["policy"]) not in anchor_keys
+            ),
+            None,
+        )
+        if replace_at is None:
+            break
+        selected_keys.discard(_policy_key(selected[replace_at]["policy"]))
+        selected[replace_at] = row
+        selected_keys.add(key)
+    return selected
 
 
 def slice_days(packed: PackedCandidates, stop_day: int) -> PackedCandidates:
@@ -163,12 +207,22 @@ def successive_halving_search(
             if fraction < 1.0
             else finalists
         )
-        active = [row["policy"] for row in rows[:keep]]
+        retained = _retain_conservative_anchors(
+            rows, keep=keep, base_policy=base_policy
+        )
+        active = [row["policy"] for row in retained]
+        anchor_keys = {
+            _policy_key(policy)
+            for policy in _conservative_anchor_policies(base_policy)
+        }
         stages.append({
             "fraction": fraction,
             "days": len(stage_data.dates),
             "evaluated_candidates": len(rows),
             "retained_candidates": len(active),
+            "protected_anchor_count": sum(
+                _policy_key(policy) in anchor_keys for policy in active
+            ),
             "leaders": rows[: min(10, len(rows))],
         })
 
