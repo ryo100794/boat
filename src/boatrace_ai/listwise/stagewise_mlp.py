@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 from sklearn.feature_extraction import FeatureHasher
 from sklearn.metrics import log_loss
@@ -21,6 +20,7 @@ from ..db import connection, init_db
 from ..fast_math import TRIFECTA_COMBINATIONS
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
+from ..legacy_model_aliases import load_model_bundle
 from .model import ListwiseLinearModel, fit_scaler, stable_softmax
 from .newton_refine import dump_joblib_atomic
 
@@ -339,7 +339,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     )
     baseline = None
     if args.baseline_model:
-        baseline_artifact = joblib.load(args.baseline_model)
+        baseline_artifact = load_model_bundle(args.baseline_model)
         baseline_model = baseline_artifact.get("model")
         if not isinstance(baseline_model, ListwiseLinearModel):
             raise ValueError("baseline artifact does not contain a listwise model")

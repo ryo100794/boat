@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-import joblib
 import numpy as np
 from sklearn.feature_extraction import FeatureHasher
 
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
+from ..legacy_model_aliases import load_model_bundle
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .stagewise_mlp import (
@@ -242,8 +242,8 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         date_from=args.selection_from,
         date_through=args.selection_through,
     )
-    selection_stage_artifact = joblib.load(args.selection_stagewise_model)
-    selection_list_artifact = joblib.load(args.selection_listwise_model)
+    selection_stage_artifact = load_model_bundle(args.selection_stagewise_model)
+    selection_list_artifact = load_model_bundle(args.selection_listwise_model)
     selection_stage, selection_list = validate_artifact_pair(
         selection_stage_artifact,
         selection_list_artifact,
@@ -268,8 +268,8 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         date_from=args.evaluation_from,
         date_through=args.evaluation_through,
     )
-    evaluation_stage_artifact = joblib.load(args.evaluation_stagewise_model)
-    evaluation_list_artifact = joblib.load(args.evaluation_listwise_model)
+    evaluation_stage_artifact = load_model_bundle(args.evaluation_stagewise_model)
+    evaluation_list_artifact = load_model_bundle(args.evaluation_listwise_model)
     evaluation_stage, evaluation_list = validate_artifact_pair(
         evaluation_stage_artifact,
         evaluation_list_artifact,
