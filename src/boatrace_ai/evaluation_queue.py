@@ -3519,7 +3519,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in (
         "init", "seed", "enqueue", "retry", "reprioritize", "status",
-        "run", "schedule",
+        "resummarize", "run", "schedule",
     ):
         command = sub.add_parser(name)
         command.add_argument("--db", default=DEFAULT_DSN)
@@ -3540,6 +3540,9 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--priority", type=int, required=True)
             command.add_argument("--reason", required=True)
             command.add_argument("--ticket-key")
+        if name == "resummarize":
+            command.add_argument("--job-id", type=int, required=True)
+            command.add_argument("--app-root", type=Path, default=Path("/workspace/boat"))
         if name == "run":
             command.add_argument("--app-root", default="/workspace/boat")
             command.add_argument("--python", default="/workspace/boat/.venv/bin/python")
@@ -3640,6 +3643,45 @@ def reprioritize_job(
     return {key: row[key] for key in row.keys()}
 
 
+def resummarize_completed_job(
+    conn: Any, *, job_id: int, app_root: Path
+) -> dict[str, Any]:
+    if job_id < 1:
+        raise ValueError("job_id must be positive")
+    row = conn.execute(
+        """
+        SELECT job_id, status, result_path
+        FROM model_evaluation_jobs
+        WHERE job_id = ?
+        """,
+        (job_id,),
+    ).fetchone()
+    if row is None or str(row["status"]) != "completed" or not row["result_path"]:
+        raise ValueError("job must be completed and have a result_path")
+    root = app_root.resolve()
+    result_path = Path(str(row["result_path"]))
+    if not result_path.is_absolute():
+        result_path = root / result_path
+    result_path = result_path.resolve()
+    if root != result_path and root not in result_path.parents:
+        raise ValueError("result_path must be inside app_root")
+    _payload, summary = _load_result(result_path)
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET result_summary = CAST(? AS JSONB), updated_at = CURRENT_TIMESTAMP
+        WHERE job_id = ? AND status = 'completed'
+        """,
+        (_json(summary), job_id),
+    )
+    return {
+        "job_id": job_id,
+        "result_path": str(result_path),
+        "summary_keys": sorted(summary),
+        "tail_diagnostics": "tail_portfolio_diagnostics" in summary,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
@@ -3682,6 +3724,16 @@ def main(argv: list[str] | None = None) -> int:
                         priority=args.priority,
                         reason=args.reason,
                         ticket_key=args.ticket_key,
+                    )
+                )
+            )
+        elif args.command == "resummarize":
+            print(
+                _json(
+                    resummarize_completed_job(
+                        conn,
+                        job_id=args.job_id,
+                        app_root=args.app_root,
                     )
                 )
             )
