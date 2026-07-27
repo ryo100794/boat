@@ -878,6 +878,12 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def protected_runtime_supported(protected_blend: dict[str, Any] | None) -> bool:
+    if protected_blend is None:
+        return True
+    return float(protected_blend["candidate_weight"]) == 1.0
+
+
 def protected_holdout_predictions(
     conn: Any,
     race_keys: Sequence[tuple[str, str, str, int]],
@@ -1194,7 +1200,9 @@ def evaluate_recency_mlp(
             ),
         }
         if protected_baseline_model_path is not None:
-            performance_gate["protected_runtime_supported"] = False
+            performance_gate["protected_runtime_supported"] = protected_runtime_supported(
+                protected_blend
+            )
         performance_gate["pass"] = bool(all(performance_gate.values()))
         promotion_gate = {
             **performance_gate,
