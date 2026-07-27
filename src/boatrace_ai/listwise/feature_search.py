@@ -45,8 +45,8 @@ from ..standard_evaluation import race_set_sha256
 
 FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
 
-SELECTION_RULE_VERSION = "ranking-loss-tolerance-top5-v1"
-SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.005
+SELECTION_RULE_VERSION = "ranking-loss-tolerance-top5-v2"
+SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.01
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
 
 

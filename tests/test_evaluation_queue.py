@@ -864,6 +864,25 @@ def test_feature_search_accepts_explicit_feature_variants(tmp_path) -> None:
     assert command[index + 1] == "full,drop_research_correlates"
 
 
+def test_combined_search_accepts_registered_feature_variant_subset(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "combined_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "feature_variants": "keep_card_numeric",
+                "targets": "winner",
+                "alphas": "0.00001",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+    index = command.index("--combined-feature-variants")
+    assert command[index + 1] == "keep_card_numeric"
+
+
 def test_feature_search_accepts_bounded_ev_policy_selection_grid(tmp_path) -> None:
     command, _output = build_command(
         _job(

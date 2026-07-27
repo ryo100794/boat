@@ -1375,10 +1375,17 @@ def build_command(
         selected_feature_variants = None
         if params.get("feature_variants"):
             if task_type == "combined_feature_search":
-                raise ValueError("feature_variants is not supported for combined search")
-            from .listwise.feature_search import feature_variants
+                from .listwise.combined_feature_search import (
+                    COMBINED_FEATURE_VARIANTS,
+                )
 
-            available_variants = {name for name, _drops in feature_variants()}
+                available_variants = {
+                    name for name, _drops in COMBINED_FEATURE_VARIANTS
+                }
+            else:
+                from .listwise.feature_search import feature_variants
+
+                available_variants = {name for name, _drops in feature_variants()}
             variant_names = tuple(dict.fromkeys(
                 item.strip() for item in str(params["feature_variants"]).split(",")
                 if item.strip()
@@ -1432,7 +1439,12 @@ def build_command(
             "--daily-budget-yen", "10000",
         ]
         if selected_feature_variants:
-            command.extend(["--feature-variants", selected_feature_variants])
+            variant_option = (
+                "--combined-feature-variants"
+                if combined
+                else "--feature-variants"
+            )
+            command.extend([variant_option, selected_feature_variants])
         if params.get("ev_thresholds"):
             thresholds = [
                 float(value) for value in str(params["ev_thresholds"]).split(",")
