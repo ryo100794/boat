@@ -209,6 +209,16 @@ def allocate_adaptive_day(
             (item["stake_yen"] for item in selected),
             default=0,
         ),
+        "_tail_portfolio_rows": [
+            {
+                "date": race_date,
+                "race_id": str(item["race_id"]),
+                "odds": float(item["estimated_odds"]),
+                "stake": int(item["stake_yen"]),
+                "return": int(item["return_yen"]),
+            }
+            for item in selected
+        ],
         "selected_sample": selection_sample(selected),
     }
 

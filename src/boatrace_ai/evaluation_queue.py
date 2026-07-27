@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from .db import connection
 from .feature_schema import FEATURE_SCHEMA_VERSION
+from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -1877,6 +1878,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     def visit(value: Any, depth: int = 0) -> None:
         if depth > 5 or not isinstance(value, dict):
             return
+        tail_diagnostics = value.get("tail_portfolio_diagnostics")
+        if (
+            "tail_portfolio_diagnostics" not in summary
+            and isinstance(tail_diagnostics, dict)
+        ):
+            summary["tail_portfolio_diagnostics"] = tail_diagnostics
         for key in METRIC_KEYS:
             if key in value and key not in summary and not isinstance(value[key], (dict, list)):
                 summary[key] = value[key]
@@ -2156,10 +2163,50 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     return "reject_or_research_only"
 
 
+def _attach_tail_portfolio_diagnostics(value: Any) -> bool:
+    changed = False
+    if isinstance(value, list):
+        for item in value:
+            changed = _attach_tail_portfolio_diagnostics(item) or changed
+        return changed
+    if not isinstance(value, dict):
+        return False
+
+    daily = value.get("daily")
+    if isinstance(daily, list):
+        rows: list[dict[str, Any]] = []
+        found_rows = False
+        for day in daily:
+            if not isinstance(day, dict):
+                continue
+            raw_rows = day.pop("_tail_portfolio_rows", None)
+            if isinstance(raw_rows, list):
+                found_rows = True
+                rows.extend(row for row in raw_rows if isinstance(row, dict))
+        if found_rows:
+            diagnostics = diagnose_tail_portfolio(rows)
+            diagnostics["odds_field"] = "estimated_odds_at_purchase"
+            value["tail_portfolio_diagnostics"] = diagnostics
+            changed = True
+
+    diagnostics = value.get("tail_portfolio_diagnostics")
+    for child in value.values():
+        if child is not diagnostics:
+            changed = _attach_tail_portfolio_diagnostics(child) or changed
+    return changed
+
+
 def _load_result(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("evaluation result must be a JSON object")
+    if _attach_tail_portfolio_diagnostics(payload):
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
     return payload, summarize_result(payload)
 
 
