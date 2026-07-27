@@ -1811,10 +1811,12 @@ class _ClaimConnection:
         self.saved_timeouts = []
         self.candidate_sql = ""
         self.update_sql = ""
+        self.events = []
 
     def execute(self, statement, parameters=()):
         sql = " ".join(statement.split())
-        if "pg_advisory_xact_lock" in sql:
+        self.events.append(sql)
+        if "pg_advisory_xact_lock" in sql or sql.startswith("LOCK TABLE"):
             return _QueryResult()
         if "SELECT jobs.*" in sql:
             self.candidate_sql = sql
@@ -1868,7 +1870,7 @@ class _LifecycleConnection:
         raise AssertionError(f"unexpected SQL: {sql}")
 
 
-def test_high_memory_evaluations_reserve_eight_gib_for_services() -> None:
+def test_high_memory_evaluations_reserve_six_gib_for_services() -> None:
     resources = ResourceSnapshot(
         available_memory_mb=28000,
         available_disk_mb=10000,
@@ -1878,7 +1880,7 @@ def test_high_memory_evaluations_reserve_eight_gib_for_services() -> None:
         memory_limit_mb=32000,
     )
 
-    assert evaluation_queue._evaluation_reservation_mb(resources) == 23808
+    assert evaluation_queue._evaluation_reservation_mb(resources) == 25856
 
 
 def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
@@ -1907,6 +1909,8 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed is not None
     assert claimed["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200]
+    assert conn.events[1] == "LOCK TABLE model_evaluation_jobs IN ROW EXCLUSIVE MODE"
+    assert conn.events[2].startswith("SELECT jobs.*")
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
     assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
