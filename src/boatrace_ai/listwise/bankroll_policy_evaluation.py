@@ -23,7 +23,11 @@ from ..bankroll_policy_search import (
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, race_ids_sha256
-from ..packed_bankroll import evaluate_packed_policy, pack_candidates
+from ..packed_bankroll import (
+    candidate_ev_calibration,
+    evaluate_packed_policy,
+    pack_candidates,
+)
 from .direct_bankroll import bootstrap_daily_bankroll
 from .feature_search import _write_json_atomic
 from .model import evaluate_range, fit_scaler, train_listwise_model
@@ -184,6 +188,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         prior_results.append({
             "payout_prior_weight": prior_weight,
             "packed_tickets": packed.tickets,
+            "candidate_ev_calibration": candidate_ev_calibration(packed),
             **search_result,
         })
         print(json.dumps({
@@ -222,6 +227,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         payout_prior_weight=float(selected_policy["payout_prior_weight"]),
     )
     holdout_bankroll = evaluate_packed_policy(holdout_packed, selected_policy)
+    holdout_ev_calibration = candidate_ev_calibration(holdout_packed)
     holdout_confidence = bootstrap_daily_bankroll(
         holdout_bankroll["daily"],
         samples=args.bootstrap_samples,
@@ -269,6 +275,8 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "ticket_hit_rate": holdout_bankroll["ticket_hit_rate"],
         "race_hit_rate": holdout_bankroll["race_hit_rate"],
         "bankroll": holdout_bankroll,
+        "holdout_candidate_ev_calibration": holdout_ev_calibration,
+        "ev_calibration_usage": "reporting_only_not_used_for_selection",
         "bankroll_confidence": holdout_confidence,
         "promotion_gate": holdout_gate,
         "recent_allocation": recent_allocation,

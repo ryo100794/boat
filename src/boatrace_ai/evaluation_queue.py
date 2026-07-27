@@ -1819,6 +1819,30 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    ev_calibration = payload.get("holdout_candidate_ev_calibration")
+    if isinstance(ev_calibration, list):
+        clean_bins = [
+            {key: row.get(key) for key in (
+                "lower_inclusive", "upper_exclusive", "tickets", "hits",
+                "realized_roi", "mean_estimated_ev",
+                "realized_to_estimated_ratio",
+            )}
+            for row in ev_calibration if isinstance(row, dict)
+        ]
+        summary["holdout_candidate_ev_calibration"] = clean_bins
+        high_bins = [
+            row for row in ev_calibration
+            if isinstance(row, dict)
+            and float(row.get("lower_inclusive") or 0.0) >= 2.0
+        ]
+        high_stake = sum(int(row.get("flat_stake_yen") or 0) for row in high_bins)
+        high_return = sum(int(row.get("flat_return_yen") or 0) for row in high_bins)
+        summary["high_ev_tickets"] = sum(
+            int(row.get("tickets") or 0) for row in high_bins
+        )
+        summary["high_ev_realized_roi"] = (
+            high_return / high_stake if high_stake else None
+        )
     registered_policy = payload.get("registered_ev_band_walk_forward")
     if isinstance(registered_policy, dict):
         for key in (

@@ -2493,6 +2493,10 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "registered_ev_band_hit_tickets"
                 ),
                 "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
+                "high_ev_tickets": metrics.get("high_ev_tickets"),
+                "high_ev_realized_roi": _float_or_none(
+                    metrics.get("high_ev_realized_roi")
+                ),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
                 "winner_log_loss": _float_or_none(
                     metrics.get("winner_log_loss")

@@ -65,6 +65,46 @@ def pack_candidates(
     )
 
 
+def candidate_ev_calibration(
+    packed: PackedCandidates,
+    *,
+    bounds: tuple[float, ...] = (1.0, 1.2, 1.5, 1.75, 2.0, 2.5),
+) -> list[dict[str, Any]]:
+    """Report realized flat-stake returns by estimated-EV band."""
+    if len(bounds) < 1 or any(
+        not np.isfinite(value) or value < 0.0 for value in bounds
+    ) or any(left >= right for left, right in zip(bounds, bounds[1:])):
+        raise ValueError("EV calibration bounds must be finite and strictly increasing")
+    ev = packed.estimated_ev.astype(np.float64, copy=False)
+    rows: list[dict[str, Any]] = []
+    for index, lower in enumerate(bounds):
+        upper = bounds[index + 1] if index + 1 < len(bounds) else None
+        mask = np.isfinite(ev) & (ev >= lower)
+        if upper is not None:
+            mask &= ev < upper
+        tickets = int(mask.sum())
+        hit_mask = mask & packed.hit
+        hits = int(hit_mask.sum())
+        returned = int(packed.actual_payout_yen[hit_mask].sum())
+        stake = tickets * 100
+        mean_ev = float(ev[mask].mean()) if tickets else None
+        rows.append({
+            "lower_inclusive": float(lower),
+            "upper_exclusive": float(upper) if upper is not None else None,
+            "tickets": tickets,
+            "hits": hits,
+            "hit_rate": hits / tickets if tickets else None,
+            "flat_stake_yen": stake,
+            "flat_return_yen": returned,
+            "realized_roi": returned / stake if stake else None,
+            "mean_estimated_ev": mean_ev,
+            "realized_to_estimated_ratio": (
+                returned / stake / mean_ev if stake and mean_ev else None
+            ),
+        })
+    return rows
+
+
 def evaluate_packed_policy(
     packed: PackedCandidates,
     policy: Mapping[str, Any],

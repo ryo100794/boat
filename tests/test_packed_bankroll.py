@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from boatrace_ai.adaptive_allocation import allocate_adaptive_day
-from boatrace_ai.packed_bankroll import evaluate_packed_policy, pack_candidates
+from boatrace_ai.packed_bankroll import (
+    candidate_ev_calibration,
+    evaluate_packed_policy,
+    pack_candidates,
+)
 
 
 POLICY = {
@@ -29,6 +33,28 @@ def _candidate(race_id: str, combination: str, probability: float, odds: float, 
         "actual_payout_yen": int(odds * 100),
         "hit": hit,
     }
+
+
+def test_candidate_ev_calibration_reports_realized_flat_returns() -> None:
+    low_hit = _candidate("r1", "1-2-3", 0.10, 11.0, hit=True)
+    low_hit["actual_payout_yen"] = 800
+    middle_miss = _candidate("r2", "1-3-2", 0.10, 13.0)
+    high_hit = _candidate("r3", "2-1-3", 0.10, 16.0, hit=True)
+    high_hit["actual_payout_yen"] = 300
+    packed = pack_candidates(
+        {"2026-07-01": [low_hit, middle_miss, high_hit]},
+        {"2026-07-01": 3},
+    )
+
+    rows = candidate_ev_calibration(packed)
+
+    assert rows[0]["tickets"] == 1
+    assert rows[0]["realized_roi"] == 8.0
+    assert rows[1]["tickets"] == 1
+    assert rows[1]["realized_roi"] == 0.0
+    assert rows[2]["tickets"] == 1
+    assert rows[2]["realized_roi"] == 3.0
+    assert rows[-1]["upper_exclusive"] is None
 
 
 def test_packed_policy_matches_reference_allocator() -> None:

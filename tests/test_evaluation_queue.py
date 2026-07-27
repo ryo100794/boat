@@ -2313,6 +2313,29 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         )
 
 
+def test_result_summary_exposes_high_ev_holdout_calibration() -> None:
+    summary = summarize_result({
+        "holdout_candidate_ev_calibration": [
+            {
+                "lower_inclusive": 2.0, "upper_exclusive": 2.5,
+                "tickets": 10, "hits": 1, "flat_stake_yen": 1000,
+                "flat_return_yen": 800, "realized_roi": 0.8,
+                "mean_estimated_ev": 2.2,
+            },
+            {
+                "lower_inclusive": 2.5, "upper_exclusive": None,
+                "tickets": 5, "hits": 1, "flat_stake_yen": 500,
+                "flat_return_yen": 1000, "realized_roi": 2.0,
+                "mean_estimated_ev": 2.8,
+            },
+        ],
+    })
+
+    assert summary["high_ev_tickets"] == 15
+    assert summary["high_ev_realized_roi"] == 1.2
+    assert len(summary["holdout_candidate_ev_calibration"]) == 2
+
+
 def test_result_summary_exposes_registered_ev_band_separately() -> None:
     summary = summarize_result({
         "roi": 0.33,
