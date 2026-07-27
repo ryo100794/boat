@@ -1674,7 +1674,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
 
     def fake_connection(_db):
         nonlocal connection_count
-        names = ("startup", "maintenance", "claim")
+        names = ("startup", "cleanup", "seeding", "claim")
         name = names[connection_count]
         connection_count += 1
         return Scope(name)
@@ -1746,11 +1746,12 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     ])
 
     assert evaluation_queue.run_worker(args) == 0
-    assert events.index("commit:maintenance") < events.index("enter:claim")
-    assert events.index("seed-market") < events.index("commit:maintenance")
-    assert events.index("reconcile") < events.index("commit:maintenance")
-    assert events.index("seed-genetic") < events.index("commit:maintenance")
-    assert events.index("seed-periodic") < events.index("commit:maintenance")
+    assert events.index("reconcile") < events.index("commit:cleanup")
+    assert events.index("commit:cleanup") < events.index("enter:seeding")
+    assert events.index("seed-market") < events.index("commit:seeding")
+    assert events.index("seed-genetic") < events.index("commit:seeding")
+    assert events.index("seed-periodic") < events.index("commit:seeding")
+    assert events.index("commit:seeding") < events.index("enter:claim")
     assert events.index("enter:claim") < events.index("claim")
 
 
@@ -1824,8 +1825,8 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "requeue", "reconcile", "seed-defaults", "seed-market",
-        "seed-periodic", "commit",
+        "enter", "requeue", "reconcile", "commit",
+        "enter", "seed-defaults", "seed-market", "seed-periodic", "commit",
     ]
 
 
@@ -2040,8 +2041,9 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed is not None
     assert claimed["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200]
-    assert conn.events[1] == "LOCK TABLE model_evaluation_jobs IN ROW EXCLUSIVE MODE"
-    assert conn.events[2].startswith("SELECT jobs.*")
+    assert conn.events[0].startswith("SELECT pg_advisory_xact_lock")
+    assert conn.events[1].startswith("SELECT jobs.*")
+    assert not any(event.startswith("LOCK TABLE") for event in conn.events)
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
     assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
@@ -2089,6 +2091,11 @@ def test_recover_worker_closes_interrupted_attempt() -> None:
     )
 
     assert recovered == 1
+    parent_sql, parent_parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in parent_sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in parent_sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in parent_sql
+    assert parent_parameters == ("evaluator-02",)
     run_sql, run_parameters = events[1]
     assert "status = 'failed'" in run_sql
     assert "completed_at = CURRENT_TIMESTAMP" in run_sql
@@ -2123,15 +2130,17 @@ def test_requeue_stale_jobs_closes_matching_running_attempt() -> None:
     assert requeued == 1
     assert len(events) == 1
     sql, parameters = events[0]
-    assert "WITH stale_jobs AS" in sql
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "), stale_jobs AS" in sql
     assert "UPDATE model_evaluation_jobs" in sql
     assert "UPDATE model_evaluation_job_runs AS runs" in sql
-    assert "RETURNING job_id, attempt" in sql
+    assert "RETURNING jobs.job_id, jobs.attempt" in sql
     assert "runs.status = 'running'" in sql
     assert "runs.job_id = stale_jobs.job_id" in sql
     assert "runs.attempt = stale_jobs.attempt" in sql
     assert "completed_at = CURRENT_TIMESTAMP" in sql
-    assert parameters == ("worker lease expired", 90, "worker lease expired")
+    assert parameters == (90, "worker lease expired", "worker lease expired")
 
 
 def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
@@ -2150,6 +2159,9 @@ def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
 
     assert cancelled == 1
     sql, parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in sql
     assert "SET status = 'cancelled'" in sql
     assert "completed_at = CURRENT_TIMESTAMP" in sql
     assert "WHERE status = 'queued' AND attempt >= max_attempts" in sql
@@ -2158,6 +2170,33 @@ def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
         "queue reconciliation cancelled exhausted job: "
         "attempt reached max_attempts",
     )
+
+
+def test_retry_pending_jobs_locks_targets_in_consistent_order() -> None:
+    events = []
+
+    class Result:
+        def fetchall(self):
+            return [{"job_id": 8}, {"job_id": 13}]
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            events.append((" ".join(statement.split()), parameters))
+            return Result()
+
+    retried = evaluation_queue.retry_pending_jobs(
+        Connection(),
+        include_failed=True,
+        include_running=True,
+    )
+
+    assert retried == 2
+    sql, parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in sql
+    assert "status IN ('queued','failed','running')" in sql
+    assert parameters == ()
 
 
 def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:
