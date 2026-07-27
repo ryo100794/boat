@@ -1325,7 +1325,7 @@ def build_command(
                 f"market source model is not available yet: {model_input}"
             )
         strategy = str(params.get("calibrator_strategy", "newton_residual"))
-        if strategy not in {"grid", "newton_residual", "odds_path_return"}:
+        if strategy not in {"grid", "newton_residual", "orthogonal_residual", "odds_path_return"}:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
             str(python), "-m", "boatrace_ai.listwise.market_calibration",

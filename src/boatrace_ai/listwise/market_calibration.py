@@ -1288,6 +1288,18 @@ def fit_deployment_configuration(
             else fit_fixed_regularization(races)
         )
         calibrator = dict(calibrator_selection["final_calibrator"])
+    elif calibrator_strategy == "orthogonal_residual":
+        from .market_orthogonal_residual import (
+            fit_fixed_regularization,
+            select_regularization_prequential,
+        )
+
+        calibrator_selection = (
+            select_regularization_prequential(races)
+            if len(dates) >= 2
+            else fit_fixed_regularization(races)
+        )
+        calibrator = dict(calibrator_selection["final_calibrator"])
     elif calibrator_strategy == "grid":
         calibrator, candidates = select_calibrator(races)
         calibrator_candidates = len(candidates)
@@ -1397,6 +1409,22 @@ def walk_forward_evaluate(
             calibrator_grid = []
         elif calibrator_strategy == "newton_residual":
             from .market_residual import (
+                fit_fixed_regularization,
+                select_regularization_prequential,
+            )
+
+            calibration_day_count = len(
+                {str(race["race_date"]) for race in calibration_races}
+            )
+            calibrator_selection = (
+                select_regularization_prequential(calibration_races)
+                if calibration_day_count >= 2
+                else fit_fixed_regularization(calibration_races)
+            )
+            calibrator = dict(calibrator_selection["final_calibrator"])
+            calibrator_grid = []
+        elif calibrator_strategy == "orthogonal_residual":
+            from .market_orthogonal_residual import (
                 fit_fixed_regularization,
                 select_regularization_prequential,
             )
@@ -2560,7 +2588,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-calibration-days", type=int, default=2)
     parser.add_argument(
         "--calibrator-strategy",
-        choices=("grid", "newton_residual", "odds_path_return"),
+        choices=("grid", "newton_residual", "orthogonal_residual", "odds_path_return"),
         default="grid",
     )
     parser.add_argument("--scored-cache")
