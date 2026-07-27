@@ -182,9 +182,15 @@ def _run_with_empirical_spies(monkeypatch, races):
     _stub_unrelated_evaluation(monkeypatch)
     events: list[dict[str, Any]] = []
 
-    def fit(records):
+    def fit(records, *, prediction_date):
         training_dates = tuple(sorted({str(row["race_date"]) for row in records}))
-        events.append({"kind": "fit", "training_dates": training_dates})
+        events.append(
+            {
+                "kind": "fit",
+                "training_dates": training_dates,
+                "prediction_date": prediction_date,
+            }
+        )
         return _Artifact(training_dates)
 
     def simulate(holdout, calibrator, probability_blender, artifact, daily_budget_yen):
@@ -222,6 +228,8 @@ def _run_with_empirical_spies(monkeypatch, races):
             {
                 "race_date": evaluation_date,
                 "raw_estimated_ev": 1.10,
+                "probability_rank": 1,
+                "forecast_odds": 4.0,
                 "gross_return_per_yen": (
                     8.0 if holdout[0]["actual_combination"] == "1-2-3" else 0.0
                 ),
@@ -229,7 +237,10 @@ def _run_with_empirical_spies(monkeypatch, races):
         ]
 
     monkeypatch.setattr(
-        market_calibration, "fit_empirical_ev_calibration", fit, raising=False
+        market_calibration,
+        "fit_contextual_empirical_ev_calibration",
+        fit,
+        raising=False,
     )
     monkeypatch.setattr(
         market_calibration, "simulate_empirical_lcb_policy", simulate, raising=False
@@ -259,6 +270,7 @@ def test_empirical_track_fits_prior_evaluation_folds_then_appends_holdout_teache
     for fold_index, evaluation_date in enumerate(evaluation_dates):
         fit_event, simulation, append = events[fold_index * 3 : fold_index * 3 + 3]
         assert fit_event["training_dates"] == tuple(evaluation_dates[:fold_index])
+        assert fit_event["prediction_date"] == evaluation_date
         assert simulation["training_dates"] == fit_event["training_dates"]
         assert simulation["evaluation_date"] == evaluation_date
         assert append["evaluation_date"] == evaluation_date

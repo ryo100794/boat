@@ -40,7 +40,7 @@ class _Artifact:
     point: float = 1.20
     lcb: float = 1.05
 
-    def predict(self, raw_ev):
+    def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
         return {"empirical_ev": self.point, "empirical_ev_lcb95": self.lcb}
 
     def as_dict(self):
@@ -95,7 +95,7 @@ def test_point_ev_drives_kelly_and_raw_lcb_are_audited():
 
 
 class _RankArtifact(_Artifact):
-    def predict(self, raw_ev):
+    def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
         return {
             "empirical_ev": 1.1 + raw_ev / 100.0,
             "empirical_ev_lcb95": 1.01 + (2.0 - raw_ev) / 10.0,
@@ -119,6 +119,22 @@ def test_limits_three_per_race_and_thirty_per_day_in_lcb_order():
         for row in audit
     ]
     assert ordering == sorted(ordering, reverse=True)
+
+
+def test_policy_passes_probability_rank_and_forecast_odds_to_artifact():
+    calls = []
+
+    class _ContextArtifact(_Artifact):
+        def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
+            calls.append((raw_ev, probability_rank, forecast_odds))
+            return super().predict(raw_ev, probability_rank, forecast_odds)
+
+    simulate_empirical_lcb_policy(
+        [_race("r1")], CALIBRATOR, _blend, _ContextArtifact(), 10_000
+    )
+
+    assert [rank for _raw_ev, rank, _odds in calls] == [1, 2, 3]
+    assert all(odds == pytest.approx(4.0) for _raw_ev, _rank, odds in calls)
 
 
 def test_simulator_contract_has_no_calibration_records_argument():
