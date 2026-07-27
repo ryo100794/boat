@@ -8,6 +8,13 @@ from .listwise.direct_bankroll import bootstrap_daily_bankroll
 from .packed_bankroll import PackedCandidates, evaluate_packed_policy
 
 
+PROMOTION_MIN_TICKETS = 300
+PROMOTION_MIN_HITS = 20
+PROMOTION_MIN_SELECTED_RACES = 100
+PROMOTION_MIN_BETTING_DAYS = 60
+PROMOTION_MAX_DRAWDOWN_STAKE_FRACTION = 0.50
+
+
 SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
     "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50),
     "min_ticket_probability": (0.0, 0.002, 0.005, 0.01, 0.02),
@@ -360,8 +367,19 @@ def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
     metrics = row["metrics"]
     confidence = row["confidence"]
     gate = {
-        "minimum_tickets": int(metrics["tickets"]) >= 300,
-        "minimum_hits": int(metrics["hit_tickets"]) >= 20,
+        "minimum_tickets": int(metrics["tickets"]) >= PROMOTION_MIN_TICKETS,
+        "minimum_hits": int(metrics["hit_tickets"]) >= PROMOTION_MIN_HITS,
+        "minimum_selected_races": (
+            int(metrics["selected_races"]) >= PROMOTION_MIN_SELECTED_RACES
+        ),
+        "minimum_betting_days": (
+            int(metrics["days_with_bets"]) >= PROMOTION_MIN_BETTING_DAYS
+        ),
+        "drawdown_within_stake_limit": (
+            int(metrics["max_drawdown_yen"])
+            <= float(metrics["stake_yen"])
+            * PROMOTION_MAX_DRAWDOWN_STAKE_FRACTION
+        ),
         "roi_above_one": float(metrics["roi"]) > 1.0,
         "roi_ci95_lower_above_one": float(confidence["roi_ci95_lower"]) > 1.0,
         "probability_roi_above_one": (

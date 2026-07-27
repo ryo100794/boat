@@ -3,6 +3,7 @@ from __future__ import annotations
 from boatrace_ai.bankroll_policy_search import (
     CONSERVATIVE_POLICY_ANCHORS,
     policy_candidates,
+    promotion_gate,
     recent_allocation_diagnostics,
     slice_day_range,
     successive_halving_search,
@@ -141,3 +142,45 @@ def test_recent_allocation_diagnostics_accepts_normal_variation() -> None:
     ]
 
     assert recent_allocation_diagnostics(daily)["stable"] is True
+
+
+def test_promotion_gate_requires_stable_diverse_bounded_evidence() -> None:
+    row = {
+        "metrics": {
+            "tickets": 300,
+            "hit_tickets": 30,
+            "selected_races": 100,
+            "days_with_bets": 60,
+            "stake_yen": 100_000,
+            "max_drawdown_yen": 50_000,
+            "roi": 1.10,
+        },
+        "confidence": {
+            "roi_ci95_lower": 1.01,
+            "probability_roi_above_one": 0.96,
+        },
+        "temporal_stability": {
+            "all_minimum_evidence": True,
+            "minimum_roi": 1.01,
+        },
+        "recent_allocation": {"stable": True},
+    }
+
+    assert all(promotion_gate(row).values())
+
+    for key, value in (
+        ("selected_races", 99),
+        ("days_with_bets", 59),
+        ("max_drawdown_yen", 50_001),
+    ):
+        failed = {**row, "metrics": {**row["metrics"], key: value}}
+        assert all(promotion_gate(failed).values()) is False
+
+    unstable = {
+        **row,
+        "temporal_stability": {
+            "all_minimum_evidence": True,
+            "minimum_roi": 0.99,
+        },
+    }
+    assert promotion_gate(unstable)["minimum_temporal_roi_above_one"] is False
