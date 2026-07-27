@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import boatrace_ai.feature_tuning as feature_tuning
 from boatrace_ai.contextual_features import RollingState
 from boatrace_ai.feature_tuning import (
     DEFAULT_ABLATION_FEATURE_GROUPS,
@@ -92,3 +93,15 @@ def test_base_pastlog_remains_the_umbrella_ablation() -> None:
     assert "national_win_rate" not in dropped
     assert "national_win_rate_rank" not in dropped
     assert "hist_racer_win_rate_s" in dropped
+
+
+def test_card_relative_work_is_skipped_when_all_relative_groups_are_dropped(
+    monkeypatch,
+) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("relative features should not be built")
+
+    monkeypatch.setattr(feature_tuning, "race_relative_features", unexpected)
+    features = _features("card_relative", "research_correlates")
+    assert "lane" in features
+    assert "national_win_rate" in features
