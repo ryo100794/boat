@@ -1283,6 +1283,7 @@ def evaluate_recency_mlp(
         "n_features": N_FEATURES,
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
+        "training_diagnostics": final_bundle.get("training_diagnostics"),
         "trainer_parameters": selected_trainer_kwargs,
         "trainer_parameter_candidates": [
             dict(row) for row in (trainer_parameter_candidates or [extra_trainer_kwargs])
@@ -1449,6 +1450,7 @@ def evaluate_recency_mlp(
             "training_races": dataset.race_count,
             "training_race_set_sha256": deployment_training_hash,
             "conditional_order": deployment_order_fit,
+            "training_diagnostics": deployment_bundle.get("training_diagnostics"),
         }
     elif deployment_model_output_path is not None:
         result["deployment_model_artifact"] = str(deployment_model_output_path)

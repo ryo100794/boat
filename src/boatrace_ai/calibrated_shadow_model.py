@@ -20,6 +20,7 @@ from .adaptive_allocation import zero_totals
 from .bankroll_backtest import _load_trifecta_payouts
 from .db import connection, init_db
 from .standard_evaluation import race_set_sha256
+from .training_diagnostics import classifier_training_diagnostics
 from .hashed_feature_dataset import (
     HashedRaceDataset,
     load_or_build_hashed_dataset,
@@ -116,6 +117,7 @@ def train_bundle_from_dataset(
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
         "matrix_cached": True,
+        "training_diagnostics": classifier_training_diagnostics(classifier),
         "recency_half_life_days": (
             None
             if recency_half_life_days is None
