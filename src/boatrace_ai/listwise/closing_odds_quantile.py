@@ -12,6 +12,11 @@ QUANTILE_LEVELS = (0.10, 0.50, 0.90)
 QUANTILE_NAMES = ("q10", "q50", "q90")
 CROSS_CONFORMAL_METHOD = "leave_one_training_day_out_cross_conformal"
 SINGLE_DAY_FALLBACK_METHOD = "in_sample_residual_quantiles_single_training_day"
+ADAPTIVE_CONFORMAL_METHOD = "online_adaptive_conformal_miscoverage_control"
+INITIAL_ADAPTIVE_ALPHA = 0.20
+TARGET_INTERVAL_COVERAGE = 0.80
+MIN_ADAPTIVE_ALPHA = 0.02
+MAX_ADAPTIVE_ALPHA = 0.40
 
 
 def _paired_race(race: dict[str, Any]) -> tuple[list[str], np.ndarray, np.ndarray] | None:
@@ -98,6 +103,7 @@ def _fit_daily_cross_conformal_model(
     training_dates: list[str],
     *,
     regularization: float,
+    alpha: float = INITIAL_ADAPTIVE_ALPHA,
 ) -> dict[str, Any]:
     """Fit location on all training days and calibrate on daily OOF residuals."""
     training = [race for day in training_dates for race in by_day[day]]
@@ -105,6 +111,8 @@ def _fit_daily_cross_conformal_model(
         training, regularization=regularization
     )
     if len(training_dates) == 1:
+        residuals = _model_residuals(training, model)
+        _set_residual_quantiles(model, residuals, alpha=alpha)
         model.update(
             calibration_method=SINGLE_DAY_FALLBACK_METHOD,
             crossfit_days=0,
@@ -132,18 +140,45 @@ def _fit_daily_cross_conformal_model(
             _, current, closing = paired
             location = intercept + coefficient * np.log(current)
             residuals.extend(np.log(closing) - location)
-    residual_quantiles = np.quantile(
-        np.asarray(residuals, dtype=np.float64), QUANTILE_LEVELS
-    )
+    _set_residual_quantiles(model, residuals, alpha=alpha)
     model.update(
-        residual_q10=float(residual_quantiles[0]),
-        residual_q50=float(residual_quantiles[1]),
-        residual_q90=float(residual_quantiles[2]),
         calibration_method=CROSS_CONFORMAL_METHOD,
         crossfit_days=len(training_dates),
         crossfit_tickets=len(residuals),
     )
     return model
+
+
+def _model_residuals(
+    races: list[dict[str, Any]], model: dict[str, Any]
+) -> list[float]:
+    intercept = float(model["intercept"])
+    coefficient = float(model["log_odds_coefficient"])
+    residuals: list[float] = []
+    for race in races:
+        paired = _paired_race(race)
+        if paired is None:
+            continue
+        _, current, closing = paired
+        location = intercept + coefficient * np.log(current)
+        residuals.extend(np.log(closing) - location)
+    return residuals
+
+
+def _set_residual_quantiles(
+    model: dict[str, Any], residuals: list[float], *, alpha: float
+) -> None:
+    levels = (alpha / 2.0, 0.50, 1.0 - alpha / 2.0)
+    residual_quantiles = np.quantile(
+        np.asarray(residuals, dtype=np.float64), levels
+    )
+    model.update(
+        residual_q10=float(residual_quantiles[0]),
+        residual_q50=float(residual_quantiles[1]),
+        residual_q90=float(residual_quantiles[2]),
+        interval_alpha=float(alpha),
+        interval_quantile_levels=[float(level) for level in levels],
+    )
 
 
 def forecast_closing_odds_quantiles(
@@ -266,9 +301,12 @@ def walk_forward_closing_odds_quantiles(
     *,
     minimum_training_days: int = 1,
     regularization: float = 0.001,
+    adaptive_rate: float = 0.5,
 ) -> dict[str, Any]:
     if minimum_training_days < 1:
         raise ValueError("minimum_training_days must be positive")
+    if not math.isfinite(adaptive_rate) or not 0.0 <= adaptive_rate <= 1.0:
+        raise ValueError("adaptive_rate must be finite and between 0 and 1")
     by_day: dict[str, list[dict[str, Any]]] = {}
     excluded_races = 0
     for race in races:
@@ -289,11 +327,15 @@ def walk_forward_closing_odds_quantiles(
         "age": 0.0,
     }
     tickets = rank_races = age_races = 0
+    alpha = INITIAL_ADAPTIVE_ALPHA
     for index in range(minimum_training_days, len(dates)):
         training = [race for day in dates[:index] for race in by_day[day]]
         holdout = by_day[dates[index]]
         model = _fit_daily_cross_conformal_model(
-            by_day, dates[:index], regularization=regularization
+            by_day,
+            dates[:index],
+            regularization=regularization,
+            alpha=alpha,
         )
         metrics = closing_odds_quantile_metrics(holdout, model)
         fold_tickets = int(metrics["evaluation_tickets"])
@@ -321,6 +363,18 @@ def walk_forward_closing_odds_quantiles(
             age_races += fold_age_races
         tickets += fold_tickets
         evaluated_races.extend(holdout)
+        alpha_before = alpha
+        observed_coverage = metrics["closing_odds_interval_coverage"]
+        if observed_coverage is not None:
+            alpha = min(
+                MAX_ADAPTIVE_ALPHA,
+                max(
+                    MIN_ADAPTIVE_ALPHA,
+                    alpha_before
+                    + adaptive_rate
+                    * (float(observed_coverage) - TARGET_INTERVAL_COVERAGE),
+                ),
+            )
         folds.append(
             {
                 "race_date": dates[index],
@@ -333,6 +387,10 @@ def walk_forward_closing_odds_quantiles(
                 "calibration_method": model["calibration_method"],
                 "crossfit_days": model["crossfit_days"],
                 "crossfit_tickets": model["crossfit_tickets"],
+                "alpha_before": alpha_before,
+                "observed_coverage": observed_coverage,
+                "alpha_after": alpha,
+                "interval_quantile_levels": model["interval_quantile_levels"],
                 "metrics": metrics,
             }
         )
@@ -367,6 +425,12 @@ def walk_forward_closing_odds_quantiles(
     ]
     return {
         "evaluation_method": "expanding_daily_walk_forward",
+        "adaptive_conformal_method": ADAPTIVE_CONFORMAL_METHOD,
+        "adaptive_conformal_target_coverage": TARGET_INTERVAL_COVERAGE,
+        "target_coverage": TARGET_INTERVAL_COVERAGE,
+        "adaptive_rate": adaptive_rate,
+        "initial_alpha": INITIAL_ADAPTIVE_ALPHA,
+        "alpha_bounds": [MIN_ADAPTIVE_ALPHA, MAX_ADAPTIVE_ALPHA],
         "calibration_method": (
             calibration_methods[0]
             if len(calibration_methods) == 1
