@@ -284,10 +284,6 @@ def _checkpoint_signature(
         "checkpoint_version": 1,
         "cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
-        "selection_rule_version": SELECTION_RULE_VERSION,
-        "selection_ranking_loss_relative_tolerance": (
-            SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
-        ),
         "as_of_date": getattr(args, "as_of_date", None),
         "race_count": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
