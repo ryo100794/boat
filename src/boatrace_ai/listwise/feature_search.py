@@ -123,6 +123,20 @@ def feature_variants() -> list[tuple[str, tuple[str, ...]]]:
     return [("full", ())] + [(f"drop_{group}", (group,)) for group in FEATURE_GROUPS]
 
 
+def parse_feature_variants(value: str | None) -> FeatureVariants | None:
+    if not value:
+        return None
+    available = dict(feature_variants())
+    names = tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+    unknown = tuple(name for name in names if name not in available)
+    if not names or unknown:
+        choices = ", ".join(available)
+        raise argparse.ArgumentTypeError(
+            f"feature variants must be selected from: {choices}"
+        )
+    return tuple((name, available[name]) for name in names)
+
+
 def _resolved_variants(
     variants: FeatureVariants | None,
 ) -> FeatureVariants:
@@ -913,6 +927,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="always",
     )
     parser.add_argument("--selected-cache-dir")
+    parser.add_argument(
+        "--feature-variants",
+        type=parse_feature_variants,
+        help="Comma-separated feature variants to evaluate; defaults to all.",
+    )
     parser.add_argument("--checkpoint")
     parser.add_argument(
         "--variant-workers",
@@ -948,7 +967,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     init_db(args.db)
     with connection(args.db) as conn:
-        result = search(conn, args=args)
+        result = search(conn, args=args, variants=args.feature_variants)
     compact = {key: value for key, value in result.items() if key not in {"search_results", "daily"}}
     print(json.dumps(compact, ensure_ascii=False, indent=2), flush=True)
     return 0

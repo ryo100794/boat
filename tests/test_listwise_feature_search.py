@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ from boatrace_ai.listwise.feature_search import (
     day_boundary,
     feature_variants,
     parse_ev_thresholds,
+    parse_feature_variants,
     search,
     selected_cache_candidates,
 )
@@ -35,6 +38,15 @@ def test_feature_search_covers_full_and_each_single_group_ablation() -> None:
     assert variants[0] == ("full", ())
     assert {drops[0] for _name, drops in variants[1:]} == set(FEATURE_GROUPS)
     assert all(len(drops) == 1 for _name, drops in variants[1:])
+
+
+def test_feature_variant_selection_is_explicit_and_ordered() -> None:
+    assert parse_feature_variants("drop_research_correlates,full,full") == (
+        ("drop_research_correlates", ("research_correlates",)),
+        ("full", ()),
+    )
+    with pytest.raises(argparse.ArgumentTypeError, match="feature variants"):
+        parse_feature_variants("unknown")
 
 
 def test_day_boundary_never_splits_a_race_day() -> None:

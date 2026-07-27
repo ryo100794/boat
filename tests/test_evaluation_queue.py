@@ -821,6 +821,23 @@ def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
         )
 
 
+def test_feature_search_accepts_explicit_feature_variants(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "feature_variants": "full,drop_research_correlates",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+    index = command.index("--feature-variants")
+    assert command[index + 1] == "full,drop_research_correlates"
+
+
 def test_feature_search_accepts_bounded_ev_policy_selection_grid(tmp_path) -> None:
     command, _output = build_command(
         _job(

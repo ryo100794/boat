@@ -1333,6 +1333,7 @@ def build_command(
             "learning_rate",
             "targets",
             "alphas",
+            "feature_variants",
             "ev_threshold",
             "ev_thresholds",
             "timeout_seconds",
@@ -1351,6 +1352,22 @@ def build_command(
         targets = str(params.get("targets", "winner,top3_pl"))
         if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
             raise ValueError("unsupported targets")
+        selected_feature_variants = None
+        if params.get("feature_variants"):
+            if task_type == "combined_feature_search":
+                raise ValueError("feature_variants is not supported for combined search")
+            from .listwise.feature_search import feature_variants
+
+            available_variants = {name for name, _drops in feature_variants()}
+            variant_names = tuple(dict.fromkeys(
+                item.strip() for item in str(params["feature_variants"]).split(",")
+                if item.strip()
+            ))
+            if not variant_names or any(
+                name not in available_variants for name in variant_names
+            ):
+                raise ValueError("unsupported feature_variants")
+            selected_feature_variants = ",".join(variant_names)
         alpha_values = [
             float(value) for value in str(
                 params.get("alphas", "0.00001,0.0001")
@@ -1394,6 +1411,8 @@ def build_command(
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
         ]
+        if selected_feature_variants:
+            command.extend(["--feature-variants", selected_feature_variants])
         if params.get("ev_thresholds"):
             thresholds = [
                 float(value) for value in str(params["ev_thresholds"]).split(",")
