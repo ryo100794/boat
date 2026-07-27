@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .constants import USER_AGENT
 
@@ -34,18 +36,37 @@ def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _cache_busted_url(url: str) -> str:
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("_boatrace_nonce", uuid.uuid4().hex))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
 def fetch_bytes(
     url: str,
     *,
     timeout: float = 30.0,
     retries: int = 2,
     sleep_seconds: float = 0.0,
+    cache_bust: bool = False,
 ) -> tuple[int, bytes]:
     requests = _requests()
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            response = requests.get(url, headers=default_headers(), timeout=timeout)
+            headers = default_headers()
+            request_url = url
+            if cache_bust:
+                headers["Cache-Control"] = "no-cache, no-store, max-age=0"
+                request_url = _cache_busted_url(url)
+            response = requests.get(
+                request_url,
+                headers=headers,
+                timeout=timeout,
+            )
             return response.status_code, response.content
         except requests.RequestException as exc:
             last_error = exc
@@ -60,9 +81,14 @@ def fetch_text(
     timeout: float = 30.0,
     retries: int = 2,
     sleep_seconds: float = 0.0,
+    cache_bust: bool = False,
 ) -> tuple[int, str, bytes]:
     status_code, payload = fetch_bytes(
-        url, timeout=timeout, retries=retries, sleep_seconds=sleep_seconds
+        url,
+        timeout=timeout,
+        retries=retries,
+        sleep_seconds=sleep_seconds,
+        cache_bust=cache_bust,
     )
     for encoding in ("utf-8", "cp932", "shift_jis"):
         try:

@@ -116,10 +116,27 @@ def collect_beforeinfo(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Pa
     return True
 
 
-def collect_odds(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) -> bool:
+def collect_odds(
+    conn,
+    *,
+    race_date: date,
+    jcd: str,
+    rno: int,
+    raw_dir: Path,
+    cache_bust: bool = False,
+) -> bool:
     rid = race_id(race_date.isoformat(), jcd, rno)
     url = race_page_url("odds3t", race_date, jcd, rno)
-    html = _fetch_page(conn, page_type="odds3t", race_date=race_date, jcd=jcd, rno=rno, url=url, raw_dir=raw_dir)
+    html = _fetch_page(
+        conn,
+        page_type="odds3t",
+        race_date=race_date,
+        jcd=jcd,
+        rno=rno,
+        url=url,
+        raw_dir=raw_dir,
+        cache_bust=cache_bust,
+    )
     if not html:
         return False
     parsed = parse_odds3t_html(html)
@@ -196,8 +213,9 @@ def _fetch_page(
     rno: int,
     url: str,
     raw_dir: Path,
+    cache_bust: bool = False,
 ) -> str | None:
-    status_code, html, payload = fetch_text(url)
+    status_code, html, payload = fetch_text(url, cache_bust=cache_bust)
     if status_code != 200:
         return None
     captured = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
