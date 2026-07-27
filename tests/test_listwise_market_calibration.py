@@ -571,3 +571,33 @@ def test_registered_ev_band_uses_only_days_after_hypothesis_registration() -> No
     assert [row["race_date"] for row in registered["daily"]] == ["2026-07-26"]
     assert result["folds"][0]["registered_ev_band_bankroll"] is None
     assert result["folds"][1]["registered_ev_band_bankroll"] is not None
+
+
+def test_prospective_normalized_ev_uses_only_unseen_days_after_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-24",
+            "2026-07-25",
+            "2026-07-26",
+            "2026-07-27",
+            "2026-07-28",
+            "2026-07-29",
+        )
+        for rno in range(1, 4)
+    ]
+
+    result = walk_forward_evaluate(races, min_calibration_days=2)
+    prospective = result["prospective_normalized_ev_walk_forward"]
+
+    assert prospective["registered_after"] == "2026-07-27"
+    assert prospective["status"] == "evaluating"
+    assert prospective["evaluation_days"] == 2
+    assert prospective["evaluated_races"] == 6
+    assert [row["race_date"] for row in prospective["daily"]] == [
+        "2026-07-28",
+        "2026-07-29",
+    ]
+    folds = {row["evaluation_date"]: row for row in result["folds"]}
+    assert folds["2026-07-27"]["prospective_normalized_ev_bankroll"] is None
+    assert folds["2026-07-28"]["prospective_normalized_ev_bankroll"] is not None

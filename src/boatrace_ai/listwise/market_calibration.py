@@ -105,6 +105,16 @@ REGISTERED_EV_BAND_POLICY: dict[str, Any] = {
     "min_model_market_ratio": 1.0,
     "staking_mode": "kelly_100",
 }
+PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER = "2026-07-27"
+PROSPECTIVE_NORMALIZED_EV_POLICY: dict[str, Any] = {
+    "name": "registered_ev1.00_to1.10_r3_normalized010_v2",
+    "ev_threshold": 1.0,
+    "max_estimated_ev": 1.10,
+    "max_odds": None,
+    "max_tickets_per_race": 3,
+    "min_model_market_ratio": 1.0,
+    "staking_mode": "normalized_010",
+}
 
 
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
@@ -752,14 +762,17 @@ def summarize_registered_policy_daily(
     daily: list[dict[str, Any]],
     *,
     evaluated_races: int,
+    policy: dict[str, Any] | None = None,
+    registered_after: str = EV_BAND_HYPOTHESIS_REGISTERED_AFTER,
 ) -> dict[str, Any]:
+    selected_policy = REGISTERED_EV_BAND_POLICY if policy is None else policy
     stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily)
     return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
     return {
         "status": "evaluating" if daily else "waiting_for_first_unseen_day",
         "comparison_role": "prospective_only_pre_registered_policy_shadow",
-        "registered_after": EV_BAND_HYPOTHESIS_REGISTERED_AFTER,
-        "policy": dict(REGISTERED_EV_BAND_POLICY),
+        "registered_after": registered_after,
+        "policy": dict(selected_policy),
         "evaluation_days": len(daily),
         "evaluated_races": evaluated_races,
         "tickets": sum(int(row.get("tickets") or 0) for row in daily),
@@ -1225,6 +1238,12 @@ def waiting_walk_forward_result(
             [],
             evaluated_races=0,
         ),
+        "prospective_normalized_ev_walk_forward": summarize_registered_policy_daily(
+            [],
+            evaluated_races=0,
+            policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
+            registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
+        ),
         "promotion_gate": promotion_gate,
         "promotion_eligible": False,
     }
@@ -1350,6 +1369,8 @@ def walk_forward_evaluate(
     flat_daily_rows = []
     registered_daily_rows = []
     registered_evaluated_races = 0
+    prospective_daily_rows = []
+    prospective_evaluated_races = 0
     edge_diagnostic_records = []
     for calibration_dates, evaluation_date in fold_dates:
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
@@ -1437,6 +1458,14 @@ def walk_forward_evaluate(
                 policy=REGISTERED_EV_BAND_POLICY,
                 daily_budget_yen=daily_budget_yen,
             )
+        prospective_bankroll = None
+        if evaluation_date > PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER:
+            prospective_bankroll = simulate_policy(
+                holdout_policy_races,
+                calibrator=calibrator,
+                policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
+                daily_budget_yen=daily_budget_yen,
+            )
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
             calibrator=calibrator,
@@ -1518,6 +1547,15 @@ def walk_forward_evaluate(
                     if registered_bankroll is not None
                     else None
                 ),
+                "prospective_normalized_ev_bankroll": (
+                    {
+                        key: value
+                        for key, value in prospective_bankroll.items()
+                        if key != "daily"
+                    }
+                    if prospective_bankroll is not None
+                    else None
+                ),
             }
         )
         daily_rows.extend(bankroll["daily"])
@@ -1525,6 +1563,9 @@ def walk_forward_evaluate(
         if registered_bankroll is not None:
             registered_daily_rows.extend(registered_bankroll["daily"])
             registered_evaluated_races += len(holdout_policy_races)
+        if prospective_bankroll is not None:
+            prospective_daily_rows.extend(prospective_bankroll["daily"])
+            prospective_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
 
@@ -1654,6 +1695,12 @@ def walk_forward_evaluate(
         "registered_ev_band_walk_forward": summarize_registered_policy_daily(
             registered_daily_rows,
             evaluated_races=registered_evaluated_races,
+        ),
+        "prospective_normalized_ev_walk_forward": summarize_registered_policy_daily(
+            prospective_daily_rows,
+            evaluated_races=prospective_evaluated_races,
+            policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
+            registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
         ),
         "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,

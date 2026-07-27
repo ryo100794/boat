@@ -1936,6 +1936,20 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in registered_policy:
                 summary[f"registered_ev_band_{key}"] = registered_policy[key]
+    prospective_policy = payload.get("prospective_normalized_ev_walk_forward")
+    if isinstance(prospective_policy, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "roi",
+            "profit_yen",
+        ):
+            if key in prospective_policy:
+                summary[f"prospective_normalized_ev_{key}"] = prospective_policy[key]
     if payload.get("model") and str(payload.get("model")).startswith(
         "genetic_listwise_island_v"
     ):
