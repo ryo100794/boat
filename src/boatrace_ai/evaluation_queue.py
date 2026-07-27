@@ -1414,7 +1414,7 @@ def build_command(
         return command, output
     if task_type == "bankroll_policy_search":
         allowed = {
-            "source_job_id", "learning_rate", "epochs", "batch_races",
+            "source_job_id", "source_kind", "learning_rate", "epochs", "batch_races",
             "candidate_count", "finalists", "bootstrap_samples",
             "payout_prior_weights", "evaluation_days", "research_only", "seed", "timeout_seconds",
         }
@@ -1424,31 +1424,58 @@ def build_command(
                 "unsupported bankroll_policy_search parameters: "
                 + ", ".join(sorted(unsupported))
             )
-        source_job_id = _integer(
-            params, "source_job_id", 0, 1, 9_999_999_999
-        )
-        source_result = (
-            app_root / "data/models/evaluation_queue"
-            / f"job-{source_job_id:08d}.json"
-        ).resolve()
-        if not source_result.is_file():
-            raise JobDependencyUnavailable(
-                f"bankroll source result is not available yet: {source_result}"
+        source_kind = params.get("source_kind")
+        if source_kind is None:
+            source_job_id = _integer(
+                params, "source_job_id", 0, 1, 9_999_999_999
             )
-        source_payload = json.loads(source_result.read_text(encoding="utf-8"))
+            source_result = (
+                app_root / "data/models/evaluation_queue"
+                / f"job-{source_job_id:08d}.json"
+            ).resolve()
+            if not source_result.is_file():
+                raise JobDependencyUnavailable(
+                    f"bankroll source result is not available yet: {source_result}"
+                )
+            source_payload = json.loads(
+                source_result.read_text(encoding="utf-8")
+            )
+            cache_value = source_payload.get("selected_cache_prefix")
+            if not cache_value:
+                raise ValueError(
+                    "bankroll source result lacks selected_cache_prefix"
+                )
+            cache_prefix = Path(str(cache_value)).resolve()
+            cache_root = (
+                app_root / "data/models/evaluation_cache"
+            ).resolve()
+            if cache_root not in cache_prefix.parents:
+                raise ValueError(
+                    "selected cache must be inside evaluation_cache"
+                )
+        elif source_kind == "standardized_selected":
+            if "source_job_id" in params:
+                raise ValueError(
+                    "source_job_id cannot be combined with standardized_selected"
+                )
+            source_result = (
+                app_root / "data" / "models" / "standardized_365d_v2"
+                / "raw" / "listwise_feature_teacher.json"
+            ).resolve()
+            cache_prefix = _selected_standard_cache_prefix(app_root)
+            source_payload = json.loads(
+                source_result.read_text(encoding="utf-8")
+            )
+        else:
+            raise ValueError(
+                "source_kind must be standardized_selected when provided"
+            )
         source_schema = source_payload.get("feature_schema_version")
         if source_schema != FEATURE_SCHEMA_VERSION:
             raise ObsoleteJob(
                 "bankroll source feature schema is obsolete: "
                 f"{source_schema} != {FEATURE_SCHEMA_VERSION}"
             )
-        cache_value = source_payload.get("selected_cache_prefix")
-        if not cache_value:
-            raise ValueError("bankroll source result lacks selected_cache_prefix")
-        cache_prefix = Path(str(cache_value)).resolve()
-        cache_root = (app_root / "data/models/evaluation_cache").resolve()
-        if cache_root not in cache_prefix.parents:
-            raise ValueError("selected cache must be inside evaluation_cache")
         learning_rate = _number(
             params, "learning_rate", 0.02, 0.001, 0.2
         )

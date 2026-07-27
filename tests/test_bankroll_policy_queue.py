@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from boatrace_ai import evaluation_queue
 from boatrace_ai.evaluation_queue import (
     ObsoleteJob,
     TASK_PROFILES,
@@ -41,6 +43,31 @@ def _source(root, *, cache_prefix=None):
         encoding="utf-8",
     )
     return result, cache
+
+
+def _standard_source(root, cache_dir):
+    artifact = (
+        root / "data/models/standardized_365d_v2/raw"
+        / "listwise_feature_teacher.json"
+    )
+    artifact.parent.mkdir(parents=True)
+    cache_prefix = cache_dir / "listwise_search_8192_drop_base_pastlog"
+    cache_dir.mkdir(parents=True)
+    Path(str(cache_prefix) + ".manifest.json").write_text(
+        json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
+        encoding="utf-8",
+    )
+    artifact.write_text(
+        json.dumps({
+            "selected": {"feature_variant": "drop_base_pastlog"},
+            "selected_cache_dir": str(cache_dir),
+            "selected_cache_prefix": str(cache_prefix),
+            "n_features": 8192,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        }),
+        encoding="utf-8",
+    )
+    return artifact, cache_prefix
 
 
 def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
@@ -82,6 +109,27 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
     assert command[command.index("--evaluation-days") + 1] == "365"
     assert command[command.index("--research-only") + 1] == "true"
+
+
+def test_bankroll_policy_search_uses_fixed_standardized_source(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "boat"
+    cache_dir = tmp_path / "standardized-selected-cache"
+    monkeypatch.setattr(
+        evaluation_queue, "STANDARDIZED_SELECTED_CACHE_DIR", cache_dir
+    )
+    artifact, cache_prefix = _standard_source(root, cache_dir)
+
+    command, _output = build_command(
+        _job({"source_kind": "standardized_selected"}),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--search-result") + 1] == str(artifact)
+    assert command[command.index("--cache-prefix") + 1] == str(cache_prefix)
 
 
 def test_bankroll_policy_search_rejects_obsolete_source_schema(tmp_path) -> None:
