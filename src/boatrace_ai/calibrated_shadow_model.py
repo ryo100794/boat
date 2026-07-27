@@ -24,10 +24,7 @@ from .hashed_feature_dataset import (
     HashedRaceDataset,
     load_or_build_hashed_dataset,
 )
-try:
-    from . import feature_tuning as _feature_source
-except ImportError:
-    from . import modeling_pastlog_v7_stream_hash as _feature_source
+from . import feature_tuning as _feature_source
 
 _ensure_sparse_index32 = _feature_source._ensure_sparse_index32
 iter_race_feature_rows = _feature_source.iter_race_feature_rows
