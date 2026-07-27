@@ -11,6 +11,10 @@ from .feature_search import search
 
 COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     (
+        "drop_base_pastlog_research_correlates",
+        ("base_pastlog", "research_correlates"),
+    ),
+    (
         "drop_research_correlates_rolling_history",
         ("research_correlates", "rolling_history"),
     ),
