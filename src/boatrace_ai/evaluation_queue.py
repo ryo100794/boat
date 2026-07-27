@@ -1825,7 +1825,8 @@ METRIC_KEYS = (
     "race_hit_rate", "race_hit_rate_ci95_lower", "race_hit_rate_ci95_upper",
     "largest_hit_return_share", "effective_hit_count", "roi_without_largest_hit",
     "profit_without_largest_hit_yen",
-    "promotion_eligible", "incremental_confidence_pass", "converged",
+    "promotion_eligible", "prediction_deployment_eligible",
+    "deployment_model_artifact_saved", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
     "source_bytes_before", "source_bytes_after", "archived_files_removed",
     "archived_bytes_removed", "staging_files", "action", "ahead", "behind",
@@ -1895,6 +1896,20 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["promotion_gate_total"] = len(checks)
         summary["promotion_gate_failed"] = [
             key for key, passed in checks.items() if not passed
+        ]
+    prediction_deployment_gate = payload.get("prediction_deployment_gate")
+    if isinstance(prediction_deployment_gate, dict):
+        prediction_checks = {
+            str(key): bool(value)
+            for key, value in prediction_deployment_gate.items()
+            if key != "pass" and isinstance(value, bool)
+        }
+        summary["prediction_deployment_gate_passed"] = sum(
+            prediction_checks.values()
+        )
+        summary["prediction_deployment_gate_total"] = len(prediction_checks)
+        summary["prediction_deployment_gate_failed"] = [
+            key for key, passed in prediction_checks.items() if not passed
         ]
     holdout_stability = payload.get("holdout_temporal_stability")
     if isinstance(holdout_stability, dict):
