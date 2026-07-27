@@ -66,6 +66,7 @@
     <div class="group-heading"><h2>3. 購入性能</h2><span class="scope-note">統一比較と研究個別評価を分離</span></div>
     <div class="section-intro"><span><b>目的</b> 資金効率と再現性</span><span><b>主要指標</b> ROI・損益・最大DD・最大1的中除外ROI</span><span><b>比較条件</b> 統一365日は同一規則で横比較可 / 研究モデルは各成果物固有条件で横比較不可</span></div>
     <div class="panel"><h2><span>統一365日 購入比較</span><span class="muted">日額10,000円・利益再投資・同一購入規則 / 購入なしと未評価を区別</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価期間</th><th>母数/評価R</th><th>購入R</th><th>購入/的中</th><th>的中R</th><th>的中R率</th><th>ROI</th><th>最大1的中除外ROI</th><th>払戻集中</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationSummaryRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>実証LCB 前進運用</span><span class="muted">過去foldのみでEV較正 / 下側95%信頼限界で購入 / レガシー資金運用とは別評価</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>状態</th><th>準備fold</th><th>評価日</th><th>点数</th><th>投資</th><th>払戻</th><th>損益</th><th>ROI</th><th>最大1的中除外ROI</th><th>tail LCB95</th><th>母数判定</th></tr></thead><tbody id="empiricalLcbRows"></tbody></table></div></div>
     <div class="grid">
       <div class="panel"><h2><span>統一評価 資金ROI</span><span class="muted">基準1.000</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
       <div class="panel"><h2><span>研究モデル 購入評価</span><span class="muted">購入判断・資金効率のみを評価 / 各成果物固有の期間・購入規則・横比較不可</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>状態</th><th>母数</th><th>データ充足</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationTrackRows"></tbody></table></div></div>
@@ -107,7 +108,7 @@ function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").repla
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
 async function refreshGeneticEvolution(){ if(gaRefreshing||document.hidden) return; gaRefreshing=true; try{ const res=await fetch("/api/reports/genetic-evolution",{cache:"no-store"}); if(res.ok){ const data=await res.json(); renderGeneticEvolution(data.jobs||[]); } } finally { gaRefreshing=false; } }
 function render(data){
-  const bank=data.bankroll||[], tests=data.backtests||[], folds=data.fold_metrics||[], features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
+  const bank=data.bankroll||[], empirical=data.empirical_lcb_walk_forward||[], tests=data.backtests||[], folds=data.fold_metrics||[], features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
   const v2Ready=Boolean(data.standardized_evaluation&&data.standardized_evaluation.ready);
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
@@ -128,6 +129,7 @@ function render(data){
   drawBars($("roiChart"),comparisonRows.filter(x=>x.bankroll).map(x=>({label:shortName(x.name),value:x.bankroll.roi})),{baseline:1});
   $("predictionSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction).map(predictionRow).join("")||'<tr><td colspan="9" class="muted">予測評価を実行中</td></tr>';
   $("operationSummaryRows").innerHTML=comparisonRows.filter(x=>x.bankroll).map(operationRow).join("")||'<tr><td colspan="12" class="muted">運用評価を実行中</td></tr>';
+  $("empiricalLcbRows").innerHTML=empirical.map(empiricalLcbRow).join("")||'<tr><td colspan="12" class="muted">実証LCB前進運用は未評価</td></tr>';
   $("compositeSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction&&x.bankroll).map(compositeRow).join("")||'<tr><td colspan="9" class="muted">複合評価を実行中</td></tr>';
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>';
   configureModelSelection(data,comparisonRows); renderSelectedModel(data);
@@ -264,6 +266,16 @@ function operationRow(row){
   const volume=b.benchmark_population_races==null?fmt(b.evaluated_races):fmt(b.benchmark_population_races)+' / '+fmt(b.benchmark_evaluated_races??b.evaluated_races)+(b.benchmark_status==='provisional'?' 暫定':'');
   const noBet=b.no_bet?'<span class="tag running" title="'+esc(b.no_bet_reason||b.policy_selection_source||"")+'">購入見送り</span>':ratio(b.roi);
   return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+volume+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+' / '+fmt(b.hit_tickets)+'</td><td>'+fmt(b.hit_races)+'</td><td>'+pct(b.race_hit_rate)+'</td><td>'+noBet+'</td><td>'+ratio(b.roi_without_largest_hit)+'</td><td>'+pct(b.largest_hit_return_share)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td></tr>';
+}
+function empiricalLcbRow(row){
+  const statuses={calibration_not_ready:"較正待ち",evaluating:"評価中",completed:"完了"};
+  const status=statuses[String(row.status||"")]||String(row.status||"未評価");
+  const ready=row.calibration_ready_folds==null?"-":`${fmt(row.calibration_ready_folds)} / ${fmt(row.minimum_ready_evaluation_days)}`;
+  const sample=row.sample_size_pass===true?'<span class="tag done">合格</span>':row.sample_size_pass===false?'<span class="tag failed">未達</span>':'<span class="tag">未評価</span>';
+  const profitCls=Number(row.profit_yen||0)>=0?"pos":"neg";
+  const roiCls=row.roi==null?"":Number(row.roi)>=1?"pos":"neg";
+  const lcbCls=row.tail_bootstrap_roi_lower95==null?"":Number(row.tail_bootstrap_roi_lower95)>1?"pos":"neg";
+  return `<tr><td class="name-cell" title="${esc(row.name)}">${esc(shortName(row.name))}</td><td>${esc(status)}</td><td class="mono">${ready}</td><td>${fmt(row.evaluation_days)}</td><td>${fmt(row.tickets)}</td><td>${row.stake_yen==null?"-":yen(row.stake_yen)}</td><td>${row.return_yen==null?"-":yen(row.return_yen)}</td><td class="${profitCls}">${row.profit_yen==null?"-":yen(row.profit_yen)}</td><td class="${roiCls}">${ratio(row.roi)}</td><td>${ratio(row.roi_without_largest_hit)}</td><td class="${lcbCls}">${ratio(row.tail_bootstrap_roi_lower95)}</td><td>${sample}</td></tr>`;
 }
 function compositeRow(row){
   const p=row.prediction||{}, b=row.bankroll||{};
