@@ -19,7 +19,7 @@ def discover_market_evaluation_candidates(
 
     paths = sorted(
         (path for path in root.glob("job-*.json") if path.is_file()),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        key=lambda path: path.name,
         reverse=True,
     )
     selected: list[str] = []
