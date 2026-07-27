@@ -9,6 +9,7 @@ import joblib
 
 
 LEGACY_MODULE_ALIASES = {
+    "boatrace_ai.modeling_pastlog_v7_stream_hash": "boatrace_ai.listwise.model",
     "boatrace_ai.modeling_no_odds_v6": "boatrace_ai.historical_model",
     "boatrace_ai.model_extended": "boatrace_ai.historical_model",
 }
