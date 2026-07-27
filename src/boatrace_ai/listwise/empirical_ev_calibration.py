@@ -166,6 +166,13 @@ def _bin_index(value: float, upper_edges: Sequence[float]) -> int:
     return int(np.searchsorted(upper_edges, value, side="right"))
 
 
+def _add_finite(array: np.ndarray, index: object, value: float) -> None:
+    updated = float(array[index]) + value
+    if not isfinite(updated):
+        raise ValueError("gross return aggregates exceed float64 range")
+    array[index] = updated
+
+
 def _weighted_pava(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
     if len(values) != len(weights):
         raise ValueError("values and weights must have equal length")
@@ -181,10 +188,12 @@ def _weighted_pava(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
         block_starts.append(index)
         while len(block_values) >= 2 and block_values[-2] > block_values[-1]:
             merged_weight = block_weights[-2] + block_weights[-1]
+            left_share = block_weights[-2] / merged_weight
+            right_share = block_weights[-1] / merged_weight
             merged_value = (
-                block_values[-2] * block_weights[-2]
-                + block_values[-1] * block_weights[-1]
-            ) / merged_weight
+                block_values[-2] * left_share
+                + block_values[-1] * right_share
+            )
             block_values[-2:] = [merged_value]
             block_weights[-2:] = [merged_weight]
             block_starts.pop()
@@ -231,6 +240,8 @@ def _bootstrap_lcb(
             day_sums[selected].sum(axis=0),
             day_counts[selected].sum(axis=0),
         )
+        if not np.all(np.isfinite(predictions[sample])):
+            raise ValueError("bootstrap aggregates exceed float64 range")
     return np.quantile(predictions, 0.05, axis=0)
 
 
@@ -273,12 +284,15 @@ def fit_empirical_ev_calibration(
     for row in rows:
         bin_index = _bin_index(row.raw_ev, upper_edges)
         day_index = date_index[row.race_date]
-        sums[bin_index] += row.gross_return
+        _add_finite(sums, bin_index, row.gross_return)
         counts[bin_index] += 1
-        day_sums[day_index, bin_index] += row.gross_return
+        _add_finite(day_sums, (day_index, bin_index), row.gross_return)
         day_counts[day_index, bin_index] += 1
         if row.raw_ev >= candidate_threshold:
             candidate_dates.add(row.race_date)
+
+    if not np.all(np.isfinite(day_sums)):
+        raise ValueError("gross return aggregates exceed float64 range")
 
     point = _isotonic_bins(sums, counts)
     lcb = (

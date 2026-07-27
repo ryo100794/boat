@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pytest
 
+import boatrace_ai.listwise.contextual_empirical_ev_calibration as calibration
 from boatrace_ai.listwise.contextual_empirical_ev_calibration import (
     ODDS_BANDS,
     RANK_GROUPS,
@@ -116,6 +118,80 @@ def test_lcb_never_exceeds_point_estimate_in_any_context() -> None:
                 assert bin_.empirical_ev_lcb95 <= bin_.empirical_ev
 
 
+def test_hierarchical_shrinkage_preserves_raw_ev_monotonicity() -> None:
+    records = []
+    for day in range(20):
+        records.extend(
+            _record(day, 1, 12.0, 10.0, raw_ev=1.02) for _ in range(10)
+        )
+        records.append(_record(day, 1, 12.0, 10.0, raw_ev=1.07))
+        records.extend(
+            _record(day, 8, 12.0, 0.0, raw_ev=1.02) for _ in range(200)
+        )
+        records.extend(
+            _record(day, 8, 12.0, 1.0, raw_ev=1.07) for _ in range(200)
+        )
+
+    artifact = _fit(
+        records,
+        bootstrap_samples=500,
+        min_rank_days=1,
+        min_rank_tickets=1,
+        min_cell_days=1,
+        min_cell_tickets=1,
+        rank_prior_tickets=100.0,
+        cell_prior_tickets=100.0,
+    )
+    predictions = [artifact.predict(raw_ev, 1, 12.0) for raw_ev in (1.02, 1.07)]
+
+    assert predictions[0]["empirical_ev"] <= predictions[1]["empirical_ev"]
+    assert predictions[0]["empirical_ev_lcb95"] <= predictions[1]["empirical_ev_lcb95"]
+
+
+def test_day_bootstrap_recomputes_shrinkage_from_resampled_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FirstDayRng:
+        def integers(
+            self,
+            low: int,
+            high: int | None = None,
+            size: int | None = None,
+        ) -> np.ndarray:
+            del low, high
+            return np.zeros(size, dtype=np.int64)
+
+    monkeypatch.setattr(
+        calibration.np.random,
+        "default_rng",
+        lambda seed: _FirstDayRng(),
+    )
+    records = [
+        *[_record(0, 1, 12.0, 0.0) for _ in range(10)],
+        *[_record(0, 8, 12.0, 2.0) for _ in range(10)],
+        *[_record(1, 8, 12.0, 2.0) for _ in range(10)],
+    ]
+
+    artifact = _fit(
+        records,
+        prediction_date="2026-01-03",
+        bin_edges=(-float("inf"), float("inf")),
+        bootstrap_samples=100,
+        min_rank_days=1,
+        min_rank_tickets=1,
+        min_cell_days=1,
+        min_cell_tickets=1,
+        rank_prior_tickets=10.0,
+        cell_prior_tickets=10.0,
+    )
+
+    # Resampling day zero twice gives 20 child tickets at each hierarchy.
+    # Re-estimated weights are 20 / (20 + 10), yielding 1/3 then 1/9.
+    assert artifact.predict(1.12, 1, 12.0)["empirical_ev_lcb95"] == pytest.approx(
+        1.0 / 9.0
+    )
+
+
 def test_same_seed_and_records_produce_identical_artifact() -> None:
     records = [
         _record(day, rank, odds, float((day + rank) % 3))
@@ -184,3 +260,5 @@ def test_invalid_context_inputs_are_rejected() -> None:
         artifact.predict(1.1, 0, 10.0)
     with pytest.raises(ValueError, match="forecast_odds"):
         artifact.predict(1.1, 1, -1.0)
+    with pytest.raises(ValueError, match="finite"):
+        _fit([_record(0, 1, 10.0, 1.0)], rank_prior_tickets=float("nan"))

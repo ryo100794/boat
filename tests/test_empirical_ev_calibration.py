@@ -178,3 +178,11 @@ def test_rejects_invalid_records_and_configuration() -> None:
             bin_edges=(-float("inf"), 1.0, 1.0, float("inf")),
             bootstrap_samples=100,
         )
+    with pytest.raises(ValueError, match="float64 range"):
+        fit_empirical_ev_calibration(
+            [_record(0, 1.02, 1e308), _record(0, 1.02, 1e308)],
+            bootstrap_samples=100,
+            min_days=1,
+            min_tickets=1,
+            min_candidate_days=1,
+        )
