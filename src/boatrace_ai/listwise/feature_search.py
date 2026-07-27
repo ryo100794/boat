@@ -16,7 +16,7 @@ from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
 from ..feature_tuning import (
-    FEATURE_GROUPS,
+    DEFAULT_ABLATION_FEATURE_GROUPS,
     _ensure_sparse_index32,
     iter_race_feature_rows,
     load_complete_race_ids,
@@ -123,7 +123,9 @@ def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -
 
 
 def feature_variants() -> list[tuple[str, tuple[str, ...]]]:
-    return [("full", ())] + [(f"drop_{group}", (group,)) for group in FEATURE_GROUPS]
+    return [("full", ())] + [
+        (f"drop_{group}", (group,)) for group in DEFAULT_ABLATION_FEATURE_GROUPS
+    ]
 
 
 def parse_feature_variants(value: str | None) -> FeatureVariants | None:
