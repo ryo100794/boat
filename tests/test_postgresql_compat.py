@@ -18,6 +18,12 @@ def test_qmark_and_named_parameters_are_converted() -> None:
     assert "%(race_id)s" in convert_sql(
         "SELECT * FROM races WHERE race_id = :race_id"
     )
+    cast_query = convert_sql(
+        "SELECT value::numeric, captured_at::timestamptz FROM samples WHERE id = ?"
+    )
+    assert "value::numeric" in cast_query
+    assert "captured_at::timestamptz" in cast_query
+    assert cast_query.endswith("id = %s")
 
 
 def test_sqlite_replace_forms_become_postgresql_upserts() -> None:
