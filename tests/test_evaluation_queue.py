@@ -1700,6 +1700,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "cancel_superseded_daily_jobs",
+        lambda *_a, **_k: events.append("cancel-superseded"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "standardized_evaluation_due",
         lambda *_a, **_k: False,
     )
@@ -1749,6 +1754,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert events.index("commit:maintenance") < events.index("enter:claim")
     assert events.index("seed-market") < events.index("commit:maintenance")
     assert events.index("reconcile") < events.index("commit:maintenance")
+    assert events.index("cancel-superseded") < events.index("seed-market")
     assert events.index("seed-genetic") < events.index("commit:maintenance")
     assert events.index("seed-periodic") < events.index("commit:maintenance")
     assert events.index("enter:claim") < events.index("claim")
@@ -1789,6 +1795,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "cancel_superseded_daily_jobs",
+        lambda *_a, **_k: events.append("cancel-superseded"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "standardized_evaluation_due",
         lambda *_a, **_k: False,
     )
@@ -1824,8 +1835,8 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "requeue", "reconcile", "seed-defaults", "seed-market",
-        "seed-periodic", "commit",
+        "enter", "requeue", "reconcile", "seed-defaults",
+        "cancel-superseded", "seed-market", "seed-periodic", "commit",
     ]
 
 
@@ -2158,6 +2169,34 @@ def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
         "queue reconciliation cancelled exhausted job: "
         "attempt reached max_attempts",
     )
+
+
+def test_cancel_superseded_daily_jobs_requires_exact_newer_track() -> None:
+    events = []
+
+    class Result:
+        def fetchall(self):
+            return [{"job_id": 4007}, {"job_id": 4009}]
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            events.append((" ".join(statement.split()), parameters))
+            return Result()
+
+    cancelled = evaluation_queue.cancel_superseded_daily_jobs(
+        Connection(),
+        evaluation_date="2026-07-27",
+    )
+
+    assert cancelled == [4007, 4009]
+    sql, parameters = events[0]
+    assert "old.status = 'queued'" in sql
+    assert "newer.task_type = old.task_type" in sql
+    assert "newer.model_key = old.model_key" in sql
+    assert "newer.status IN ('queued', 'running', 'completed')" in sql
+    assert "superseded_by_newer_daily_evaluation" in sql
+    assert "RETURNING old.job_id" in sql
+    assert parameters == ("2026-07-27", "2026-07-27")
 
 
 def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:

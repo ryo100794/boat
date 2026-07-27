@@ -2955,6 +2955,43 @@ def standardized_evaluation_due(
     return (target - latest).days >= max(1, int(cadence_days))
 
 
+def cancel_superseded_daily_jobs(
+    conn: Any,
+    *,
+    evaluation_date: str,
+) -> list[int]:
+    """Cancel older queued daily jobs only when an exact newer track exists."""
+    rows = conn.execute(
+        """
+        UPDATE model_evaluation_jobs AS old
+        SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP,
+            decision = 'superseded_by_newer_daily_evaluation',
+            worker_id = NULL, locked_at = NULL
+        WHERE old.status = 'queued'
+          AND COALESCE(
+                old.parameters->>'evaluation_date',
+                old.parameters->>'evaluation_through'
+              ) < ?
+          AND EXISTS (
+            SELECT 1
+            FROM model_evaluation_jobs AS newer
+            WHERE newer.job_id <> old.job_id
+              AND newer.task_type = old.task_type
+              AND newer.model_key = old.model_key
+              AND newer.status IN ('queued', 'running', 'completed')
+              AND COALESCE(
+                    newer.parameters->>'evaluation_date',
+                    newer.parameters->>'evaluation_through'
+                  ) = ?
+          )
+        RETURNING old.job_id
+        """,
+        (evaluation_date, evaluation_date),
+    ).fetchall()
+    return [int(row["job_id"]) for row in rows]
+
+
 def seed_default_jobs(
     conn: Any,
     *,
@@ -3279,6 +3316,10 @@ def run_worker(args: argparse.Namespace) -> int:
                                 conn, evaluation_date=evaluation_date
                             ),
                         )
+                        cancel_superseded_daily_jobs(
+                            conn,
+                            evaluation_date=evaluation_date,
+                        )
                         seed_daily_market_jobs(
                             conn,
                             app_root=app_root,
@@ -3387,6 +3428,10 @@ def run_scheduler(args: argparse.Namespace) -> int:
                         include_standardized=standardized_evaluation_due(
                             conn, evaluation_date=evaluation_date
                         ),
+                    )
+                    cancel_superseded_daily_jobs(
+                        conn,
+                        evaluation_date=evaluation_date,
                     )
                     seed_daily_market_jobs(
                         conn,
