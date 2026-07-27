@@ -40,7 +40,11 @@ def test_newton_evaluation_result_contract_preserves_schema_and_policy() -> None
     policy = {"daily_budget_yen": 10_000, "ev_threshold": 1.2}
 
     contract = evaluation_result_contract(
-        {"feature_schema_version": "schema-v1"},
+        {
+            "feature_schema_version": "schema-v1",
+            "selection_rule_version": "rule-v1",
+            "selection_ranking_loss_relative_tolerance": 0.005,
+        },
         policy,
     )
     policy["ev_threshold"] = 9.9
@@ -48,6 +52,8 @@ def test_newton_evaluation_result_contract_preserves_schema_and_policy() -> None
     assert contract == {
         "feature_schema_version": "schema-v1",
         "policy": {"daily_budget_yen": 10_000, "ev_threshold": 1.2},
+        "selection_rule_version": "rule-v1",
+        "selection_ranking_loss_relative_tolerance": 0.005,
     }
 
 
