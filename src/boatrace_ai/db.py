@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
 from .constants import VENUES
 
 
+_POSTGRES_ODDS_SIGNATURE_SCHEMA_READY = False
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -72,6 +75,7 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
   bet_type TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   source_update_time TEXT,
+  odds_signature TEXT,
   parser_version TEXT,
   raw_json TEXT,
   source_url TEXT,
@@ -266,6 +270,7 @@ def init_db(path: str | Path, *, attempts: int = 6, retry_seconds: float = 5.0) 
         try:
             with connection(path) as conn:
                 conn.executescript(SCHEMA)
+                ensure_odds_signature_schema(conn)
                 conn.executemany(
                     "INSERT OR IGNORE INTO venues(code, name) VALUES (?, ?)",
                     [(venue.code, venue.name) for venue in VENUES],
@@ -276,6 +281,60 @@ def init_db(path: str | Path, *, attempts: int = 6, retry_seconds: float = 5.0) 
             if not locked or attempt + 1 >= attempts:
                 raise
             time.sleep(retry_seconds)
+
+
+def _canonical_odds_value(value: float | None) -> str | None:
+    if value is None:
+        return None
+    decimal_value = Decimal(str(value))
+    if not decimal_value.is_finite():
+        raise ValueError("odds values must be finite")
+    if decimal_value == 0:
+        return "0"
+    return format(decimal_value.normalize(), "f")
+
+
+def trifecta_odds_signature(odds: dict[str, float | None]) -> str:
+    normalized = [
+        [str(combination), _canonical_odds_value(value)]
+        for combination, value in sorted(odds.items())
+    ]
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def ensure_odds_signature_schema(conn: Any) -> None:
+    global _POSTGRES_ODDS_SIGNATURE_SCHEMA_READY
+    if getattr(conn, "dialect", None) == "postgresql":
+        if _POSTGRES_ODDS_SIGNATURE_SCHEMA_READY:
+            return
+        conn.execute(
+            "ALTER TABLE odds_snapshots "
+            "ADD COLUMN IF NOT EXISTS odds_signature TEXT"
+        )
+    else:
+        if getattr(conn, "_boatrace_odds_signature_schema_ready", False):
+            return
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(odds_snapshots)").fetchall()
+        }
+        if "odds_signature" not in columns:
+            conn.execute("ALTER TABLE odds_snapshots ADD COLUMN odds_signature TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_odds_race_signature "
+        "ON odds_snapshots(race_id, odds_signature, captured_at)"
+    )
+    if getattr(conn, "dialect", None) == "postgresql":
+        _POSTGRES_ODDS_SIGNATURE_SCHEMA_READY = True
+    try:
+        setattr(conn, "_boatrace_odds_signature_schema_ready", True)
+    except (AttributeError, TypeError):
+        pass
 
 
 def upsert_race(conn: sqlite3.Connection, payload: dict[str, Any]) -> str:
@@ -379,18 +438,20 @@ def insert_odds_snapshot(
     source_url: str,
     raw: dict[str, Any],
 ) -> int:
+    odds_signature = trifecta_odds_signature(odds)
     conn.execute(
         """
         INSERT INTO odds_snapshots (
-          race_id, bet_type, captured_at, source_update_time, parser_version,
-          raw_json, source_url
+          race_id, bet_type, captured_at, source_update_time, odds_signature,
+          parser_version, raw_json, source_url
         )
-        VALUES (?, 'trifecta', ?, ?, ?, ?, ?)
+        VALUES (?, 'trifecta', ?, ?, ?, ?, ?, ?)
         """,
         (
             race_id_value,
             captured_at,
             source_update_time,
+            odds_signature,
             raw.get("parser_version"),
             json.dumps(raw, ensure_ascii=False, sort_keys=True),
             source_url,
