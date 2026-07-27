@@ -604,7 +604,7 @@ def _select_conditional_payout_policy_state(
         )
         return (
             float(fallback_ridge), 0.0, fallback_threshold,
-            "fallback_fixed_policy", [], None, statistics,
+            "insufficient_calibration_no_bet", [], None, statistics,
             ConditionalPayoutTailCalibrator.empty(),
             fallback_exposure,
         )
@@ -673,7 +673,7 @@ def _select_conditional_payout_policy_state(
             "ev_threshold": fallback_threshold,
             "min_daily_exposure_fraction": fallback_exposure,
         }
-        source = "fallback_fixed_policy"
+        source = "selection_gate_no_bet"
     selected_ridge = float(selected["ridge"])
     selected_mean_correction = float(selected["mean_correction_factor"])
     selected_exposure = float(selected["min_daily_exposure_fraction"])
@@ -822,6 +822,11 @@ def simulate_conditional_payout_walk_forward(
     )
     selected_policy["ev_threshold"] = selected_threshold
     selected_policy["min_daily_exposure_fraction"] = selected_min_daily_exposure
+    no_bet = selection_source.endswith("_no_bet")
+    selected_policy["no_bet"] = no_bet
+    selected_policy["no_bet_reason"] = (
+        selection_source if no_bet else None
+    )
     selected_policy.update(
         {
             "payout_estimator": (
@@ -952,6 +957,8 @@ def simulate_conditional_payout_walk_forward(
                     ev_threshold=float(selected_policy["ev_threshold"]),
                 )
             )
+        if no_bet:
+            candidates = []
         candidates.sort(
             key=lambda row: (str(row["race_id"]), row["combination"])
         )

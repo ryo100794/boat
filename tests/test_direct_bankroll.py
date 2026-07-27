@@ -277,7 +277,11 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
     assert result["evaluated_races"] == 2
     assert result["policy"]["market_reference"] == "fixed baseline probability"
-    assert result["policy_selection"]["source"] == "fallback_fixed_policy"
+    assert result["policy_selection"]["source"] == "insufficient_calibration_no_bet"
+    assert result["policy"]["no_bet"] is True
+    assert result["selected_tickets"] == 0
+    assert result["stake_yen"] == 0
+    assert result["profit_yen"] == 0
     diagnostics = result["payout_diagnostics"]
     assert diagnostics["feature_schema"] == "conditional_payout_interactions_v2"
     assert diagnostics["feature_count"] == 382
@@ -596,8 +600,8 @@ def test_conditional_policy_prefers_bootstrap_lower_bound_over_raw_roi(
 @pytest.mark.parametrize(
     ("roi_ci95_lower", "probability", "expected_source"),
     [
-        (1.0, 0.99, "fallback_fixed_policy"),
-        (1.01, 0.949999, "fallback_fixed_policy"),
+        (1.0, 0.99, "selection_gate_no_bet"),
+        (1.01, 0.949999, "selection_gate_no_bet"),
         (1.01, 0.95, "pre_evaluation_adaptive_selection"),
     ],
 )
@@ -916,6 +920,18 @@ def _tail_eligibility_walk_forward_case(
 def test_tail_result_changes_eligibility_only_on_following_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original_selection = direct_bankroll._select_conditional_payout_policy_state
+
+    def force_selected_policy(*args: object, **kwargs: object):
+        selected = list(original_selection(*args, **kwargs))
+        selected[3] = "pre_evaluation_adaptive_selection"
+        return tuple(selected)
+
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_select_conditional_payout_policy_state",
+        force_selected_policy,
+    )
     with_result = _tail_eligibility_walk_forward_case(
         monkeypatch,
         selection_samples=19,
