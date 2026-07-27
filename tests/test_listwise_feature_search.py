@@ -10,7 +10,7 @@ import threading
 import pytest
 
 from boatrace_ai.db import connection, init_db
-from boatrace_ai.feature_tuning import FEATURE_GROUPS
+from boatrace_ai.feature_tuning import DEFAULT_ABLATION_FEATURE_GROUPS
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
     _checkpoint_signature,
@@ -36,7 +36,9 @@ def test_ev_policy_thresholds_are_parsed_separately_from_model_search() -> None:
 def test_feature_search_covers_full_and_each_single_group_ablation() -> None:
     variants = feature_variants()
     assert variants[0] == ("full", ())
-    assert {drops[0] for _name, drops in variants[1:]} == set(FEATURE_GROUPS)
+    assert {drops[0] for _name, drops in variants[1:]} == set(
+        DEFAULT_ABLATION_FEATURE_GROUPS
+    )
     assert all(len(drops) == 1 for _name, drops in variants[1:])
 
 

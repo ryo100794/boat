@@ -32,6 +32,7 @@ from .feature_schema import (
     uses_official_series_features,
     uses_racer_period_stats,
 )
+from .features import NUMERIC_ENTRY_FIELDS
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
 from .racer_period_features import (
@@ -46,12 +47,38 @@ from .standard_evaluation import race_set_sha256
 FEATURE_SET = "pastlog_v9_research_correlates_stream_hash_sgd"
 FEATURE_GROUPS = (
     "base_pastlog",
+    "card_identity_context",
+    "card_numeric",
+    "card_relative",
     "research_correlates",
     "series_cached",
     "series_relative",
     "rolling_history",
     "legacy_composites",
 )
+DEFAULT_ABLATION_FEATURE_GROUPS = tuple(
+    group
+    for group in FEATURE_GROUPS
+    if group not in {"card_identity_context", "card_numeric", "card_relative"}
+)
+CARD_IDENTITY_CONTEXT_FEATURES = {
+    "lane",
+    "lane_num",
+    "jcd",
+    "rno",
+    "race_type",
+    "distance_m",
+    "racer_class",
+    "class_rank",
+    "branch",
+    "origin",
+    "race_month",
+    "race_weekday",
+    "race_rno_bucket",
+    "distance_bucket",
+    "lane_rno_bucket",
+}
+CARD_NUMERIC_FEATURES = {*NUMERIC_ENTRY_FIELDS, "has_motor_no", "has_boat_no"}
 LEGACY_COMPOSITE_FEATURES = (
     "ability_score",
     "ability_lane_score",
@@ -440,7 +467,9 @@ def ablation_streaming(
     epochs: int = 1,
 ) -> dict[str, Any]:
     variants: list[tuple[str, tuple[str, ...]]] = [("baseline", ())]
-    variants.extend((f"drop_{group}", (group,)) for group in FEATURE_GROUPS)
+    variants.extend(
+        (f"drop_{group}", (group,)) for group in DEFAULT_ABLATION_FEATURE_GROUPS
+    )
     results: list[dict[str, Any]] = []
     for variant, drop_groups in variants:
         detail_path = _ablation_detail_path(output_path, variant)
@@ -458,7 +487,8 @@ def ablation_streaming(
     summary = {
         "generated_at": _now(),
         "feature_set": FEATURE_SET,
-        "feature_groups": list(FEATURE_GROUPS),
+        "feature_groups": list(DEFAULT_ABLATION_FEATURE_GROUPS),
+        "supported_feature_groups": list(FEATURE_GROUPS),
         "results": results,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -672,6 +702,16 @@ def build_race_features(
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
+            if "card_identity_context" in dropped:
+                for key in CARD_IDENTITY_CONTEXT_FEATURES:
+                    item.pop(key, None)
+            if "card_numeric" in dropped:
+                for key in CARD_NUMERIC_FEATURES:
+                    item.pop(key, None)
+            if "card_relative" in dropped:
+                for key in relatives[lane]:
+                    if not key.startswith(RESEARCH_FEATURE_PREFIX):
+                        item.pop(key, None)
         if uses_racer_period_stats(feature_schema_version):
             item.update(racer_period_feature_values(row))
         if (

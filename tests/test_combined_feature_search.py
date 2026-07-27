@@ -20,6 +20,18 @@ from boatrace_ai.listwise.feature_search import (
 
 EXPECTED_COMBINED_VARIANTS = (
     (
+        "keep_card_identity_context",
+        ("card_numeric", "card_relative", "research_correlates"),
+    ),
+    (
+        "keep_card_numeric",
+        ("card_identity_context", "card_relative", "research_correlates"),
+    ),
+    (
+        "keep_card_relative",
+        ("card_identity_context", "card_numeric", "research_correlates"),
+    ),
+    (
         "drop_base_pastlog_research_correlates",
         ("base_pastlog", "research_correlates"),
     ),
@@ -80,7 +92,7 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
-    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 3
+    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 6
     assert ("base_pastlog", "research_correlates") in {
         drops for _name, drops in COMBINED_FEATURE_VARIANTS
     }

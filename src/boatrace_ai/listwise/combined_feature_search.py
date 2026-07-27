@@ -11,6 +11,18 @@ from .feature_search import search
 
 COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     (
+        "keep_card_identity_context",
+        ("card_numeric", "card_relative", "research_correlates"),
+    ),
+    (
+        "keep_card_numeric",
+        ("card_identity_context", "card_relative", "research_correlates"),
+    ),
+    (
+        "keep_card_relative",
+        ("card_identity_context", "card_numeric", "research_correlates"),
+    ),
+    (
         "drop_base_pastlog_research_correlates",
         ("base_pastlog", "research_correlates"),
     ),
