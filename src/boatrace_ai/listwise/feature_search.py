@@ -44,6 +44,8 @@ from ..standard_evaluation import race_set_sha256
 
 
 FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
+
+SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.005
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
 
 
@@ -384,10 +386,20 @@ def _ordered_rows(
 
 
 def _selected_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return min(rows, key=lambda row: (
-        float(row["ranking_log_loss"]),
-        float(row["entry_log_loss"]),
+    best_ranking_loss = min(float(row["ranking_log_loss"]) for row in rows)
+    ranking_ceiling = best_ranking_loss * (
+        1.0 + SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
+    )
+    eligible = [
+        row
+        for row in rows
+        if float(row["ranking_log_loss"]) <= ranking_ceiling + 1e-12
+    ]
+    return min(eligible, key=lambda row: (
         -float(row["trifecta_top5_hit_rate"]),
+        -float(row["winner_top1_accuracy"]),
+        float(row["entry_log_loss"]),
+        float(row["ranking_log_loss"]),
     ))
 
 
@@ -865,7 +877,10 @@ def search(
         "feature_variants": [name for name, _drops in run_variants],
         "teacher_targets": list(targets),
         "alphas": list(alphas),
-        "selection_metric": "minimum top3 PL ranking log loss; entry log loss and top5 as tie breaks",
+        "selection_metric": (
+            "ranking log loss within 0.5% of best, then maximum 3T5; "
+            "winner top1 and entry log loss as tie breaks"
+        ),
         "search_results": search_rows,
         "selected": {
             key: selected[key]
