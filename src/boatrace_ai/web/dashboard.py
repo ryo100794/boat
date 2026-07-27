@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from functools import lru_cache
 import gzip
 import html
 import importlib.util
@@ -60,6 +61,25 @@ BOATCAST_STADIUMS = {
 
 def _load_template(name: str) -> str:
     return (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=512)
+def _read_json_artifact_cached(
+    path_text: str,
+    mtime_ns: int,
+    size: int,
+) -> Any:
+    del mtime_ns, size
+    return json.loads(Path(path_text).read_text(encoding="utf-8"))
+
+
+def _read_json_artifact(path: Path) -> Any:
+    metadata = path.stat()
+    return _read_json_artifact_cached(
+        str(path),
+        metadata.st_mtime_ns,
+        metadata.st_size,
+    )
 
 
 def now_jst() -> datetime:
@@ -1032,7 +1052,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 
     for path in sorted(model_dir.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_json_artifact(path)
         except Exception as exc:
             errors.append({"file": path.name, "error": str(exc)})
             continue
@@ -1456,7 +1476,7 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
         "errors": [],
     }
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _read_json_artifact(manifest_path)
     except FileNotFoundError:
         result["errors"].append("manifest missing")
         return result
@@ -1467,7 +1487,7 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
         result["errors"].append("manifest is not an object")
         return result
     try:
-        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+        protocol = _read_json_artifact(protocol_path)
     except FileNotFoundError:
         result["errors"].append("protocol missing")
         return result
@@ -1570,7 +1590,7 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
         summary = manifest_models.get(model_id) or {}
         path = root / f"{model_id}.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_json_artifact(path)
         except FileNotFoundError:
             result["errors"].append(f"{model_id}: result missing")
             continue
@@ -5246,7 +5266,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
         ).isoformat(),
     }
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_json_artifact(path)
     except (OSError, json.JSONDecodeError) as exc:
         result["error"] = str(exc)
         return result

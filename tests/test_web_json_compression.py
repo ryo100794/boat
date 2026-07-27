@@ -3,6 +3,8 @@ from io import BytesIO
 import json
 
 from boatrace_ai.web.dashboard import (
+    _read_json_artifact,
+    _read_json_artifact_cached,
     model_performance_daily_report,
     model_performance_public_report,
     send_json,
@@ -24,6 +26,22 @@ class ResponseRecorder:
 
     def end_headers(self) -> None:
         return None
+
+
+def test_json_artifact_cache_reloads_changed_file(tmp_path) -> None:
+    path = tmp_path / "result.json"
+    path.write_text('{"value":1}', encoding="utf-8")
+    _read_json_artifact_cached.cache_clear()
+
+    first = _read_json_artifact(path)
+    cached = _read_json_artifact(path)
+    assert cached is first
+
+    path.write_text('{"value":200}', encoding="utf-8")
+    updated = _read_json_artifact(path)
+
+    assert updated == {"value": 200}
+    assert updated is not first
 
 
 def test_send_json_compresses_large_payload_when_client_accepts_gzip() -> None:
