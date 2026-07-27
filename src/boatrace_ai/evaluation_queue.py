@@ -3629,6 +3629,14 @@ def resummarize_completed_job(
         """,
         (_json(summary), job_id),
     )
+    conn.execute(
+        """
+        UPDATE model_improvement_candidates
+        SET metrics = CAST(? AS JSONB)
+        WHERE job_id = ?
+        """,
+        (_json(summary), job_id),
+    )
     return {
         "job_id": job_id,
         "result_path": str(result_path),
