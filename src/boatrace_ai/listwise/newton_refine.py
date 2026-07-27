@@ -92,10 +92,17 @@ def evaluation_result_contract(
     schema = search_result.get("feature_schema_version")
     if not isinstance(schema, str) or not schema:
         raise ValueError("search result lacks a feature schema version")
-    return {
+    contract = {
         "feature_schema_version": schema,
         "policy": dict(policy),
     }
+    for key in (
+        "selection_rule_version",
+        "selection_ranking_loss_relative_tolerance",
+    ):
+        if search_result.get(key) is not None:
+            contract[key] = search_result[key]
+    return contract
 
 
 def _file_sha256(path: Path) -> str:
@@ -457,6 +464,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "drop_feature_groups": dropped,
             "n_features": int(search_result["n_features"]),
             "feature_schema_version": search_result["feature_schema_version"],
+            "selection_rule_version": search_result.get("selection_rule_version"),
+            "selection_ranking_loss_relative_tolerance": search_result.get(
+                "selection_ranking_loss_relative_tolerance"
+            ),
             "trained_races": selection_end,
             "trained_through": race_keys[selection_end - 1],
             "target": selected["target"],
