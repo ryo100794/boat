@@ -789,12 +789,27 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         "0.0005",
     ]
 
+    selected_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-26",
+                "half_lives": "none",
+                "protected_blend": True,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    selected_index = selected_command.index("--half-lives") + 1
+    assert selected_command[selected_index] == "none"
+
 
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
         ({}, "evaluation_date is required"),
-        ({"evaluation_date": "2026-07-22", "half_lives": "none"}, "at least 2"),
         ({"evaluation_date": "2026-07-22", "half_lives": "none,29"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "half_lives": "none,nan"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "calibration_days": 29}, "calibration_days"),

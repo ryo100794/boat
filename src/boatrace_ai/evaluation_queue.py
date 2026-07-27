@@ -1073,7 +1073,7 @@ def build_command(
             raise ValueError("evaluation_date is required")
         evaluation_date = _date(params, "evaluation_date")
         _integer(params, "timeout_seconds", 28800, 300, 86400)
-        half_lives = _half_lives(params)
+        half_lives = _half_lives(params, minimum_candidates=1)
         calibration_days = _integer(params, "calibration_days", 180, 30, 730)
         drop_feature_groups = _drop_feature_groups(params)
         selection_tolerance = _number(
