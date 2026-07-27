@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from boatrace_ai.evaluation_queue import TASK_PROFILES, build_command
+from boatrace_ai.evaluation_queue import (
+    ObsoleteJob,
+    TASK_PROFILES,
+    build_command,
+)
+from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.listwise.bankroll_policy_evaluation import (
     build_parser,
     prior_selection_key,
@@ -29,7 +34,10 @@ def _source(root, *, cache_prefix=None):
         / "listwise_search_8192_drop_research_correlates"
     )
     result.write_text(
-        json.dumps({"selected_cache_prefix": str(cache)}),
+        json.dumps({
+            "selected_cache_prefix": str(cache),
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        }),
         encoding="utf-8",
     )
     return result, cache
@@ -74,6 +82,26 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
     assert command[command.index("--evaluation-days") + 1] == "365"
     assert command[command.index("--research-only") + 1] == "true"
+
+
+def test_bankroll_policy_search_rejects_obsolete_source_schema(tmp_path) -> None:
+    root = tmp_path / "boat"
+    source, _cache = _source(root)
+    source.write_text(
+        json.dumps({
+            "selected_cache_prefix": str(_cache),
+            "feature_schema_version": "pastlog-listwise-hashed-v3",
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ObsoleteJob, match="feature schema is obsolete"):
+        build_command(
+            _job({"source_job_id": 3565}),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:

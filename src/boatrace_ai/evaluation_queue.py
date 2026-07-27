@@ -1436,6 +1436,12 @@ def build_command(
                 f"bankroll source result is not available yet: {source_result}"
             )
         source_payload = json.loads(source_result.read_text(encoding="utf-8"))
+        source_schema = source_payload.get("feature_schema_version")
+        if source_schema != FEATURE_SCHEMA_VERSION:
+            raise ObsoleteJob(
+                "bankroll source feature schema is obsolete: "
+                f"{source_schema} != {FEATURE_SCHEMA_VERSION}"
+            )
         cache_value = source_payload.get("selected_cache_prefix")
         if not cache_value:
             raise ValueError("bankroll source result lacks selected_cache_prefix")
