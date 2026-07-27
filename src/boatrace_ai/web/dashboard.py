@@ -2672,6 +2672,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("trifecta_top5_hit_rate")
                 ),
+                "closing_odds_log_mae": _float_or_none(
+                    metrics.get("closing_odds_log_mae")
+                ),
+                "closing_odds_rank_correlation": _float_or_none(
+                    metrics.get("closing_odds_rank_correlation")
+                ),
+                "closing_odds_interval_coverage": _float_or_none(
+                    metrics.get("closing_odds_interval_coverage")
+                ),
+                "closing_snapshot_age_seconds": _float_or_none(
+                    metrics.get("closing_snapshot_age_seconds")
+                ),
+                "tail_portfolio_diagnostics": metrics.get(
+                    "tail_portfolio_diagnostics"
+                ),
                 "result_path": row.get("result_path"),
                 "error": row.get("error") if status == "failed" else None,
             }
@@ -2694,6 +2709,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "trifecta_top5_hit_rate": _float_or_none(
                     candidate_metrics.get("trifecta_top5_hit_rate")
+                ),
+                "closing_odds_log_mae": _float_or_none(
+                    candidate_metrics.get("closing_odds_log_mae")
+                ),
+                "closing_odds_rank_correlation": _float_or_none(
+                    candidate_metrics.get("closing_odds_rank_correlation")
+                ),
+                "closing_odds_interval_coverage": _float_or_none(
+                    candidate_metrics.get("closing_odds_interval_coverage")
+                ),
+                "closing_snapshot_age_seconds": _float_or_none(
+                    candidate_metrics.get("closing_snapshot_age_seconds")
+                ),
+                "tail_portfolio_diagnostics": candidate_metrics.get(
+                    "tail_portfolio_diagnostics"
                 ),
                 "payout_feature_candidate_schema": candidate_metrics.get(
                     "payout_feature_candidate_schema"
