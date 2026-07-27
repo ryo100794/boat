@@ -14,8 +14,37 @@ from boatrace_ai.evaluation_queue import (
 from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.listwise.bankroll_policy_evaluation import (
     build_parser,
+    flat_top_k_diagnostic,
     prior_selection_key,
 )
+
+
+def test_flat_top5_diagnostic_converts_hit_rate_to_realized_roi() -> None:
+    rows = {
+        "hit": [
+            {"lane": lane, "probability": probability}
+            for lane, probability in enumerate((0.40, 0.25, 0.15, 0.10, 0.06, 0.04), 1)
+        ],
+        "miss": [
+            {"lane": lane, "probability": probability}
+            for lane, probability in enumerate((0.40, 0.25, 0.15, 0.10, 0.06, 0.04), 1)
+        ],
+    }
+    payouts = {
+        "hit": {"combination": "1-2-3", "payout_yen": 1200},
+        "miss": {"combination": "6-5-4", "payout_yen": 5000},
+    }
+
+    result = flat_top_k_diagnostic(rows, payouts=payouts)
+
+    assert result["evaluated_races"] == 2
+    assert result["tickets"] == 10
+    assert result["hit_races"] == 1
+    assert result["hit_rate"] == 0.5
+    assert result["stake_yen"] == 1000
+    assert result["return_yen"] == 1200
+    assert result["roi"] == 1.2
+    assert result["breakeven_average_hit_payout_yen"] == 1000
 
 
 def _job(parameters):

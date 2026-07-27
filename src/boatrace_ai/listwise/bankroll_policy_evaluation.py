@@ -23,6 +23,7 @@ from ..bankroll_policy_search import (
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, race_ids_sha256
+from ..modeling import _normalize_lane_probs, trifecta_predictions
 from ..packed_bankroll import (
     candidate_ev_calibration,
     evaluate_packed_policy,
@@ -66,6 +67,52 @@ def packed_candidates_from_rows(
             )
         )
     return pack_candidates(candidates_by_date, evaluated_by_date)
+
+
+def flat_top_k_diagnostic(
+    rows_by_race: dict[str, list[dict[str, Any]]],
+    *,
+    payouts: dict[str, dict[str, Any]],
+    top_k: int = 5,
+    unit_yen: int = 100,
+) -> dict[str, Any]:
+    if not 1 <= top_k <= 120 or unit_yen <= 0:
+        raise ValueError("flat top-k diagnostic requires valid top_k and unit_yen")
+    races = hits = returned = 0
+    for race_id, rows in rows_by_race.items():
+        payout = payouts.get(race_id)
+        if len(rows) != 6 or payout is None:
+            continue
+        lane_probs = _normalize_lane_probs({
+            int(row["lane"]): float(row["probability"]) for row in rows
+        })
+        combinations = {
+            item["combination"]
+            for item in trifecta_predictions(lane_probs)[:top_k]
+        }
+        races += 1
+        if str(payout["combination"]) in combinations:
+            hits += 1
+            returned += int(payout["payout_yen"])
+    tickets = races * top_k
+    stake = tickets * unit_yen
+    return {
+        "role": "diagnostic_all_races_flat_stake_not_daily_budget",
+        "top_k": top_k,
+        "unit_yen": unit_yen,
+        "evaluated_races": races,
+        "tickets": tickets,
+        "hit_races": hits,
+        "hit_rate": hits / races if races else None,
+        "stake_yen": stake,
+        "return_yen": returned,
+        "profit_yen": returned - stake,
+        "roi": returned / stake if stake else None,
+        "average_hit_payout_yen": returned / hits if hits else None,
+        "breakeven_average_hit_payout_yen": (
+            top_k * unit_yen * races / hits if hits else None
+        ),
+    }
 
 
 def prior_selection_key(row: dict[str, Any]) -> tuple[Any, ...]:
@@ -149,6 +196,9 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         keep_rows=True,
     )
     payouts = _load_trifecta_payouts(conn)
+    selection_top5_flat = flat_top_k_diagnostic(
+        selection_rows, payouts=payouts
+    )
     selection_train_races = {
         race_id for race_id, *_rest in race_keys[:train_end]
     }
@@ -218,6 +268,9 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         batch_races=args.batch_races,
         keep_rows=True,
     )
+    holdout_top5_flat = flat_top_k_diagnostic(
+        holdout_rows, payouts=payouts
+    )
     holdout_packed = packed_candidates_from_rows(
         holdout_rows,
         payouts=payouts,
@@ -256,11 +309,13 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         ),
         "selection_races": len(selection_rows),
         "selection_prediction_metrics": selection_metrics,
+        "selection_top5_flat_diagnostic": selection_top5_flat,
         "selection_training_history": selection_history,
         "policy_searches": prior_results,
         "selected_policy": selected_policy,
         "holdout_races": len(holdout_rows),
         "holdout_prediction_metrics": holdout_metrics,
+        "holdout_top5_flat_diagnostic": holdout_top5_flat,
         "holdout_training_history": final_history,
         "evaluated_races": holdout_bankroll["evaluated_races"],
         "selected_races": holdout_bankroll["selected_races"],
