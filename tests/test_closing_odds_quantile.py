@@ -151,3 +151,75 @@ def test_daily_walk_forward_does_not_learn_from_future_targets() -> None:
     assert baseline_fold == mutated_fold
     assert baseline["evaluation_races"] == 2
     assert baseline["evaluation_tickets"] == 240
+
+
+def test_walk_forward_uses_daily_cross_conformal_residuals() -> None:
+    races = [
+        _race("2026-07-20", "day-1", log_residual=-0.40),
+        _race("2026-07-21", "day-2", log_residual=0.40),
+        _race("2026-07-22", "day-3", log_residual=0.70),
+    ]
+
+    result = walk_forward_closing_odds_quantiles(
+        races, minimum_training_days=1, regularization=0.0
+    )
+    fallback_fold, crossfit_fold = result["folds"]
+
+    assert fallback_fold["calibration_method"] == (
+        "in_sample_residual_quantiles_single_training_day"
+    )
+    assert fallback_fold["crossfit_days"] == 0
+    assert fallback_fold["crossfit_tickets"] == 0
+    assert crossfit_fold["calibration_method"] == (
+        "leave_one_training_day_out_cross_conformal"
+    )
+    assert crossfit_fold["crossfit_days"] == 2
+    assert crossfit_fold["crossfit_tickets"] == 240
+    assert crossfit_fold["metrics"]["closing_odds_interval_coverage"] == pytest.approx(
+        1.0
+    )
+    assert result["calibration_method"] == (
+        "mixed_daily_cross_conformal_with_single_day_fallback"
+    )
+    assert result["crossfit_days"] == 2
+    assert result["crossfit_tickets"] == 240
+
+
+def test_cross_conformal_fold_does_not_learn_from_future_day() -> None:
+    races = [
+        _race("2026-07-20", "day-1", log_residual=-0.30),
+        _race("2026-07-21", "day-2", log_residual=0.30),
+        _race("2026-07-22", "day-3", log_residual=0.20),
+        _race("2026-07-23", "day-4", log_residual=-0.10),
+    ]
+    changed_future = copy.deepcopy(races)
+    changed_future[-1]["closing_odds"] = {
+        combination: value * 50.0
+        for combination, value in changed_future[-1]["closing_odds"].items()
+    }
+
+    baseline = walk_forward_closing_odds_quantiles(
+        races, minimum_training_days=1, regularization=0.0
+    )
+    mutated = walk_forward_closing_odds_quantiles(
+        changed_future, minimum_training_days=1, regularization=0.0
+    )
+    baseline_fold = next(
+        fold for fold in baseline["folds"] if fold["evaluation_date"] == "2026-07-22"
+    )
+    mutated_fold = next(
+        fold for fold in mutated["folds"] if fold["evaluation_date"] == "2026-07-22"
+    )
+
+    assert baseline_fold["calibration_method"] == (
+        "leave_one_training_day_out_cross_conformal"
+    )
+    assert baseline_fold == mutated_fold
+
+
+def test_public_fit_api_reports_legacy_calibration_metadata() -> None:
+    model = fit_closing_odds_quantile_model(_training_races())
+
+    assert model["calibration_method"] == "in_sample_residual_quantiles"
+    assert model["crossfit_days"] == 0
+    assert model["crossfit_tickets"] == 0

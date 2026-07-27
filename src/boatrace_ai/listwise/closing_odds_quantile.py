@@ -10,6 +10,8 @@ from .closing_odds import MAX_ODDS, MIN_ODDS
 
 QUANTILE_LEVELS = (0.10, 0.50, 0.90)
 QUANTILE_NAMES = ("q10", "q50", "q90")
+CROSS_CONFORMAL_METHOD = "leave_one_training_day_out_cross_conformal"
+SINGLE_DAY_FALLBACK_METHOD = "in_sample_residual_quantiles_single_training_day"
 
 
 def _paired_race(race: dict[str, Any]) -> tuple[list[str], np.ndarray, np.ndarray] | None:
@@ -85,7 +87,63 @@ def fit_closing_odds_quantile_model(
                 & (target <= location + residual_quantiles[2])
             )
         ),
+        "calibration_method": "in_sample_residual_quantiles",
+        "crossfit_days": 0,
+        "crossfit_tickets": 0,
     }
+
+
+def _fit_daily_cross_conformal_model(
+    by_day: dict[str, list[dict[str, Any]]],
+    training_dates: list[str],
+    *,
+    regularization: float,
+) -> dict[str, Any]:
+    """Fit location on all training days and calibrate on daily OOF residuals."""
+    training = [race for day in training_dates for race in by_day[day]]
+    model = fit_closing_odds_quantile_model(
+        training, regularization=regularization
+    )
+    if len(training_dates) == 1:
+        model.update(
+            calibration_method=SINGLE_DAY_FALLBACK_METHOD,
+            crossfit_days=0,
+            crossfit_tickets=0,
+        )
+        return model
+
+    residuals: list[float] = []
+    for held_out_date in training_dates:
+        fit_races = [
+            race
+            for day in training_dates
+            if day != held_out_date
+            for race in by_day[day]
+        ]
+        fold_model = fit_closing_odds_quantile_model(
+            fit_races, regularization=regularization
+        )
+        intercept = float(fold_model["intercept"])
+        coefficient = float(fold_model["log_odds_coefficient"])
+        for race in by_day[held_out_date]:
+            paired = _paired_race(race)
+            if paired is None:
+                continue
+            _, current, closing = paired
+            location = intercept + coefficient * np.log(current)
+            residuals.extend(np.log(closing) - location)
+    residual_quantiles = np.quantile(
+        np.asarray(residuals, dtype=np.float64), QUANTILE_LEVELS
+    )
+    model.update(
+        residual_q10=float(residual_quantiles[0]),
+        residual_q50=float(residual_quantiles[1]),
+        residual_q90=float(residual_quantiles[2]),
+        calibration_method=CROSS_CONFORMAL_METHOD,
+        crossfit_days=len(training_dates),
+        crossfit_tickets=len(residuals),
+    )
+    return model
 
 
 def forecast_closing_odds_quantiles(
@@ -234,8 +292,8 @@ def walk_forward_closing_odds_quantiles(
     for index in range(minimum_training_days, len(dates)):
         training = [race for day in dates[:index] for race in by_day[day]]
         holdout = by_day[dates[index]]
-        model = fit_closing_odds_quantile_model(
-            training, regularization=regularization
+        model = _fit_daily_cross_conformal_model(
+            by_day, dates[:index], regularization=regularization
         )
         metrics = closing_odds_quantile_metrics(holdout, model)
         fold_tickets = int(metrics["evaluation_tickets"])
@@ -272,6 +330,9 @@ def walk_forward_closing_odds_quantiles(
                 "evaluation_date": dates[index],
                 "training_races": len(training),
                 "evaluation_races": fold_races,
+                "calibration_method": model["calibration_method"],
+                "crossfit_days": model["crossfit_days"],
+                "crossfit_tickets": model["crossfit_tickets"],
                 "metrics": metrics,
             }
         )
@@ -296,8 +357,29 @@ def walk_forward_closing_odds_quantiles(
         ),
         "snapshot_age_races": age_races,
     }
+    calibration_methods = sorted(
+        {str(fold["calibration_method"]) for fold in folds}
+    )
+    crossfit_folds = [
+        fold
+        for fold in folds
+        if fold["calibration_method"] == CROSS_CONFORMAL_METHOD
+    ]
     return {
         "evaluation_method": "expanding_daily_walk_forward",
+        "calibration_method": (
+            calibration_methods[0]
+            if len(calibration_methods) == 1
+            else "mixed_daily_cross_conformal_with_single_day_fallback"
+            if calibration_methods
+            else None
+        ),
+        "crossfit_days": sum(
+            int(fold["crossfit_days"]) for fold in crossfit_folds
+        ),
+        "crossfit_tickets": sum(
+            int(fold["crossfit_tickets"]) for fold in crossfit_folds
+        ),
         "minimum_training_days": minimum_training_days,
         "eligible_days": len(dates),
         "evaluation_days": len(folds),
