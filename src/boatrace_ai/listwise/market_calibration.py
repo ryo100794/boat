@@ -45,6 +45,7 @@ from .odds_path_operational import attach_odds_path_model, fit_odds_path_model
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .closing_odds import decision_odds
 from .closing_odds_momentum import (
+    attach_selected_closing_odds,
     select_closing_odds_model,
     selected_closing_odds_metrics,
 )
@@ -1357,6 +1358,164 @@ def closing_odds_training_ready(races: Iterable[dict[str, Any]]) -> bool:
     )
 
 
+CLOSING_ODDS_FORECAST_POLICY_INPUT = "oof_forecast_final_from_real_t5"
+CLOSING_ODDS_FALLBACK_POLICY_INPUT = "observed_t5_fallback"
+_CLOSING_ODDS_POLICY_FIELDS = (
+    "estimated_final_odds",
+    "closing_odds_forecast_source",
+    "closing_odds_forecast_target",
+    "closing_odds_policy_input",
+    "closing_odds_policy_fallback",
+    "closing_odds_policy_fallback_reason",
+    "closing_odds_model_training_days",
+    "closing_odds_model_training_races",
+    "closing_odds_model_trained_through_date",
+)
+
+
+def _attach_t5_policy_fallback(
+    races: Iterable[dict[str, Any]], *, reason: str
+) -> list[dict[str, Any]]:
+    result = []
+    for race in races:
+        item = dict(race)
+        item.pop("estimated_final_odds", None)
+        item.pop("closing_odds_forecast_source", None)
+        item.pop("closing_odds_forecast_target", None)
+        item["closing_odds_policy_input"] = CLOSING_ODDS_FALLBACK_POLICY_INPUT
+        item["closing_odds_policy_fallback"] = True
+        item["closing_odds_policy_fallback_reason"] = reason
+        result.append(item)
+    return result
+
+
+def _attach_oof_closing_odds_forecast(
+    races: list[dict[str, Any]],
+    selection: dict[str, Any],
+    *,
+    training_dates: list[str],
+    training_races: int,
+) -> list[dict[str, Any]]:
+    augmented = attach_selected_closing_odds(races, selection)
+    result = []
+    for race in augmented:
+        forecast = race.get("estimated_final_odds") or {}
+        observed = race.get("odds") or {}
+        if (
+            len(observed) != 120
+            or set(forecast) != set(observed)
+            or any(
+                not math.isfinite(float(value)) or float(value) <= 0.0
+                for value in forecast.values()
+            )
+        ):
+            result.extend(
+                _attach_t5_policy_fallback(
+                    [race], reason="incomplete_closing_odds_forecast"
+                )
+            )
+            continue
+        item = dict(race)
+        item["closing_odds_policy_input"] = CLOSING_ODDS_FORECAST_POLICY_INPUT
+        item["closing_odds_policy_fallback"] = False
+        item.pop("closing_odds_policy_fallback_reason", None)
+        item["closing_odds_model_training_days"] = len(training_dates)
+        item["closing_odds_model_training_races"] = int(training_races)
+        item["closing_odds_model_trained_through_date"] = training_dates[-1]
+        result.append(item)
+    return result
+
+
+def prequential_closing_odds_policy_inputs(
+    races: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build date-OOF policy prices using strictly earlier closing teachers."""
+    by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in races:
+        by_day[str(race["race_date"])].append(race)
+    dates = sorted(by_day)
+    attached_by_race_id: dict[str, dict[str, Any]] = {}
+    folds: dict[str, dict[str, Any]] = {}
+    for index, prediction_date in enumerate(dates):
+        training_dates = dates[:index]
+        if any(date >= prediction_date for date in training_dates):
+            raise AssertionError("closing odds training crossed prediction date")
+        prior = [race for date in training_dates for race in by_day[date]]
+        teachers = verifiable_closing_odds_races(prior)
+        teacher_dates = sorted({str(race["race_date"]) for race in teachers})
+        if any(date >= prediction_date for date in teacher_dates):
+            raise AssertionError("closing odds teacher crossed prediction date")
+
+        selection = None
+        evaluation = None
+        model = None
+        fallback_reason = None
+        if not teachers:
+            fallback_reason = "no_strictly_prior_closing_odds_teachers"
+        elif not closing_odds_training_ready(teachers):
+            fallback_reason = "insufficient_strictly_prior_closing_odds_teachers"
+        else:
+            try:
+                selection = select_closing_odds_model(teachers)
+                attached = _attach_oof_closing_odds_forecast(
+                    by_day[prediction_date],
+                    selection,
+                    training_dates=teacher_dates,
+                    training_races=len(teachers),
+                )
+            except (KeyError, ValueError, np.linalg.LinAlgError):
+                selection = None
+                fallback_reason = "closing_odds_model_fit_failed"
+            else:
+                selected_model = str(selection["selected"])
+                model = dict(selection[f"{selected_model}_model"])
+                model["model_type"] = selected_model
+                evaluation = selected_closing_odds_metrics(
+                    verifiable_closing_odds_races(by_day[prediction_date]),
+                    selection,
+                )
+        if selection is None:
+            attached = _attach_t5_policy_fallback(
+                by_day[prediction_date],
+                reason=str(fallback_reason),
+            )
+        for race in attached:
+            attached_by_race_id[str(race["race_id"])] = race
+        folds[prediction_date] = {
+            "prediction_date": prediction_date,
+            "training_dates": teacher_dates,
+            "trained_through_date": teacher_dates[-1] if teacher_dates else None,
+            "training_races": len(teachers),
+            "selection": selection,
+            "model": model,
+            "evaluation": evaluation,
+            "policy_input": (
+                CLOSING_ODDS_FORECAST_POLICY_INPUT
+                if selection is not None
+                else CLOSING_ODDS_FALLBACK_POLICY_INPUT
+            ),
+            "fallback_reason": fallback_reason,
+        }
+    return {"races_by_id": attached_by_race_id, "folds": folds}
+
+
+def apply_prequential_closing_odds_policy_inputs(
+    races: list[dict[str, Any]], inputs: dict[str, Any]
+) -> list[dict[str, Any]]:
+    attached_by_race_id = inputs["races_by_id"]
+    result = []
+    for race in races:
+        source = attached_by_race_id[str(race["race_id"])]
+        item = dict(race)
+        for key in _CLOSING_ODDS_POLICY_FIELDS:
+            if key in source:
+                item[key] = source[key]
+            else:
+                item.pop(key, None)
+        result.append(item)
+    return result
+
+
 def evaluate_closing_odds_quantiles(
     races: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1437,7 +1596,6 @@ def fit_deployment_configuration(
 
     closing_odds_selection = None
     closing_training_races = verifiable_closing_odds_races(races)
-    policy_races = races
     if closing_odds_training_ready(closing_training_races):
         try:
             closing_odds_selection = select_closing_odds_model(
@@ -1445,6 +1603,14 @@ def fit_deployment_configuration(
             )
         except ValueError:
             pass
+    closing_policy_inputs = prequential_closing_odds_policy_inputs(races)
+    policy_races = apply_prequential_closing_odds_policy_inputs(
+        races, closing_policy_inputs
+    )
+    forecast_policy_races = sum(
+        int(race.get("closing_odds_policy_fallback") is False)
+        for race in policy_races
+    )
     selected_policy, policy_grid = select_policy(
         policy_races,
         calibrator=calibrator,
@@ -1469,8 +1635,14 @@ def fit_deployment_configuration(
         "closing_odds_training_days": len(
             {str(race["race_date"]) for race in closing_training_races}
         ),
-        "closing_odds_policy_input": "observed_t5_odds_pending_oof_wiring",
-        "closing_odds_policy_enabled": False,
+        "closing_odds_policy_input": (
+            "date_oof_forecast_with_explicit_observed_t5_fallback"
+        ),
+        "closing_odds_policy_enabled": forecast_policy_races > 0,
+        "closing_odds_forecast_policy_races": forecast_policy_races,
+        "closing_odds_fallback_policy_races": (
+            len(policy_races) - forecast_policy_races
+        ),
         "selected_policy": selected_policy,
         "policy_diagnostics": summarize_policy_candidates(policy_grid),
     }
@@ -1508,6 +1680,7 @@ def walk_forward_evaluate(
             calibrator_strategy=calibrator_strategy,
         )
 
+    closing_policy_inputs = prequential_closing_odds_policy_inputs(races)
     folds = []
     evaluation_races: list[dict[str, Any]] = []
     evaluation_policy_races: list[dict[str, Any]] = []
@@ -1584,29 +1757,18 @@ def walk_forward_evaluate(
             calibrator, calibrator_grid = select_calibrator(calibration_races)
         else:
             raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
-        closing_odds_model = None
-        closing_odds_selection = None
-        closing_odds_evaluation = None
-        calibration_policy_races = calibration_races
-        holdout_policy_races = holdout
+        calibration_policy_races = apply_prequential_closing_odds_policy_inputs(
+            calibration_races, closing_policy_inputs
+        )
+        holdout_policy_races = apply_prequential_closing_odds_policy_inputs(
+            holdout, closing_policy_inputs
+        )
         closing_training_races = verifiable_closing_odds_races(calibration_races)
         closing_holdout_races = verifiable_closing_odds_races(holdout)
-        if closing_odds_training_ready(closing_training_races):
-            try:
-                closing_odds_selection = select_closing_odds_model(
-                    closing_training_races
-                )
-            except ValueError:
-                pass
-            else:
-                selected_price_model = str(closing_odds_selection["selected"])
-                closing_odds_model = dict(
-                    closing_odds_selection[f"{selected_price_model}_model"]
-                )
-                closing_odds_model["model_type"] = selected_price_model
-                closing_odds_evaluation = selected_closing_odds_metrics(
-                    closing_holdout_races, closing_odds_selection
-                )
+        closing_policy_fold = closing_policy_inputs["folds"][evaluation_date]
+        closing_odds_selection = closing_policy_fold["selection"]
+        closing_odds_model = closing_policy_fold["model"]
+        closing_odds_evaluation = closing_policy_fold["evaluation"]
         policy, policy_grid = select_policy(
             calibration_policy_races,
             calibrator=calibrator,
@@ -1700,9 +1862,13 @@ def walk_forward_evaluate(
                 "closing_odds_evaluation": closing_odds_evaluation,
                 "closing_odds_training_races": len(closing_training_races),
                 "closing_odds_holdout_races": len(closing_holdout_races),
-                "closing_odds_policy_input": (
-                    "observed_t5_odds_pending_oof_wiring"
-                ),
+                "closing_odds_model_trained_through_date": closing_policy_fold[
+                    "trained_through_date"
+                ],
+                "closing_odds_policy_input": closing_policy_fold["policy_input"],
+                "closing_odds_policy_fallback_reason": closing_policy_fold[
+                    "fallback_reason"
+                ],
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
                 "policy_candidates": len(policy_grid),
