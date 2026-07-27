@@ -760,6 +760,26 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
     )
     assert base_command[groups_index] == "base_pastlog"
 
+    research_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "drop_feature_groups": "raw_equipment_identifiers",
+                "protected_blend": True,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    research_cache_index = research_command.index("--feature-cache") + 1
+    research_groups_index = research_command.index("--drop-feature-groups") + 1
+    assert research_command[research_cache_index].endswith(
+        "calibrated_shadow_features_16384__drop_raw_equipment_identifiers"
+    )
+    assert research_command[research_groups_index] == "raw_equipment_identifiers"
+
     protected_command, _ = build_command(
         _job(
             "calibrated_mlp_recency_search",

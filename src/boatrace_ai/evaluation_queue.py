@@ -773,6 +773,7 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
         raise ValueError("drop_feature_groups must be a comma-separated string")
     allowed = (
         "base_pastlog",
+        "raw_equipment_identifiers",
         "research_correlates",
         "series_cached",
         "series_relative",
