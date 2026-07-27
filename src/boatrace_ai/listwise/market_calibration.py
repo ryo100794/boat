@@ -45,9 +45,11 @@ from .odds_path_operational import attach_odds_path_model, fit_odds_path_model
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .closing_odds import decision_odds
 from .closing_odds_momentum import (
-    attach_selected_closing_odds,
     select_closing_odds_model,
     selected_closing_odds_metrics,
+)
+from .closing_odds_quantile import (
+    walk_forward_closing_odds_quantiles,
 )
 from .conditional_order import ConditionalOrderModel, conditional_probabilities
 from .conditional_stagewise import (
@@ -65,11 +67,13 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 20
+MARKET_EVALUATION_VERSION = 21
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
-SCORED_CACHE_VERSION = 11
+SCORED_CACHE_VERSION = 12
+MIN_CLOSING_ODDS_TRAINING_DAYS = 7
+MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
@@ -1249,6 +1253,51 @@ def waiting_walk_forward_result(
     }
 
 
+def verifiable_closing_odds_races(
+    races: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep teachers whose official update or 120-price vector actually changed."""
+    return [
+        race
+        for race in races
+        if len(race.get("closing_odds") or {}) == 120
+        and (
+            race.get("closing_source_changed") is True
+            or race.get("closing_odds_changed") is True
+        )
+    ]
+
+
+def closing_odds_training_ready(races: Iterable[dict[str, Any]]) -> bool:
+    eligible = list(races)
+    return bool(
+        len(eligible) >= MIN_CLOSING_ODDS_TRAINING_RACES
+        and len({str(race["race_date"]) for race in eligible})
+        >= MIN_CLOSING_ODDS_TRAINING_DAYS
+    )
+
+
+def evaluate_closing_odds_quantiles(
+    races: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    eligible = verifiable_closing_odds_races(races)
+    days = sorted({str(race["race_date"]) for race in eligible})
+    if len(days) < 2:
+        return {
+            "status": "insufficient_independent_snapshots",
+            "teacher": "last_preclose_odds_with_verified_source_or_value_change",
+            "eligible_races": len(eligible),
+            "eligible_days": len(days),
+            "minimum_evaluation_days": 2,
+        }
+    result = walk_forward_closing_odds_quantiles(
+        eligible, minimum_training_days=1
+    )
+    result["status"] = "evaluated"
+    result["teacher"] = "last_preclose_odds_with_verified_source_or_value_change"
+    return result
+
+
 def fit_deployment_configuration(
     races: list[dict[str, Any]],
     *,
@@ -1307,13 +1356,15 @@ def fit_deployment_configuration(
         raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
 
     closing_odds_selection = None
+    closing_training_races = verifiable_closing_odds_races(races)
     policy_races = races
-    try:
-        closing_odds_selection = select_closing_odds_model(races)
-    except ValueError:
-        pass
-    else:
-        policy_races = attach_selected_closing_odds(races, closing_odds_selection)
+    if closing_odds_training_ready(closing_training_races):
+        try:
+            closing_odds_selection = select_closing_odds_model(
+                closing_training_races
+            )
+        except ValueError:
+            pass
     selected_policy, policy_grid = select_policy(
         policy_races,
         calibrator=calibrator,
@@ -1334,6 +1385,12 @@ def fit_deployment_configuration(
         "calibrator_selection": calibrator_selection,
         "calibrator_candidates": calibrator_candidates,
         "closing_odds_selection": closing_odds_selection,
+        "closing_odds_training_races": len(closing_training_races),
+        "closing_odds_training_days": len(
+            {str(race["race_date"]) for race in closing_training_races}
+        ),
+        "closing_odds_policy_input": "observed_t5_odds_pending_oof_wiring",
+        "closing_odds_policy_enabled": False,
         "selected_policy": selected_policy,
         "policy_diagnostics": summarize_policy_candidates(policy_grid),
     }
@@ -1448,25 +1505,24 @@ def walk_forward_evaluate(
         closing_odds_evaluation = None
         calibration_policy_races = calibration_races
         holdout_policy_races = holdout
-        try:
-            closing_odds_selection = select_closing_odds_model(calibration_races)
-        except ValueError:
-            pass
-        else:
-            selected_price_model = str(closing_odds_selection["selected"])
-            closing_odds_model = dict(
-                closing_odds_selection[f"{selected_price_model}_model"]
-            )
-            closing_odds_model["model_type"] = selected_price_model
-            calibration_policy_races = attach_selected_closing_odds(
-                calibration_races, closing_odds_selection
-            )
-            holdout_policy_races = attach_selected_closing_odds(
-                holdout, closing_odds_selection
-            )
-            closing_odds_evaluation = selected_closing_odds_metrics(
-                holdout, closing_odds_selection
-            )
+        closing_training_races = verifiable_closing_odds_races(calibration_races)
+        closing_holdout_races = verifiable_closing_odds_races(holdout)
+        if closing_odds_training_ready(closing_training_races):
+            try:
+                closing_odds_selection = select_closing_odds_model(
+                    closing_training_races
+                )
+            except ValueError:
+                pass
+            else:
+                selected_price_model = str(closing_odds_selection["selected"])
+                closing_odds_model = dict(
+                    closing_odds_selection[f"{selected_price_model}_model"]
+                )
+                closing_odds_model["model_type"] = selected_price_model
+                closing_odds_evaluation = selected_closing_odds_metrics(
+                    closing_holdout_races, closing_odds_selection
+                )
         policy, policy_grid = select_policy(
             calibration_policy_races,
             calibrator=calibrator,
@@ -1536,6 +1592,11 @@ def walk_forward_evaluate(
                 "closing_odds_model": closing_odds_model,
                 "closing_odds_selection": closing_odds_selection,
                 "closing_odds_evaluation": closing_odds_evaluation,
+                "closing_odds_training_races": len(closing_training_races),
+                "closing_odds_holdout_races": len(closing_holdout_races),
+                "closing_odds_policy_input": (
+                    "observed_t5_odds_pending_oof_wiring"
+                ),
                 "selected_policy": policy,
                 "calibrator_candidates": len(calibrator_grid),
                 "policy_candidates": len(policy_grid),
@@ -1659,6 +1720,7 @@ def walk_forward_evaluate(
         daily_rows,
         evaluated_races=len(evaluation_races),
     )
+    closing_odds_forecast = evaluate_closing_odds_quantiles(races)
     return {
         "model": (
             "odds_path_operational_v1"
@@ -1680,6 +1742,7 @@ def walk_forward_evaluate(
         "evaluation_races": len(evaluation_races),
         "evaluation_days": len(daily_rows),
         "probability_metrics": aggregate_metrics,
+        "closing_odds_forecast": closing_odds_forecast,
         "market_comparison": market_comparison,
         "ticket_diagnostics": predefined_ticket_diagnostics(
             evaluation_policy_races,
