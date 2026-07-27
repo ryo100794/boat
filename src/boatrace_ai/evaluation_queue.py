@@ -664,22 +664,55 @@ def claim_job(
 
 
 def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
-    cursor = conn.execute(
+    audit_error = "worker lease expired"
+    rows = conn.execute(
+        """
+        WITH stale_jobs AS (
+          UPDATE model_evaluation_jobs
+          SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
+              available_at = CURRENT_TIMESTAMP,
+              worker_id = NULL,
+              locked_at = NULL,
+              error = COALESCE(error, ?),
+              updated_at = CURRENT_TIMESTAMP
+          WHERE status = 'running'
+            AND locked_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
+          RETURNING job_id, attempt
+        ), closed_runs AS (
+          UPDATE model_evaluation_job_runs AS runs
+          SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
+              error = COALESCE(runs.error, ?)
+          FROM stale_jobs
+          WHERE runs.job_id = stale_jobs.job_id
+            AND runs.attempt = stale_jobs.attempt
+            AND runs.status = 'running'
+          RETURNING runs.run_id
+        )
+        SELECT job_id, attempt FROM stale_jobs
+        """,
+        (audit_error, max(1, int(stale_minutes)), audit_error),
+    ).fetchall()
+    return len(rows)
+
+
+def reconcile_queue_state(conn: Any) -> int:
+    """Cancel exhausted queued jobs that can no longer be claimed."""
+    audit_error = (
+        "queue reconciliation cancelled exhausted job: "
+        "attempt reached max_attempts"
+    )
+    rows = conn.execute(
         """
         UPDATE model_evaluation_jobs
-        SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
-            available_at = CURRENT_TIMESTAMP,
-            worker_id = NULL,
-            locked_at = NULL,
-            error = COALESCE(error, 'worker lease expired'),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE status = 'running'
-          AND locked_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
+        SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP,
+            worker_id = NULL, locked_at = NULL,
+            error = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'queued' AND attempt >= max_attempts
         RETURNING job_id
         """,
-        (max(1, int(stale_minutes)),),
-    )
-    return len(cursor.fetchall())
+        (audit_error,),
+    ).fetchall()
+    return len(rows)
 
 
 def retry_pending_jobs(
@@ -3231,6 +3264,7 @@ def run_worker(args: argparse.Namespace) -> int:
                 scheduled_periodic = False
                 with connection(args.db) as conn:
                     requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                    reconcile_queue_state(conn)
                     if (
                         args.seed_defaults
                         and now - last_seed >= args.seed_interval
@@ -3342,6 +3376,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
             scheduled_periodic = False
             with connection(args.db) as conn:
                 requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                reconcile_queue_state(conn)
                 if args.seed_defaults and now - last_seed >= args.seed_interval:
                     evaluation_date = (
                         datetime.now(JST).date() - timedelta(days=1)

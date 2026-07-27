@@ -1690,6 +1690,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_queue_state",
+        lambda *_a, **_k: events.append("reconcile"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_default_jobs",
         lambda *_a, **_k: events.append("seed-defaults"),
     )
@@ -1743,6 +1748,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_worker(args) == 0
     assert events.index("commit:maintenance") < events.index("enter:claim")
     assert events.index("seed-market") < events.index("commit:maintenance")
+    assert events.index("reconcile") < events.index("commit:maintenance")
     assert events.index("seed-genetic") < events.index("commit:maintenance")
     assert events.index("seed-periodic") < events.index("commit:maintenance")
     assert events.index("enter:claim") < events.index("claim")
@@ -1770,6 +1776,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
         evaluation_queue,
         "requeue_stale_jobs",
         lambda *_a, **_k: events.append("requeue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_queue_state",
+        lambda *_a, **_k: events.append("reconcile"),
     )
     monkeypatch.setattr(
         evaluation_queue,
@@ -1813,7 +1824,7 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "requeue", "seed-defaults", "seed-market",
+        "enter", "requeue", "reconcile", "seed-defaults", "seed-market",
         "seed-periodic", "commit",
     ]
 
@@ -2082,6 +2093,71 @@ def test_recover_worker_closes_interrupted_attempt() -> None:
     assert "status = 'failed'" in run_sql
     assert "completed_at = CURRENT_TIMESTAMP" in run_sql
     assert run_parameters == (3566, 2)
+
+
+def test_requeue_stale_jobs_closes_matching_running_attempt() -> None:
+    events = []
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            sql = " ".join(statement.split())
+            events.append((sql, parameters))
+            if "UPDATE model_evaluation_jobs" in sql:
+                return Result([{"job_id": 3566, "attempt": 2}])
+            if "UPDATE model_evaluation_job_runs" in sql:
+                return Result()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    requeued = evaluation_queue.requeue_stale_jobs(
+        Connection(),
+        stale_minutes=90,
+    )
+
+    assert requeued == 1
+    assert len(events) == 1
+    sql, parameters = events[0]
+    assert "WITH stale_jobs AS" in sql
+    assert "UPDATE model_evaluation_jobs" in sql
+    assert "UPDATE model_evaluation_job_runs AS runs" in sql
+    assert "RETURNING job_id, attempt" in sql
+    assert "runs.status = 'running'" in sql
+    assert "runs.job_id = stale_jobs.job_id" in sql
+    assert "runs.attempt = stale_jobs.attempt" in sql
+    assert "completed_at = CURRENT_TIMESTAMP" in sql
+    assert parameters == ("worker lease expired", 90, "worker lease expired")
+
+
+def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
+    events = []
+
+    class Result:
+        def fetchall(self):
+            return [{"job_id": 3564}]
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            events.append((" ".join(statement.split()), parameters))
+            return Result()
+
+    cancelled = evaluation_queue.reconcile_queue_state(Connection())
+
+    assert cancelled == 1
+    sql, parameters = events[0]
+    assert "SET status = 'cancelled'" in sql
+    assert "completed_at = CURRENT_TIMESTAMP" in sql
+    assert "WHERE status = 'queued' AND attempt >= max_attempts" in sql
+    assert "running" not in sql
+    assert parameters == (
+        "queue reconciliation cancelled exhausted job: "
+        "attempt reached max_attempts",
+    )
 
 
 def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:
