@@ -2517,6 +2517,24 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "registered_ev_band_hit_tickets"
                 ),
                 "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
+                "prospective_normalized_ev_status": metrics.get(
+                    "prospective_normalized_ev_status"
+                ),
+                "prospective_normalized_ev_registered_after": metrics.get(
+                    "prospective_normalized_ev_registered_after"
+                ),
+                "prospective_normalized_ev_evaluation_days": metrics.get(
+                    "prospective_normalized_ev_evaluation_days"
+                ),
+                "prospective_normalized_ev_tickets": metrics.get(
+                    "prospective_normalized_ev_tickets"
+                ),
+                "prospective_normalized_ev_hit_tickets": metrics.get(
+                    "prospective_normalized_ev_hit_tickets"
+                ),
+                "prospective_normalized_ev_roi": _float_or_none(
+                    metrics.get("prospective_normalized_ev_roi")
+                ),
                 "high_ev_tickets": metrics.get("high_ev_tickets"),
                 "high_ev_realized_roi": _float_or_none(
                     metrics.get("high_ev_realized_roi")
