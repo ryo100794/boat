@@ -18,10 +18,17 @@ from .hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .listwise.model import evaluate_range, fit_scaler, train_listwise_model
 
 
-MODEL = "genetic_listwise_island_v2"
+# The artifact protocol is v3, while the genome contract remains v2. Keeping
+# those versions separate allows v2 champions to migrate into v3 islands.
+MODEL = "genetic_listwise_island_v3"
+ARTIFACT_VERSION = 3
 GENOME_VERSION = 2
 TARGETS = ("winner", "top3_pl")
 POLICY_EV_THRESHOLD = 1.20
+VALIDATION_SEGMENT_COUNT = 3
+WORST_RANKING_PENALTY_WEIGHT = 0.50
+WINNER_STABILITY_PENALTY_WEIGHT = 0.25
+TOP5_STABILITY_PENALTY_WEIGHT = 0.20
 
 
 @dataclass(frozen=True)
@@ -101,14 +108,85 @@ def mutate(genome: Genome, rng: random.Random, rate: float = 0.35) -> Genome:
     return Genome(target, alpha, learning_rate, epochs, POLICY_EV_THRESHOLD)
 
 
-def speculative_fitness(metrics: dict[str, Any], genome: Genome) -> float:
-    """Rank candidates on a selection window; never use this for promotion."""
+def _aggregate_speculative_score(metrics: dict[str, Any], genome: Genome) -> float:
     ranking = float(metrics["ranking_log_loss"])
     entry = float(metrics["entry_log_loss"])
     winner = float(metrics["winner_top1_accuracy"])
     top5 = float(metrics["trifecta_top5_hit_rate"])
     complexity = 0.002 * max(0, genome.epochs - 1)
     return -ranking - 0.35 * entry + 0.35 * winner + 0.20 * top5 - complexity
+
+
+def fitness_components(metrics: dict[str, Any], genome: Genome) -> dict[str, float]:
+    """Score chronological validation segments; never use this for promotion."""
+    segments = metrics.get("validation_segments")
+    if not isinstance(segments, list) or not segments:
+        base = _aggregate_speculative_score(metrics, genome)
+        return {
+            "segment_mean_score": base,
+            "worst_segment_ranking_log_loss": float(metrics["ranking_log_loss"]),
+            "ranking_worst_segment_penalty": 0.0,
+            "winner_stability_std": 0.0,
+            "winner_stability_penalty": 0.0,
+            "top5_stability_std": 0.0,
+            "top5_stability_penalty": 0.0,
+            "stability_penalty": 0.0,
+            "fitness": base,
+        }
+
+    segment_scores = [_aggregate_speculative_score(row, genome) for row in segments]
+    ranking_losses = [float(row["ranking_log_loss"]) for row in segments]
+    winner_rates = [float(row["winner_top1_accuracy"]) for row in segments]
+    top5_rates = [float(row["trifecta_top5_hit_rate"]) for row in segments]
+    segment_mean = statistics.fmean(segment_scores)
+    worst_ranking = max(ranking_losses)
+    ranking_penalty = WORST_RANKING_PENALTY_WEIGHT * max(
+        0.0, worst_ranking - statistics.fmean(ranking_losses)
+    )
+    winner_std = statistics.pstdev(winner_rates)
+    top5_std = statistics.pstdev(top5_rates)
+    winner_penalty = WINNER_STABILITY_PENALTY_WEIGHT * winner_std
+    top5_penalty = TOP5_STABILITY_PENALTY_WEIGHT * top5_std
+    stability_penalty = ranking_penalty + winner_penalty + top5_penalty
+    return {
+        "segment_mean_score": segment_mean,
+        "worst_segment_ranking_log_loss": worst_ranking,
+        "ranking_worst_segment_penalty": ranking_penalty,
+        "winner_stability_std": winner_std,
+        "winner_stability_penalty": winner_penalty,
+        "top5_stability_std": top5_std,
+        "top5_stability_penalty": top5_penalty,
+        "stability_penalty": stability_penalty,
+        "fitness": segment_mean - stability_penalty,
+    }
+
+
+def speculative_fitness(metrics: dict[str, Any], genome: Genome) -> float:
+    return fitness_components(metrics, genome)["fitness"]
+
+
+def chronological_validation_segments(
+    race_start: int,
+    race_end: int,
+    *,
+    segment_count: int = VALIDATION_SEGMENT_COUNT,
+) -> list[tuple[int, int]]:
+    """Partition an ordered race range without shuffling, overlap, or gaps."""
+    race_count = race_end - race_start
+    if segment_count < 1:
+        raise ValueError("segment_count must be positive")
+    if race_count < segment_count:
+        raise ValueError(
+            f"validation requires at least {segment_count} races; got {race_count}"
+        )
+    quotient, remainder = divmod(race_count, segment_count)
+    segments: list[tuple[int, int]] = []
+    start = race_start
+    for index in range(segment_count):
+        stop = start + quotient + (1 if index < remainder else 0)
+        segments.append((start, stop))
+        start = stop
+    return segments
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
@@ -163,15 +241,19 @@ def evolve_island(
         genomes = list(unique.values())[:population_size]
         with ThreadPoolExecutor(max_workers=min(2, population_size)) as executor:
             metrics_rows = list(executor.map(evaluator, genomes))
-        ranked = sorted(
-            (
+        candidate_rows: list[dict[str, Any]] = []
+        for genome, metrics in zip(genomes, metrics_rows):
+            components = fitness_components(metrics, genome)
+            candidate_rows.append(
                 {
                     "genome": genome.as_dict(),
                     "metrics": metrics,
-                    "fitness": speculative_fitness(metrics, genome),
+                    "fitness": components["fitness"],
+                    "fitness_components": components,
                 }
-                for genome, metrics in zip(genomes, metrics_rows)
-            ),
+            )
+        ranked = sorted(
+            candidate_rows,
             key=lambda row: float(row["fitness"]),
             reverse=True,
         )
@@ -260,6 +342,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     scaler = fit_scaler(dataset, race_end=train_end, batch_rows=args.batch_races * 6)
 
+    validation_segments = chronological_validation_segments(
+        train_end, dataset.race_count
+    )
+    validation_dates = [str(row[1]) for row in dataset.race_keys[train_end:]]
+    if validation_dates != sorted(validation_dates):
+        raise ValueError(
+            "genetic validation races must be ordered chronologically by race date"
+        )
+
     def evaluate(genome: Genome) -> dict[str, Any]:
         model, history = train_listwise_model(
             dataset,
@@ -281,6 +372,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         metrics["final_training_ranking_log_loss"] = history[-1][
             "training_ranking_log_loss"
         ]
+        metrics["validation_segments"] = []
+        for segment_index, (segment_start, segment_end) in enumerate(
+            validation_segments, start=1
+        ):
+            segment_metrics, _ = evaluate_range(
+                dataset,
+                model,
+                race_start=segment_start,
+                race_end=segment_end,
+                batch_races=args.batch_races,
+            )
+            metrics["validation_segments"].append({
+                "segment_index": segment_index,
+                "race_start": segment_start,
+                "race_end": segment_end,
+                "start_race_date": str(dataset.race_keys[segment_start][1]),
+                "end_race_date": str(dataset.race_keys[segment_end - 1][1]),
+                **segment_metrics,
+            })
         return metrics
 
     immigrants = [genome_from_dict(row) for row in args.immigrants]
@@ -296,6 +406,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     result = {
         "status": "completed",
+        "artifact_version": ARTIFACT_VERSION,
         "model": (
             f"{MODEL}-{args.cohort}-g{args.generation:02d}"
             f"-i{args.island_id:02d}"
@@ -303,6 +414,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "evaluation_scope": "speculative_recent_window_not_promotion_evidence",
         "promotion_eligible": False,
+        "validation_protocol": {
+            "kind": "three_contiguous_chronological_segments",
+            "segment_count": VALIDATION_SEGMENT_COUNT,
+            "shuffled": False,
+            "formal_365d_validation_separate": True,
+            "fitness": (
+                "mean_segment_speculative_score_minus_worst_ranking_and_"
+                "winner_top5_stability_penalties"
+            ),
+        },
         "genome_scope": "prediction_hyperparameters_only",
         "excluded_policy_genes": ["ev_threshold"],
         "policy_optimization_stage": "selection_window_before_formal_holdout",
