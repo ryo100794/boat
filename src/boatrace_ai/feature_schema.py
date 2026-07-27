@@ -1,7 +1,8 @@
 LEGACY_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v1"
 MISSING_SAFE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing-safe"
 SPARSE_MISSING_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v3-series-sparse-missing"
-FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v5-low-coverage-guard"
+LOW_COVERAGE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v5-low-coverage-guard"
+FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v6-no-untrained-series"
 LIGHTGBM_FEATURE_SCHEMA_VERSION = (
     "pastlog-lightgbm-hashed-v6-period-coverage-safe"
 )
@@ -14,6 +15,7 @@ def uses_missing_safe_series(version: str | None) -> bool:
 def uses_sparse_series_missing(version: str | None) -> bool:
     return str(version or LEGACY_FEATURE_SCHEMA_VERSION) in {
         SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
+        LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
         FEATURE_SCHEMA_VERSION,
         LIGHTGBM_FEATURE_SCHEMA_VERSION,
     }
@@ -21,9 +23,14 @@ def uses_sparse_series_missing(version: str | None) -> bool:
 
 def uses_empirical_series_trend_direction(version: str | None) -> bool:
     return str(version or LEGACY_FEATURE_SCHEMA_VERSION) in {
+        LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
         FEATURE_SCHEMA_VERSION,
         LIGHTGBM_FEATURE_SCHEMA_VERSION,
     }
+
+
+def uses_official_series_features(version: str | None) -> bool:
+    return str(version or LEGACY_FEATURE_SCHEMA_VERSION) != FEATURE_SCHEMA_VERSION
 
 
 def uses_racer_period_stats(version: str | None) -> bool:

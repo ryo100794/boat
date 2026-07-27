@@ -13,6 +13,7 @@ from .feature_schema import (
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
     uses_empirical_series_trend_direction,
     uses_missing_safe_series,
+    uses_official_series_features,
     uses_sparse_series_missing,
 )
 from .contextual_features import RollingState, _race_sort_key
@@ -166,7 +167,10 @@ def prediction_features(
             rows,
             feature_schema_version=feature_schema_version,
         )
-        if "series_relative" not in dropped
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        )
         else {}
     )
     result = []
@@ -175,14 +179,20 @@ def prediction_features(
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
-        if "series_cached" not in dropped:
+        if (
+            "series_cached" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(
                 cached_series_features(
                     row,
                     feature_schema_version=feature_schema_version,
                 )
             )
-        if "series_relative" not in dropped:
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))

@@ -3,8 +3,11 @@ from boatrace_ai import series_features_form
 from boatrace_ai.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LEGACY_FEATURE_SCHEMA_VERSION,
+    LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
     SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
+    uses_official_series_features,
 )
 from boatrace_ai.operational_features import (
     _ranks,
@@ -18,6 +21,12 @@ def _row(lane: int, **values: float | None) -> dict:
     row.update(values)
     row["lane"] = lane
     return row
+
+
+def test_hashed_v6_disables_untrained_official_series_features() -> None:
+    assert not uses_official_series_features(FEATURE_SCHEMA_VERSION)
+    assert uses_official_series_features(LOW_COVERAGE_FEATURE_SCHEMA_VERSION)
+    assert uses_official_series_features(LIGHTGBM_FEATURE_SCHEMA_VERSION)
 
 
 def test_series_missing_values_are_not_ranked_by_lane() -> None:

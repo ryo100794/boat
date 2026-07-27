@@ -29,6 +29,7 @@ from .contextual_features import RollingState, _race_sort_key
 from .feature_schema import (
     FEATURE_SCHEMA_VERSION,
     uses_explicit_card_missing_flags,
+    uses_official_series_features,
     uses_racer_period_stats,
 )
 from .series_features_form import base_pastlog_features
@@ -659,7 +660,10 @@ def build_race_features(
             race_rows,
             feature_schema_version=feature_schema_version,
         )
-        if "series_relative" not in dropped
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        )
         else {}
     )
     out = []
@@ -670,14 +674,20 @@ def build_race_features(
             item.update(base_pastlog_features(row, relatives[lane]))
         if uses_racer_period_stats(feature_schema_version):
             item.update(racer_period_feature_values(row))
-        if "series_cached" not in dropped:
+        if (
+            "series_cached" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(
                 cached_series_features(
                     row,
                     feature_schema_version=feature_schema_version,
                 )
             )
-        if "series_relative" not in dropped:
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))

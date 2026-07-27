@@ -7,11 +7,12 @@ import pytest
 from boatrace_ai import historical_model, model_core
 from boatrace_ai.bankroll_optimizer import _validated_pretrained_bundle
 from boatrace_ai.base_features import is_home_branch, race_relative_features
-from boatrace_ai.cache_entry_series_features import ensure_series_cache_table
+from boatrace_ai.cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from boatrace_ai.contextual_features import RollingState
 from boatrace_ai.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
 )
 from boatrace_ai.feature_tuning import build_race_features
 from boatrace_ai.standard_evaluation import race_set_sha256
@@ -153,6 +154,28 @@ def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
     assert "local_win_rate" in dropped[0]["features"]
     assert "motor_2_rate" in dropped[0]["features"]
     assert "boat_2_rate" in dropped[0]["features"]
+
+
+def test_hashed_v6_omits_series_features_absent_from_training() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    for row in rows:
+        row.update({field: None for field in CACHE_FIELDS})
+        row["series_starts"] = 3.0
+        row["series_has_results"] = 1
+
+    current = build_race_features(
+        rows,
+        RollingState(),
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+    previous = build_race_features(
+        rows,
+        RollingState(),
+        feature_schema_version=LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
+    )[0]["features"]
+
+    assert not any(key.startswith("series_") for key in current)
+    assert previous["series_starts"] == 3.0
 
 
 def test_lightgbm_schema_rejects_temporal_availability_leaks() -> None:
