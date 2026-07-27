@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,8 +14,19 @@ def run_snapshot(script: Path, *, app_root: Path, arguments: list[str]) -> int:
     with tempfile.TemporaryDirectory(prefix="boatrace-script-") as temporary:
         snapshot = Path(temporary) / source.name
         snapshot.write_bytes(source.read_bytes())
+        for directory in ("src", "scripts"):
+            source_directory = root / directory
+            if source_directory.is_dir():
+                shutil.copytree(
+                    source_directory,
+                    Path(temporary) / directory,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
         env = dict(os.environ)
         env["BOATRACE_APP_ROOT"] = str(root)
+        env["BOATRACE_PYTHONPATH"] = str(Path(temporary) / "src")
+        env["PYTHONPATH"] = env["BOATRACE_PYTHONPATH"]
+        env["BOATRACE_SCRIPTS_DIR"] = str(Path(temporary) / "scripts")
         completed = subprocess.run(
             ["bash", str(snapshot), *arguments],
             cwd=root,
