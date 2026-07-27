@@ -50,6 +50,7 @@ FEATURE_GROUPS = (
     "card_identity_context",
     "card_numeric",
     "card_relative",
+    "raw_equipment_identifiers",
     "research_correlates",
     "series_cached",
     "series_relative",
@@ -59,7 +60,12 @@ FEATURE_GROUPS = (
 DEFAULT_ABLATION_FEATURE_GROUPS = tuple(
     group
     for group in FEATURE_GROUPS
-    if group not in {"card_identity_context", "card_numeric", "card_relative"}
+    if group not in {
+        "card_identity_context",
+        "card_numeric",
+        "card_relative",
+        "raw_equipment_identifiers",
+    }
 )
 CARD_IDENTITY_CONTEXT_FEATURES = {
     "lane",
@@ -713,6 +719,9 @@ def build_race_features(
             if "card_numeric" in dropped:
                 for key in CARD_NUMERIC_FEATURES:
                     item.pop(key, None)
+            if "raw_equipment_identifiers" in dropped:
+                item.pop("motor_no", None)
+                item.pop("boat_no", None)
             if "card_relative" in dropped:
                 for key in relatives[lane]:
                     if not key.startswith(RESEARCH_FEATURE_PREFIX):

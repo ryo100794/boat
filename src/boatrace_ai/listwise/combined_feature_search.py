@@ -20,6 +20,15 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
         ("card_identity_context", "card_relative", "research_correlates"),
     ),
     (
+        "keep_card_numeric_without_raw_equipment_ids",
+        (
+            "card_identity_context",
+            "card_relative",
+            "raw_equipment_identifiers",
+            "research_correlates",
+        ),
+    ),
+    (
         "keep_card_relative",
         ("card_identity_context", "card_numeric", "research_correlates"),
     ),
