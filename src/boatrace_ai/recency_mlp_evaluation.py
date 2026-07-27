@@ -884,6 +884,27 @@ def protected_runtime_supported(protected_blend: dict[str, Any] | None) -> bool:
     return float(protected_blend["candidate_weight"]) == 1.0
 
 
+def build_prediction_deployment_gate(
+    prediction_gate: dict[str, Any],
+    conditional_order_selection: dict[str, Any],
+    protected_blend: dict[str, Any] | None,
+    *,
+    protected_model_requested: bool,
+) -> dict[str, bool]:
+    gate = {
+        "prediction_pass": bool(prediction_gate["pass"]),
+        "conditional_order_converged": bool(
+            (conditional_order_selection.get("final_fit") or {}).get("success")
+        ),
+    }
+    if protected_model_requested:
+        gate["protected_runtime_supported"] = protected_runtime_supported(
+            protected_blend
+        )
+    gate["pass"] = bool(all(gate.values()))
+    return gate
+
+
 def protected_holdout_predictions(
     conn: Any,
     race_keys: Sequence[tuple[str, str, str, int]],
@@ -1204,6 +1225,12 @@ def evaluate_recency_mlp(
                 protected_blend
             )
         performance_gate["pass"] = bool(all(performance_gate.values()))
+        prediction_deployment_gate = build_prediction_deployment_gate(
+            prediction_gate,
+            conditional_order_selection,
+            protected_blend,
+            protected_model_requested=protected_baseline_model_path is not None,
+        )
         promotion_gate = {
             **performance_gate,
             "performance_pass": bool(performance_gate["pass"]),
@@ -1231,6 +1258,10 @@ def evaluate_recency_mlp(
         "drop_feature_groups": list(resolved_drop_feature_groups),
         "include_odds": False,
         "performance_eligible": bool(performance_gate["pass"]),
+        "prediction_deployment_eligible": bool(
+            prediction_deployment_gate["pass"]
+        ),
+        "prediction_deployment_gate": prediction_deployment_gate,
         "promotion_eligible": False,
         "promotion_note": (
             "performance gates passed; deployable full-data artifact is pending"
@@ -1343,7 +1374,7 @@ def evaluate_recency_mlp(
         )
 
     deployment_saved = False
-    if performance_gate["pass"] and deployment_model_output_path is not None:
+    if prediction_deployment_gate["pass"] and deployment_model_output_path is not None:
         deployment_order_model, deployment_order_fit = (
             fit_deployment_conditional_order_layer(
                 predictions,
@@ -1381,7 +1412,11 @@ def evaluate_recency_mlp(
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "model": model_name,
                 "model_instance": model_instance,
-                "role": "production_candidate",
+                "role": (
+                    "production_candidate"
+                    if performance_gate["pass"]
+                    else "prediction_production_candidate"
+                ),
                 "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
                 "drop_feature_groups": list(resolved_drop_feature_groups),
