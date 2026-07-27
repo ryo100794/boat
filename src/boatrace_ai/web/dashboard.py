@@ -1272,7 +1272,14 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_candidates": queued_evaluations["candidates"],
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
         "remote_generated_at": remote_evaluations.get("generated_at"),
-        "standardized_evaluation": _standardized_v2_public_status(standardized),
+        "standardized_evaluation": _standardized_v2_public_status(
+            standardized,
+            evaluation_pending=any(
+                str(row.get("kind") or "") == "standardized_365d"
+                and str(row.get("status") or "") in {"待機中", "実行中"}
+                for row in queued_evaluations["jobs"]
+            ),
+        ),
         "errors": errors,
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
@@ -1704,10 +1711,16 @@ def _load_standardized_v2_bundle(model_dir: Path) -> dict[str, Any]:
     return result
 
 
-def _standardized_v2_public_status(bundle: dict[str, Any]) -> dict[str, Any]:
+def _standardized_v2_public_status(
+    bundle: dict[str, Any],
+    *,
+    evaluation_pending: bool = False,
+) -> dict[str, Any]:
     manifest = bundle.get("manifest") or {}
     protocol = bundle.get("protocol") or {}
     source = manifest if bundle.get("ready") else protocol
+    pending_validation = bool(evaluation_pending and not bundle.get("ready"))
+    validation_errors = list(bundle.get("errors") or [])
     return {
         "ready": bool(bundle.get("ready")),
         "status": (
@@ -1725,7 +1738,11 @@ def _standardized_v2_public_status(bundle: dict[str, Any]) -> dict[str, Any]:
         "promotion_decision": (
             manifest.get("promotion_decision") if bundle.get("ready") else None
         ),
-        "errors": list(bundle.get("errors") or []),
+        "validation_pending": pending_validation,
+        "pending_validation_count": (
+            len(validation_errors) if pending_validation else 0
+        ),
+        "errors": [] if pending_validation else validation_errors,
     }
 
 

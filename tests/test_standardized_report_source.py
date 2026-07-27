@@ -13,6 +13,7 @@ from boatrace_ai.standard_evaluation import (
 from boatrace_ai.web.dashboard import (
     _load_standardized_v2_bundle,
     _merge_standardized_v2_status,
+    _standardized_v2_public_status,
     model_performance_report,
 )
 
@@ -279,3 +280,23 @@ def test_report_rejects_stale_manifest_for_new_protocol(tmp_path) -> None:
         and row["status"] == "実行中"
         for row in merged["jobs"]
     )
+
+
+def test_public_status_defers_stale_bundle_errors_while_evaluation_runs(
+    tmp_path,
+) -> None:
+    _write_bundle(tmp_path, protocol_hash_override="new-protocol")
+    bundle = _load_standardized_v2_bundle(tmp_path)
+
+    pending = _standardized_v2_public_status(
+        bundle,
+        evaluation_pending=True,
+    )
+    stopped = _standardized_v2_public_status(bundle)
+
+    assert pending["status"] == "evaluating"
+    assert pending["validation_pending"] is True
+    assert pending["pending_validation_count"] == len(bundle["errors"])
+    assert pending["errors"] == []
+    assert stopped["validation_pending"] is False
+    assert stopped["errors"] == bundle["errors"]
