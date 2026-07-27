@@ -1060,7 +1060,7 @@ def build_command(
     if task_type == "calibrated_mlp_recency_search":
         unsupported = set(params) - {
             "evaluation_date", "timeout_seconds", "half_lives", "calibration_days",
-            "drop_feature_groups",
+            "drop_feature_groups", "protected_blend",
         }
         if unsupported:
             raise ValueError(
@@ -1074,6 +1074,9 @@ def build_command(
         half_lives = _half_lives(params)
         calibration_days = _integer(params, "calibration_days", 180, 30, 730)
         drop_feature_groups = _drop_feature_groups(params)
+        protected_blend = params.get("protected_blend", False)
+        if type(protected_blend) is not bool:
+            raise ValueError("protected_blend must be a boolean")
         cache_suffix = (
             ""
             if drop_feature_groups == "research_correlates"
@@ -1085,7 +1088,7 @@ def build_command(
             / "models"
             / ("calibrated_shadow_features_16384" + cache_suffix)
         )
-        return [
+        command = [
             str(python), "-m", "boatrace_ai.recency_mlp_evaluation",
             "--db", db,
             "--output", str(output),
@@ -1104,7 +1107,13 @@ def build_command(
             "--drop-feature-groups", drop_feature_groups,
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
-        ], output
+        ]
+        if protected_blend:
+            command.extend([
+                "--protected-baseline-model",
+                str(app_root / "data/models/standardized_365d_v2/no_odds_v8.joblib"),
+            ])
+        return command, output
     if task_type == "racer_stats_backfill":
         allowed = {"from_year", "to_year", "sleep_seconds", "timeout_seconds"}
         unsupported = set(params) - allowed

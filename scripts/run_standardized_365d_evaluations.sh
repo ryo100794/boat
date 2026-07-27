@@ -201,7 +201,7 @@ run_job standardized_365d_v2_pastlog_v9_research_bankroll \
 
 fi
 
-for kind in linear mlp; do
+for kind in mlp; do
   if source_needs_run "calibrated_${kind}"; then
   run_job "standardized_365d_v2_calibrated_${kind}" \
     .venv/bin/python -m boatrace_ai.calibrated_shadow_model backtest \

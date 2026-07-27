@@ -912,6 +912,7 @@ def test_cli_defaults_match_recency_protocol() -> None:
     assert args.model_output is None
     assert args.incumbent_prediction is None
     assert args.incumbent_bankroll is None
+    assert args.protected_baseline_model is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180
 

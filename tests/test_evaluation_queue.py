@@ -758,6 +758,20 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
     )
     assert base_command[groups_index] == "base_pastlog"
 
+    protected_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {"evaluation_date": "2026-07-22", "protected_blend": True},
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert protected_command[-2:] == [
+        "--protected-baseline-model",
+        str(root / "data/models/standardized_365d_v2/no_odds_v8.joblib"),
+    ]
+
     default_command, _ = build_command(
         _job("calibrated_mlp_recency_search", {"evaluation_date": "2026-07-22"}),
         app_root=root,
@@ -781,6 +795,7 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         ({"evaluation_date": "2026-07-22", "half_lives": "none,nan"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "calibration_days": 29}, "calibration_days"),
         ({"evaluation_date": "2026-07-22", "timeout_seconds": 299}, "timeout_seconds"),
+        ({"evaluation_date": "2026-07-22", "protected_blend": "yes"}, "boolean"),
         ({"evaluation_date": "2026-07-22", "command": "rm -rf /"}, "unsupported"),
         ({"evaluation_date": "2026-07-22", "feature_cache": "/tmp/cache"}, "unsupported"),
         ({"evaluation_date": "2026-07-22", "drop_feature_groups": "future"}, "unknown"),

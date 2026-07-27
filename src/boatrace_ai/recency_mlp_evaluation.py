@@ -46,6 +46,12 @@ from .listwise.direct_bankroll import (
 from .listwise.newton_refine import dump_joblib_atomic
 from .listwise.validation import default_policy, evaluate_bankroll_fold
 from .modeling import _race_level_metrics
+from .protected_historical_blend import (
+    blend_predictions,
+    prediction_metrics as protected_prediction_metrics,
+    select_protected_blend,
+)
+from .protected_historical_evaluation import score_historical_baseline_range
 from .standard_evaluation import (
     POLICY as STANDARD_POLICY,
     build_protocol,
@@ -893,6 +899,7 @@ def evaluate_recency_mlp(
     trainer_kwargs: dict[str, Any] | None = None,
     trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
     selection_entry_log_loss_tolerance: float = 0.0,
+    protected_baseline_model_path: Path | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -1007,6 +1014,30 @@ def evaluate_recency_mlp(
             candidates=len(candidates),
             selected_half_life_days=selected_half_life,
         )
+        protected_blend = None
+        if protected_baseline_model_path is not None:
+            calibration_start = int(split["inner_train_races"])
+            _, baseline_calibration_predictions = score_historical_baseline_range(
+                conn,
+                race_keys,
+                train_end=calibration_start,
+                score_start=calibration_start,
+                score_end=training_count,
+            )
+            protected_blend = select_protected_blend(
+                baseline_calibration_predictions,
+                calibration_predictions,
+            )
+            calibration_predictions = blend_predictions(
+                baseline_calibration_predictions,
+                calibration_predictions,
+                candidate_weight=float(protected_blend["candidate_weight"]),
+            )
+            report_progress(
+                "protected_blend_selected",
+                candidate_weight=protected_blend["candidate_weight"],
+                protected_candidates=protected_blend["protected_candidate_count"],
+            )
         selected_trainer_kwargs = dict(
             split.get("selected_trainer_parameters", extra_trainer_kwargs)
         )
@@ -1027,6 +1058,21 @@ def evaluate_recency_mlp(
             race_end=dataset.race_count,
             batch_size=batch_size,
         )
+        if protected_baseline_model_path is not None:
+            _, baseline_holdout_predictions = score_historical_baseline_range(
+                conn,
+                race_keys,
+                train_end=training_count,
+                score_start=training_count,
+                score_end=dataset.race_count,
+                model_path=protected_baseline_model_path,
+            )
+            predictions = blend_predictions(
+                baseline_holdout_predictions,
+                predictions,
+                candidate_weight=float(protected_blend["candidate_weight"]),
+            )
+            prediction_metrics = protected_prediction_metrics(predictions)
         report_progress(
             "holdout_scored",
             evaluated_races=int(prediction_metrics["evaluated_races"]),
@@ -1111,6 +1157,8 @@ def evaluate_recency_mlp(
                 (conditional_order_selection.get("final_fit") or {}).get("success")
             ),
         }
+        if protected_baseline_model_path is not None:
+            performance_gate["protected_runtime_supported"] = False
         performance_gate["pass"] = bool(all(performance_gate.values()))
         promotion_gate = {
             **performance_gate,
@@ -1176,6 +1224,12 @@ def evaluate_recency_mlp(
             "selected_recency_half_life_days": selected_half_life,
         },
         "selection_candidates": candidates,
+        "protected_historical_blend": protected_blend,
+        "protected_baseline_model": (
+            str(protected_baseline_model_path)
+            if protected_baseline_model_path is not None
+            else None
+        ),
         "selected_recency_half_life_days": selected_half_life,
         "conditional_order": conditional_order_selection,
         "evaluated_races": int(prediction_metrics["evaluated_races"]),
@@ -1195,6 +1249,12 @@ def evaluate_recency_mlp(
             **final_bundle,
             "hasher": hasher,
             "conditional_order_model": conditional_order_model,
+            "protected_historical_blend": protected_blend,
+            "protected_baseline_model": (
+                str(protected_baseline_model_path)
+                if protected_baseline_model_path is not None
+                else None
+            ),
             "feature_schema_version": dataset.feature_schema_version,
             "drop_feature_groups": list(resolved_drop_feature_groups),
             "trained_through": trained_through,
@@ -1218,6 +1278,11 @@ def evaluate_recency_mlp(
                     conditional_order_selection["selected_regularization"]
                 ),
                 "include_odds": False,
+                "protected_candidate_weight": (
+                    float(protected_blend["candidate_weight"])
+                    if protected_blend is not None
+                    else None
+                ),
             },
         }
         dump_joblib_atomic(model_output_path, artifact)
@@ -1321,6 +1386,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deployment-model-output", type=Path)
     parser.add_argument("--incumbent-prediction", type=Path)
     parser.add_argument("--incumbent-bankroll", type=Path)
+    parser.add_argument("--protected-baseline-model", type=Path)
     parser.add_argument(
         "--evaluation-date",
         type=parse_evaluation_date,
@@ -1359,6 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
             deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
+            protected_baseline_model_path=args.protected_baseline_model,
             progress_callback=lambda row: print(
                 "RECENCY_PROGRESS "
                 + json.dumps(row, ensure_ascii=True, sort_keys=True),
