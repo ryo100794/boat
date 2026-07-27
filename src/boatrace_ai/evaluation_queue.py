@@ -1863,6 +1863,9 @@ METRIC_KEYS = (
     "race_hit_rate", "race_hit_rate_ci95_lower", "race_hit_rate_ci95_upper",
     "largest_hit_return_share", "effective_hit_count", "roi_without_largest_hit",
     "profit_without_largest_hit_yen",
+    "closing_odds_log_mae", "baseline_closing_odds_log_mae",
+    "closing_odds_rank_correlation", "closing_odds_interval_coverage",
+    "closing_snapshot_age_seconds", "closing_snapshot_age_seconds_p90",
     "promotion_eligible", "prediction_deployment_eligible",
     "deployment_model_artifact_saved", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
@@ -1889,6 +1892,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[key] = value[key]
         for key in (
             "metrics", "holdout", "holdout_after_newton", "bankroll",
+            "closing_odds_forecast",
             "conditional_order", "venue_conditional_order",
             "momentum_newton_residual",
         ):
