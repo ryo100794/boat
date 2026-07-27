@@ -1304,13 +1304,51 @@ def _model_performance_report_contract(
         None,
     )
     return {
-        "version": "model-performance-v3",
+        "version": "model-performance-v4",
         "principles": [
             "異なる評価母集団の数値は横比較しない",
             "損失は艇Entry LLと3連単LLを区別する",
             "投資0円はROI 0ではなく購入なしと表示する",
             "正式T-5評価は事前登録日以降の完全日だけを集計する",
         ],
+        "stages": [
+            {
+                "id": "outcome_prediction",
+                "label": "着順確率",
+                "teacher": "確定着順",
+                "metrics": ["艇Entry LL", "1着Top1", "3連単Top5"],
+                "gate": "同一365日holdoutで基準モデルを劣化させない",
+            },
+            {
+                "id": "closing_odds",
+                "label": "確定オッズ予測",
+                "teacher": "締切直前の公式確定オッズ",
+                "metrics": ["対数オッズMAE", "順位相関", "取得遅延"],
+                "gate": "完全取得日のwalk-forward評価だけを使用する",
+            },
+            {
+                "id": "purchase_policy",
+                "label": "購入・資金配分",
+                "teacher": "払戻と資金制約下の実現損益",
+                "metrics": ["ROI", "損益", "最大DD", "ROI片側95%下限"],
+                "gate": "過去日だけで方針を選び未使用日でROI下限1超",
+            },
+            {
+                "id": "promotion",
+                "label": "本番昇格",
+                "teacher": "なし（上流3段の判定集約）",
+                "metrics": ["予測gate", "オッズ品質gate", "資金gate"],
+                "gate": "全必須gate合格。未達はno-betまたはshadowを維持",
+            },
+        ],
+        "metric_definitions": {
+            "entry_log_loss": "各艇の着順確率に対する対数損失。低いほど良い",
+            "winner_top1_accuracy": "1着予測の的中レース率",
+            "trifecta_top5_hit_rate": "正解3連単が予測上位5点に含まれるレース率",
+            "roi": "払戻総額を投資総額で割った値。購入なしは未評価",
+            "roi_ci95_lower": "日単位再標本化によるROI片側95%下限",
+            "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
+        },
         "groups": [
             {
                 "id": "standard_365d",
