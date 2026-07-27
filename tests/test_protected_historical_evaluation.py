@@ -87,3 +87,12 @@ def test_rejects_artifact_from_different_training_universe(
             score_end=3,
             model_path=tmp_path / "baseline.joblib",
         )
+
+
+def test_file_sha256_tracks_exact_artifact_bytes(tmp_path: Path) -> None:
+    artifact = tmp_path / "model.joblib"
+    artifact.write_bytes(b"protected-model")
+
+    assert evaluation.file_sha256(artifact) == (
+        "8260c04747c023d3fcd9f8ab8677e8abb097638af32a57ecf1cfcde51eaba612"
+    )

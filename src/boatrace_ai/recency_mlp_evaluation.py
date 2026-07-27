@@ -51,7 +51,10 @@ from .protected_historical_blend import (
     prediction_metrics as protected_prediction_metrics,
     select_protected_blend,
 )
-from .protected_historical_evaluation import score_historical_baseline_range
+from .protected_historical_evaluation import (
+    file_sha256,
+    score_historical_baseline_range,
+)
 from .standard_evaluation import (
     POLICY as STANDARD_POLICY,
     build_protocol,
@@ -1015,6 +1018,11 @@ def evaluate_recency_mlp(
             selected_half_life_days=selected_half_life,
         )
         protected_blend = None
+        protected_baseline_sha256 = (
+            file_sha256(protected_baseline_model_path)
+            if protected_baseline_model_path is not None
+            else None
+        )
         if protected_baseline_model_path is not None:
             calibration_start = int(split["inner_train_races"])
             _, baseline_calibration_predictions = score_historical_baseline_range(
@@ -1230,6 +1238,7 @@ def evaluate_recency_mlp(
             if protected_baseline_model_path is not None
             else None
         ),
+        "protected_baseline_sha256": protected_baseline_sha256,
         "selected_recency_half_life_days": selected_half_life,
         "conditional_order": conditional_order_selection,
         "evaluated_races": int(prediction_metrics["evaluated_races"]),
@@ -1255,6 +1264,7 @@ def evaluate_recency_mlp(
                 if protected_baseline_model_path is not None
                 else None
             ),
+            "protected_baseline_sha256": protected_baseline_sha256,
             "feature_schema_version": dataset.feature_schema_version,
             "drop_feature_groups": list(resolved_drop_feature_groups),
             "trained_through": trained_through,
@@ -1278,6 +1288,7 @@ def evaluate_recency_mlp(
                     conditional_order_selection["selected_regularization"]
                 ),
                 "include_odds": False,
+                "protected_baseline_sha256": protected_baseline_sha256,
                 "protected_candidate_weight": (
                     float(protected_blend["candidate_weight"])
                     if protected_blend is not None

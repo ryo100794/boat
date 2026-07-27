@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -9,6 +10,14 @@ import joblib
 from . import historical_model
 from .protected_historical_blend import prediction_metrics
 from .standard_evaluation import race_set_sha256
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def score_historical_baseline_range(
