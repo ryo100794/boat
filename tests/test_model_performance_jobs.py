@@ -79,6 +79,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "setInterval(refreshGeneticEvolution,10000)" in MODEL_REPORT_HTML
     assert "変異率" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
+    assert "promotion_gate_passed" in MODEL_REPORT_HTML
+    assert "gateTitle" in MODEL_REPORT_HTML
 
 
 def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -> None:
@@ -118,6 +120,11 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "payout_feature_roi_delta_ci95_lower": 0.02,
         "payout_feature_roi_delta_ci95_upper": 0.24,
         "payout_feature_probability_roi_delta_above_zero": 0.99,
+        "promotion_gate_passed": 7,
+        "promotion_gate_total": 10,
+        "promotion_gate_failed": ["minimum_betting_days"],
+        "holdout_temporal_minimum_roi": 0.94,
+        "holdout_temporal_fold_rois": [1.10, 0.94, 1.03],
     }
     conn.execute(
         "INSERT INTO model_evaluation_jobs VALUES (273, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -140,6 +147,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["decision"] == "confirm_on_new_holdout"
     assert status["jobs"][0]["winner_log_loss"] == 1.24
     assert status["jobs"][0]["winner_top1_accuracy"] == 0.53
+    assert status["jobs"][0]["promotion_gate_passed"] == 7
+    assert status["jobs"][0]["promotion_gate_total"] == 10
+    assert status["jobs"][0]["promotion_gate_failed"] == ["minimum_betting_days"]
+    assert status["jobs"][0]["holdout_temporal_minimum_roi"] == 0.94
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
     assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200

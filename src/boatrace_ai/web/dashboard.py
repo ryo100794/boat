@@ -2463,6 +2463,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "evaluation_days": metrics.get("evaluation_days"),
                 "promotion_eligible": metrics.get("promotion_eligible"),
+                "promotion_gate_passed": metrics.get("promotion_gate_passed"),
+                "promotion_gate_total": metrics.get("promotion_gate_total"),
+                "promotion_gate_failed": metrics.get("promotion_gate_failed") or [],
+                "holdout_temporal_minimum_roi": _float_or_none(
+                    metrics.get("holdout_temporal_minimum_roi")
+                ),
+                "holdout_temporal_fold_rois": (
+                    metrics.get("holdout_temporal_fold_rois") or []
+                ),
                 "running": status == "running",
                 "elapsed": _database_job_elapsed(
                     current_attempt_started.get(

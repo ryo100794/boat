@@ -1884,6 +1884,28 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["high_ev_realized_roi"] = (
             high_return / high_stake if high_stake else None
         )
+    promotion_gate = payload.get("promotion_gate")
+    if isinstance(promotion_gate, dict):
+        checks = {
+            str(key): bool(value)
+            for key, value in promotion_gate.items()
+            if isinstance(value, bool)
+        }
+        summary["promotion_gate_passed"] = sum(checks.values())
+        summary["promotion_gate_total"] = len(checks)
+        summary["promotion_gate_failed"] = [
+            key for key, passed in checks.items() if not passed
+        ]
+    holdout_stability = payload.get("holdout_temporal_stability")
+    if isinstance(holdout_stability, dict):
+        summary["holdout_temporal_minimum_roi"] = (
+            holdout_stability.get("minimum_roi")
+        )
+        summary["holdout_temporal_fold_rois"] = [
+            row.get("roi")
+            for row in (holdout_stability.get("folds") or [])
+            if isinstance(row, dict) and row.get("roi") is not None
+        ]
     registered_policy = payload.get("registered_ev_band_walk_forward")
     if isinstance(registered_policy, dict):
         for key in (
