@@ -559,7 +559,6 @@ def claim_job(
     snapshot = _json(resource_snapshot_dict(resources))
     evaluation_reservation_mb = _evaluation_reservation_mb(resources)
     conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
-    conn.execute("LOCK TABLE model_evaluation_jobs IN ROW EXCLUSIVE MODE")
     candidate = conn.execute(
         """
         SELECT jobs.*
@@ -668,17 +667,24 @@ def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
     audit_error = "worker lease expired"
     rows = conn.execute(
         """
-        WITH stale_jobs AS (
-          UPDATE model_evaluation_jobs
+        WITH locked_jobs AS MATERIALIZED (
+          SELECT job_id
+          FROM model_evaluation_jobs
+          WHERE status = 'running'
+            AND locked_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
+          ORDER BY job_id
+          FOR UPDATE SKIP LOCKED
+        ), stale_jobs AS (
+          UPDATE model_evaluation_jobs AS jobs
           SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
               available_at = CURRENT_TIMESTAMP,
               worker_id = NULL,
               locked_at = NULL,
               error = COALESCE(error, ?),
               updated_at = CURRENT_TIMESTAMP
-          WHERE status = 'running'
-            AND locked_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
-          RETURNING job_id, attempt
+          FROM locked_jobs
+          WHERE jobs.job_id = locked_jobs.job_id
+          RETURNING jobs.job_id, jobs.attempt
         ), closed_runs AS (
           UPDATE model_evaluation_job_runs AS runs
           SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
@@ -691,7 +697,7 @@ def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
         )
         SELECT job_id, attempt FROM stale_jobs
         """,
-        (audit_error, max(1, int(stale_minutes)), audit_error),
+        (max(1, int(stale_minutes)), audit_error, audit_error),
     ).fetchall()
     return len(rows)
 
@@ -704,12 +710,20 @@ def reconcile_queue_state(conn: Any) -> int:
     )
     rows = conn.execute(
         """
-        UPDATE model_evaluation_jobs
+        WITH locked_jobs AS MATERIALIZED (
+          SELECT job_id
+          FROM model_evaluation_jobs
+          WHERE status = 'queued' AND attempt >= max_attempts
+          ORDER BY job_id
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE model_evaluation_jobs AS jobs
         SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP,
             worker_id = NULL, locked_at = NULL,
             error = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE status = 'queued' AND attempt >= max_attempts
-        RETURNING job_id
+        FROM locked_jobs
+        WHERE jobs.job_id = locked_jobs.job_id
+        RETURNING jobs.job_id
         """,
         (audit_error,),
     ).fetchall()
@@ -732,13 +746,21 @@ def retry_pending_jobs(
     attempt_filter = "" if include_failed else "AND attempt < max_attempts"
     rows = conn.execute(
         f"""
-        UPDATE model_evaluation_jobs
+        WITH locked_jobs AS MATERIALIZED (
+          SELECT job_id
+          FROM model_evaluation_jobs
+          WHERE status IN {status_sql} {attempt_filter}
+          ORDER BY job_id
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE model_evaluation_jobs AS jobs
         SET status = 'queued', {reset}
             available_at = CURRENT_TIMESTAMP, completed_at = NULL,
             worker_id = NULL, locked_at = NULL, error = NULL,
             updated_at = CURRENT_TIMESTAMP
-        WHERE status IN {status_sql} {attempt_filter}
-        RETURNING job_id
+        FROM locked_jobs
+        WHERE jobs.job_id = locked_jobs.job_id
+        RETURNING jobs.job_id
         """
     ).fetchall()
     return len(rows)
@@ -747,12 +769,20 @@ def retry_pending_jobs(
 def recover_worker_job(conn: Any, *, worker_id: str) -> int:
     rows = conn.execute(
         """
-        UPDATE model_evaluation_jobs
+        WITH locked_jobs AS MATERIALIZED (
+          SELECT job_id
+          FROM model_evaluation_jobs
+          WHERE status = 'running' AND worker_id = ?
+          ORDER BY job_id
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE model_evaluation_jobs AS jobs
         SET status = 'queued', available_at = CURRENT_TIMESTAMP,
             worker_id = NULL, locked_at = NULL, updated_at = CURRENT_TIMESTAMP,
             error = COALESCE(error, 'worker restarted before completion update')
-        WHERE status = 'running' AND worker_id = ?
-        RETURNING job_id, attempt
+        FROM locked_jobs
+        WHERE jobs.job_id = locked_jobs.job_id
+        RETURNING jobs.job_id, jobs.attempt
         """,
         (worker_id,),
     ).fetchall()

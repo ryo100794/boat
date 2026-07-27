@@ -2051,8 +2051,9 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed is not None
     assert claimed["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200]
-    assert conn.events[1] == "LOCK TABLE model_evaluation_jobs IN ROW EXCLUSIVE MODE"
-    assert conn.events[2].startswith("SELECT jobs.*")
+    assert conn.events[0].startswith("SELECT pg_advisory_xact_lock")
+    assert conn.events[1].startswith("SELECT jobs.*")
+    assert not any(event.startswith("LOCK TABLE") for event in conn.events)
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
     assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
@@ -2134,15 +2135,17 @@ def test_requeue_stale_jobs_closes_matching_running_attempt() -> None:
     assert requeued == 1
     assert len(events) == 1
     sql, parameters = events[0]
-    assert "WITH stale_jobs AS" in sql
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "), stale_jobs AS" in sql
     assert "UPDATE model_evaluation_jobs" in sql
     assert "UPDATE model_evaluation_job_runs AS runs" in sql
-    assert "RETURNING job_id, attempt" in sql
+    assert "RETURNING jobs.job_id, jobs.attempt" in sql
     assert "runs.status = 'running'" in sql
     assert "runs.job_id = stale_jobs.job_id" in sql
     assert "runs.attempt = stale_jobs.attempt" in sql
     assert "completed_at = CURRENT_TIMESTAMP" in sql
-    assert parameters == ("worker lease expired", 90, "worker lease expired")
+    assert parameters == (90, "worker lease expired", "worker lease expired")
 
 
 def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
