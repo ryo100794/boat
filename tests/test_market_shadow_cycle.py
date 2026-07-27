@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from boatrace_ai.runtime.market_shadow_cycle import (
     completed_through_date,
     evaluation_due,
+    evaluation_slot,
 )
 
 
@@ -75,3 +77,13 @@ def test_evaluation_due_when_model_artifact_changes_same_day() -> None:
         evaluation_version=5,
         odds_signature={"snapshot_count": 2},
     )
+
+
+def test_evaluation_slots_bound_cross_process_work(tmp_path: Path) -> None:
+    lock_dir = tmp_path / "slots"
+    with evaluation_slot(lock_dir, 2) as first:
+        with evaluation_slot(lock_dir, 2) as second:
+            with evaluation_slot(lock_dir, 2) as unavailable:
+                assert (first, second, unavailable) == (0, 1, None)
+    with evaluation_slot(lock_dir, 2) as released:
+        assert released == 0
