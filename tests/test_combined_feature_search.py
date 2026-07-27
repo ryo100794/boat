@@ -30,6 +30,15 @@ EXPECTED_COMBINED_VARIANTS = (
         ("card_identity_context", "card_relative", "research_correlates"),
     ),
     (
+        "keep_card_numeric_without_raw_equipment_ids",
+        (
+            "card_identity_context",
+            "card_relative",
+            "raw_equipment_identifiers",
+            "research_correlates",
+        ),
+    ),
+    (
         "keep_card_relative",
         ("card_identity_context", "card_numeric", "research_correlates"),
     ),
@@ -94,7 +103,7 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
-    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 7
+    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 8
     assert ("base_pastlog", "research_correlates") in {
         drops for _name, drops in COMBINED_FEATURE_VARIANTS
     }

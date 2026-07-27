@@ -61,10 +61,16 @@ def test_granular_card_groups_are_explicit_only() -> None:
         "card_identity_context",
         "card_numeric",
         "card_relative",
+        "raw_equipment_identifiers",
     } & set(DEFAULT_ABLATION_FEATURE_GROUPS)
     assert normalize_drop_feature_groups(
-        "card_identity_context,card_numeric,card_relative"
-    ) == ("card_identity_context", "card_numeric", "card_relative")
+        "card_identity_context,card_numeric,card_relative,raw_equipment_identifiers"
+    ) == (
+        "card_identity_context",
+        "card_numeric",
+        "card_relative",
+        "raw_equipment_identifiers",
+    )
 
 
 def test_card_groups_can_be_ablated_independently() -> None:
@@ -79,6 +85,13 @@ def test_card_groups_can_be_ablated_independently() -> None:
     assert "race_month" in numeric_dropped
     assert "national_win_rate" not in numeric_dropped
     assert "national_win_rate_rank" in numeric_dropped
+
+    equipment_ids_dropped = _features("raw_equipment_identifiers")
+    assert "motor_no" not in equipment_ids_dropped
+    assert "boat_no" not in equipment_ids_dropped
+    assert "motor_2_rate" in equipment_ids_dropped
+    assert "boat_2_rate" in equipment_ids_dropped
+    assert "hist_motor_win_rate_s" in equipment_ids_dropped
 
     relative_dropped = _features("card_relative", "research_correlates")
     assert "lane" in relative_dropped
