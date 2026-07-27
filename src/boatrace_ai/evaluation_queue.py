@@ -1997,6 +1997,39 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in prospective_policy:
                 summary[f"prospective_normalized_ev_{key}"] = prospective_policy[key]
+    empirical_policy = payload.get("empirical_lcb_walk_forward")
+    if isinstance(empirical_policy, dict):
+        for key in (
+            "status",
+            "evaluation_days",
+            "evaluated_races",
+            "calibration_ready_folds",
+            "minimum_ready_evaluation_days",
+            "minimum_tickets",
+            "sample_size_pass",
+            "eligible_days",
+            "no_bet_days",
+            "profitable_days",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "largest_hit_return_share",
+            "max_drawdown_yen",
+        ):
+            if key in empirical_policy:
+                summary[f"empirical_lcb_{key}"] = empirical_policy[key]
+        empirical_tail = empirical_policy.get("tail_portfolio_diagnostics")
+        if isinstance(empirical_tail, dict):
+            summary["empirical_lcb_tail_portfolio_diagnostics"] = empirical_tail
+            ordinary = empirical_tail.get("normal")
+            if isinstance(ordinary, dict):
+                summary["empirical_lcb_roi_lower95"] = ordinary.get(
+                    "daily_cluster_bootstrap_roi_lower_95"
+                )
     if payload.get("model") and str(payload.get("model")).startswith(
         "genetic_listwise_island_v"
     ):
