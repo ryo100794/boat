@@ -39,6 +39,7 @@ class _Artifact:
     ready: bool = True
     point: float = 1.20
     lcb: float = 1.05
+    trained_through_date: str | None = "2026-06-30"
 
     def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
         return {"empirical_ev": self.point, "empirical_ev_lcb95": self.lcb}
@@ -81,7 +82,7 @@ def test_not_ready_or_non_strict_edge_never_bets(artifact, expected_status):
     assert result["daily"][0]["candidate_tickets"] == 0
 
 
-def test_point_ev_drives_kelly_and_raw_lcb_are_audited():
+def test_lcb_drives_kelly_and_point_estimate_is_audited():
     result = simulate_empirical_lcb_policy(
         [_race("r1", multipliers={"1-2-3": 3.0})],
         CALIBRATOR, _blend, _Artifact(point=1.20, lcb=1.05), 10_000,
@@ -91,7 +92,9 @@ def test_point_ev_drives_kelly_and_raw_lcb_are_audited():
     assert winner["raw_estimated_ev"] == pytest.approx(4.8)
     assert winner["empirical_ev"] == pytest.approx(1.20)
     assert winner["empirical_ev_lcb95"] == pytest.approx(1.05)
-    assert result["daily"][0]["selected_sample"][0]["estimated_ev"] == pytest.approx(1.20)
+    assert winner["allocation_ev"] == pytest.approx(1.05)
+    selected = result["daily"][0]["selected_sample"]
+    assert not selected or selected[0]["estimated_ev"] == pytest.approx(1.05)
 
 
 class _RankArtifact(_Artifact):
@@ -142,4 +145,26 @@ def test_simulator_contract_has_no_calibration_records_argument():
         simulate_empirical_lcb_policy(
             [_race("r1")], CALIBRATOR, _blend, _Artifact(), 10_000,
             calibration_records=[],
+        )
+
+
+def test_policy_rejects_same_day_or_future_trained_artifact():
+    with pytest.raises(ValueError, match="strictly before"):
+        simulate_empirical_lcb_policy(
+            [_race("r1")],
+            CALIBRATOR,
+            _blend,
+            _Artifact(trained_through_date="2026-07-01"),
+            10_000,
+        )
+
+
+def test_ready_policy_rejects_artifact_without_training_boundary():
+    with pytest.raises(ValueError, match="trained_through_date"):
+        simulate_empirical_lcb_policy(
+            [_race("r1")],
+            CALIBRATOR,
+            _blend,
+            _Artifact(trained_through_date=None),
+            10_000,
         )

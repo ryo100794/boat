@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, datetime
 from math import isfinite
 from typing import Any, Callable, Mapping, Protocol
 
@@ -15,6 +16,7 @@ MAX_DAILY_TICKETS = 30
 
 class EmpiricalEVArtifact(Protocol):
     ready: bool
+    trained_through_date: str | None
 
     def predict(
         self,
@@ -24,6 +26,39 @@ class EmpiricalEVArtifact(Protocol):
     ) -> Mapping[str, object]: ...
 
     def as_dict(self) -> Mapping[str, object]: ...
+
+
+def _iso_date(value: object, name: str) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO date") from exc
+
+
+def _verify_prior_only_artifact(
+    races: list[dict[str, Any]],
+    artifact: EmpiricalEVArtifact,
+) -> None:
+    if not races:
+        return
+    trained_through = artifact.trained_through_date
+    if trained_through is None:
+        if artifact.ready:
+            raise ValueError("ready artifact must declare trained_through_date")
+        return
+    trained_date = _iso_date(trained_through, "trained_through_date")
+    first_evaluation_date = min(
+        _iso_date(race["race_date"], "race_date") for race in races
+    )
+    if trained_date >= first_evaluation_date:
+        raise ValueError(
+            "artifact must be trained strictly before every evaluation date"
+        )
 
 
 def _blended_probabilities(
@@ -109,7 +144,8 @@ def _eligible_candidate(
         "combination": combination,
         "probability": probability,
         "estimated_odds": odds,
-        "estimated_ev": point,
+        # Allocation must use the same conservative edge that admitted the ticket.
+        "estimated_ev": lcb95,
         "raw_estimated_ev": raw_ev,
         "empirical_ev": point,
         "empirical_ev_lcb95": lcb95,
@@ -188,6 +224,7 @@ def _candidate_audit(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "raw_estimated_ev": float(candidate["raw_estimated_ev"]),
         "empirical_ev": float(candidate["empirical_ev"]),
         "empirical_ev_lcb95": float(candidate["empirical_ev_lcb95"]),
+        "allocation_ev": float(candidate["estimated_ev"]),
     }
 
 
@@ -201,6 +238,7 @@ def simulate_empirical_lcb_policy(
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
         raise ValueError("daily_budget_yen must be positive")
+    _verify_prior_only_artifact(races, artifact)
     races_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         races_by_day[str(race["race_date"])].append(race)
