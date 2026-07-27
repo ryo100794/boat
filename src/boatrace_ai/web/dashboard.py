@@ -2463,6 +2463,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "evaluation_days": metrics.get("evaluation_days"),
                 "promotion_eligible": metrics.get("promotion_eligible"),
+                "prediction_deployment_eligible": metrics.get(
+                    "prediction_deployment_eligible"
+                ),
+                "deployment_model_artifact_saved": metrics.get(
+                    "deployment_model_artifact_saved"
+                ),
+                "prediction_deployment_gate_passed": metrics.get(
+                    "prediction_deployment_gate_passed"
+                ),
+                "prediction_deployment_gate_total": metrics.get(
+                    "prediction_deployment_gate_total"
+                ),
+                "prediction_deployment_gate_failed": metrics.get(
+                    "prediction_deployment_gate_failed"
+                ) or [],
                 "promotion_gate_passed": metrics.get("promotion_gate_passed"),
                 "promotion_gate_total": metrics.get("promotion_gate_total"),
                 "promotion_gate_failed": metrics.get("promotion_gate_failed") or [],
