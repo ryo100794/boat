@@ -1369,6 +1369,7 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     ]
     assert standardized[0]["parameters"]["timeout_seconds"] == 86400
     assert standardized[0]["max_attempts"] == 3
+    assert standardized[0]["priority"] == 70
     drop_base_mlp = next(
         row for row in calls
         if row["model_key"] == "calibrated_mlp_recency_drop_base_pastlog"
@@ -1416,6 +1417,54 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
         row["parameters"]["evaluation_date"] == "2026-07-22"
         for row in calls
         if row["task_type"] != "conditional_payout_tail"
+    )
+
+    calls.clear()
+    inserted = seed_default_jobs(
+        object(),
+        evaluation_date="2026-07-23",
+        include_standardized=False,
+    )
+    assert len(inserted) == 14
+    assert all(row["task_type"] != "standardized_365d" for row in calls)
+
+
+def test_standardized_evaluation_due_uses_weekly_cadence() -> None:
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class DueConnection:
+        def __init__(self, row):
+            self.row = row
+
+        def execute(self, statement, parameters=()):
+            assert "task_type = ?" in statement
+            assert parameters == ("standardized_365d",)
+            return Result(self.row)
+
+    assert evaluation_queue.standardized_evaluation_due(
+        DueConnection(None), evaluation_date="2026-07-28"
+    )
+    completed = DueConnection({
+        "evaluation_date": "2026-07-21",
+        "status": "completed",
+    })
+    assert not evaluation_queue.standardized_evaluation_due(
+        completed, evaluation_date="2026-07-27"
+    )
+    assert evaluation_queue.standardized_evaluation_due(
+        completed, evaluation_date="2026-07-28"
+    )
+    running = DueConnection({
+        "evaluation_date": "2026-07-01",
+        "status": "running",
+    })
+    assert not evaluation_queue.standardized_evaluation_due(
+        running, evaluation_date="2026-07-28"
     )
 
 
@@ -1585,6 +1634,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "standardized_evaluation_due",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_daily_market_jobs",
         lambda *_a, **_k: events.append("seed-market"),
     )
@@ -1660,6 +1714,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
         evaluation_queue,
         "seed_default_jobs",
         lambda *_a, **_k: events.append("seed-defaults"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "standardized_evaluation_due",
+        lambda *_a, **_k: False,
     )
     monkeypatch.setattr(
         evaluation_queue,

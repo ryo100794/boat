@@ -2892,7 +2892,39 @@ def update_work_ticket(
     )
 
 
-def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
+def standardized_evaluation_due(
+    conn: Any,
+    *,
+    evaluation_date: str,
+    cadence_days: int = 7,
+) -> bool:
+    target = datetime.strptime(evaluation_date, "%Y-%m-%d").date()
+    row = conn.execute(
+        """
+        SELECT parameters->>'evaluation_date' AS evaluation_date, status
+        FROM model_evaluation_jobs
+        WHERE task_type = ?
+          AND status IN ('queued', 'running', 'completed')
+          AND parameters->>'evaluation_date' IS NOT NULL
+        ORDER BY parameters->>'evaluation_date' DESC NULLS LAST, job_id DESC
+        LIMIT 1
+        """,
+        ("standardized_365d",),
+    ).fetchone()
+    if row is None:
+        return True
+    if str(row["status"]) in {"queued", "running"}:
+        return False
+    latest = datetime.strptime(str(row["evaluation_date"]), "%Y-%m-%d").date()
+    return (target - latest).days >= max(1, int(cadence_days))
+
+
+def seed_default_jobs(
+    conn: Any,
+    *,
+    evaluation_date: str,
+    include_standardized: bool = True,
+) -> list[int]:
     inserted: list[int] = []
 
     def add(**kwargs: Any) -> None:
@@ -2900,13 +2932,17 @@ def seed_default_jobs(conn: Any, *, evaluation_date: str) -> list[int]:
         if job_id is not None:
             inserted.append(job_id)
 
-    add(
-        task_type="standardized_365d",
-        model_key="all_registered_models",
-        parameters={"evaluation_date": evaluation_date, "timeout_seconds": 86400},
-        priority=100,
-        max_attempts=3,
-    )
+    if include_standardized:
+        add(
+            task_type="standardized_365d",
+            model_key="all_registered_models",
+            parameters={
+                "evaluation_date": evaluation_date,
+                "timeout_seconds": 86400,
+            },
+            priority=70,
+            max_attempts=3,
+        )
     evaluation_end = datetime.strptime(evaluation_date, "%Y-%m-%d").date()
     evaluation_start = evaluation_end - timedelta(days=364)
     add(
@@ -3199,7 +3235,13 @@ def run_worker(args: argparse.Namespace) -> int:
                         evaluation_date = (
                             datetime.now(JST).date() - timedelta(days=1)
                         ).isoformat()
-                        seed_default_jobs(conn, evaluation_date=evaluation_date)
+                        seed_default_jobs(
+                            conn,
+                            evaluation_date=evaluation_date,
+                            include_standardized=standardized_evaluation_due(
+                                conn, evaluation_date=evaluation_date
+                            ),
+                        )
                         seed_daily_market_jobs(
                             conn,
                             app_root=app_root,
@@ -3301,7 +3343,13 @@ def run_scheduler(args: argparse.Namespace) -> int:
                     evaluation_date = (
                         datetime.now(JST).date() - timedelta(days=1)
                     ).isoformat()
-                    seed_default_jobs(conn, evaluation_date=evaluation_date)
+                    seed_default_jobs(
+                        conn,
+                        evaluation_date=evaluation_date,
+                        include_standardized=standardized_evaluation_due(
+                            conn, evaluation_date=evaluation_date
+                        ),
+                    )
                     seed_daily_market_jobs(
                         conn,
                         app_root=app_root,
