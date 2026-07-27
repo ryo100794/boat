@@ -18,6 +18,7 @@ from ..bankroll_backtest import (
 from ..bankroll_policy_search import (
     promotion_gate,
     recent_allocation_diagnostics,
+    temporal_stability,
     successive_halving_search,
 )
 from ..db import connection, init_db
@@ -287,10 +288,14 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         seed=args.seed,
     )
     recent_allocation = recent_allocation_diagnostics(holdout_bankroll["daily"])
+    holdout_temporal_stability = temporal_stability(
+        holdout_packed, selected_policy
+    )
     holdout_gate = promotion_gate({
         "metrics": holdout_bankroll,
         "confidence": holdout_confidence,
         "recent_allocation": recent_allocation,
+        "temporal_stability": holdout_temporal_stability,
     })
     result = {
         "model": "bankroll_policy_optimized_v1",
@@ -335,6 +340,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "bankroll_confidence": holdout_confidence,
         "promotion_gate": holdout_gate,
         "recent_allocation": recent_allocation,
+        "holdout_temporal_stability": holdout_temporal_stability,
         "research_only": args.research_only == "true",
         "promotion_eligible": (
             args.research_only != "true" and all(holdout_gate.values())
