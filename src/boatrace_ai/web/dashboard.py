@@ -2497,6 +2497,11 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "high_ev_realized_roi": _float_or_none(
                     metrics.get("high_ev_realized_roi")
                 ),
+                "top5_flat_tickets": metrics.get("top5_flat_tickets"),
+                "top5_flat_hit_rate": _float_or_none(
+                    metrics.get("top5_flat_hit_rate")
+                ),
+                "top5_flat_roi": _float_or_none(metrics.get("top5_flat_roi")),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
                 "winner_log_loss": _float_or_none(
                     metrics.get("winner_log_loss")

@@ -2328,6 +2328,13 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
 
 def test_result_summary_exposes_high_ev_holdout_calibration() -> None:
     summary = summarize_result({
+        "holdout_top5_flat_diagnostic": {
+            "evaluated_races": 100, "tickets": 500, "hit_races": 30,
+            "hit_rate": 0.3, "stake_yen": 50000,
+            "return_yen": 45000, "profit_yen": -5000, "roi": 0.9,
+            "average_hit_payout_yen": 1500,
+            "breakeven_average_hit_payout_yen": 1666.6667,
+        },
         "holdout_candidate_ev_calibration": [
             {
                 "lower_inclusive": 2.0, "upper_exclusive": 2.5,
@@ -2344,6 +2351,9 @@ def test_result_summary_exposes_high_ev_holdout_calibration() -> None:
         ],
     })
 
+    assert summary["top5_flat_tickets"] == 500
+    assert summary["top5_flat_hit_rate"] == 0.3
+    assert summary["top5_flat_roi"] == 0.9
     assert summary["high_ev_tickets"] == 15
     assert summary["high_ev_realized_roi"] == 1.2
     assert len(summary["holdout_candidate_ev_calibration"]) == 2

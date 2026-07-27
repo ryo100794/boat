@@ -1825,6 +1825,15 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    top5_flat = payload.get("holdout_top5_flat_diagnostic")
+    if isinstance(top5_flat, dict):
+        for key in (
+            "evaluated_races", "tickets", "hit_races", "hit_rate",
+            "stake_yen", "return_yen", "profit_yen", "roi",
+            "average_hit_payout_yen", "breakeven_average_hit_payout_yen",
+        ):
+            if key in top5_flat:
+                summary[f"top5_flat_{key}"] = top5_flat[key]
     ev_calibration = payload.get("holdout_candidate_ev_calibration")
     if isinstance(ev_calibration, list):
         clean_bins = [
