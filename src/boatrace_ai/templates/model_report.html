@@ -213,6 +213,7 @@ function predictionRow(row){
   return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+fmt(p.evaluated_races)+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+ratio(p.entry_brier)+'</td><td>'+ratio(p.trifecta_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top1_hit_rate)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td></tr>';
 }
 function operationState(b){
+  if(b.no_bet) return {label:"購入見送り",cls:"running"};
   if(b.roi==null) return {label:"資金未評価",cls:"running"};
   if(Number(b.roi)>=1&&Number(b.profit_yen)>0) return {label:"収益プラス",cls:"done"};
   return {label:"要改善",cls:"failed"};
@@ -222,7 +223,8 @@ function operationRow(row){
   const profitCls=b.profit_yen==null?"":Number(b.profit_yen)>=0?"pos":"neg";
   const rawName=b.file||b.name||row.name, name=esc(shortName(rawName)), scope=esc(scopeText(row.scope));
   const volume=b.benchmark_population_races==null?fmt(b.evaluated_races):fmt(b.benchmark_population_races)+' / '+fmt(b.benchmark_evaluated_races??b.evaluated_races)+(b.benchmark_status==='provisional'?' 暫定':'');
-  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+volume+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+' / '+fmt(b.hit_tickets)+'</td><td>'+fmt(b.hit_races)+'</td><td>'+pct(b.race_hit_rate)+'</td><td>'+ratio(b.roi)+'</td><td>'+ratio(b.roi_without_largest_hit)+'</td><td>'+pct(b.largest_hit_return_share)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td></tr>';
+  const noBet=b.no_bet?'<span class="tag running" title="'+esc(b.no_bet_reason||b.policy_selection_source||"")+'">購入見送り</span>':ratio(b.roi);
+  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+volume+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+' / '+fmt(b.hit_tickets)+'</td><td>'+fmt(b.hit_races)+'</td><td>'+pct(b.race_hit_rate)+'</td><td>'+noBet+'</td><td>'+ratio(b.roi_without_largest_hit)+'</td><td>'+pct(b.largest_hit_return_share)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td></tr>';
 }
 function compositeRow(row){
   const p=row.prediction||{}, b=row.bankroll||{};
@@ -231,7 +233,8 @@ function compositeRow(row){
   const state=operationState(b);
   const profitCls=b.profit_yen==null?"":Number(b.profit_yen)>=0?"pos":"neg";
   const name=esc(row.name);
-  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="mono">'+evaluationR+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td><td>'+ratio(b.roi)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td><td><span class="tag '+state.cls+'">'+state.label+'</span></td></tr>';
+  const roi=b.no_bet?'<span class="tag running" title="'+esc(b.no_bet_reason||b.policy_selection_source||"")+'">購入見送り</span>':ratio(b.roi);
+  return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="mono">'+evaluationR+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td><td>'+roi+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td><td><span class="tag '+state.cls+'">'+state.label+'</span></td></tr>';
 }
 function configureModelSelection(data,comparisonRows){
   const catalog=data.model_catalog||[], available=new Set(catalog.map(row=>row.model_key));

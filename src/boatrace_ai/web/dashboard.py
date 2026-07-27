@@ -2825,6 +2825,7 @@ def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
 
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
     policy = data.get("policy") or {}
+    policy_selection = data.get("policy_selection") or {}
     tickets = data.get("tickets")
     if tickets is None:
         tickets = data.get("selected_tickets")
@@ -2850,6 +2851,9 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "model": data.get("model") or policy.get("model"),
         "daily_budget_yen": policy.get("daily_budget_yen"),
         "stake_model": policy.get("stake_model"),
+        "no_bet": bool(policy.get("no_bet")),
+        "no_bet_reason": policy.get("no_bet_reason") or policy_selection.get("source"),
+        "policy_selection_source": policy_selection.get("source"),
         "evaluated_races": data.get("bankroll_evaluated_races") or data.get("evaluated_races"),
         "entry_log_loss": _float_or_none(data.get("entry_log_loss")),
         "winner_top1_accuracy": _float_or_none(data.get("winner_top1_accuracy")),
