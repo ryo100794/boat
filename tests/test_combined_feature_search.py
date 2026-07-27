@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from boatrace_ai.db import connection, init_db
+from boatrace_ai.listwise import feature_search as feature_search_module
 from boatrace_ai.listwise.combined_feature_search import (
     COMBINED_FEATURE_VARIANTS,
     build_parser,
@@ -15,6 +19,8 @@ from boatrace_ai.listwise.feature_search import (
     _checkpoint_signature,
     _load_checkpoint,
     _ordered_rows,
+    _persist_checkpoint_progress,
+    _selected_row,
     feature_variants,
 )
 
@@ -200,3 +206,284 @@ def test_combined_checkpoint_resumes_without_accepting_default_signature(
 
     assert list(resumed.values()) == rows
     assert _load_checkpoint(checkpoint, _signature()) == {}
+
+
+def test_combined_checkpoint_exposes_atomic_candidate_and_variant_progress(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    targets = ("winner", "top3_pl")
+    alphas = (0.0001, 0.001)
+    signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
+    checkpoint = tmp_path / "combined-checkpoint.json"
+    first = _row(*COMBINED_FEATURE_VARIANTS[0], "winner", 0.0001)
+    completed = {
+        _candidate_key("drop_base_pastlog", "winner", 0.0001): first,
+    }
+
+    _persist_checkpoint_progress(
+        checkpoint,
+        signature,
+        completed,
+        targets=targets,
+        alphas=alphas,
+        variants=COMBINED_FEATURE_VARIANTS,
+        last_completed={
+            "kind": "candidate",
+            "feature_variant": "drop_base_pastlog",
+            "target": "winner",
+            "alpha": 0.0001,
+        },
+    )
+
+    candidate_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert candidate_payload["progress"] == {
+        "completed_candidates": 1,
+        "total_candidates": 32,
+        "completed_variants": 0,
+        "total_variants": 8,
+        "last_completed": {
+            "kind": "candidate",
+            "feature_variant": "drop_base_pastlog",
+            "target": "winner",
+            "alpha": 0.0001,
+        },
+    }
+    assert not list(tmp_path.glob(".*.tmp"))
+
+    for target in targets:
+        for alpha in alphas:
+            row = _row(*COMBINED_FEATURE_VARIANTS[0], target, alpha)
+            completed[_candidate_key("drop_base_pastlog", target, alpha)] = row
+    _persist_checkpoint_progress(
+        checkpoint,
+        signature,
+        completed,
+        targets=targets,
+        alphas=alphas,
+        variants=COMBINED_FEATURE_VARIANTS,
+        last_completed={
+            "kind": "variant",
+            "feature_variant": "drop_base_pastlog",
+        },
+    )
+
+    variant_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert variant_payload["progress"]["completed_candidates"] == 4
+    assert variant_payload["progress"]["completed_variants"] == 1
+    assert variant_payload["progress"]["last_completed"]["kind"] == "variant"
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [event["feature_search_progress"]["last_completed"]["kind"] for event in events] == [
+        "candidate",
+        "variant",
+    ]
+
+
+def test_combined_killed_run_resumes_to_uninterrupted_selection(tmp_path: Path) -> None:
+    targets = ("winner", "top3_pl")
+    alphas = (0.0001, 0.001)
+    rows = [
+        _row(name, dropped, target, alpha)
+        for name, dropped in COMBINED_FEATURE_VARIANTS
+        for target in targets
+        for alpha in alphas
+    ]
+    uninterrupted = {
+        _candidate_key(row["feature_variant"], row["target"], row["alpha"]): row
+        for row in rows
+    }
+    signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
+    checkpoint = tmp_path / "combined-checkpoint.json"
+    killed_after = 13
+    partial = dict(list(uninterrupted.items())[:killed_after])
+    _persist_checkpoint_progress(
+        checkpoint,
+        signature,
+        partial,
+        targets=targets,
+        alphas=alphas,
+        variants=COMBINED_FEATURE_VARIANTS,
+        last_completed={"kind": "candidate", "sequence": killed_after},
+    )
+
+    resumed = _load_checkpoint(checkpoint, signature)
+    assert len(resumed) == killed_after
+    for key, row in list(uninterrupted.items())[killed_after:]:
+        resumed[key] = row
+        _persist_checkpoint_progress(
+            checkpoint,
+            signature,
+            resumed,
+            targets=targets,
+            alphas=alphas,
+            variants=COMBINED_FEATURE_VARIANTS,
+            last_completed={"kind": "candidate", "key": key},
+        )
+
+    resumed_rows = _ordered_rows(
+        _load_checkpoint(checkpoint, signature),
+        targets=targets,
+        alphas=alphas,
+        variants=COMBINED_FEATURE_VARIANTS,
+    )
+    uninterrupted_rows = _ordered_rows(
+        uninterrupted,
+        targets=targets,
+        alphas=alphas,
+        variants=COMBINED_FEATURE_VARIANTS,
+    )
+    assert resumed_rows == uninterrupted_rows
+    assert _selected_row(resumed_rows) == _selected_row(uninterrupted_rows)
+
+
+def _small_combined_feature_db(path: Path) -> None:
+    init_db(path)
+    with connection(path) as conn:
+        for index in range(10):
+            race_id = f"combined-{index:02d}"
+            race_date = f"2026-02-{index + 1:02d}"
+            conn.execute(
+                """
+                INSERT INTO races(
+                  race_id, race_date, jcd, venue_name, rno, status
+                ) VALUES (?, ?, '01', 'fixture', 1, 'completed')
+                """,
+                (race_id, race_date),
+            )
+            for lane in range(1, 7):
+                rank = (lane + index - 1) % 6 + 1
+                conn.execute(
+                    """
+                    INSERT INTO entries(
+                      race_id, lane, racer_no, racer_name, racer_class,
+                      age, weight_kg, avg_st, national_win_rate,
+                      national_2_rate, national_3_rate, local_win_rate,
+                      local_2_rate, local_3_rate, motor_no, motor_2_rate,
+                      motor_3_rate, boat_no, boat_2_rate, boat_3_rate
+                    ) VALUES (
+                      ?, ?, ?, ?, 'A1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        race_id,
+                        lane,
+                        2000 + lane,
+                        f"racer-{lane}",
+                        20 + lane,
+                        50.0 + lane,
+                        0.10 + lane / 100,
+                        5.0 + lane / 10,
+                        40.0 + lane,
+                        60.0 + lane,
+                        4.0 + lane / 10,
+                        35.0 + lane,
+                        55.0 + lane,
+                        lane,
+                        30.0 + lane,
+                        50.0 + lane,
+                        lane,
+                        31.0 + lane,
+                        51.0 + lane,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO race_results(
+                      race_id, lane, rank, course, start_timing
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (race_id, lane, rank, lane, 0.10 + lane / 100),
+                )
+
+
+def _combined_search_args(root: Path, db: Path):
+    return build_parser().parse_args([
+        "--db", str(db),
+        "--output", str(root / "result.json"),
+        "--cache-dir", str(root / "cache"),
+        "--cache-write-mode", "never",
+        "--checkpoint", str(root / "checkpoint.json"),
+        "--candidate-workers", "1",
+        "--n-features", "64",
+        "--batch-races", "2",
+        "--epochs", "1",
+        "--targets", "winner,top3_pl",
+        "--alphas", "0.0001",
+        "--train-fraction", "0.5",
+        "--selection-fraction", "0.8",
+    ])
+
+
+def _stable_result(result: dict) -> dict:
+    return {
+        key: result[key]
+        for key in (
+            "search_results",
+            "selected",
+            "holdout",
+            "evaluation_race_set_sha256",
+            "roi",
+            "profit_yen",
+            "stake_yen",
+            "return_yen",
+            "max_drawdown_yen",
+            "daily",
+        )
+    }
+
+
+def test_actual_combined_search_recovers_after_candidate_checkpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = tmp_path / "fixture.sqlite"
+    _small_combined_feature_db(db)
+    uninterrupted_args = _combined_search_args(tmp_path / "full", db)
+    resumed_args = _combined_search_args(tmp_path / "resumed", db)
+    with connection(db) as conn:
+        uninterrupted = feature_search_module.search(
+            conn,
+            args=uninterrupted_args,
+            variants=COMBINED_FEATURE_VARIANTS,
+        )
+
+    original = feature_search_module._persist_checkpoint_progress
+    writes = 0
+
+    def kill_after_atomic_write(*args, **kwargs):
+        nonlocal writes
+        original(*args, **kwargs)
+        writes += 1
+        if writes == 4:
+            raise RuntimeError("simulated kill after durable candidate checkpoint")
+
+    monkeypatch.setattr(
+        feature_search_module,
+        "_persist_checkpoint_progress",
+        kill_after_atomic_write,
+    )
+    with connection(db) as conn, pytest.raises(RuntimeError, match="simulated kill"):
+        feature_search_module.search(
+            conn,
+            args=resumed_args,
+            variants=COMBINED_FEATURE_VARIANTS,
+        )
+    checkpoint = Path(resumed_args.checkpoint)
+    durable = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert durable["progress"]["completed_candidates"] == 3
+    assert durable["progress"]["completed_variants"] == 1
+
+    monkeypatch.setattr(
+        feature_search_module,
+        "_persist_checkpoint_progress",
+        original,
+    )
+    with connection(db) as conn:
+        resumed = feature_search_module.search(
+            conn,
+            args=resumed_args,
+            variants=COMBINED_FEATURE_VARIANTS,
+        )
+
+    assert _stable_result(resumed) == _stable_result(uninterrupted)
+    assert not checkpoint.exists()
