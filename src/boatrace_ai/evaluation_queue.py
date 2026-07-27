@@ -30,6 +30,7 @@ STANDARDIZED_SELECTED_CACHE_DIR = Path(
 )
 SCHEMA_LOCK_ID = 71234001
 CLAIM_LOCK_ID = 71234002
+EVALUATION_MEMORY_SAFETY_MB = 8192
 
 
 @dataclass(frozen=True)
@@ -540,6 +541,14 @@ def _timeout_retry_parameters(
     return updated
 
 
+def _evaluation_reservation_mb(resources: ResourceSnapshot) -> int:
+    return max(
+        8192,
+        int(resources.memory_limit_mb or resources.available_memory_mb)
+        - EVALUATION_MEMORY_SAFETY_MB,
+    )
+
+
 def claim_job(
     conn: Any,
     *,
@@ -547,10 +556,7 @@ def claim_job(
     resources: ResourceSnapshot,
 ) -> dict[str, Any] | None:
     snapshot = _json(resource_snapshot_dict(resources))
-    evaluation_reservation_mb = max(
-        8192,
-        int(resources.memory_limit_mb or resources.available_memory_mb) - 4096,
-    )
+    evaluation_reservation_mb = _evaluation_reservation_mb(resources)
     conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
     candidate = conn.execute(
         """

@@ -1791,6 +1791,19 @@ class _LifecycleConnection:
         raise AssertionError(f"unexpected SQL: {sql}")
 
 
+def test_high_memory_evaluations_reserve_eight_gib_for_services() -> None:
+    resources = ResourceSnapshot(
+        available_memory_mb=28000,
+        available_disk_mb=10000,
+        idle_cpu_percent=100.0,
+        cpu_count=16,
+        load_1m=0.0,
+        memory_limit_mb=32000,
+    )
+
+    assert evaluation_queue._evaluation_reservation_mb(resources) == 23808
+
+
 def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     state = {
         "job_id": 387,
