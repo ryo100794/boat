@@ -74,6 +74,7 @@ BATCH_SIZE = 12_000
 EPOCHS = 2
 ALPHA = 0.0001
 ORDER_VALIDATION_DAYS = 60
+SELECTION_ENTRY_LOG_LOSS_TOLERANCE = 0.0005
 
 
 def parse_evaluation_date(value: str) -> date:
@@ -274,7 +275,7 @@ def select_recency_half_life(
     model_kind: str = "mlp",
     trainer_kwargs: dict[str, Any] | None = None,
     trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
-    selection_entry_log_loss_tolerance: float = 0.0,
+    selection_entry_log_loss_tolerance: float = SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
@@ -358,6 +359,8 @@ def select_recency_half_life(
                 -float(row["trifecta_top5_hit_rate"]),
                 -float(row["winner_top1_accuracy"]),
                 float(row["entry_log_loss"]),
+                0 if row["recency_half_life_days"] is None else 1,
+                -float(row["recency_half_life_days"] or 0.0),
                 int(row["trainer_parameter_index"]),
             ),
         )
@@ -901,7 +904,7 @@ def evaluate_recency_mlp(
     bundle_trainer: Callable[..., dict[str, Any]] | None = None,
     trainer_kwargs: dict[str, Any] | None = None,
     trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
-    selection_entry_log_loss_tolerance: float = 0.0,
+    selection_entry_log_loss_tolerance: float = SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
     protected_baseline_model_path: Path | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -1417,6 +1420,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated values such as none,180,365,730",
     )
     parser.add_argument("--calibration-days", type=int, default=180)
+    parser.add_argument(
+        "--selection-entry-log-loss-tolerance",
+        type=float,
+        default=SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
+    )
     return parser
 
 
@@ -1431,6 +1439,9 @@ def main(argv: list[str] | None = None) -> int:
             write_feature_cache=args.write_feature_cache,
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
+            selection_entry_log_loss_tolerance=(
+                args.selection_entry_log_loss_tolerance
+            ),
             drop_feature_groups=args.drop_feature_groups,
             model_output_path=args.model_output,
             deployment_model_output_path=args.deployment_model_output,

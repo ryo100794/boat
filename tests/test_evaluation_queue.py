@@ -736,6 +736,8 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         "none,180,365",
         "--calibration-days",
         "120",
+        "--selection-entry-log-loss-tolerance",
+        "0.0005",
     ]
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
@@ -778,11 +780,13 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         python=python,
         db="postgresql://test",
     )
-    assert default_command[-4:] == [
+    assert default_command[-6:] == [
         "--half-lives",
         "none,180,365,730",
         "--calibration-days",
         "180",
+        "--selection-entry-log-loss-tolerance",
+        "0.0005",
     ]
 
 
@@ -794,6 +798,13 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         ({"evaluation_date": "2026-07-22", "half_lives": "none,29"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "half_lives": "none,nan"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "calibration_days": 29}, "calibration_days"),
+        (
+            {
+                "evaluation_date": "2026-07-22",
+                "selection_entry_log_loss_tolerance": 0.051,
+            },
+            "selection_entry_log_loss_tolerance",
+        ),
         ({"evaluation_date": "2026-07-22", "timeout_seconds": 299}, "timeout_seconds"),
         ({"evaluation_date": "2026-07-22", "protected_blend": "yes"}, "boolean"),
         ({"evaluation_date": "2026-07-22", "command": "rm -rf /"}, "unsupported"),

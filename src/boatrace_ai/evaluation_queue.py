@@ -1061,6 +1061,7 @@ def build_command(
         unsupported = set(params) - {
             "evaluation_date", "timeout_seconds", "half_lives", "calibration_days",
             "drop_feature_groups", "protected_blend",
+            "selection_entry_log_loss_tolerance",
         }
         if unsupported:
             raise ValueError(
@@ -1074,6 +1075,9 @@ def build_command(
         half_lives = _half_lives(params)
         calibration_days = _integer(params, "calibration_days", 180, 30, 730)
         drop_feature_groups = _drop_feature_groups(params)
+        selection_tolerance = _number(
+            params, "selection_entry_log_loss_tolerance", 0.0005, 0.0, 0.05
+        )
         protected_blend = params.get("protected_blend", False)
         if type(protected_blend) is not bool:
             raise ValueError("protected_blend must be a boolean")
@@ -1107,6 +1111,7 @@ def build_command(
             "--drop-feature-groups", drop_feature_groups,
             "--half-lives", half_lives,
             "--calibration-days", str(calibration_days),
+            "--selection-entry-log-loss-tolerance", str(selection_tolerance),
         ]
         if protected_blend:
             command.extend([
@@ -1179,7 +1184,7 @@ def build_command(
         max_bin = _integer(params, "max_bin", 63, 15, 255)
         n_jobs = _integer(params, "n_jobs", 4, 1, 128)
         selection_tolerance = _number(
-            params, "selection_entry_log_loss_tolerance", 0.0, 0.0, 0.05
+            params, "selection_entry_log_loss_tolerance", 0.0005, 0.0, 0.05
         )
         architecture_presets = params.get("architecture_presets")
         if architecture_presets is not None:
