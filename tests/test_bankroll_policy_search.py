@@ -103,6 +103,8 @@ def test_policy_candidates_preserve_conservative_anchors() -> None:
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
         assert {**POLICY, **overrides} in candidates
 
+    assert max(candidate["ev_threshold"] for candidate in candidates) >= 2.0
+
 
 def test_slice_day_range_rebases_offsets() -> None:
     packed = _packed_days()

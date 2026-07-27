@@ -9,8 +9,8 @@ from .packed_bankroll import PackedCandidates, evaluate_packed_policy
 
 
 SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
-    "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50),
-    "min_ticket_probability": (0.0, 0.002, 0.005, 0.01),
+    "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50),
+    "min_ticket_probability": (0.0, 0.002, 0.005, 0.01, 0.02),
     "max_estimated_odds": (None, 30.0, 50.0, 100.0, 200.0),
     "fractional_kelly": (0.10, 0.25, 0.50),
     "max_daily_exposure_fraction": (0.30, 0.60, 0.80),
@@ -24,7 +24,7 @@ SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
 # Preserve the sparse, conservative region when new search dimensions are added.
 CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
     {
-        "ev_threshold": 1.35,
+        "ev_threshold": 1.75,
         "min_ticket_probability": 0.0,
         "max_estimated_odds": None,
         "fractional_kelly": 0.10,
@@ -35,7 +35,7 @@ CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
         "max_daily_tickets": 30,
     },
     {
-        "ev_threshold": 1.35,
+        "ev_threshold": 2.00,
         "min_ticket_probability": 0.0,
         "max_estimated_odds": 100.0,
         "fractional_kelly": 0.10,
