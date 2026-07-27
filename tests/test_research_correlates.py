@@ -133,6 +133,36 @@ def test_course_change_and_research_group_ablation() -> None:
     assert not any(key.startswith("research_") for key in dropped[0]["features"])
 
 
+def test_official_context_can_be_isolated_from_speculative_research() -> None:
+    rows = [_entry(lane) for lane in range(1, 7)]
+    official = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=(
+            "speculative_research", "series_cached", "series_relative"
+        ),
+    )[0]["features"]
+    card_only = build_race_features(
+        rows,
+        RollingState(),
+        drop_feature_groups=(
+            "speculative_research",
+            "live_official_context",
+            "series_cached",
+            "series_relative",
+        ),
+    )[0]["features"]
+
+    assert "research_home_branch" in official
+    assert "research_equipment_strength" in official
+    assert "research_exhibition_top1" in official
+    assert "research_outer_threat_vs_lane1" not in official
+    assert "research_home_branch" in card_only
+    assert "research_equipment_strength" in card_only
+    assert "research_exhibition_top1" not in card_only
+    assert "research_lane_wind_bucket" not in card_only
+
+
 def test_legacy_composite_ablation_keeps_raw_card_features() -> None:
     rows = [_entry(lane) for lane in range(1, 7)]
     full = build_race_features(
