@@ -3,6 +3,7 @@ from io import BytesIO
 import json
 
 from boatrace_ai.web.dashboard import (
+    model_performance_daily_report,
     model_performance_public_report,
     send_json,
 )
@@ -51,12 +52,45 @@ def test_send_json_leaves_small_payload_uncompressed() -> None:
 def test_public_model_report_omits_duplicated_legacy_daily_rows() -> None:
     report = {
         "bankroll_daily": {"legacy": [{"race_date": "2026-07-24"}]},
-        "model_daily": {"current": {"rows": [{"date": "2026-07-24"}]}},
+        "model_daily": {
+            "current": {"rows": [{"date": "2026-07-24"}]},
+            "missing": {"rows": [], "unavailable_reason": "日次なし"},
+        },
         "bankroll": [],
     }
 
     public = model_performance_public_report(report)
 
     assert "bankroll_daily" not in public
-    assert public["model_daily"] == report["model_daily"]
+    assert public["model_daily"]["current"] == {
+        "row_count": 1,
+        "loaded": False,
+    }
+    assert public["model_daily"]["missing"] == {
+        "row_count": 0,
+        "loaded": True,
+        "rows": [],
+        "unavailable_reason": "日次なし",
+    }
     assert "bankroll_daily" in report
+    assert report["model_daily"]["current"]["rows"]
+
+
+def test_model_daily_report_returns_only_requested_model() -> None:
+    report = {
+        "model_daily": {
+            "alpha": {"rows": [{"date": "2026-07-24"}]},
+            "beta": {"rows": [{"date": "2026-07-25"}]},
+        }
+    }
+
+    daily = model_performance_daily_report(report, {"model_key": ["alpha"]})
+
+    assert daily == {
+        "loaded": True,
+        "rows": [{"date": "2026-07-24"}],
+    }
+    missing = model_performance_daily_report(report, {"model_key": ["unknown"]})
+    assert missing["loaded"] is True
+    assert missing["rows"] == []
+    assert "指定モデル" in missing["unavailable_reason"]

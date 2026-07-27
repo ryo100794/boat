@@ -824,6 +824,14 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                             model_performance_report(db_path, query)
                         ),
                     )
+                elif parsed.path == "/api/reports/model-performance/daily":
+                    send_json(
+                        self,
+                        model_performance_daily_report(
+                            model_performance_report(db_path, query),
+                            query,
+                        ),
+                    )
                 elif parsed.path == "/api/reports/genetic-evolution":
                     send_json(self, genetic_evolution_report(db_path))
                 elif parsed.path == "/reports/roadmap":
@@ -1274,7 +1282,42 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:
     public = dict(report)
     public.pop("bankroll_daily", None)
+    daily_index: dict[str, dict[str, Any]] = {}
+    for key, value in (report.get("model_daily") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        metadata = dict(value)
+        rows = metadata.pop("rows", [])
+        metadata["row_count"] = len(rows) if isinstance(rows, list) else 0
+        metadata["loaded"] = metadata["row_count"] == 0
+        if metadata["loaded"]:
+            metadata["rows"] = []
+        daily_index[str(key)] = metadata
+    public["model_daily"] = daily_index
     return public
+
+
+def model_performance_daily_report(
+    report: dict[str, Any],
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    key = str((query.get("model_key") or [""])[0]).strip()
+    if not key:
+        return {
+            "model_key": "",
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "model_keyを指定してください",
+        }
+    value = (report.get("model_daily") or {}).get(key)
+    if not isinstance(value, dict):
+        return {
+            "model_key": key,
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "指定モデルの日次評価はありません",
+        }
+    return {**value, "loaded": True}
 
 
 def genetic_evolution_report(db_path: Path) -> dict[str, Any]:

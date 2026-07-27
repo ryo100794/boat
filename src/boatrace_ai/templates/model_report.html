@@ -96,7 +96,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let selectedModelKey="", currentReport=null, gaRefreshing=false;
+let selectedModelKey="", currentReport=null, gaRefreshing=false, dailyLoading=new Set();
 const esc = v => String(v ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const fmt = v => v == null ? "-" : Number(v).toLocaleString("ja-JP");
 const pct = v => v == null ? "-" : `${(Number(v)*100).toFixed(2)}%`;
@@ -294,6 +294,23 @@ function activateModel(key){
   renderSelectedModel(currentReport);
   $("selectedModelDetail").scrollIntoView({block:"nearest"});
 }
+async function loadModelDaily(data,key){
+  const daily=(data.model_daily||{})[key]||{};
+  if(daily.loaded||dailyLoading.has(key)) return;
+  dailyLoading.add(key);
+  daily.unavailable_reason="日次データ取得中";
+  renderDaily(data,key);
+  try{
+    const res=await fetch("/api/reports/model-performance/daily?model_key="+encodeURIComponent(key),{cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    data.model_daily[key]=await res.json();
+  }catch(error){
+    data.model_daily[key]={...daily,loaded:true,rows:[],unavailable_reason:"日次データ取得失敗: "+String(error)};
+  }finally{
+    dailyLoading.delete(key);
+    if(currentReport===data&&selectedModelKey===key) renderSelectedModel(data);
+  }
+}
 function renderSelectedModel(data){
   const key=selectedModelKey, catalog=selectedCatalogEntry(data,key);
   const label=catalog?catalog.label:"対象なし";
@@ -307,6 +324,7 @@ function renderSelectedModel(data){
   renderFeatureDiagnostics((data.feature_diagnostics||[]).filter(x=>modelMatches(x,key)));
   renderRoiAttribution(bank);
   updateSelectedRows();
+  loadModelDaily(data,key);
 }
 function marketCi(x){
   if(x.market_log_loss_delta==null) return "-";
