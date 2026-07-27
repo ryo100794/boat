@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 
 
-_NAMED_PARAMETER = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_NAMED_PARAMETER = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 _MEMORY_SETTING = re.compile(r"[1-9][0-9]*(?:kB|MB|GB)", re.IGNORECASE)
 
 
