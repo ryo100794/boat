@@ -3060,6 +3060,13 @@ def genetic_cache_evaluation_date(app_root: Path) -> str | None:
 MARKET_FORMAL_FROM_DATE = "2026-07-18"
 MARKET_EVALUATION_SOURCES = (
     (
+        "protected_mlp_prediction",
+        "calibrated_mlp_recency_search",
+        "calibrated_mlp_prediction_deployment",
+        "newton_residual",
+        "deployment",
+    ),
+    (
         "calibrated_mlp_recency_selected",
         "calibrated_mlp_recency_search",
         "calibrated_mlp_recency_card_features",
@@ -3092,7 +3099,9 @@ def seed_daily_market_jobs(
         return []
     model_root = (app_root / "data" / "models").resolve()
     inserted: list[int] = []
-    for label, task_type, source_key, calibrator_strategy in MARKET_EVALUATION_SOURCES:
+    for source_spec in MARKET_EVALUATION_SOURCES:
+        label, task_type, source_key, calibrator_strategy, *artifact_kinds = source_spec
+        artifact_kind = artifact_kinds[0] if artifact_kinds else "evaluation"
         source = conn.execute(
             """
             SELECT result_path
@@ -3109,7 +3118,11 @@ def seed_daily_market_jobs(
         result_path = Path(str(source["result_path"]))
         if not result_path.is_absolute():
             result_path = app_root / result_path
-        model_input = result_path.with_suffix(".joblib").resolve()
+        model_input = (
+            result_path.with_name(result_path.stem + ".deployment.joblib")
+            if artifact_kind == "deployment"
+            else result_path.with_suffix(".joblib")
+        ).resolve()
         if model_root not in model_input.parents or not model_input.is_file():
             continue
         parameters = {
