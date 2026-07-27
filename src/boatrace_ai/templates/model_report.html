@@ -12,12 +12,17 @@
     main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(6,minmax(92px,1fr)); gap:1px; border:1px solid var(--line); background:var(--line); }
     .kpi { background:#fff; padding:3px 4px; min-width:0; } .kpi b { display:block; font-size:12px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .kpi span { color:var(--muted); font-size:9px; } .kpi.good b { color:var(--ok); } .kpi.bad b { color:var(--bad); }
     .grid { display:grid; grid-template-columns:repeat(2,minmax(300px,1fr)); gap:6px; margin-top:6px; } .grid.three { grid-template-columns:repeat(3,minmax(260px,1fr)); } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
-    .report-group { margin-top:7px; padding-top:4px; border-top:2px solid var(--ink); } .report-group.research { border-top-color:var(--accent2); } .group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px; } .group-heading h2 { margin:0; font-size:12px; } .group-heading .scope-note { max-width:68%; color:var(--muted); text-align:right; } .group-controls { display:flex; align-items:center; gap:4px; } .group-controls label { color:var(--muted); } .group-controls select { min-width:270px; max-width:52vw; }
-    .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } canvas { width:100%; height:170px; border:1px solid var(--line); background:#fff; }
+    .section-nav { position:sticky; top:28px; z-index:3; display:grid; grid-template-columns:repeat(4,1fr); gap:1px; margin:5px 0; border:1px solid var(--line); background:var(--line); }
+    .section-nav a { height:23px; display:flex; align-items:center; justify-content:center; border:0; border-radius:0; font-weight:700; background:#fff; } .section-nav a:hover,.section-nav a:focus { background:#e8f3f3; color:var(--accent); }
+    .report-group { scroll-margin-top:56px; margin-top:7px; padding-top:4px; border-top:3px solid var(--ink); } .report-group.odds { border-top-color:#1769c2; } .report-group.purchase { border-top-color:#a76300; } .report-group.promotion { border-top-color:var(--accent2); }
+    .group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px; } .group-heading h2 { margin:0; font-size:12px; } .group-heading .scope-note { max-width:68%; color:var(--muted); text-align:right; }
+    .section-intro { display:grid; grid-template-columns:minmax(90px,.6fr) minmax(190px,1.4fr) minmax(150px,1fr); gap:1px; margin:1px 0 4px; border:1px solid var(--line); background:var(--line); } .section-intro span { min-width:0; padding:2px 4px; background:#fafbfb; white-space:normal; } .section-intro b { color:var(--ink); }
+    .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } canvas { width:100%; height:150px; border:1px solid var(--line); background:#fff; }
     table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:3px; } th,td { border-bottom:1px solid var(--line); padding:1px 3px; line-height:1.12; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } th { color:var(--muted); background:#fafbfb; } th:first-child,td:first-child { text-align:left; }
     .table-scroll { overflow-x:visible; } .table-stack,.model-track-groups { display:grid; grid-template-columns:minmax(0,1fr); gap:7px; } .metric-table,.model-table,.wide-name-table,.comparison-table { width:100%; min-width:0; table-layout:fixed; } .metric-table th,.metric-table td,.model-table th,.model-table td,.wide-name-table th,.wide-name-table td { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; } .metric-table .name-cell,.model-table .name-cell,.wide-name-table .name-cell { width:20%; white-space:normal; overflow:visible; overflow-wrap:anywhere; text-align:left; } .metric-table .axis-cell,.model-table .axis-cell { width:13%; white-space:normal; text-align:left; } .model-table .detail-cell { width:24%; white-space:normal; overflow:visible; overflow-wrap:anywhere; text-align:left; } .metric-table .mono,.model-table .mono { white-space:nowrap; }
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
     .model-select-row { cursor:pointer; } .model-select-row:hover td { background:#eef6f6; } .model-select-row[aria-selected="true"] td { background:#d8eeee; box-shadow:inset 0 1px 0 var(--accent),inset 0 -1px 0 var(--accent); } .model-select-row:focus { outline:2px solid var(--accent); outline-offset:-2px; }
+    .missing { color:var(--bad); text-decoration:underline dotted; text-underline-offset:2px; cursor:help; } .period-cell { text-align:left; white-space:normal; } .compact-note { margin:2px 0; color:var(--muted); }
     .ga-panel { margin-top:5px; border-top-color:#a76300; } .ga-summary { display:grid; grid-template-columns:repeat(8,minmax(68px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .ga-summary div { min-width:0; padding:2px 4px; background:#fff; } .ga-summary b { display:block; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ga-summary span { color:var(--muted); font-size:8px; }
     .ga-table { table-layout:auto; min-width:980px; } .ga-table th:first-child,.ga-table td:first-child { width:38px; text-align:right; }
@@ -29,46 +34,63 @@
 <header><h1>モデル性能レポート</h1><div><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a href="/reports/teleboat">Teleboat</a><a class="primary" href="/">ダッシュボード</a></div></header>
 <main>
   <div id="kpis" class="kpis"></div>
-  <div id="standardProtocol" class="panel"></div>
-  <div id="geneticEvolution" class="panel ga-panel"></div>
-  <section id="allModelsGroup" class="report-group">
-    <div class="group-heading"><h2>統一365日 共通評価</h2><span class="scope-note">同一holdout・同一対象R・同一日額10,000円ポリシーだけを横比較</span></div>
-    <div class="table-stack">
-      <div class="panel"><h2><span>予測モデル</span><span id="meta" class="muted"></span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>評価R</th><th>艇Entry LL</th><th>Brier</th><th>3連単LL</th><th>1着</th><th>3T1</th><th>3T5</th></tr></thead><tbody id="predictionSummaryRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>運用モデル</span><span class="muted">同一日額10,000円ポリシー</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価範囲</th><th>母数/評価R</th><th>購入R</th><th>購入/的中</th><th>的中R</th><th>的中R率</th><th>ROI</th><th>最大1的中除外ROI</th><th>払戻集中</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationSummaryRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>予測＋運用 複合モデル</span><span class="muted">昇格判断用</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
+  <nav class="section-nav" aria-label="性能評価区分">
+    <a href="#predictionSection">1 予測性能</a><a href="#oddsSection">2 確定オッズ予測</a><a href="#purchaseSection">3 購入性能</a><a href="#promotionSection">4 本番昇格判定</a>
+  </nav>
+
+  <section id="predictionSection" class="report-group">
+    <div class="group-heading"><h2>1. 予測性能</h2><span id="meta" class="scope-note"></span></div>
+    <div class="section-intro"><span><b>目的</b> 着順確率の精度</span><span><b>主要指標</b> 艇Entry LogLoss・Brier・1着・3連単Top5</span><span><b>比較条件</b> 統一365日 共通評価 / 確率精度のみを評価</span></div>
+    <div id="allModelsGroup" class="table-stack">
+    <div class="panel"><h2><span>統一365日 予測比較</span><span class="muted">行タップで詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価期間</th><th>母数</th><th>艇Entry LL</th><th>Brier</th><th>3連単LL</th><th>1着</th><th>3T1</th><th>3T5</th></tr></thead><tbody id="predictionSummaryRows"></tbody></table></div></div>
     </div>
-    <div class="grid three">
-      <div class="panel"><h2><span>統一評価 的中率</span><span class="muted">1着 / 3連単Top5</span></h2><canvas id="hitChart" width="900" height="330"></canvas></div>
-      <div class="panel"><h2><span>統一評価 fold別 艇Entry LL</span><span class="muted">低いほど良い</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
-      <div class="panel"><h2><span>統一評価 資金ROI</span><span class="muted">払戻 ÷ 投資 / 基準1.000</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
+    <div class="grid">
+      <div class="panel"><h2><span>的中率</span><span class="muted">1着 / 3連単Top5</span></h2><canvas id="hitChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>fold別 艇Entry LL</span><span class="muted">低いほど良い・軸目盛りは実値</span></h2><canvas id="lossChart" width="900" height="330"></canvas></div>
     </div>
-  </section>
-  <section class="report-group research">
-    <div class="group-heading"><h2>研究モデル 個別評価</h2><span class="scope-note">評価期間や損失定義が異なるため、統一365日表とは分離して判定</span></div>
-    <div class="model-track-groups">
-      <div class="panel"><h2><span>予測モデル</span><span class="muted">確率精度のみを評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>教師・学習方式</th><th>状態</th><th>評価量</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th></tr></thead><tbody id="predictionTrackRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>運用モデル</span><span class="muted">購入判断・資金効率のみを評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>状態</th><th>評価量</th><th>データ充足</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationTrackRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>予測＋運用 複合モデル</span><span class="muted">確率精度と資金成績を同時評価</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価軸</th><th>状態</th><th>評価量</th><th>損失</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
-    </div>
-    <div class="table-stack">
-      <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>母数/評価R</th><th>資金診断</th><th>前向EV帯</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
-      <div class="panel"><h2><span>候補スイープ</span><span class="muted">同一探索内のみ比較</span></h2><div class="table-scroll"><table><thead><tr><th>variant</th><th>艇Entry LL</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>評価R</th></tr></thead><tbody id="sweepRows"></tbody></table></div></div>
-    </div>
-    <div class="panel"><h2><span>完了候補・昇格判定</span><span class="muted">同一holdoutの予測＋運用判定</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>現ROI</th><th>現損益</th><th>候補ROI</th><th>候補損益</th><th>候補最大DD</th><th>P(ROI&gt;1)</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
-  </section>
-  <section id="selectedModelGroup" class="report-group">
-    <div class="group-heading"><h2>モデル個別集計</h2><span id="selectedModelName" class="scope-note">対象モデルなし</span></div>
-    <div class="panel"><h2><span>選択モデル 予測＋運用</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価R</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
-    <div class="grid three">
-      <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
-      <div class="panel"><h2><span>累積損益率</span><span class="muted">累積損益 ÷ 累積投資 / 0%が損益分岐</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
-      <div class="panel"><h2><span>日次購入密度</span><span class="muted">点数 / 使用率</span></h2><canvas id="ticketsChart" width="900" height="330"></canvas></div>
-    </div>
-    <div class="panel"><h2><span>選択モデル日次表</span><span class="muted">日別資金運用</span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>日付</th><th>日次損益率</th><th>累積損益率</th><th>日次損益</th><th>累積損益</th><th>投資</th><th>払戻</th><th>点数</th><th>対象R</th><th>資金使用率</th></tr></thead><tbody id="dailyRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>研究モデル 予測評価</span><span class="muted">教師・期間・母数を併記</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>教師・学習方式</th><th>状態</th><th>母数</th><th>損失</th><th>市場差95%CI</th><th>1着</th><th>3T5</th></tr></thead><tbody id="predictionTrackRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>候補スイープ</span><span class="muted">同一探索内のみ比較</span></h2><div class="table-scroll"><table><thead><tr><th>variant</th><th>艇Entry LL</th><th>Brier</th><th>1着</th><th>3T1</th><th>3T5</th><th>母数</th></tr></thead><tbody id="sweepRows"></tbody></table></div></div>
+    <div id="geneticEvolution" class="panel ga-panel"></div>
     <div class="panel"><h2><span>特徴量相関診断</span><span class="muted">選択モデル・ファミリー別</span></h2><table><thead><tr><th>診断</th><th>特徴群</th><th>数</th><th>max相関</th><th>平均相関</th><th>係数量</th><th>低充足</th><th>主な特徴</th></tr></thead><tbody id="featureFamilyRows"></tbody></table></div>
-    <div class="panel"><h2><span>疑似相関/要確認特徴</span><span class="muted">選択モデル・欠損・ID・係数ズレ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
-    <div class="panel"><h2><span>購入券ROI帰属</span><span class="muted">選択モデルの投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
+    <div class="panel"><h2><span>疑似相関 / 要確認特徴</span><span class="muted">欠損・ID・係数ずれ</span></h2><table><thead><tr><th>診断</th><th>特徴量</th><th>理由</th><th>相関</th><th>present</th><th>-1率</th></tr></thead><tbody id="suspectRows"></tbody></table></div>
+  </section>
+
+  <section id="oddsSection" class="report-group odds">
+    <div class="group-heading"><h2>2. 確定オッズ予測</h2><span id="oddsSectionMeta" class="scope-note">締切直前スナップショットを市場基準と比較</span></div>
+    <div class="section-intro"><span><b>目的</b> 確定オッズと変動の予測</span><span><b>主要指標</b> モデルLL・市場LL・差分95%CI・実オッズ充足</span><span><b>比較条件</b> 同一締切窓・完全日のみ</span></div>
+    <div class="panel"><h2><span>実オッズモデル評価</span><span class="muted">未評価は理由を表示</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・締切窓</th><th>母数</th><th>データ充足</th><th>モデル3連単LL</th><th>市場3連単LL</th><th>市場差ΔLL 95%CI</th><th>状態 / 欠損理由</th></tr></thead><tbody id="closingOddsRows"></tbody></table></div></div>
+  </section>
+
+  <section id="purchaseSection" class="report-group purchase">
+    <div class="group-heading"><h2>3. 購入性能</h2><span class="scope-note">日額10,000円・利益再投資・同一購入規則</span></div>
+    <div class="section-intro"><span><b>目的</b> 資金効率と再現性</span><span><b>主要指標</b> ROI・損益・最大DD・最大1的中除外ROI</span><span><b>比較条件</b> 研究モデル 個別評価 / 購入判断・資金効率のみを評価</span></div>
+    <div class="panel"><h2><span>統一365日 購入比較</span><span class="muted">購入なしと未評価を区別</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>評価期間</th><th>母数/評価R</th><th>購入R</th><th>購入/的中</th><th>的中R</th><th>的中R率</th><th>ROI</th><th>最大1的中除外ROI</th><th>払戻集中</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationSummaryRows"></tbody></table></div></div>
+    <div class="grid">
+      <div class="panel"><h2><span>統一評価 資金ROI</span><span class="muted">基準1.000</span></h2><canvas id="roiChart" width="900" height="330"></canvas></div>
+      <div class="panel"><h2><span>研究モデル 購入評価</span><span class="muted">期間・母数・充足を併記</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>状態</th><th>母数</th><th>データ充足</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="operationTrackRows"></tbody></table></div></div>
+    </div>
+    <div id="selectedModelDetail">
+      <div class="group-heading"><h2>モデル個別集計 / 日次詳細</h2><span id="selectedModelName" class="scope-note">対象モデルなし</span></div>
+      <div class="panel"><h2><span>予測＋購入 要約</span><span id="selectedModelMeta" class="muted"></span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="modelDetailRows"></tbody></table></div></div>
+      <div class="grid three">
+        <div class="panel"><h2><span>累積損益</span><span id="profitTitle" class="muted"></span></h2><canvas id="profitChart" width="900" height="330"></canvas></div>
+        <div class="panel"><h2><span>累積損益率</span><span class="muted">0%が損益分岐</span></h2><canvas id="dailyRoiChart" width="900" height="330"></canvas></div>
+        <div class="panel"><h2><span>日次購入密度</span><span class="muted">点数 / 使用率</span></h2><canvas id="ticketsChart" width="900" height="330"></canvas></div>
+      </div>
+      <div class="panel"><h2><span>日次資金運用</span><span class="muted">欠損時は生成不能理由を表示</span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>日付</th><th>日次損益率</th><th>累積損益率</th><th>日次損益</th><th>累積損益</th><th>投資</th><th>払戻</th><th>点数</th><th>対象R</th><th>資金使用率</th></tr></thead><tbody id="dailyRows"></tbody></table></div></div>
+      <div class="panel"><h2><span>購入券ROI帰属</span><span class="muted">投資・払戻で検証</span></h2><table><thead><tr><th>モデル</th><th>特徴/判断軸</th><th>群</th><th>ROI差</th><th>fold再現</th><th>最良bucket</th><th>最悪bucket</th></tr></thead><tbody id="roiAttributionRows"></tbody></table></div>
+    </div>
+  </section>
+
+  <section id="promotionSection" class="report-group promotion">
+    <div class="group-heading"><h2>4. 本番昇格判定</h2><span class="scope-note">予測・オッズ・購入の全ゲートを分離判定</span></div>
+    <div class="section-intro"><span><b>目的</b> 本番差替え可否</span><span><b>必須条件</b> 精度非劣化・ROI&gt;=1・損益&gt;0・DD監査</span><span><b>結論</b> 確率精度と資金成績を同時評価 / 未評価なら昇格不可</span></div>
+    <div id="standardProtocol" class="panel"></div>
+    <div class="panel"><h2><span>統一365日 複合判定</span><span class="muted">行タップで日次詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
+    <span id="selectedModelGroup" aria-hidden="true"></span>
+    <div class="panel"><h2><span>研究モデル 複合判定</span><span class="muted">異なる期間は横比較禁止</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>状態</th><th>母数</th><th>損失</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>完了候補・昇格ゲート</span><span class="muted">同一holdoutのみ</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>現ROI</th><th>現損益</th><th>候補ROI</th><th>候補損益</th><th>候補最大DD</th><th>P(ROI&gt;1)</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>母数/評価R</th><th>資金診断</th><th>前向EV帯</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
   </section>
 </main>
 <script>
@@ -91,18 +113,20 @@ function render(data){
   const comparisonBank=v2Ready?v2Bank:v1Bank, comparisonTests=v2Ready?v2Tests:v1Tests;
   const v2Folds=folds.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Folds=folds.filter(x=>x.evaluation_scope==="standard_365d");
   const comparisonFolds=v2Ready?v2Folds:v1Folds, comparisonRows=mergeComparisonRows(comparisonTests,comparisonBank);
+  const standardWindow=data.standardized_evaluation||{};
+  comparisonRows.forEach(row=>{ row.period=(standardWindow.holdout_start||standardWindow.holdout_end)?`${standardWindow.holdout_start||"-"}..${standardWindow.holdout_end||"継続中"}`:scopeText(row.scope); });
   const baseline=comparisonRows.find(x=>modelKey(x.name).includes("no_odds_v8"))||comparisonRows[0];
   const bestRoi=[...comparisonRows].filter(x=>x.bankroll&&x.bankroll.roi!=null).sort((a,b)=>Number(b.bankroll.roi)-Number(a.bankroll.roi))[0];
   const running=jobs.filter(x=>x.running).length;
   const evaluationR=baseline&&baseline.prediction?baseline.prediction.evaluated_races:null;
   const kpis=[["統一評価モデル",comparisonRows.length,""],["統一評価R",fmt(evaluationR),""],["基準1着",baseline?pct(baseline.prediction&&baseline.prediction.winner_top1_accuracy):"-",""],["基準3T5",baseline?pct(baseline.prediction&&baseline.prediction.trifecta_top5_hit_rate):"-",""],["最高ROI",bestRoi?`${ratio(bestRoi.bankroll.roi)} ${shortName(bestRoi.name)}`:"-",bestRoi?(Number(bestRoi.bankroll.roi)>=1?"good":"bad"):""],["評価実行中",running,running?"":""]];
   $("kpis").innerHTML=kpis.map(([label,value,cls])=>`<div class="kpi ${cls}"><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("");
-  currentReport=data; renderStandardProtocol(data.standardized_evaluation||{}); renderGeneticEvolution(jobs); renderModelTracks(tracks); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
+  currentReport=data; renderStandardProtocol(data.standardized_evaluation||{}); renderGeneticEvolution(jobs); renderModelTracks(tracks); renderClosingOdds(tracks,jobs); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
   drawGroupedBars($("hitChart"),comparisonRows.filter(x=>x.prediction).map(x=>({label:shortName(x.name),a:x.prediction.winner_top1_accuracy,b:x.prediction.trifecta_top5_hit_rate})),{a:"1着",b:"3T5",percent:true});
   drawLines($("lossChart"),groupFoldSeries(comparisonFolds,"entry_log_loss"),{baseline:null});
   drawBars($("roiChart"),comparisonRows.filter(x=>x.bankroll).map(x=>({label:shortName(x.name),value:x.bankroll.roi})),{baseline:1});
   $("predictionSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction).map(predictionRow).join("")||'<tr><td colspan="9" class="muted">予測評価を実行中</td></tr>';
-  $("operationSummaryRows").innerHTML=comparisonRows.filter(x=>x.bankroll).map(operationRow).join("")||'<tr><td colspan="11" class="muted">運用評価を実行中</td></tr>';
+  $("operationSummaryRows").innerHTML=comparisonRows.filter(x=>x.bankroll).map(operationRow).join("")||'<tr><td colspan="12" class="muted">運用評価を実行中</td></tr>';
   $("compositeSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction&&x.bankroll).map(compositeRow).join("")||'<tr><td colspan="9" class="muted">複合評価を実行中</td></tr>';
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>';
   configureModelSelection(data,comparisonRows); renderSelectedModel(data);
@@ -209,7 +233,7 @@ function mergeComparisonRows(tests,bankroll){
 }
 function predictionRow(row){
   const p=row.prediction||{};
-  const name=esc(row.name), scope=esc(scopeText(row.scope));
+  const name=esc(row.name), scope=esc(row.period||scopeText(row.scope));
   return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+fmt(p.evaluated_races)+'</td><td>'+ratio(p.entry_log_loss)+'</td><td>'+ratio(p.entry_brier)+'</td><td>'+ratio(p.trifecta_log_loss)+'</td><td>'+pct(p.winner_top1_accuracy)+'</td><td>'+pct(p.trifecta_top1_hit_rate)+'</td><td>'+pct(p.trifecta_top5_hit_rate)+'</td></tr>';
 }
 function operationState(b){
@@ -221,7 +245,7 @@ function operationState(b){
 function operationRow(row){
   const b=row.bankroll||{}, selectedR=b.selected_races??b.races_bet;
   const profitCls=b.profit_yen==null?"":Number(b.profit_yen)>=0?"pos":"neg";
-  const rawName=b.file||b.name||row.name, name=esc(shortName(rawName)), scope=esc(scopeText(row.scope));
+  const rawName=b.file||b.name||row.name, name=esc(shortName(rawName)), scope=esc(row.period||scopeText(row.scope));
   const volume=b.benchmark_population_races==null?fmt(b.evaluated_races):fmt(b.benchmark_population_races)+' / '+fmt(b.benchmark_evaluated_races??b.evaluated_races)+(b.benchmark_status==='provisional'?' 暫定':'');
   const noBet=b.no_bet?'<span class="tag running" title="'+esc(b.no_bet_reason||b.policy_selection_source||"")+'">購入見送り</span>':ratio(b.roi);
   return '<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="'+esc(row.model_key||"")+'"><td class="name-cell" title="'+name+'">'+name+'</td><td class="axis-cell">'+scope+'</td><td class="mono">'+volume+'</td><td>'+fmt(selectedR)+'</td><td>'+fmt(b.tickets??b.selected_tickets)+' / '+fmt(b.hit_tickets)+'</td><td>'+fmt(b.hit_races)+'</td><td>'+pct(b.race_hit_rate)+'</td><td>'+noBet+'</td><td>'+ratio(b.roi_without_largest_hit)+'</td><td>'+pct(b.largest_hit_return_share)+'</td><td class="'+profitCls+'">'+(b.profit_yen==null?"-":yen(b.profit_yen))+'</td><td>'+(b.max_drawdown_yen==null?"-":yen(b.max_drawdown_yen))+'</td></tr>';
@@ -253,7 +277,7 @@ function activateModel(key){
   if(!key||!currentReport) return;
   selectedModelKey=key;
   renderSelectedModel(currentReport);
-  $("selectedModelGroup").scrollIntoView({block:"nearest"});
+  $("selectedModelDetail").scrollIntoView({block:"nearest"});
 }
 function renderSelectedModel(data){
   const key=selectedModelKey, catalog=selectedCatalogEntry(data,key);
@@ -297,6 +321,42 @@ function trackCoverage(x){
   const clean=Number(x.coverage_clean_days||0), excluded=Number(x.coverage_excluded_days||0);
   const calibration=x.calibration_eligible_races==null?"":`較正 ${fmt(x.calibration_eligible_races)}R/${fmt(x.calibration_eligible_days)}日 / `;
   return `${calibration}評価完全日 ${fmt(clean)}/${fmt(clean+excluded)} / 最新 ${pct(x.coverage_latest_rate)} / 必須 ${pct(x.coverage_minimum)}`;
+}
+function evaluationPeriod(x){
+  const start=x.holdout_start||x.evaluation_start||x.formal_evaluation_from;
+  const end=x.holdout_end||x.evaluation_end||x.market_comparison_date;
+  if(start||end) return `${start||"-"}..${end||"継続中"} / ${trackAxis(x)}`;
+  return trackAxis(x);
+}
+function missingReason(x,label){
+  const explicit=x.unavailable_reason||x.error||x.failure_reason||x.message;
+  if(explicit) return String(explicit);
+  const status=String(x.status||"");
+  if(status.includes("失敗")) return `${label}の評価ジョブが失敗`;
+  if(Number(x.real_odds_races||0)===0&&x.include_odds) return "締切前の実オッズ対象レースが0件";
+  if(Number(x.coverage_excluded_days||0)>0) return `完全日条件を満たさない日が${fmt(x.coverage_excluded_days)}日`;
+  if(status.includes("待ち")||status.includes("中")) return `${label}を評価中`;
+  return `${label}が成果物に記録されていない`;
+}
+function metricMarkup(value,formatter,reason){
+  return value==null?`<span class="missing" title="${esc(reason)}">未評価</span>`:formatter(value);
+}
+function renderClosingOdds(tracks,jobs){
+  const oddsTracks=(tracks||[]).filter(x=>x.include_odds||x.evaluation_group==="t5_formal"||[x.market_probe_log_loss,x.model_trifecta_log_loss,x.market_log_loss_delta].some(v=>v!=null));
+  const rows=[...oddsTracks];
+  (jobs||[]).filter(x=>x.real_odds_races!=null).forEach(job=>{ if(!rows.some(row=>modelMatches(row,job.model_key||modelKey(job.name)))) rows.push(job); });
+  const complete=rows.filter(x=>(x.model_trifecta_log_loss??x.trifecta_log_loss)!=null&&x.market_probe_log_loss!=null).length;
+  $("oddsSectionMeta").textContent=`評価済み ${fmt(complete)} / 対象 ${fmt(rows.length)}モデル / 締切窓・完全日を行内表示`;
+  $("closingOddsRows").innerHTML=rows.map(x=>{
+    const state=trackState(x), key=x.model_key||modelKey(x.name||x.label), label=x.label||x.name||x.model_file||"-";
+    const modelLoss=x.model_trifecta_log_loss??x.trifecta_log_loss, marketLoss=x.market_probe_log_loss;
+    const sample=x.eligible_races??x.evaluated_races??x.real_odds_races, days=x.evaluation_days??x.calibration_eligible_days;
+    const sampleText=sample==null?"未集計":`${fmt(sample)}R${days==null?"":` / ${fmt(days)}日`}`;
+    const coverage=trackCoverage(x)!=="-"?trackCoverage(x):(x.real_odds_races==null?"未集計":`実odds ${fmt(x.real_odds_races)}R`);
+    const absent=[]; if(modelLoss==null) absent.push(missingReason(x,"モデルLL")); if(marketLoss==null) absent.push(missingReason(x,"市場LL")); if(x.market_log_loss_delta==null) absent.push(missingReason(x,"市場差"));
+    const statusText=absent.length?[...new Set(absent)].join(" / "):state.status;
+    return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(key)}"><td class="name-cell" title="${esc(label)}">${esc(label)}</td><td class="period-cell">${esc(evaluationPeriod(x))}</td><td class="mono">${esc(sampleText)}</td><td>${esc(coverage)}</td><td>${metricMarkup(modelLoss,ratio,missingReason(x,"モデルLL"))}</td><td>${metricMarkup(marketLoss,ratio,missingReason(x,"市場LL"))}</td><td class="mono">${metricMarkup(x.market_log_loss_delta,()=>marketCi(x),missingReason(x,"市場差"))}</td><td title="${esc(statusText)}"><span class="tag ${absent.length?"running":state.cls}">${absent.length?"未完了":esc(state.status)}</span> ${absent.length?`<span class="missing">${esc(statusText)}</span>`:""}</td></tr>`;
+  }).join("")||`<tr><td colspan="8" class="muted">実オッズ評価対象なし: 締切前オッズを含む評価成果物がAPIに未登録</td></tr>`;
 }
 function trackState(x){ const status=String(x.status||"-"); const cls=status==="稼働中"||status==="評価済み"||status==="完了"?"done":status.includes("待ち")||status.includes("中")?"running":status.includes("失敗")?"failed":""; return {status,cls}; }
 function trackHasPrediction(x){ return [x.entry_log_loss,x.trifecta_log_loss,x.market_probe_log_loss,x.model_trifecta_log_loss,x.winner_top1_accuracy,x.trifecta_top5_hit_rate].some(v=>v!=null); }
