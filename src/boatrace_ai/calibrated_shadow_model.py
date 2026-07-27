@@ -40,6 +40,26 @@ FEATURE_SET = "pastlog_calibrated_hash_shadow"
 MODEL_KINDS = ("linear", "mlp")
 
 
+def stabilize_sparse_scaler(scaler: StandardScaler) -> StandardScaler:
+    """Repair numerical round-off in incremental sparse variance estimates."""
+    if not all(hasattr(scaler, name) for name in ("mean_", "var_", "scale_")):
+        return scaler
+    mean = np.asarray(scaler.mean_, dtype=np.float64)
+    variance = np.asarray(scaler.var_, dtype=np.float64)
+    scale = np.asarray(scaler.scale_, dtype=np.float64)
+    if not np.all(np.isfinite(mean)):
+        raise ValueError("non-finite sparse scaler mean")
+    invalid = ~np.isfinite(variance) | (variance < 0.0) | ~np.isfinite(scale)
+    if np.any(invalid):
+        variance = variance.copy()
+        scale = scale.copy()
+        variance[invalid] = 0.0
+        scale[invalid] = 1.0
+        scaler.var_ = variance
+        scaler.scale_ = scale
+    return scaler
+
+
 def train_bundle_from_dataset(
     dataset: HashedRaceDataset,
     *,
@@ -72,6 +92,7 @@ def train_bundle_from_dataset(
                 dataset.matrix[start:end],
                 sample_weight=sample_weights[start:end],
             )
+    stabilize_sparse_scaler(scaler)
 
     classifier = make_classifier(model_kind, alpha=alpha, batch_size=batch_size)
     first = True
