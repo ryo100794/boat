@@ -1287,6 +1287,10 @@ def evaluate_recency_mlp(
                 "evaluation_races": int(protocol["prediction_races"]),
                 "evaluation_race_set_sha256": evaluation_hash,
                 "recency_half_life_days": selected_half_life,
+                "selection_criterion": result["selection"]["criterion"],
+                "selection_entry_log_loss_tolerance": float(
+                    selection_entry_log_loss_tolerance
+                ),
                 "conditional_order_regularization": (
                     conditional_order_selection["selected_regularization"]
                 ),
@@ -1355,6 +1359,10 @@ def evaluate_recency_mlp(
                 "evaluation_races": int(protocol["prediction_races"]),
                 "evaluation_race_set_sha256": evaluation_hash,
                 "recency_half_life_days": selected_half_life,
+                "selection_criterion": result["selection"]["criterion"],
+                "selection_entry_log_loss_tolerance": float(
+                    selection_entry_log_loss_tolerance
+                ),
                 "conditional_order_regularization": (
                     conditional_order_selection["selected_regularization"]
                 ),
