@@ -842,9 +842,14 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert shadow_artifact["metadata"]["drop_feature_groups"] == [
         "research_correlates"
     ]
+    assert shadow_artifact["metadata"]["selection_entry_log_loss_tolerance"] == 0.0005
+    assert shadow_artifact["metadata"]["selection_criterion"]
     assert deployment_artifact["training_races"] == dataset.race_count
     assert deployment_artifact["metadata"]["role"] == "production_candidate"
     assert deployment_artifact["drop_feature_groups"] == ["research_correlates"]
+    assert deployment_artifact["metadata"][
+        "selection_entry_log_loss_tolerance"
+    ] == 0.0005
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()
