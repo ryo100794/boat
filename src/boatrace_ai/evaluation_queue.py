@@ -2737,6 +2737,16 @@ DEFAULT_WORK_TICKETS = (
         25,
     ),
     (
+        "MODEL-HISTORICAL-RESIDUAL-001",
+        "Protected historical residual model",
+        "Model",
+        "Keep no_odds_v8 baseline probabilities fixed and learn historical-feature residual corrections on selection data only",
+        "On the untouched 365-day holdout, do not degrade log loss, winner top1, or trifecta top5 versus no_odds_v8; compare ROI, profit, and drawdown under the identical bankroll protocol without selecting blend weights on holdout",
+        99,
+        "queued",
+        5,
+    ),
+    (
         "MODEL-MARKET-POLICY-CAL-001",
         "T-5期待値・払戻選択層の較正",
         "モデル",
