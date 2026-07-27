@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 
 from ..adaptive_allocation import allocate_adaptive_day, append_day_result, folds_by_full_day, zero_totals
 from ..bankroll_backtest import _build_payout_model, _candidate_tickets, _load_trifecta_payouts
-from ..calibrated_shadow_model import matrix_batch_ranges
+from ..calibrated_shadow_model import matrix_batch_ranges, stabilize_sparse_scaler
 from ..db import connection, init_db
 from ..feature_tuning import (
     _ensure_sparse_index32,
@@ -90,7 +90,7 @@ def fit_scaler(dataset: HashedRaceDataset, *, race_end: int, batch_rows: int) ->
     scaler = StandardScaler(with_mean=False)
     for start, stop in matrix_batch_ranges(row_end, batch_rows):
         scaler.partial_fit(dataset.matrix[start:stop])
-    return scaler
+    return stabilize_sparse_scaler(scaler)
 
 
 def train_listwise_model(
