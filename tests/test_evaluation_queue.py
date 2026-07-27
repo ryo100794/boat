@@ -2087,6 +2087,10 @@ def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None
     assert result_decision("combined_feature_search", {"roi": 0.8}) == (
         "refine_selected_candidate"
     )
+    assert result_decision(
+        "combined_feature_search",
+        {"roi": 1.2, "profit_yen": 2000, "promotion_eligible": True},
+    ) == "refine_selected_candidate"
 
 
 @pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])

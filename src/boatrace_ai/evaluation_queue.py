@@ -2021,6 +2021,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         if summary.get("payout_feature_promotion_eligible") is True:
             return "payout_feature_promotion_candidate"
         return "reject_or_research_only"
+    if task_type in {"listwise_feature_search", "combined_feature_search"}:
+        return "refine_selected_candidate"
     if summary.get("promotion_eligible") is True:
         return "promotion_candidate"
     if summary.get("payout_feature_promotion_eligible") is True:
@@ -2031,8 +2033,6 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     profit = summary.get("profit_yen")
     if roi is not None and float(roi) >= 1.0 and float(profit or 0) > 0:
         return "bankroll_gate_pass"
-    if task_type in {"listwise_feature_search", "combined_feature_search"}:
-        return "refine_selected_candidate"
     if task_type == "evaluation_aggregate":
         return "aggregation_complete"
     if task_type in {"gdrive_raw_archive", "gdrive_model_cache_archive"}:
