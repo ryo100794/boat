@@ -775,6 +775,8 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
         "base_pastlog",
         "raw_equipment_identifiers",
         "research_correlates",
+        "speculative_research",
+        "live_official_context",
         "series_cached",
         "series_relative",
         "rolling_history",

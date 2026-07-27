@@ -52,11 +52,52 @@ FEATURE_GROUPS = (
     "card_relative",
     "raw_equipment_identifiers",
     "research_correlates",
+    "speculative_research",
+    "live_official_context",
     "series_cached",
     "series_relative",
     "rolling_history",
     "legacy_composites",
 )
+
+# Documented BOAT RACE factors are isolated from higher-variance research
+# interactions so forward evaluation can retain only the official context.
+OFFICIAL_CARD_CONTEXT_FEATURES = {
+    "research_home_branch",
+    "research_home_lane",
+    "research_has_local_rates",
+    "research_local_vs_national_win",
+    "research_local_vs_national_2",
+    "research_home_local_win_delta",
+    "research_home_local_2_delta",
+    "research_racer_strength",
+    "research_racer_strength_rank",
+    "research_equipment_strength",
+}
+OFFICIAL_LIVE_CONTEXT_FEATURES = {
+    "research_has_live_context",
+    "research_has_full_course",
+    "research_waku_nari",
+    "research_course_cat",
+    "research_lane_course",
+    "research_course_changed",
+    "research_course_delta",
+    "research_exhibition_top1",
+    "research_exhibition_top2",
+    "research_exhibition_rank_venue",
+    "research_exhibition_rank_weather",
+    "research_exhibition_rank_distance",
+    "research_exhibition_racer_strength",
+    "research_exhibition_rain",
+    "research_venue_weather",
+    "research_lane_wind_direction",
+    "research_lane_wind_bucket",
+    "research_lane_wave_bucket",
+}
+OFFICIAL_CONTEXT_FEATURES = (
+    OFFICIAL_CARD_CONTEXT_FEATURES | OFFICIAL_LIVE_CONTEXT_FEATURES
+)
+
 DEFAULT_ABLATION_FEATURE_GROUPS = tuple(
     group
     for group in FEATURE_GROUPS
@@ -65,6 +106,8 @@ DEFAULT_ABLATION_FEATURE_GROUPS = tuple(
         "card_numeric",
         "card_relative",
         "raw_equipment_identifiers",
+        "speculative_research",
+        "live_official_context",
     }
 )
 CARD_IDENTITY_CONTEXT_FEATURES = {
@@ -754,6 +797,16 @@ def build_race_features(
                 for key, value in item.items()
                 if not key.startswith(RESEARCH_FEATURE_PREFIX)
             }
+        elif "speculative_research" in dropped:
+            item = {
+                key: value
+                for key, value in item.items()
+                if not key.startswith(RESEARCH_FEATURE_PREFIX)
+                or key in OFFICIAL_CONTEXT_FEATURES
+            }
+        if "live_official_context" in dropped:
+            for key in OFFICIAL_LIVE_CONTEXT_FEATURES:
+                item.pop(key, None)
         if uses_explicit_card_missing_flags(feature_schema_version):
             item.pop("origin", None)
             _add_explicit_card_missing_flags(item)
