@@ -51,6 +51,11 @@ from .closing_odds_momentum import (
 from .closing_odds_quantile import (
     walk_forward_closing_odds_quantiles,
 )
+from .empirical_ev_calibration import fit_empirical_ev_calibration
+from .empirical_lcb_policy import (
+    policy_edge_records,
+    simulate_empirical_lcb_policy,
+)
 from .conditional_order import ConditionalOrderModel, conditional_probabilities
 from .conditional_stagewise import (
     ConditionalStagewiseModel,
@@ -67,7 +72,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 22
+MARKET_EVALUATION_VERSION = 23
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
@@ -75,6 +80,8 @@ SCORED_CACHE_VERSION = 12
 MIN_CLOSING_ODDS_TRAINING_DAYS = 7
 MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
+MIN_EMPIRICAL_LCB_EVALUATION_DAYS = 30
+MIN_EMPIRICAL_LCB_TICKETS = 300
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
 EV_THRESHOLDS = (1.05, 1.10, 1.15, 1.20, 1.30, 1.50)
@@ -790,6 +797,69 @@ def summarize_registered_policy_daily(
     }
 
 
+def _fit_prior_empirical_ev_artifact(
+    records: list[dict[str, Any]], evaluation_date: str
+):
+    teacher_dates = sorted({str(row["race_date"]) for row in records})
+    future_dates = [date for date in teacher_dates if date >= evaluation_date]
+    if future_dates:
+        raise ValueError(
+            "empirical EV teachers must precede evaluation_date: "
+            f"{future_dates[0]} >= {evaluation_date}"
+        )
+    artifact = fit_empirical_ev_calibration(records)
+    if (
+        artifact.trained_through_date is not None
+        and artifact.trained_through_date >= evaluation_date
+    ):
+        raise AssertionError("empirical EV artifact crossed evaluation boundary")
+    return artifact
+
+
+def _summarize_empirical_lcb_walk_forward(
+    daily: list[dict[str, Any]],
+    *,
+    evaluated_races: int,
+    folds: list[dict[str, Any]],
+) -> dict[str, Any]:
+    stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily)
+    return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
+    ready_folds = sum(int(bool(fold.get("calibration_ready"))) for fold in folds)
+    tickets = sum(int(row.get("tickets") or 0) for row in daily)
+    sample_size_pass = (
+        ready_folds >= MIN_EMPIRICAL_LCB_EVALUATION_DAYS
+        and tickets >= MIN_EMPIRICAL_LCB_TICKETS
+    )
+    return {
+        "status": "evaluating" if ready_folds else "calibration_not_ready",
+        "comparison_role": "prior_only_empirical_ev_lcb95_production_candidate",
+        "validation_design": (
+            "Each fold fits empirical EV only from prior evaluated folds; the "
+            "current realized payout is appended after its purchase simulation"
+        ),
+        "evaluation_days": len(daily),
+        "evaluated_races": evaluated_races,
+        "calibration_ready_folds": ready_folds,
+        "minimum_ready_evaluation_days": MIN_EMPIRICAL_LCB_EVALUATION_DAYS,
+        "minimum_tickets": MIN_EMPIRICAL_LCB_TICKETS,
+        "sample_size_pass": sample_size_pass,
+        "eligible_days": sum(
+            int(bool(row.get("eligible_candidate_audit"))) for row in daily
+        ),
+        "no_bet_days": sum(int((row.get("tickets") or 0) == 0) for row in daily),
+        "profitable_days": sum(int((row.get("profit_yen") or 0) > 0) for row in daily),
+        "tickets": tickets,
+        "hit_tickets": sum(int(row.get("hit_tickets") or 0) for row in daily),
+        "stake_yen": stake_yen,
+        "return_yen": return_yen,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else None,
+        **bankroll_reliability_metrics(daily, evaluated_races=evaluated_races),
+        "folds": folds,
+        "daily": daily,
+    }
+
+
 def select_policy(
     races: list[dict[str, Any]],
     *,
@@ -1238,6 +1308,11 @@ def waiting_walk_forward_result(
             "winning_days": 0,
             "daily": [],
         },
+        "empirical_lcb_walk_forward": _summarize_empirical_lcb_walk_forward(
+            [],
+            evaluated_races=0,
+            folds=[],
+        ),
         "registered_ev_band_walk_forward": summarize_registered_policy_daily(
             [],
             evaluated_races=0,
@@ -1441,6 +1516,10 @@ def walk_forward_evaluate(
     prospective_daily_rows = []
     prospective_evaluated_races = 0
     edge_diagnostic_records = []
+    empirical_history_records: list[dict[str, Any]] = []
+    empirical_daily_rows: list[dict[str, Any]] = []
+    empirical_fold_rows: list[dict[str, Any]] = []
+    empirical_evaluated_races = 0
     for calibration_dates, evaluation_date in fold_dates:
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
         holdout = by_day[evaluation_date]
@@ -1555,6 +1634,28 @@ def walk_forward_evaluate(
             calibrator=calibrator,
             probability_blender=blend_probabilities,
         )
+        empirical_artifact = _fit_prior_empirical_ev_artifact(
+            empirical_history_records, evaluation_date
+        )
+        empirical_bankroll = simulate_empirical_lcb_policy(
+            holdout_policy_races,
+            calibrator,
+            blend_probabilities,
+            empirical_artifact,
+            daily_budget_yen,
+        )
+        empirical_fold_rows.append(
+            {
+                "fold": len(folds) + 1,
+                "evaluation_date": evaluation_date,
+                "calibration_ready": empirical_artifact.ready,
+                "trained_through_date": empirical_artifact.trained_through_date,
+                "training_days": empirical_artifact.training_days,
+                "training_tickets": empirical_artifact.tickets,
+                "candidate_days": empirical_artifact.candidate_days,
+                "ready_reasons": list(empirical_artifact.ready_reasons),
+            }
+        )
         flat_bankroll = simulate_flat_policy(
             holdout_policy_races,
             calibrator=calibrator,
@@ -1645,6 +1746,11 @@ def walk_forward_evaluate(
                     if prospective_bankroll is not None
                     else None
                 ),
+                "empirical_lcb_bankroll": {
+                    key: value
+                    for key, value in empirical_bankroll.items()
+                    if key != "daily"
+                },
             }
         )
         daily_rows.extend(bankroll["daily"])
@@ -1657,6 +1763,19 @@ def walk_forward_evaluate(
             prospective_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
+        empirical_daily_rows.extend(empirical_bankroll["daily"])
+        empirical_evaluated_races += len(holdout_policy_races)
+        current_empirical_records = policy_edge_records(
+            holdout_policy_races,
+            calibrator,
+            blend_probabilities,
+        )
+        if any(
+            str(row["race_date"]) != evaluation_date
+            for row in current_empirical_records
+        ):
+            raise AssertionError("empirical EV fold produced a mismatched teacher date")
+        empirical_history_records.extend(current_empirical_records)
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
@@ -1675,6 +1794,11 @@ def walk_forward_evaluate(
         market_top5_differences,
         cluster_labels=market_cluster_labels,
     )
+    empirical_lcb_walk_forward = _summarize_empirical_lcb_walk_forward(
+        empirical_daily_rows,
+        evaluated_races=empirical_evaluated_races,
+        folds=empirical_fold_rows,
+    )
     promotion_gate = {
         "minimum_evaluation_races": 1000,
         "minimum_evaluation_days": 30,
@@ -1685,6 +1809,14 @@ def walk_forward_evaluate(
         "fold_stability_pass": profitable_folds >= math.ceil(len(folds) * 0.60),
         "calibration_pass": _calibration_gate_pass(aggregate_metrics),
         "market_confidence_pass": bool(market_comparison["confidence_pass"]),
+        "empirical_lcb_policy_pass": bool(
+            empirical_lcb_walk_forward["sample_size_pass"]
+            and empirical_lcb_walk_forward["profit_yen"] > 0
+            and float(empirical_lcb_walk_forward["roi"] or 0.0) > 1.0
+            and float(
+                empirical_lcb_walk_forward["roi_without_largest_hit"] or 0.0
+            ) > 1.0
+        ),
         "no_lookahead_pass": True,
     }
     deployment_configuration = fit_deployment_configuration(
@@ -1783,6 +1915,7 @@ def walk_forward_evaluate(
             "winning_days": sum(int(row["profit_yen"] > 0) for row in flat_daily_rows),
             "daily": flat_daily_rows,
         },
+        "empirical_lcb_walk_forward": empirical_lcb_walk_forward,
         "registered_ev_band_walk_forward": summarize_registered_policy_daily(
             registered_daily_rows,
             evaluated_races=registered_evaluated_races,
