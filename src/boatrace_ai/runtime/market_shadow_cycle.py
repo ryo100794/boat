@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -111,6 +113,27 @@ def build_command(args: argparse.Namespace, *, through_date: str) -> list[str]:
     return command
 
 
+@contextmanager
+def evaluation_slot(lock_dir: Path, slots: int):
+    if slots < 1:
+        raise ValueError("evaluation slots must be positive")
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(slots):
+        handle = (lock_dir / f"slot-{index}.lock").open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            continue
+        try:
+            yield index
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+        return
+    yield None
+
+
 def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     through_date = completed_through_date(now)
@@ -160,23 +183,40 @@ def run_once(args: argparse.Namespace, *, now: datetime | None = None) -> dict[s
         write_state(state_path, event)
         return event
 
-    completed = subprocess.run(
-        build_command(args, through_date=through_date),
-        text=True,
-        capture_output=True,
-        timeout=max(60, int(args.timeout)),
+    lock_dir = Path(
+        getattr(
+            args,
+            "evaluation_lock_dir",
+            "run/market-shadow-evaluation-slots",
+        )
     )
-    event["returncode"] = completed.returncode
-    event["stdout_tail"] = completed.stdout.splitlines()[-40:]
-    event["stderr_tail"] = completed.stderr.splitlines()[-40:]
-    if completed.returncode == 0:
-        event["status"] = "evaluated"
-        event["completed_through_date"] = through_date
-    else:
-        event["status"] = "error"
-        event["error"] = f"market calibration exited {completed.returncode}"
-        if previous.get("completed_through_date"):
-            event["completed_through_date"] = previous["completed_through_date"]
+    slots = int(getattr(args, "max_concurrent_evaluations", 2))
+    with evaluation_slot(lock_dir, slots) as slot:
+        if slot is None:
+            event["status"] = "deferred_resource_busy"
+            event["max_concurrent_evaluations"] = slots
+            if previous.get("completed_through_date"):
+                event["completed_through_date"] = previous["completed_through_date"]
+            write_state(state_path, event)
+            return event
+        event["evaluation_slot"] = slot
+        completed = subprocess.run(
+            build_command(args, through_date=through_date),
+            text=True,
+            capture_output=True,
+            timeout=max(60, int(args.timeout)),
+        )
+        event["returncode"] = completed.returncode
+        event["stdout_tail"] = completed.stdout.splitlines()[-40:]
+        event["stderr_tail"] = completed.stderr.splitlines()[-40:]
+        if completed.returncode == 0:
+            event["status"] = "evaluated"
+            event["completed_through_date"] = through_date
+        else:
+            event["status"] = "error"
+            event["error"] = f"market calibration exited {completed.returncode}"
+            if previous.get("completed_through_date"):
+                event["completed_through_date"] = previous["completed_through_date"]
     write_state(state_path, event)
     return event
 
@@ -211,6 +251,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     parser.add_argument("--interval", type=float, default=3600.0)
+    parser.add_argument(
+        "--evaluation-lock-dir",
+        default="run/market-shadow-evaluation-slots",
+    )
+    parser.add_argument(
+        "--max-concurrent-evaluations",
+        type=int,
+        default=2,
+    )
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--once", action="store_true")
     return parser
