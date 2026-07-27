@@ -296,10 +296,12 @@ def _weighted_pava(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
         block_starts.append(index)
         while len(block_values) >= 2 and block_values[-2] > block_values[-1]:
             merged_weight = block_weights[-2] + block_weights[-1]
+            left_share = block_weights[-2] / merged_weight
+            right_share = block_weights[-1] / merged_weight
             merged_value = (
-                block_values[-2] * block_weights[-2]
-                + block_values[-1] * block_weights[-1]
-            ) / merged_weight
+                block_values[-2] * left_share
+                + block_values[-1] * right_share
+            )
             block_values[-2:] = [merged_value]
             block_weights[-2:] = [merged_weight]
             block_starts.pop()
@@ -347,10 +349,32 @@ def _context_reasons(
     return tuple(reasons)
 
 
-def _shrinkage_weight(support: int, prior_tickets: float) -> float:
-    if support <= 0:
-        return 0.0
-    return float(support / (support + prior_tickets))
+def _add_finite(array: np.ndarray, index: object, value: float) -> None:
+    updated = float(array[index]) + value
+    if not isfinite(updated):
+        raise ValueError("gross return aggregates exceed float64 range")
+    array[index] = updated
+
+
+def _shrunken_isotonic(
+    sums: np.ndarray,
+    counts: np.ndarray,
+    parent: np.ndarray,
+    prior_tickets: float,
+) -> np.ndarray:
+    """Fit one monotone child curve with the parent as finite pseudo-support."""
+    if not np.all(np.isfinite(parent)):
+        return np.array(parent, dtype=np.float64, copy=True)
+    local = np.divide(
+        sums,
+        counts,
+        out=np.zeros_like(sums, dtype=np.float64),
+        where=counts > 0,
+    )
+    local_weight = counts / (counts + prior_tickets)
+    targets = local_weight * local + (1.0 - local_weight) * parent
+    weights = counts.astype(np.float64) + prior_tickets
+    return _weighted_pava(targets, weights)
 
 
 def fit_contextual_empirical_ev_calibration(
@@ -392,6 +416,8 @@ def fit_contextual_empirical_ev_calibration(
     )
     if any(value < 1 for value in thresholds):
         raise ValueError("readiness thresholds must be positive")
+    rank_prior_tickets = _finite_float(rank_prior_tickets, "rank_prior_tickets")
+    cell_prior_tickets = _finite_float(cell_prior_tickets, "cell_prior_tickets")
     if rank_prior_tickets <= 0.0 or cell_prior_tickets <= 0.0:
         raise ValueError("prior ticket strengths must be positive")
 
@@ -432,8 +458,11 @@ def fit_contextual_empirical_ev_calibration(
             row.odds_index,
             index,
         )
-        day_sums[coordinates] += row.gross_return
+        _add_finite(day_sums, coordinates, row.gross_return)
         day_counts[coordinates] += 1
+
+    if not np.all(np.isfinite(day_sums)):
+        raise ValueError("gross return aggregates exceed float64 range")
 
     sums = day_sums.sum(axis=0)
     counts = day_counts.sum(axis=0)
@@ -462,18 +491,16 @@ def fit_contextual_empirical_ev_calibration(
             min_days=min_rank_days,
         )
         rank_ready[rank_index] = not reasons
-        local = _isotonic_bins(rank_sums[rank_index], rank_counts[rank_index])
-        for bin_index in range(bin_count):
-            if rank_ready[rank_index] and rank_counts[rank_index, bin_index] > 0:
-                weight = _shrinkage_weight(
-                    int(rank_counts[rank_index, bin_index]),
-                    rank_prior_tickets,
-                )
-                rank_weights[rank_index, bin_index] = weight
-                rank_point[rank_index, bin_index] = (
-                    weight * local[bin_index]
-                    + (1.0 - weight) * global_point[bin_index]
-                )
+        if rank_ready[rank_index]:
+            rank_point[rank_index] = _shrunken_isotonic(
+                rank_sums[rank_index],
+                rank_counts[rank_index],
+                global_point,
+                rank_prior_tickets,
+            )
+            rank_weights[rank_index] = rank_counts[rank_index] / (
+                rank_counts[rank_index] + rank_prior_tickets
+            )
 
     cell_ready = np.zeros((len(RANK_GROUPS), len(ODDS_BANDS)), dtype=bool)
     cell_weights = np.zeros(
@@ -490,24 +517,16 @@ def fit_contextual_empirical_ev_calibration(
                 min_days=min_cell_days,
             )
             cell_ready[rank_index, odds_index] = not reasons
-            local = _isotonic_bins(
-                sums[rank_index, odds_index],
-                counts[rank_index, odds_index],
-            )
-            for bin_index in range(bin_count):
-                if (
-                    cell_ready[rank_index, odds_index]
-                    and counts[rank_index, odds_index, bin_index] > 0
-                ):
-                    weight = _shrinkage_weight(
-                        int(counts[rank_index, odds_index, bin_index]),
-                        cell_prior_tickets,
-                    )
-                    cell_weights[rank_index, odds_index, bin_index] = weight
-                    cell_point[rank_index, odds_index, bin_index] = (
-                        weight * local[bin_index]
-                        + (1.0 - weight) * rank_point[rank_index, bin_index]
-                    )
+            if cell_ready[rank_index, odds_index]:
+                cell_point[rank_index, odds_index] = _shrunken_isotonic(
+                    sums[rank_index, odds_index],
+                    counts[rank_index, odds_index],
+                    rank_point[rank_index],
+                    cell_prior_tickets,
+                )
+                cell_weights[rank_index, odds_index] = counts[
+                    rank_index, odds_index
+                ] / (counts[rank_index, odds_index] + cell_prior_tickets)
 
     cell_samples = np.empty(
         (bootstrap_samples, len(RANK_GROUPS), len(ODDS_BANDS), bin_count),
@@ -519,23 +538,21 @@ def fit_contextual_empirical_ev_calibration(
             selected = rng.integers(0, len(dates), size=len(dates))
             sampled_sums = day_sums[selected].sum(axis=0)
             sampled_counts = day_counts[selected].sum(axis=0)
+            if not np.all(np.isfinite(sampled_sums)):
+                raise ValueError("bootstrap aggregates exceed float64 range")
             sampled_global = _isotonic_bins(
                 sampled_sums.sum(axis=(0, 1)),
                 sampled_counts.sum(axis=(0, 1)),
             )
             sampled_rank = np.tile(sampled_global, (len(RANK_GROUPS), 1))
             for rank_index in range(len(RANK_GROUPS)):
-                local = _isotonic_bins(
-                    sampled_sums[rank_index].sum(axis=0),
-                    sampled_counts[rank_index].sum(axis=0),
-                )
-                for bin_index in range(bin_count):
-                    weight = rank_weights[rank_index, bin_index]
-                    if weight > 0.0 and not np.isnan(local[bin_index]):
-                        sampled_rank[rank_index, bin_index] = (
-                            weight * local[bin_index]
-                            + (1.0 - weight) * sampled_global[bin_index]
-                        )
+                if rank_ready[rank_index]:
+                    sampled_rank[rank_index] = _shrunken_isotonic(
+                        sampled_sums[rank_index].sum(axis=0),
+                        sampled_counts[rank_index].sum(axis=0),
+                        sampled_global,
+                        rank_prior_tickets,
+                    )
             sample_cells = np.repeat(
                 sampled_rank[:, None, :],
                 len(ODDS_BANDS),
@@ -543,18 +560,13 @@ def fit_contextual_empirical_ev_calibration(
             )
             for rank_index in range(len(RANK_GROUPS)):
                 for odds_index in range(len(ODDS_BANDS)):
-                    local = _isotonic_bins(
-                        sampled_sums[rank_index, odds_index],
-                        sampled_counts[rank_index, odds_index],
-                    )
-                    for bin_index in range(bin_count):
-                        weight = cell_weights[rank_index, odds_index, bin_index]
-                        if weight > 0.0 and not np.isnan(local[bin_index]):
-                            sample_cells[rank_index, odds_index, bin_index] = (
-                                weight * local[bin_index]
-                                + (1.0 - weight)
-                                * sampled_rank[rank_index, bin_index]
-                            )
+                    if cell_ready[rank_index, odds_index]:
+                        sample_cells[rank_index, odds_index] = _shrunken_isotonic(
+                            sampled_sums[rank_index, odds_index],
+                            sampled_counts[rank_index, odds_index],
+                            sampled_rank[rank_index],
+                            cell_prior_tickets,
+                        )
             cell_samples[sample] = sample_cells
         cell_lcb = np.quantile(cell_samples, 0.05, axis=0)
         cell_lcb = np.minimum(cell_point, cell_lcb)
@@ -574,11 +586,11 @@ def fit_contextual_empirical_ev_calibration(
             for bin_index in range(bin_count):
                 cell_weight = cell_weights[rank_index, odds_index, bin_index]
                 rank_weight = rank_weights[rank_index, bin_index]
-                if cell_weight > 0.0:
+                if cell_ready[rank_index, odds_index]:
                     level = "rank_odds_cell"
                     weight = cell_weight
                     lcb_value = cell_lcb[rank_index, odds_index, bin_index]
-                elif rank_weight > 0.0:
+                elif rank_ready[rank_index]:
                     level = "rank_group"
                     weight = rank_weight
                     lcb_value = cell_lcb[rank_index, odds_index, bin_index]
