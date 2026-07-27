@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from boatrace_ai.listwise.combined_feature_search import (
     COMBINED_FEATURE_VARIANTS,
     build_parser,
+    parse_combined_feature_variants,
 )
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
@@ -113,6 +114,16 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     assert args.candidate_workers == 1
     assert args.output.endswith("listwise_combined_feature_search_v1.json")
     assert args.cache_dir.endswith("listwise_combined_search_cache")
+
+
+def test_combined_variant_subset_is_registered_and_ordered() -> None:
+    selected = parse_combined_feature_variants(
+        "keep_card_numeric,drop_base_pastlog,keep_card_numeric"
+    )
+    assert selected == (
+        COMBINED_FEATURE_VARIANTS[2],
+        COMBINED_FEATURE_VARIANTS[0],
+    )
 
 
 def test_combined_signature_is_separate_from_default_signature() -> None:

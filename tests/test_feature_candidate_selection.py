@@ -22,7 +22,7 @@ def _candidate(
 
 def test_selection_prefers_top5_within_ranking_loss_tolerance() -> None:
     best_loss = _candidate("best-loss", ranking_loss=1.0, top5=0.29)
-    better_top5 = _candidate("better-top5", ranking_loss=1.0049, top5=0.31)
+    better_top5 = _candidate("better-top5", ranking_loss=1.0099, top5=0.31)
 
     assert _selected_row([best_loss, better_top5])["feature_variant"] == (
         "better-top5"
@@ -31,7 +31,7 @@ def test_selection_prefers_top5_within_ranking_loss_tolerance() -> None:
 
 def test_selection_rejects_top5_gain_outside_ranking_loss_tolerance() -> None:
     best_loss = _candidate("best-loss", ranking_loss=1.0, top5=0.29)
-    outside = _candidate("outside", ranking_loss=1.0051, top5=0.40)
+    outside = _candidate("outside", ranking_loss=1.0101, top5=0.40)
 
     assert _selected_row([best_loss, outside])["feature_variant"] == "best-loss"
 

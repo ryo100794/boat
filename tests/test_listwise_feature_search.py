@@ -15,6 +15,7 @@ from boatrace_ai.listwise.feature_search import (
     _candidate_key,
     _checkpoint_signature,
     _ordered_rows,
+    _selected_row,
     _evaluate_variant,
     build_parser,
     day_boundary,
@@ -24,6 +25,25 @@ from boatrace_ai.listwise.feature_search import (
     search,
     selected_cache_candidates,
 )
+
+
+def test_selection_prefers_hit_rates_within_one_percent_ranking_loss() -> None:
+    best_ranking = {
+        "ranking_log_loss": 1.3658187203,
+        "trifecta_top5_hit_rate": 0.3213782460,
+        "winner_top1_accuracy": 0.5627725961,
+        "entry_log_loss": 0.3306188577,
+        "target": "top3_pl",
+    }
+    better_predictions = {
+        "ranking_log_loss": 1.3775575482,
+        "trifecta_top5_hit_rate": 0.3233577132,
+        "winner_top1_accuracy": 0.5683978617,
+        "entry_log_loss": 0.3280697773,
+        "target": "winner",
+    }
+
+    assert _selected_row([best_ranking, better_predictions]) is better_predictions
 
 
 def test_ev_policy_thresholds_are_parsed_separately_from_model_search() -> None:

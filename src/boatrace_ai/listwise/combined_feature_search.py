@@ -38,12 +38,28 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
 )
 
 
+def parse_combined_feature_variants(value: str) -> FeatureVariants:
+    available = dict(COMBINED_FEATURE_VARIANTS)
+    names = tuple(dict.fromkeys(
+        item.strip() for item in value.split(",") if item.strip()
+    ))
+    if not names or any(name not in available for name in names):
+        raise argparse.ArgumentTypeError("unsupported combined feature variants")
+    return tuple((name, available[name]) for name in names)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = build_feature_search_parser()
     parser.description = "Fixed combined feature-group ablation search."
     parser.set_defaults(
         output="data/models/listwise_combined_feature_search_v1.json",
         cache_dir="data/models/listwise_combined_search_cache",
+    )
+    parser.add_argument(
+        "--combined-feature-variants",
+        type=parse_combined_feature_variants,
+        default=None,
+        help="Comma-separated registered combined feature variants.",
     )
     return parser
 
@@ -52,7 +68,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     init_db(args.db)
     with connection(args.db) as conn:
-        result = search(conn, args=args, variants=COMBINED_FEATURE_VARIANTS)
+        result = search(
+            conn,
+            args=args,
+            variants=args.combined_feature_variants or COMBINED_FEATURE_VARIANTS,
+        )
     compact = {
         key: value
         for key, value in result.items()
