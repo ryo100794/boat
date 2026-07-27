@@ -51,10 +51,8 @@ from .protected_historical_blend import (
     prediction_metrics as protected_prediction_metrics,
     select_protected_blend,
 )
-from .protected_historical_evaluation import (
-    file_sha256,
-    score_historical_baseline_range,
-)
+from .protected_historical_evaluation import file_sha256
+from .protected_prediction_cache import cached_historical_baseline_range
 from .standard_evaluation import (
     POLICY as STANDARD_POLICY,
     build_protocol,
@@ -1028,12 +1026,13 @@ def evaluate_recency_mlp(
         )
         if protected_baseline_model_path is not None:
             calibration_start = int(split["inner_train_races"])
-            _, baseline_calibration_predictions = score_historical_baseline_range(
+            _, baseline_calibration_predictions = cached_historical_baseline_range(
                 conn,
                 race_keys,
                 train_end=calibration_start,
                 score_start=calibration_start,
                 score_end=training_count,
+                cache_dir=output_path.parent / "protected_baseline_cache",
             )
             protected_blend = select_protected_blend(
                 baseline_calibration_predictions,
@@ -1070,12 +1069,13 @@ def evaluate_recency_mlp(
             batch_size=batch_size,
         )
         if protected_baseline_model_path is not None:
-            _, baseline_holdout_predictions = score_historical_baseline_range(
+            _, baseline_holdout_predictions = cached_historical_baseline_range(
                 conn,
                 race_keys,
                 train_end=training_count,
                 score_start=training_count,
                 score_end=dataset.race_count,
+                cache_dir=output_path.parent / "protected_baseline_cache",
                 model_path=protected_baseline_model_path,
             )
             predictions = blend_predictions(
