@@ -1036,6 +1036,26 @@ def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
     assert result_decision("market_curvature", summary) == "confirm_on_new_holdout"
 
 
+def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
+    summary = summarize_result({
+        "promotion_gate": {
+            "minimum_tickets": True,
+            "minimum_betting_days": False,
+            "roi_above_one": True,
+        },
+        "holdout_temporal_stability": {
+            "minimum_roi": 0.94,
+            "folds": [{"roi": 1.10}, {"roi": 0.94}, {"roi": 1.03}],
+        },
+    })
+
+    assert summary["promotion_gate_passed"] == 2
+    assert summary["promotion_gate_total"] == 3
+    assert summary["promotion_gate_failed"] == ["minimum_betting_days"]
+    assert summary["holdout_temporal_minimum_roi"] == 0.94
+    assert summary["holdout_temporal_fold_rois"] == [1.10, 0.94, 1.03]
+
+
 def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     summary = summarize_result({
         "status": "completed",
