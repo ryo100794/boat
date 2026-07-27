@@ -1289,11 +1289,15 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     model_dir = tmp_path / "data" / "models" / "evaluation_queue"
     model_dir.mkdir(parents=True)
     sources = {
+        "calibrated_mlp_prediction_deployment": model_dir / "protected.json",
         "calibrated_mlp_recency_card_features": model_dir / "mlp.json",
         "calibrated_lightgbm_recency_period_v6_4cpu": model_dir / "lightgbm.json",
     }
     for path in sources.values():
         path.with_suffix(".joblib").write_bytes(b"model")
+    sources["calibrated_mlp_prediction_deployment"].with_name(
+        "protected.deployment.joblib"
+    ).write_bytes(b"model")
 
     class FakeConn:
         parameters = ()
@@ -1319,12 +1323,19 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3]
+    assert inserted == [1, 2, 3, 4]
     assert {row["model_key"] for row in calls} == {
+        "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
         "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
         "odds_path_operational_daily:market_residual:20260718-25",
     }
+    protected = next(
+        row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
+    )
+    assert Path(protected["parameters"]["model_input"]).name == (
+        "protected.deployment.joblib"
+    )
     assert all(
         row["parameters"]["through_date"] == "2026-07-25"
         and row["parameters"]["from_date"] == "2026-07-18"
