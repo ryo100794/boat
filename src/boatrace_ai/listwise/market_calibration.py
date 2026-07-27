@@ -1876,6 +1876,9 @@ def score_real_odds_races(
             )
         )
         closing_odds = None
+        closing_age = None
+        closing_source_changed = None
+        closing_odds_changed = None
         if closing_snapshot is None or len(closing_snapshot.get("odds") or {}) != 120:
             skipped_no_closing_odds += 1
         else:
@@ -1892,6 +1895,19 @@ def score_real_odds_races(
                     key: float(value)
                     for key, value in closing_snapshot["odds"].items()
                 }
+                closing_source_changed = (
+                    snapshot.get("source_update_time")
+                    != closing_snapshot.get("source_update_time")
+                )
+                closing_odds_changed = any(
+                    not math.isclose(
+                        float(snapshot["odds"][key]),
+                        float(closing_odds[key]),
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    for key in closing_odds
+                )
                 closing_odds_races += 1
         odds = {key: float(value) for key, value in snapshot["odds"].items()}
         market_probabilities = normalized_market_probabilities(odds)
@@ -1920,8 +1936,18 @@ def score_real_odds_races(
                     if closing_odds is not None
                     else None
                 ),
+                "closing_source_update_time": (
+                    closing_snapshot.get("source_update_time")
+                    if closing_odds is not None
+                    else None
+                ),
+                "closing_snapshot_age_seconds": closing_age,
+                "closing_source_changed": closing_source_changed,
+                "closing_odds_changed": closing_odds_changed,
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "captured_at": snapshot.get("captured_at"),
+                "source_update_time": snapshot.get("source_update_time"),
+                "input_snapshot_age_seconds": snapshot_age,
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
                 **(
                     odds_path_fields_from_snapshots(
