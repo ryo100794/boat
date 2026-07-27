@@ -878,6 +878,36 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def protected_holdout_predictions(
+    conn: Any,
+    race_keys: Sequence[tuple[str, str, str, int]],
+    *,
+    training_count: int,
+    candidate_predictions: dict[str, list[dict[str, Any]]],
+    candidate_metrics: dict[str, Any],
+    candidate_weight: float,
+    cache_dir: Path,
+    baseline_model_path: Path,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    if float(candidate_weight) == 1.0:
+        return candidate_metrics, candidate_predictions
+    _, baseline_predictions = cached_historical_baseline_range(
+        conn,
+        race_keys,
+        train_end=training_count,
+        score_start=training_count,
+        score_end=len(race_keys),
+        cache_dir=cache_dir,
+        model_path=baseline_model_path,
+    )
+    blended = blend_predictions(
+        baseline_predictions,
+        candidate_predictions,
+        candidate_weight=float(candidate_weight),
+    )
+    return protected_prediction_metrics(blended), blended
+
+
 def evaluate_recency_mlp(
     conn: Any,
     *,
@@ -1069,21 +1099,16 @@ def evaluate_recency_mlp(
             batch_size=batch_size,
         )
         if protected_baseline_model_path is not None:
-            _, baseline_holdout_predictions = cached_historical_baseline_range(
+            prediction_metrics, predictions = protected_holdout_predictions(
                 conn,
                 race_keys,
-                train_end=training_count,
-                score_start=training_count,
-                score_end=dataset.race_count,
-                cache_dir=output_path.parent / "protected_baseline_cache",
-                model_path=protected_baseline_model_path,
-            )
-            predictions = blend_predictions(
-                baseline_holdout_predictions,
-                predictions,
+                training_count=training_count,
+                candidate_predictions=predictions,
+                candidate_metrics=prediction_metrics,
                 candidate_weight=float(protected_blend["candidate_weight"]),
+                cache_dir=output_path.parent / "protected_baseline_cache",
+                baseline_model_path=protected_baseline_model_path,
             )
-            prediction_metrics = protected_prediction_metrics(predictions)
         report_progress(
             "holdout_scored",
             evaluated_races=int(prediction_metrics["evaluated_races"]),
