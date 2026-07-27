@@ -10,6 +10,7 @@ from .feature_search import search
 
 
 COMBINED_FEATURE_VARIANTS: FeatureVariants = (
+    ("drop_base_pastlog", ("base_pastlog",)),
     (
         "keep_card_identity_context",
         ("card_numeric", "card_relative", "research_correlates"),
