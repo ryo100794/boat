@@ -2,7 +2,8 @@
 set -euo pipefail
 
 cd "${BOATRACE_APP_ROOT:-$(dirname "$0")/..}"
-export PYTHONPATH=src
+export PYTHONPATH="${BOATRACE_PYTHONPATH:-src}"
+scripts_dir="${BOATRACE_SCRIPTS_DIR:-scripts}"
 
 db="${BOATRACE_DB:-data/boatrace.sqlite}"
 model_dir="${BOATRACE_MODEL_DIR:-data/models}"
@@ -231,7 +232,7 @@ fi
 
 if source_needs_run listwise_newton; then
 run_job standardized_365d_v2_persist_selected_cache \
-  .venv/bin/python scripts/persist_selected_feature_cache.py \
+  .venv/bin/python "$scripts_dir/persist_selected_feature_cache.py" \
   --artifact "$raw_dir/listwise_feature_teacher.json" \
   --destination-dir "$eval_dir/selected_cache"
 
@@ -278,7 +279,7 @@ run_job standardized_365d_v2_consolidate \
   --protocol-file "$protocol"
 
 run_job standardized_365d_v2_audit \
-  .venv/bin/python scripts/audit_standardized_evaluation.py "$eval_dir" --db "$db"
+  .venv/bin/python "$scripts_dir/audit_standardized_evaluation.py" "$eval_dir" --db "$db"
 
 cleanup_temporary_files
 printf 'COMPLETE %s standardized_365d_v2\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$queue_log"
