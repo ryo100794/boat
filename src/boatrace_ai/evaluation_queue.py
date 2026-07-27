@@ -30,7 +30,7 @@ STANDARDIZED_SELECTED_CACHE_DIR = Path(
 )
 SCHEMA_LOCK_ID = 71234001
 CLAIM_LOCK_ID = 71234002
-EVALUATION_MEMORY_SAFETY_MB = 8192
+EVALUATION_MEMORY_SAFETY_MB = 6144
 
 
 @dataclass(frozen=True)
@@ -558,6 +558,7 @@ def claim_job(
     snapshot = _json(resource_snapshot_dict(resources))
     evaluation_reservation_mb = _evaluation_reservation_mb(resources)
     conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
+    conn.execute("LOCK TABLE model_evaluation_jobs IN ROW EXCLUSIVE MODE")
     candidate = conn.execute(
         """
         SELECT jobs.*
