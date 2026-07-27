@@ -16,7 +16,12 @@ MAX_DAILY_TICKETS = 30
 class EmpiricalEVArtifact(Protocol):
     ready: bool
 
-    def predict(self, raw_ev: float) -> Mapping[str, object]: ...
+    def predict(
+        self,
+        raw_ev: float,
+        probability_rank: int | None = None,
+        forecast_odds: float | None = None,
+    ) -> Mapping[str, object]: ...
 
     def as_dict(self) -> Mapping[str, object]: ...
 
@@ -138,11 +143,14 @@ def _race_candidates(
     odds = decision_odds(race)
     multipliers = race.get("historical_return_multipliers") or {}
     candidates: list[dict[str, Any]] = []
-    for combination, probability in probabilities.items():
+    ranked = _ranked_combinations(probabilities)
+    ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
+    for combination in ranked:
+        probability = probabilities[combination]
         price = float(odds[combination])
         return_multiplier = float(multipliers.get(combination, 1.0))
         raw_ev = float(probability) * price * return_multiplier
-        prediction = artifact.predict(raw_ev)
+        prediction = artifact.predict(raw_ev, ranks[combination], price)
         point_value = prediction.get("empirical_ev")
         lcb_value = prediction.get("empirical_ev_lcb95")
         if point_value is None or lcb_value is None:

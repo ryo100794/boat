@@ -51,7 +51,9 @@ from .closing_odds_momentum import (
 from .closing_odds_quantile import (
     walk_forward_closing_odds_quantiles,
 )
-from .empirical_ev_calibration import fit_empirical_ev_calibration
+from .contextual_empirical_ev_calibration import (
+    fit_contextual_empirical_ev_calibration,
+)
 from .empirical_lcb_policy import (
     policy_edge_records,
     simulate_empirical_lcb_policy,
@@ -72,7 +74,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 23
+MARKET_EVALUATION_VERSION = 24
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
@@ -807,7 +809,10 @@ def _fit_prior_empirical_ev_artifact(
             "empirical EV teachers must precede evaluation_date: "
             f"{future_dates[0]} >= {evaluation_date}"
         )
-    artifact = fit_empirical_ev_calibration(records)
+    artifact = fit_contextual_empirical_ev_calibration(
+        records,
+        prediction_date=evaluation_date,
+    )
     if (
         artifact.trained_through_date is not None
         and artifact.trained_through_date >= evaluation_date

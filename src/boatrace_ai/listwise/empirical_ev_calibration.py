@@ -59,7 +59,14 @@ class EmpiricalEVCalibrationArtifact:
     bootstrap_samples: int
     seed: int
 
-    def predict(self, raw_ev: float) -> dict[str, int | float | None]:
+    def predict(
+        self,
+        raw_ev: float,
+        probability_rank: int | None = None,
+        forecast_odds: float | None = None,
+    ) -> dict[str, int | float | None]:
+        # Context is accepted so global and contextual artifacts share one policy API.
+        del probability_rank, forecast_odds
         value = _finite_float(raw_ev, "raw_ev")
         index = _bin_index(value, tuple(bin_.upper for bin_ in self.bins))
         return self.bins[index].as_dict()

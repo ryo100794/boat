@@ -95,6 +95,10 @@ class ContextualEmpiricalEVCalibrationArtifact:
     seed: int
     calibration_version: int = CONTEXTUAL_CALIBRATION_VERSION
 
+    @property
+    def candidate_days(self) -> int:
+        return self.global_calibration.candidate_days
+
     def predict(
         self,
         raw_ev: float,
@@ -134,6 +138,7 @@ class ContextualEmpiricalEVCalibrationArtifact:
             "trained_through_date": self.trained_through_date,
             "training_days": self.training_days,
             "tickets": self.tickets,
+            "candidate_days": self.candidate_days,
             "excluded_non_past_records": self.excluded_non_past_records,
             "context_ready_cells": self.context_ready_cells,
             "context_cells": len(self.cells),
