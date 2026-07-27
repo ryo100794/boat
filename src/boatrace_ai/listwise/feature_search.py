@@ -508,9 +508,27 @@ def _checkpoint_payload(
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
     variants: FeatureVariants | None = None,
+    last_completed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    run_variants = _resolved_variants(variants)
+    completed_variants = sum(
+        all(
+            _candidate_key(variant_name, target, alpha) in completed
+            for target in targets
+            for alpha in alphas
+        )
+        for variant_name, _dropped in run_variants
+    )
+    total_candidates = len(run_variants) * len(targets) * len(alphas)
     return {
         "signature": signature,
+        "progress": {
+            "completed_candidates": len(completed),
+            "total_candidates": total_candidates,
+            "completed_variants": completed_variants,
+            "total_variants": len(run_variants),
+            "last_completed": last_completed,
+        },
         "search_results": _ordered_rows(
             completed,
             targets=targets,
@@ -518,6 +536,33 @@ def _checkpoint_payload(
             variants=variants,
         ),
     }
+
+
+def _persist_checkpoint_progress(
+    path: Path,
+    signature: dict[str, Any],
+    completed: dict[str, dict[str, Any]],
+    *,
+    targets: tuple[str, ...],
+    alphas: tuple[float, ...],
+    variants: FeatureVariants | None,
+    last_completed: dict[str, Any],
+) -> None:
+    payload = _checkpoint_payload(
+        signature,
+        completed,
+        targets=targets,
+        alphas=alphas,
+        variants=variants,
+        last_completed=last_completed,
+    )
+    _write_json_atomic(path, payload)
+    print(json.dumps({
+        "feature_search_progress": {
+            **payload["progress"],
+            "checkpoint": str(path),
+        }
+    }, ensure_ascii=False), flush=True)
 
 
 def search(
@@ -660,15 +705,19 @@ def search(
                 float(row["alpha"]),
             )
             completed[key] = row
-            _write_json_atomic(
+            _persist_checkpoint_progress(
                 checkpoint_path,
-                _checkpoint_payload(
-                    checkpoint_signature,
-                    completed,
-                    targets=targets,
-                    alphas=alphas,
-                    variants=run_variants,
-                ),
+                checkpoint_signature,
+                completed,
+                targets=targets,
+                alphas=alphas,
+                variants=run_variants,
+                last_completed={
+                    "kind": "candidate",
+                    "feature_variant": variant_name,
+                    "target": str(row["target"]),
+                    "alpha": float(row["alpha"]),
+                },
             )
 
         try:
@@ -691,15 +740,17 @@ def search(
                         for name, value in row.items()
                         if name != "training_history"
                     }, ensure_ascii=False), flush=True)
-            _write_json_atomic(
+            _persist_checkpoint_progress(
                 checkpoint_path,
-                _checkpoint_payload(
-                    checkpoint_signature,
-                    completed,
-                    targets=targets,
-                    alphas=alphas,
-                    variants=run_variants,
-                ),
+                checkpoint_signature,
+                completed,
+                targets=targets,
+                alphas=alphas,
+                variants=run_variants,
+                last_completed={
+                    "kind": "variant",
+                    "feature_variant": variant_name,
+                },
             )
             current_selected = _selected_row(
                 _ordered_rows(
