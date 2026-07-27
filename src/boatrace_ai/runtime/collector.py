@@ -58,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
             "t5_priority_failed": 0,
             "t5_guard_targets": 0,
             "t5_guard_until_seconds": None,
+            "closing_priority_targets": 0,
+            "closing_priority_ok": 0,
+            "closing_priority_failed": 0,
+            "closing_guard_targets": 0,
+            "closing_guard_until_seconds": None,
             "beforeinfo_targets": 0,
             "beforeinfo_ok": 0,
             "beforeinfo_failed": 0,
@@ -125,23 +130,60 @@ def main(argv: list[str] | None = None) -> int:
                     counters=counters,
                 )
                 time.sleep(args.sleep_page)
+            closing_odds_ids: set[str] = set()
+            for closing_seconds, closing_row in closing_priority_rows(rows, now=now_jst()):
+                race_id = str(closing_row["race_id"])
+                counters["closing_priority_targets"] += 1
+                counters["odds_targets"] += 1
+                ok = collect_odds(
+                    conn,
+                    race_date=target_date,
+                    jcd=closing_row["jcd"],
+                    rno=int(closing_row["rno"]),
+                    raw_dir=raw_dir,
+                )
+                conn.commit()
+                if ok:
+                    closing_odds_ids.add(race_id)
+                    counters["closing_priority_ok"] += 1
+                    counters["odds_ok"] += 1
+                else:
+                    counters["closing_priority_failed"] += 1
+                    counters["odds_failed"] += 1
+                refresh_prediction(
+                    conn,
+                    enabled=args.predict,
+                    model_path=model_path,
+                    race_date=target_date,
+                    row=closing_row,
+                    odds_collected=bool(ok),
+                    counters=counters,
+                )
+                time.sleep(args.sleep_page)
             guard_now = now_jst()
             guarded_rows = t5_guard_rows(
                 rows,
                 now=guard_now,
                 satisfied_race_ids=priority_odds_ids,
             )
-            if guarded_rows:
+            closing_guarded_rows = closing_guard_rows(rows, now=guard_now)
+            if guarded_rows or closing_guarded_rows:
                 counters["t5_guard_targets"] = len(guarded_rows)
-                counters["t5_guard_until_seconds"] = round(
-                    guarded_rows[0][0], 1
+                counters["t5_guard_until_seconds"] = (
+                    round(guarded_rows[0][0], 1) if guarded_rows else None
+                )
+                counters["closing_guard_targets"] = len(closing_guarded_rows)
+                counters["closing_guard_until_seconds"] = (
+                    round(closing_guarded_rows[0][0], 1)
+                    if closing_guarded_rows
+                    else None
                 )
                 counters["now_jst"] = guard_now.isoformat(timespec="seconds")
                 print(json.dumps(counters, ensure_ascii=False), flush=True)
                 loop += 1
                 if args.max_loops is not None and loop >= args.max_loops:
                     return 0
-                time.sleep(min(args.sleep_loop, 5.0))
+                time.sleep(min(args.sleep_loop, 2.0 if closing_guarded_rows else 5.0))
                 continue
             if args.collect_results:
                 for result_row in due_result_rows(rows, now=now):
@@ -198,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         counters["beforeinfo_failed"] += 1
                     time.sleep(args.sleep_page)
-                if str(row["race_id"]) in priority_odds_ids:
+                if str(row["race_id"]) in priority_odds_ids or str(row["race_id"]) in closing_odds_ids:
                     continue
 
                 interval = odds_interval(seconds_to_cutoff)
@@ -527,13 +569,50 @@ def beforeinfo_interval(seconds_to_start: float, *, has_rows: bool) -> float | N
     return 90.0
 
 
+def closing_snapshot_is_fresh(*, now: datetime, latest_odds: datetime | None) -> bool:
+    return bool(
+        latest_odds is not None
+        and 0.0 <= (now - latest_odds).total_seconds() <= 12.0
+    )
+
+
+def closing_priority_rows(
+    rows: list[Any], *, now: datetime, window_seconds: float = 75.0
+) -> list[tuple[float, Any]]:
+    candidates: list[tuple[float, Any]] = []
+    for row in rows:
+        cutoff_at = estimated_deadline_from_start(
+            stored_start_time(row["deadline_at"])
+        )
+        if cutoff_at is None:
+            continue
+        seconds = (cutoff_at - now).total_seconds()
+        if not 0.0 <= seconds <= window_seconds:
+            continue
+        latest_odds = parse_time(
+            row["latest_odds_at"], default_tz=timezone.utc
+        )
+        if closing_snapshot_is_fresh(now=now, latest_odds=latest_odds):
+            continue
+        candidates.append((seconds, row))
+    return sorted(candidates, key=lambda item: item[0])
+
+
+def closing_guard_rows(
+    rows: list[Any], *, now: datetime, window_seconds: float = 75.0
+) -> list[tuple[float, Any]]:
+    return closing_priority_rows(rows, now=now, window_seconds=window_seconds)
+
+
 def odds_interval(seconds_to_cutoff: float) -> float | None:
     if seconds_to_cutoff < 0:
         return None
-    if seconds_to_cutoff <= 90:
+    if seconds_to_cutoff <= 75:
+        return 5.0
+    if seconds_to_cutoff <= 3 * 60:
         return 10.0
     if seconds_to_cutoff <= 5 * 60:
-        return 20.0
+        return 15.0
     if seconds_to_cutoff <= 15 * 60:
         return 45.0
     if seconds_to_cutoff <= 60 * 60:
