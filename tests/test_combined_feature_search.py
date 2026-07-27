@@ -107,6 +107,8 @@ def test_combined_signature_is_separate_from_default_signature() -> None:
     combined = _signature(variants=COMBINED_FEATURE_VARIANTS)
 
     assert combined != default
+    assert combined["selection_rule_version"] == "ranking-loss-tolerance-top5-v1"
+    assert combined["selection_ranking_loss_relative_tolerance"] == 0.005
     assert combined["feature_variants"] == [
         [name, list(dropped)] for name, dropped in COMBINED_FEATURE_VARIANTS
     ]

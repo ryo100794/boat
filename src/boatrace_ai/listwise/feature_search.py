@@ -45,6 +45,7 @@ from ..standard_evaluation import race_set_sha256
 
 FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
 
+SELECTION_RULE_VERSION = "ranking-loss-tolerance-top5-v1"
 SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.005
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
 
@@ -283,6 +284,10 @@ def _checkpoint_signature(
         "checkpoint_version": 1,
         "cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "selection_rule_version": SELECTION_RULE_VERSION,
+        "selection_ranking_loss_relative_tolerance": (
+            SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
+        ),
         "as_of_date": getattr(args, "as_of_date", None),
         "race_count": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
@@ -874,6 +879,10 @@ def search(
         "n_features": args.n_features,
         "hashed_cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "selection_rule_version": SELECTION_RULE_VERSION,
+        "selection_ranking_loss_relative_tolerance": (
+            SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
+        ),
         "feature_variants": [name for name, _drops in run_variants],
         "teacher_targets": list(targets),
         "alphas": list(alphas),

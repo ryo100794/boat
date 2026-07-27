@@ -383,7 +383,7 @@ def test_variant_reuses_dataset_and_scaler_and_parallelizes_only_missing_candida
     ]
 
 
-def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None:
+def test_default_checkpoint_signature_records_selection_rule_contract() -> None:
     args = SimpleNamespace(
         as_of_date="2026-07-23",
         n_features=4096,
@@ -407,6 +407,8 @@ def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None
     assert json.dumps(signature, separators=(",", ":")) == (
         '{"checkpoint_version":1,"cache_version":2,'
         '"feature_schema_version":"pastlog-listwise-hashed-v6-no-untrained-series",'
+        '"selection_rule_version":"ranking-loss-tolerance-top5-v1",'
+        '"selection_ranking_loss_relative_tolerance":0.005,'
         '"as_of_date":"2026-07-23","race_count":2,'
         '"race_universe_sha256":'
         '"a5d59ddbba062a4884a2242737fca8bc14d2858a52d64cb1af19dddb3bd6bd23",'
