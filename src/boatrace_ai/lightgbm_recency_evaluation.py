@@ -272,11 +272,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-bin", type=int, default=63)
     parser.add_argument("--n-jobs", type=int, default=4)
     parser.add_argument(
-        "--selection-entry-log-loss-tolerance",
-        type=float,
-        default=0.0,
-    )
-    parser.add_argument(
         "--architecture-presets",
         type=parse_architecture_presets,
         help="comma-separated nested-selection presets: compact,balanced,interaction",

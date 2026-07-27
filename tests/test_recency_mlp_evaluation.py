@@ -915,6 +915,7 @@ def test_cli_defaults_match_recency_protocol() -> None:
     assert args.protected_baseline_model is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180
+    assert args.selection_entry_log_loss_tolerance == 0.0005
 
 
 def test_cli_validates_drop_feature_groups() -> None:

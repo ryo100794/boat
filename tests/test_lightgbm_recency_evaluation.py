@@ -276,6 +276,7 @@ def test_lightgbm_cli_uses_separate_cache_and_safe_feature_drop() -> None:
     assert args.drop_feature_groups == ("legacy_composites",)
     assert args.half_lives == (None, 365.0)
     assert args.n_jobs == 4
+    assert args.selection_entry_log_loss_tolerance == 0.0005
 
 
 def test_lightgbm_wrapper_injects_model_contract(monkeypatch: pytest.MonkeyPatch) -> None:
