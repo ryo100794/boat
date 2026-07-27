@@ -1016,6 +1016,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     fold_metrics: list[dict[str, Any]] = []
     bankroll: list[dict[str, Any]] = []
     bankroll_daily: dict[str, list[dict[str, Any]]] = {}
+    empirical_lcb_walk_forward: list[dict[str, Any]] = []
     sweeps: list[dict[str, Any]] = []
     feature_diagnostics: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -1029,6 +1030,11 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             errors.append({"file": path.name, "error": str(exc)})
             continue
         label = _report_label(path, data)
+        empirical_policy = data.get("empirical_lcb_walk_forward")
+        if isinstance(empirical_policy, dict):
+            empirical_lcb_walk_forward.append(
+                _empirical_lcb_walk_forward_summary(path, label, empirical_policy)
+            )
         conditional_metrics = data.get("conditional_order")
         direct_bankroll = data.get("bankroll")
         bankroll_confidence = data.get("bankroll_confidence") or {}
@@ -1210,6 +1216,9 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         }
     )
     queued_evaluations = _database_evaluation_status(db_path)
+    empirical_lcb_walk_forward.extend(
+        _database_empirical_lcb_walk_forward(queued_evaluations["jobs"])
+    )
     queue_backtests, queue_bankroll, queue_daily = _database_evaluation_artifacts(
         queued_evaluations,
         model_dir,
@@ -1231,6 +1240,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     evaluation_jobs = queued_evaluations["jobs"] + legacy_evaluation_jobs
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
+    empirical_lcb_walk_forward = _latest_named_rows(empirical_lcb_walk_forward)
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
     feature_diagnostics.sort(key=lambda item: (item.get("generated_at") or "", item["file"]))
     model_tracks = _model_track_summaries(model_dir, backtests, remote_evaluations)
@@ -1256,6 +1266,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
+        "empirical_lcb_walk_forward": empirical_lcb_walk_forward,
         "model_catalog": model_catalog,
         "model_daily": model_daily,
         "sweeps": sweeps,
@@ -2573,6 +2584,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "prospective_normalized_ev_roi": _float_or_none(
                     metrics.get("prospective_normalized_ev_roi")
                 ),
+                "empirical_lcb_walk_forward": (
+                    _empirical_lcb_walk_forward_from_metrics(metrics)
+                ),
                 "high_ev_tickets": metrics.get("high_ev_tickets"),
                 "high_ev_realized_roi": _float_or_none(
                     metrics.get("high_ev_realized_roi")
@@ -2931,6 +2945,92 @@ def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "trifecta_top1_hit_rate": _float_or_none(data.get("trifecta_top1_hit_rate")),
         "trifecta_top5_hit_rate": _float_or_none(data.get("trifecta_top5_hit_rate")),
     }
+
+
+def _empirical_lcb_walk_forward_from_metrics(
+    metrics: dict[str, Any],
+) -> dict[str, Any] | None:
+    prefix = "empirical_lcb_"
+    if not any(str(key).startswith(prefix) for key in metrics):
+        return None
+    policy = {
+        key.removeprefix(prefix): value
+        for key, value in metrics.items()
+        if str(key).startswith(prefix)
+        and key
+        not in {
+            "empirical_lcb_tail_portfolio_diagnostics",
+            "empirical_lcb_roi_lower95",
+        }
+    }
+    tail = metrics.get("empirical_lcb_tail_portfolio_diagnostics")
+    if isinstance(tail, dict):
+        policy["tail_portfolio_diagnostics"] = tail
+    if metrics.get("empirical_lcb_roi_lower95") is not None:
+        policy["tail_bootstrap_roi_lower95"] = metrics[
+            "empirical_lcb_roi_lower95"
+        ]
+    return policy
+
+
+def _empirical_lcb_walk_forward_summary(
+    path: Path,
+    label: str,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    tail = policy.get("tail_portfolio_diagnostics")
+    normal = tail.get("normal") if isinstance(tail, dict) else None
+    tail_lower95 = policy.get("tail_bootstrap_roi_lower95")
+    if tail_lower95 is None and isinstance(normal, dict):
+        tail_lower95 = normal.get("daily_cluster_bootstrap_roi_lower_95")
+    roi_without_largest = policy.get("roi_without_largest_hit")
+    if roi_without_largest is None and isinstance(normal, dict):
+        roi_without_largest = normal.get("roi_excluding_largest_hit")
+    return {
+        "name": label,
+        "file": path.name,
+        "status": policy.get("status"),
+        "calibration_ready_folds": policy.get("calibration_ready_folds"),
+        "minimum_ready_evaluation_days": policy.get(
+            "minimum_ready_evaluation_days"
+        ),
+        "evaluation_days": policy.get("evaluation_days"),
+        "tickets": policy.get("tickets"),
+        "stake_yen": policy.get("stake_yen"),
+        "return_yen": policy.get("return_yen"),
+        "profit_yen": policy.get("profit_yen"),
+        "roi": _float_or_none(policy.get("roi")),
+        "roi_without_largest_hit": _float_or_none(roi_without_largest),
+        "sample_size_pass": policy.get("sample_size_pass"),
+        "tail_bootstrap_roi_lower95": _float_or_none(tail_lower95),
+    }
+
+
+def _database_empirical_lcb_walk_forward(
+    jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        policy = job.get("empirical_lcb_walk_forward")
+        if not isinstance(policy, dict):
+            continue
+        result_path = str(job.get("result_path") or "")
+        path = Path(result_path) if result_path else Path("database-result.json")
+        rows.append(
+            _empirical_lcb_walk_forward_summary(
+                path,
+                str(job.get("name") or f"job-{job.get('db_job_id')}"),
+                policy,
+            )
+        )
+    return rows
+
+
+def _latest_named_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        latest[str(row.get("name") or "-")] = row
+    return sorted(latest.values(), key=lambda row: str(row.get("name") or ""))
 
 
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
