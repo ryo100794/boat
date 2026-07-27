@@ -2,6 +2,9 @@ from datetime import datetime, timedelta
 
 from boatrace_ai.runtime.collector import (
     beforeinfo_interval,
+    closing_guard_rows,
+    closing_priority_rows,
+    closing_snapshot_is_fresh,
     odds_interval,
     t5_guard_rows,
     t5_priority_due,
@@ -21,9 +24,46 @@ def test_odds_polling_does_not_probe_before_the_collection_window() -> None:
     assert odds_interval(61 * 60) is None
     assert odds_interval(60 * 60) == 90.0
     assert odds_interval(15 * 60) == 45.0
-    assert odds_interval(5 * 60) == 20.0
-    assert odds_interval(90) == 10.0
+    assert odds_interval(5 * 60) == 15.0
+    assert odds_interval(181) == 15.0
+    assert odds_interval(180) == 10.0
+    assert odds_interval(76) == 10.0
+    assert odds_interval(75) == 5.0
     assert odds_interval(-1) is None
+
+
+def test_closing_priority_orders_cutoffs_and_enforces_snapshot_freshness() -> None:
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=JST)
+    rows = [
+        {
+            "race_id": "later",
+            "deadline_at": (now + timedelta(minutes=6, seconds=10)).isoformat(),
+            "latest_odds_at": (now - timedelta(seconds=13)).isoformat(),
+        },
+        {
+            "race_id": "sooner",
+            "deadline_at": (now + timedelta(minutes=5, seconds=20)).isoformat(),
+            "latest_odds_at": None,
+        },
+        {
+            "race_id": "fresh",
+            "deadline_at": (now + timedelta(minutes=5, seconds=30)).isoformat(),
+            "latest_odds_at": (now - timedelta(seconds=12)).isoformat(),
+        },
+    ]
+
+    priority = closing_priority_rows(rows, now=now)
+    assert [(seconds, row["race_id"]) for seconds, row in priority] == [
+        (20.0, "sooner"),
+        (70.0, "later"),
+    ]
+    assert closing_guard_rows(rows, now=now) == priority
+    assert closing_snapshot_is_fresh(
+        now=now, latest_odds=now - timedelta(seconds=12)
+    )
+    assert not closing_snapshot_is_fresh(
+        now=now, latest_odds=now - timedelta(seconds=13)
+    )
 
 
 def test_t5_priority_is_due_during_last_minute_without_fresh_odds() -> None:
