@@ -32,6 +32,7 @@ def evaluate_market_kelly_challenger(
     *,
     regularization: float = 1.0,
     evaluation_dates: Iterable[str] | None = None,
+    select_regularization: bool = False,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -43,6 +44,7 @@ def evaluate_market_kelly_challenger(
     calibrated_races, calibration = attach_prequential_market_offsets(
         races,
         regularization=regularization,
+        select_regularization=select_regularization,
     )
     return evaluate_attached_market_kelly_challenger(
         calibrated_races,
@@ -170,6 +172,7 @@ def attach_prequential_market_offsets(
     races: Iterable[Mapping[str, Any]],
     *,
     regularization: float = 1.0,
+    select_regularization: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Attach one strictly-prior offset prediction or an explicit market fallback."""
 
@@ -186,16 +189,29 @@ def attach_prequential_market_offsets(
         training_days = len(prior_dates)
         training_races = len(prior_records)
         artifact = None
+        regularization_selection = None
         fallback_reason = None
         if training_days < MIN_TRAINING_DAYS:
             fallback_reason = "insufficient_strictly_prior_days"
         elif training_races < MIN_TRAINING_RACES:
             fallback_reason = "insufficient_strictly_prior_races"
         else:
+            selected_regularization = regularization
+            if select_regularization:
+                from .market_offset_selection import (
+                    select_market_offset_regularization,
+                )
+                regularization_selection = select_market_offset_regularization(
+                    prior_records,
+                    prediction_date=prediction_day,
+                )
+                selected_regularization = float(
+                    regularization_selection["selected_regularization"]
+                )
             artifact = fit_market_offset_calibration(
                 prior_records,
                 prediction_date=prediction_day,
-                regularization=regularization,
+                regularization=selected_regularization,
                 min_training_races=MIN_TRAINING_RACES,
             )
             _audit_artifact_boundary(artifact, prediction_day)
@@ -239,6 +255,7 @@ def attach_prequential_market_offsets(
                 if artifact is not None and callable(getattr(artifact, "as_dict", None))
                 else None
             ),
+            "regularization_selection": regularization_selection,
         }
         day_audits.append(audit)
 
