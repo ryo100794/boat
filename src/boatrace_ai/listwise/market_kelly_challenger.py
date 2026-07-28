@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import date, datetime, time
 from typing import Any, Iterable, Mapping
 
+from boatrace_ai.bankroll_bootstrap import bootstrap_daily_roi
 from boatrace_ai.listwise.closing_odds import decision_odds
 from boatrace_ai.listwise.market_calibration import bankroll_reliability_metrics
 from boatrace_ai.listwise.market_offset_calibration import (
@@ -77,6 +78,17 @@ def evaluate_attached_market_kelly_challenger(
         daily,
         evaluated_races=evaluated_races,
     )
+    bootstrap = (
+        bootstrap_daily_roi(daily)
+        if daily
+        else {
+            "days": 0,
+            "samples": 20_000,
+            "valid_samples": 0,
+            "roi_ci95_lower": None,
+            "probability_roi_above_one": None,
+        }
+    )
     log_loss = _log_loss_comparison(evaluation_races)
     return {
         "challenger": "market_offset_discrete_multinomial_kelly",
@@ -109,13 +121,17 @@ def evaluate_attached_market_kelly_challenger(
         "log_loss": log_loss,
         **reliability,
         "reliability": reliability,
-        "promotion_gate": _promotion_gate(daily, reliability),
+        "edge_diagnostics": _edge_diagnostics(evaluation_races),
+        "bootstrap": bootstrap,
+        "promotion_gate": _promotion_gate(daily, reliability, bootstrap),
         "daily": daily,
     }
 
 
 def _promotion_gate(
-    daily: list[dict[str, Any]], reliability: Mapping[str, Any]
+    daily: list[dict[str, Any]],
+    reliability: Mapping[str, Any],
+    bootstrap: Mapping[str, Any],
 ) -> dict[str, Any]:
     tickets = sum(int(row["tickets"]) for row in daily)
     purchase_days = sum(int(row["stake_yen"] > 0) for row in daily)
@@ -129,8 +145,13 @@ def _promotion_gate(
         "largest_hit_excluded_roi_pass": bool(
             float(reliability.get("roi_without_largest_hit") or 0.0) > 1.0
         ),
-        "bootstrap_lower_95_pass": False,
-        "bootstrap_status": "not_yet_computed",
+        "bootstrap_lower_95_pass": bool(
+            float(bootstrap.get("roi_ci95_lower") or 0.0) > 1.0
+        ),
+        "bootstrap_probability_pass": bool(
+            float(bootstrap.get("probability_roi_above_one") or 0.0) >= 0.95
+        ),
+        "bootstrap_status": "evaluated" if bootstrap.get("valid_samples") else "undefined_no_stake",
     }
     gates["pass"] = all(
         gates[key]
@@ -139,6 +160,7 @@ def _promotion_gate(
             "roi_pass",
             "largest_hit_excluded_roi_pass",
             "bootstrap_lower_95_pass",
+            "bootstrap_probability_pass",
         )
     )
     return gates
@@ -212,6 +234,11 @@ def attach_prequential_market_offsets(
             ),
             "fitted": bool(getattr(artifact, "fitted", False)),
             "converged": bool(getattr(artifact, "converged", False)),
+            "artifact": (
+                artifact.as_dict()
+                if artifact is not None and callable(getattr(artifact, "as_dict", None))
+                else None
+            ),
         }
         day_audits.append(audit)
 
@@ -461,6 +488,61 @@ def _log_loss_comparison(races: list[dict[str, Any]]) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _edge_diagnostics(races: list[dict[str, Any]]) -> dict[str, Any]:
+    race_maxima: list[float] = []
+    ready_maxima: list[float] = []
+    positive_combinations = 0
+    positive_races = 0
+    ready_positive_races = 0
+    for race in races:
+        probabilities = _normalized(
+            race["_policy_calibrated_probabilities"],
+            "policy probabilities",
+        )
+        odds = decision_odds(race)
+        if set(probabilities) != set(odds):
+            raise ValueError("probability and decision odds keys must match")
+        values = [
+            probabilities[selection]
+            * _positive_float(odds[selection], "decision odds")
+            for selection in probabilities
+        ]
+        maximum = max(values)
+        race_maxima.append(maximum)
+        positive = sum(int(value > 1.0) for value in values)
+        positive_combinations += positive
+        positive_races += int(positive > 0)
+        if race["_market_kelly_calibration"]["ready"]:
+            ready_maxima.append(maximum)
+            ready_positive_races += int(positive > 0)
+    ordered = sorted(race_maxima)
+    ready_ordered = sorted(ready_maxima)
+    return {
+        "races": len(races),
+        "positive_ev_races": positive_races,
+        "positive_ev_combinations": positive_combinations,
+        "positive_ev_race_rate": positive_races / len(races) if races else None,
+        "max_estimated_ev": max(ordered) if ordered else None,
+        "race_max_ev_p50": _quantile(ordered, 0.50),
+        "race_max_ev_p90": _quantile(ordered, 0.90),
+        "race_max_ev_p95": _quantile(ordered, 0.95),
+        "race_max_ev_p99": _quantile(ordered, 0.99),
+        "ready_races": len(ready_ordered),
+        "ready_positive_ev_races": ready_positive_races,
+        "ready_max_estimated_ev": max(ready_ordered) if ready_ordered else None,
+    }
+
+
+def _quantile(ordered: list[float], probability: float) -> float | None:
+    if not ordered:
+        return None
+    position = (len(ordered) - 1) * probability
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def _normalized(values: Mapping[str, Any], name: str) -> dict[str, float]:

@@ -195,6 +195,11 @@ def test_actual_return_uses_actual_stake_and_payout_per_100_yen() -> None:
     assert result["return_yen"] == 6_150
     assert result["profit_yen"] == 5_650
     assert result["reliability"]["largest_hit_return_yen"] == 6_150
+    diagnostics = result["edge_diagnostics"]
+    assert diagnostics["races"] == 1
+    assert diagnostics["positive_ev_races"] == 1
+    assert diagnostics["positive_ev_combinations"] == 1
+    assert diagnostics["max_estimated_ev"] == pytest.approx(1.8)
     assert result["log_loss"]["challenger"] == pytest.approx(
         -math.log(0.9)
     )
@@ -218,3 +223,27 @@ def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> No
     assert "races" not in result
     assert result["promotion_gate"]["sample_size_pass"] is False
     assert result["promotion_gate"]["pass"] is False
+
+
+def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
+    no_bet = _race("2026-07-20", "no-bet", favourite=None)
+    no_bet["odds"] = {key: 100.0 for key in COMBINATIONS}
+    empty = challenger.evaluate_market_kelly_challenger([no_bet])
+
+    assert empty["bootstrap"]["roi_ci95_lower"] is None
+    assert empty["promotion_gate"]["bootstrap_status"] == "undefined_no_stake"
+    assert empty["promotion_gate"]["pass"] is False
+
+    profitable = challenger.evaluate_market_kelly_challenger([
+        _race(
+            "2026-07-20",
+            "winner",
+            favourite="1-2-3",
+            actual="1-2-3",
+            payout=1_230,
+        )
+    ])
+    assert profitable["bootstrap"]["roi_ci95_lower"] == pytest.approx(12.3)
+    assert profitable["bootstrap"]["probability_roi_above_one"] == 1.0
+    assert profitable["promotion_gate"]["bootstrap_lower_95_pass"] is True
+    assert profitable["promotion_gate"]["sample_size_pass"] is False
