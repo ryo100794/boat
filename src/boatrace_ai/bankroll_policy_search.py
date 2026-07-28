@@ -21,7 +21,7 @@ PROMOTION_MAX_DRAWDOWN_STAKE_FRACTION = 0.50
 
 SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
     "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50),
-    "min_ticket_probability": (0.0, 0.002, 0.005, 0.01, 0.02),
+    "min_ticket_probability": (0.0, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05),
     "min_estimated_odds": (None, 5.0, 6.0, 30.0, 100.0, 101.0),
     "max_estimated_odds": (None, 30.0, 50.0, 100.0, 200.0),
     "fractional_kelly": (0.10, 0.25, 0.50),
@@ -29,7 +29,7 @@ SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
     "min_daily_exposure_fraction": (0.0, 0.20, 0.40),
     "race_cap_fraction": (0.05, 0.10, 0.15),
     "ticket_cap_fraction": (0.01, 0.02, 0.03),
-    "max_daily_tickets": (10, 20, 30, 50),
+    "max_daily_tickets": (1, 3, 5, 10, 20, 30, 50),
 }
 
 
@@ -124,6 +124,34 @@ TAIL_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
 )
 
 
+SPARSE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
+    {
+        "ev_threshold": 1.50,
+        "min_ticket_probability": 0.02,
+        "min_estimated_odds": 5.0,
+        "max_estimated_odds": 30.0,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 3,
+    },
+    {
+        "ev_threshold": 2.00,
+        "min_ticket_probability": 0.002,
+        "min_estimated_odds": 101.0,
+        "max_estimated_odds": None,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 3,
+    },
+)
+
+
 def _conservative_anchor_policies(
     base_policy: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -152,6 +180,30 @@ def _tail_anchor_policies(
     return anchors
 
 
+def _sparse_anchor_policies(
+    base_policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    anchors = []
+    seen = set()
+    for overrides in SPARSE_POLICY_ANCHORS:
+        candidate = {**base_policy, **overrides}
+        key = _policy_key(candidate)
+        if _valid_caps(candidate) and key not in seen:
+            seen.add(key)
+            anchors.append(candidate)
+    return anchors
+
+
+def _registered_anchor_policies(
+    base_policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    return (
+        _conservative_anchor_policies(base_policy)
+        + _tail_anchor_policies(base_policy)
+        + _sparse_anchor_policies(base_policy)
+    )
+
+
 def policy_candidates(
     base_policy: Mapping[str, Any],
     *,
@@ -165,10 +217,7 @@ def policy_candidates(
     canonical_base.setdefault("min_estimated_odds", None)
     candidates = [canonical_base]
     seen = {_policy_key(candidates[0])}
-    anchors = (
-        _conservative_anchor_policies(canonical_base)
-        + _tail_anchor_policies(canonical_base)
-    )
+    anchors = _registered_anchor_policies(canonical_base)
     for candidate in anchors:
         if len(candidates) >= count:
             break
@@ -236,12 +285,18 @@ def _retain_registered_anchors(
     *,
     keep: int,
     base_policy: Mapping[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     selected = list(rows[:keep])
-    protected = (
-        _conservative_anchor_policies(base_policy)
-        + _tail_anchor_policies(base_policy)
-    )[:keep]
+    # Anchors prevent premature elimination on short early windows, but must
+    # not occupy nearly every finalist slot regardless of observed results.
+    registered = _registered_anchor_policies(base_policy)
+    registered_keys = {_policy_key(policy) for policy in registered}
+    protection_limit = min(len(registered), keep // 4)
+    protected = [
+        row["policy"]
+        for row in rows
+        if _policy_key(row["policy"]) in registered_keys
+    ][:protection_limit]
     anchor_keys = tuple(
         _policy_key(policy)
         for policy in protected
@@ -268,7 +323,7 @@ def _retain_registered_anchors(
         selected_keys.discard(_policy_key(selected[replace_at]["policy"]))
         selected[replace_at] = row
         selected_keys.add(key)
-    return selected
+    return selected, len(protected)
 
 
 def slice_days(packed: PackedCandidates, stop_day: int) -> PackedCandidates:
@@ -356,25 +411,18 @@ def successive_halving_search(
             if fraction < 1.0
             else finalists
         )
-        retained = _retain_registered_anchors(
-            rows, keep=keep, base_policy=base_policy
+        retained, protected_anchor_count = (
+            _retain_registered_anchors(rows, keep=keep, base_policy=base_policy)
+            if fraction < 1.0
+            else (list(rows[:keep]), 0)
         )
         active = [row["policy"] for row in retained]
-        anchor_keys = {
-            _policy_key(policy)
-            for policy in (
-                _conservative_anchor_policies(base_policy)
-                + _tail_anchor_policies(base_policy)
-            )[:keep]
-        }
         stages.append({
             "fraction": fraction,
             "days": len(stage_data.dates),
             "evaluated_candidates": len(rows),
             "retained_candidates": len(active),
-            "protected_anchor_count": sum(
-                _policy_key(policy) in anchor_keys for policy in active
-            ),
+            "protected_anchor_count": protected_anchor_count,
             "leaders": rows[: min(10, len(rows))],
         })
 
