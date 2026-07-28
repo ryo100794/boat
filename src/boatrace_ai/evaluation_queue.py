@@ -57,7 +57,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
-    "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 12288},
+    "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 24576, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
@@ -494,8 +494,8 @@ def job_workspace_reservation_mb(job: dict[str, Any], app_root: Path) -> int:
         Path(f"{prefix}.manifest.json"),
     )
     if all(path.is_file() and path.stat().st_size > 0 for path in cache_files):
-        return min(required_mb, 1024)
-    return required_mb
+        return min(required_mb, 256)
+    return min(required_mb, 1024)
 
 
 def _json(value: Any) -> str:

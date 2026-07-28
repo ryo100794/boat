@@ -132,7 +132,7 @@ def test_calibrated_mlp_recency_search_profile() -> None:
     assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
         "category": "evaluation",
         "memory_mb": 16384,
-        "disk_mb": 12288,
+        "disk_mb": 4096,
         "idle_cpu": 15.0,
         "max_parallel": 1,
     }

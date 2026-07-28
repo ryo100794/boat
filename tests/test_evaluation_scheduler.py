@@ -116,7 +116,7 @@ def test_mlp_workspace_reservation_drops_after_complete_cache(
         },
     }
 
-    assert job_workspace_reservation_mb(job, tmp_path) == 12288
+    assert job_workspace_reservation_mb(job, tmp_path) == 1024
 
     prefix = (
         tmp_path
@@ -128,7 +128,7 @@ def test_mlp_workspace_reservation_drops_after_complete_cache(
     for suffix in ("matrix.npz", "ranks.npy", "manifest.json"):
         Path(f"{prefix}.{suffix}").write_bytes(b"complete")
 
-    assert job_workspace_reservation_mb(job, tmp_path) == 1024
+    assert job_workspace_reservation_mb(job, tmp_path) == 256
 
 
 def test_non_mlp_workspace_reservation_uses_profile_requirement(
