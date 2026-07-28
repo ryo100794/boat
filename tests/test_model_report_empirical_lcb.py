@@ -62,6 +62,56 @@ def test_model_report_exposes_empirical_lcb_separately_from_legacy(tmp_path) -> 
     assert row["tail_bootstrap_roi_lower95"] == 1.006
 
 
+def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> None:
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    artifact = {
+        "model": "stagewise_market_shadow",
+        "generated_at": "2026-07-28T08:00:00+00:00",
+        "winner_top1_accuracy": 0.56,
+        "trifecta_top5_hit_rate": 0.36,
+        "evaluated_races": 918,
+        "calibrated_trifecta_log_loss": 3.735,
+        "conservative_market_offset_kelly_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "evaluation_days": 0,
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0,
+            "daily": [
+                {
+                    "race_date": "2026-07-29",
+                    "stake_yen": 0,
+                    "return_yen": 0,
+                }
+            ],
+        },
+    }
+    artifact_path = model_dir / "stagewise_market_shadow.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    dashboard._MODEL_REPORT_CACHE.clear()
+
+    report = dashboard.model_performance_report(
+        tmp_path / "boatrace.sqlite",
+        {"model_dir": [str(model_dir)]},
+    )
+
+    expected_name = (
+        "stagewise_market_shadow_"
+        "conservative_market_offset_kelly_walk_forward"
+    )
+    row = next(item for item in report["bankroll"] if item["name"] == expected_name)
+    assert row["model"].endswith("conservative_market_offset_kelly_walk_forward")
+    assert row["evaluated_races"] == 918
+    assert row["winner_top1_accuracy"] == 0.56
+    assert row["trifecta_top5_hit_rate"] == 0.36
+    assert row["roi"] == 0
+    assert row["entry_log_loss"] == 3.735
+    assert expected_name in report["bankroll_daily"]
+
+
 def test_empirical_lcb_database_metrics_restore_compact_result() -> None:
     metrics = {
         "empirical_lcb_status": "calibration_not_ready",

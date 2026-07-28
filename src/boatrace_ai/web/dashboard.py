@@ -1035,6 +1035,14 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             empirical_lcb_walk_forward.append(
                 _empirical_lcb_walk_forward_summary(path, label, empirical_policy)
             )
+        component_rows, component_daily = _bankroll_component_summaries(
+            path,
+            label,
+            data,
+            _bankroll_prediction_metrics(data),
+        )
+        bankroll.extend(component_rows)
+        bankroll_daily.update(component_daily)
         conditional_metrics = data.get("conditional_order")
         direct_bankroll = data.get("bankroll")
         bankroll_confidence = data.get("bankroll_confidence") or {}
@@ -2763,6 +2771,70 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
     }
 
 
+_BANKROLL_COMPONENT_KEYS = (
+    "market_offset_multinomial_kelly_walk_forward",
+    "conservative_market_offset_kelly_walk_forward",
+    "market_offset_registered_policy_walk_forward",
+    "registered_ev_band_walk_forward",
+    "prospective_normalized_ev_walk_forward",
+)
+
+
+def _bankroll_prediction_metrics(data: dict[str, Any]) -> dict[str, Any]:
+    entry_log_loss = data.get("entry_log_loss")
+    if entry_log_loss is None:
+        entry_log_loss = data.get("calibrated_trifecta_log_loss")
+    if entry_log_loss is None:
+        entry_log_loss = data.get("trifecta_log_loss")
+    metrics = {
+        "entry_log_loss": entry_log_loss,
+        "entry_brier": data.get("entry_brier"),
+        "winner_top1_accuracy": data.get("winner_top1_accuracy"),
+        "trifecta_top1_hit_rate": data.get("trifecta_top1_hit_rate"),
+        "trifecta_top5_hit_rate": data.get("trifecta_top5_hit_rate"),
+        "ranking_log_loss": data.get("ranking_log_loss"),
+        "evaluated_races": data.get("evaluated_races"),
+        "evaluation_race_set_sha256": data.get("evaluation_race_set_sha256"),
+    }
+    return {
+        key: value
+        for key, value in metrics.items()
+        if value is not None
+    }
+
+
+def _bankroll_component_summaries(
+    path: Path,
+    label: str,
+    data: dict[str, Any],
+    prediction_metrics: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    rows: list[dict[str, Any]] = []
+    daily: dict[str, list[dict[str, Any]]] = {}
+    model_name = data.get("model") or label
+    for component_key in _BANKROLL_COMPONENT_KEYS:
+        component = data.get(component_key)
+        if not isinstance(component, dict) or not component:
+            continue
+        if not any(
+            component.get(key) is not None
+            for key in ("roi", "stake_yen", "tickets", "evaluation_days")
+        ):
+            continue
+        component_label = f"{label}_{component_key}"
+        component_result = {
+            **prediction_metrics,
+            **component,
+            "model": f"{model_name}_{component_key}",
+            "generated_at": data.get("generated_at"),
+        }
+        rows.append(_bankroll_summary(path, component_label, component_result))
+        component_daily = _daily_report_rows(component.get("daily") or [])
+        if component_daily:
+            daily[component_label] = component_daily
+    return rows, daily
+
+
 def _database_evaluation_artifacts(
     queue_status: dict[str, Any],
     model_dir: Path,
@@ -2813,20 +2885,7 @@ def _database_evaluation_artifacts(
             continue
         seen_models.add(model_key)
         label = model_key
-        prediction_metrics = {
-            key: data.get(key)
-            for key in (
-                "entry_log_loss",
-                "entry_brier",
-                "winner_top1_accuracy",
-                "trifecta_top1_hit_rate",
-                "trifecta_top5_hit_rate",
-                "ranking_log_loss",
-                "evaluated_races",
-                "evaluation_race_set_sha256",
-            )
-            if data.get(key) is not None
-        }
+        prediction_metrics = _bankroll_prediction_metrics(data)
         if prediction_metrics.get("entry_log_loss") is not None:
             backtests.append(
                 _backtest_summary(
@@ -2874,34 +2933,14 @@ def _database_evaluation_artifacts(
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
                     daily[walk_label] = walk_daily
-        for component_key in (
-            "market_offset_multinomial_kelly_walk_forward",
-            "conservative_market_offset_kelly_walk_forward",
-            "market_offset_registered_policy_walk_forward",
-            "registered_ev_band_walk_forward",
-            "prospective_normalized_ev_walk_forward",
-        ):
-            component = data.get(component_key)
-            if not isinstance(component, dict) or not component:
-                continue
-            if not any(
-                component.get(key) is not None
-                for key in ("roi", "stake_yen", "tickets", "evaluation_days")
-            ):
-                continue
-            component_label = f"{label}_{component_key}"
-            component_result = {
-                **prediction_metrics,
-                **component,
-                "model": f"{data.get('model') or model_key}_{component_key}",
-                "generated_at": data.get("generated_at"),
-            }
-            bankroll_rows.append(
-                _bankroll_summary(path, component_label, component_result)
-            )
-            component_daily = _daily_report_rows(component.get("daily") or [])
-            if component_daily:
-                daily[component_label] = component_daily
+        component_rows, component_daily = _bankroll_component_summaries(
+            path,
+            label,
+            data,
+            prediction_metrics,
+        )
+        bankroll_rows.extend(component_rows)
+        daily.update(component_daily)
         if len(seen_models) >= max(1, int(maximum_artifacts)):
             break
     return backtests, bankroll_rows, daily
