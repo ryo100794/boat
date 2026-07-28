@@ -70,6 +70,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "archive_closing_odds_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
@@ -2060,6 +2061,33 @@ def build_command(
             "--from-date", _date(params, "from_date"),
             "--output", str(output),
         ], output
+    if task_type == "archive_closing_odds_backfill":
+        allowed = {
+            "from_date", "through_date", "sleep_seconds", "max_pages",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported archive closing odds parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        from_date = _date(params, "from_date")
+        through_date = _date(params, "through_date")
+        if from_date > through_date:
+            raise ValueError("archive from_date must not be after through_date")
+        sleep_seconds = _number(params, "sleep_seconds", 1.0, 0.5, 60.0)
+        max_pages = _integer(params, "max_pages", 1000, 1, 100000)
+        _integer(params, "timeout_seconds", 86400, 300, 172800)
+        return [
+            str(python), "-m", "boatrace_ai.archive_closing_odds",
+            "--db", db,
+            "--from-date", from_date,
+            "--through-date", through_date,
+            "--sleep-seconds", str(sleep_seconds),
+            "--max-pages", str(max_pages),
+            "--output", str(output),
+        ], output
     if task_type == "listwise_newton_refine":
         search_result = app_root / str(params["search_result"])
         if app_root not in search_result.resolve().parents:
@@ -2484,6 +2512,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         "repository_hygiene",
         "series_feature_cache",
         "racer_stats_backfill",
+        "archive_closing_odds_backfill",
         "persist_standard_selected_cache",
     }:
         return "maintenance_complete"
