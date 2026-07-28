@@ -203,6 +203,55 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["candidates"][0]["payout_feature_roi_delta_ci95_lower"] == 0.02
 
 
+def test_database_evaluation_status_quarantines_invalid_data_source(tmp_path) -> None:
+    db_path = tmp_path / "queue.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE model_evaluation_jobs (
+          job_id INTEGER PRIMARY KEY, task_type TEXT, category TEXT,
+          model_key TEXT, status TEXT, parameters TEXT,
+          attempt INTEGER, max_attempts INTEGER,
+          started_at TEXT, completed_at TEXT, decision TEXT,
+          result_summary TEXT, result_path TEXT, error TEXT
+        );
+        CREATE TABLE model_improvement_candidates (
+          job_id INTEGER PRIMARY KEY, metrics TEXT, parameters TEXT,
+          created_at TEXT
+        );
+        """
+    )
+    metrics = {
+        "roi": 1.25,
+        "profit_yen": 2500,
+        "winner_top1_accuracy": 0.70,
+        "data_source_validation_pass": False,
+    }
+    conn.execute(
+        "INSERT INTO model_evaluation_jobs VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "archive_market_oracle", "evaluation", "invalid-oracle", "completed",
+            "{}", 1, 1, "2026-07-28T00:00:00+00:00",
+            "2026-07-28T01:00:00+00:00", "invalid_data_source",
+            json.dumps(metrics), "invalid.json", None,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO model_improvement_candidates VALUES (?, ?, ?, ?)",
+        (1, json.dumps(metrics), "{}", "2026-07-28T01:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    status = _database_evaluation_status(db_path)
+
+    assert status["jobs"][0]["status"] == "無効"
+    assert status["jobs"][0]["valid_for_comparison"] is False
+    assert status["jobs"][0]["roi"] is None
+    assert status["jobs"][0]["winner_top1_accuracy"] is None
+    assert status["candidates"] == []
+
+
 def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
     tmp_path,
 ) -> None:

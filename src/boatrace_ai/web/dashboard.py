@@ -2511,6 +2511,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         metrics = _json_mapping(row.get("result_summary"))
         parameters = _json_mapping(row.get("parameters"))
         status = str(row.get("status") or "")
+        invalid_data_source = bool(
+            row.get("decision") == "invalid_data_source"
+            or metrics.get("data_source_validation_pass") is False
+        )
+        if invalid_data_source:
+            metrics = {}
         task_type = str(row.get("task_type") or "")
         nested_expected_folds = 5 if task_type == "bankroll_policy_nested_annual" else None
         nested_completed_folds = (
@@ -2529,8 +2535,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "name": row.get("model_key"),
                 "milestone": row.get("task_type"),
                 "kind": row.get("task_type"),
-                "status": status_labels.get(status, status or "-"),
+                "status": (
+                    "無効" if invalid_data_source
+                    else status_labels.get(status, status or "-")
+                ),
                 "decision": row.get("decision"),
+                "valid_for_comparison": not invalid_data_source,
                 "parameters": parameters,
                 "cohort": parameters.get("cohort") or metrics.get("genetic_cohort"),
                 "generation": parameters.get("generation"),
@@ -2690,7 +2700,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
             }
         )
         candidate_metrics = _json_mapping(row.get("candidate_metrics"))
-        if not candidate_metrics:
+        if invalid_data_source or not candidate_metrics:
             continue
         candidates.append(
             {
