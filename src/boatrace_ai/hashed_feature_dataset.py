@@ -203,7 +203,7 @@ def save_hashed_dataset(prefix: Path, dataset: HashedRaceDataset) -> None:
     temporary_paths.extend((matrix_temporary, ranks_temporary, manifest_temporary))
     try:
         with matrix_temporary.open("wb") as handle:
-            sparse.save_npz(handle, matrix, compressed=False)
+            sparse.save_npz(handle, matrix, compressed=True)
             _flush_and_fsync(handle)
         with ranks_temporary.open("wb") as handle:
             np.save(handle, ranks, allow_pickle=False)
