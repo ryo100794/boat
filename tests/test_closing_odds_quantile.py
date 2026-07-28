@@ -7,6 +7,7 @@ import pytest
 from boatrace_ai.listwise.closing_odds_quantile import (
     closing_odds_quantile_metrics,
     fit_closing_odds_quantile_model,
+    fit_closing_odds_trend_quantile_model,
     forecast_closing_odds_quantiles,
     walk_forward_closing_odds_quantiles,
 )
@@ -180,6 +181,9 @@ def test_policy_forecasts_are_strictly_prior_lower_bounds() -> None:
     assert baseline_forecast["closing_odds_model_trained_through_date"] < (
         "2026-07-21"
     )
+    assert baseline_forecast["closing_odds_model_type"] == (
+        "ridge_log_location_odds_path_v2"
+    )
     assert baseline_forecast["closing_odds_lower_quantile"] == pytest.approx(0.10)
     assert len(baseline_forecast["estimated_final_odds"]) == 120
 
@@ -254,3 +258,75 @@ def test_public_fit_api_reports_legacy_calibration_metadata() -> None:
     assert model["calibration_method"] == "in_sample_residual_quantiles"
     assert model["crossfit_days"] == 0
     assert model["crossfit_tickets"] == 0
+
+
+def _race_with_closing_trend(race_date: str, race_id: str, shift: float) -> dict:
+    race = _race(race_date, race_id)
+    current_probability = {
+        key: 1.0 / value for key, value in race["odds"].items()
+    }
+    total = sum(current_probability.values())
+    current_probability = {
+        key: value / total for key, value in current_probability.items()
+    }
+    raw_earlier = {
+        key: probability * math.exp(
+            -5.0 * (shift + (index - 59.5) / 5000.0)
+        )
+        for index, (key, probability) in enumerate(current_probability.items())
+    }
+    earlier_total = sum(raw_earlier.values())
+    earlier_probability = {
+        key: value / earlier_total for key, value in raw_earlier.items()
+    }
+    race["odds_path"] = [
+        {
+            "minutes_before_decision": 5.0,
+            "market_probabilities": earlier_probability,
+        },
+        {
+            "minutes_before_decision": 0.0,
+            "market_probabilities": current_probability,
+        },
+    ]
+    race["odds_path_points"] = 2
+    race["closing_odds"] = {
+        key: race["odds"][key] * math.exp(
+            -4.0 * (
+                math.log(current_probability[key])
+                - math.log(earlier_probability[key])
+            ) / 5.0
+        )
+        for key in COMBINATIONS
+    }
+    return race
+
+
+def test_odds_path_trend_improves_unseen_day_closing_forecast() -> None:
+    races = [
+        _race_with_closing_trend(
+            f"2026-07-{day:02d}", f"trend-{day}-{index}", shift
+        )
+        for day, shift in ((20, -0.03), (21, 0.02), (22, -0.01), (23, 0.04))
+        for index in range(2)
+    ]
+    simple = walk_forward_closing_odds_quantiles(
+        races,
+        minimum_training_days=2,
+        regularization=0.001,
+        use_trend_features=False,
+    )
+    trend = walk_forward_closing_odds_quantiles(
+        races,
+        minimum_training_days=2,
+        regularization=0.001,
+        use_trend_features=True,
+    )
+
+    assert trend["closing_odds_model_type"] == (
+        "ridge_log_location_odds_path_v2"
+    )
+    assert trend["closing_odds_log_mae"] < simple["closing_odds_log_mae"]
+    model = fit_closing_odds_trend_quantile_model(races[:4])
+    forecast = forecast_closing_odds_quantiles(races[-1], model)
+    assert all(len(values) == 120 for values in forecast.values())
