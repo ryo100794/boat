@@ -1642,6 +1642,8 @@ def build_command(
             "payout_prior_weights", "evaluation_days", "research_only", "seed", "timeout_seconds",
             "coefficient_optimizer", "max_newton_iterations",
             "max_cg_iterations", "gradient_tolerance", "cg_tolerance",
+            "ev_calibration_mode", "calibration_fraction",
+            "calibration_bootstrap_samples",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1723,6 +1725,17 @@ def build_command(
         cg_tolerance = _number(
             params, "cg_tolerance", 0.001, 1e-8, 0.1
         )
+        ev_calibration_mode = str(params.get("ev_calibration_mode", "none"))
+        if ev_calibration_mode not in {
+            "none", "contextual_point", "contextual_lcb95"
+        }:
+            raise ValueError("unsupported ev_calibration_mode")
+        calibration_fraction = _number(
+            params, "calibration_fraction", 0.50, 0.20, 0.80
+        )
+        calibration_bootstrap_samples = _integer(
+            params, "calibration_bootstrap_samples", 2000, 100, 20000
+        )
         candidate_count = _integer(
             params, "candidate_count", 24, 8, 128
         )
@@ -1767,6 +1780,10 @@ def build_command(
             "--max-cg-iterations", str(max_cg_iterations),
             "--gradient-tolerance", str(gradient_tolerance),
             "--cg-tolerance", str(cg_tolerance),
+            "--ev-calibration-mode", ev_calibration_mode,
+            "--calibration-fraction", str(calibration_fraction),
+            "--calibration-bootstrap-samples",
+            str(calibration_bootstrap_samples),
             "--candidate-count", str(candidate_count),
             "--finalists", str(finalists),
             "--bootstrap-samples", str(bootstrap_samples),

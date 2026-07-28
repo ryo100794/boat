@@ -20,6 +20,8 @@ from ..bankroll_policy_search import (
     recent_allocation_diagnostics,
     temporal_stability,
     successive_halving_search,
+    slice_day_range,
+    slice_days,
 )
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
@@ -38,6 +40,7 @@ from .newton_refine import (
     search_race_date_through,
     validate_search_race_universe,
 )
+from .packed_ev_calibration import apply_contextual_ev, fit_packed_contextual_ev
 
 
 def packed_candidates_from_rows(
@@ -131,6 +134,14 @@ def prior_selection_key(row: dict[str, Any]) -> tuple[Any, ...]:
         int(metrics["profit_yen"]),
         int(metrics["hit_tickets"]),
     )
+
+
+def calibration_day_count(total_days: int, fraction: float) -> int:
+    if total_days < 61:
+        raise ValueError("contextual EV calibration requires at least 61 days")
+    if not 0.20 <= fraction <= 0.80:
+        raise ValueError("calibration_fraction must be between 0.20 and 0.80")
+    return max(30, min(total_days - 30, int(round(total_days * fraction))))
 
 
 def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
@@ -227,12 +238,37 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
     }
     prior_results = []
     for index, prior_weight in enumerate(args.payout_prior_weights):
-        packed = packed_candidates_from_rows(
+        raw_packed = packed_candidates_from_rows(
             selection_rows,
             payouts=payouts,
             train_races=selection_train_races,
             payout_prior_weight=prior_weight,
         )
+        packed = raw_packed
+        calibration = None
+        calibration_days = 0
+        if args.ev_calibration_mode != "none":
+            calibration_days = calibration_day_count(
+                len(raw_packed.dates), args.calibration_fraction
+            )
+            calibration_packed = slice_days(raw_packed, calibration_days)
+            policy_packed = slice_day_range(
+                raw_packed, calibration_days, len(raw_packed.dates)
+            )
+            artifact = fit_packed_contextual_ev(
+                calibration_packed,
+                prediction_date=policy_packed.dates[0],
+                bootstrap_samples=args.calibration_bootstrap_samples,
+                seed=args.seed + index,
+            )
+            estimate = (
+                "point" if args.ev_calibration_mode == "contextual_point"
+                else "lcb95"
+            )
+            packed = apply_contextual_ev(
+                policy_packed, artifact, estimate=estimate
+            )
+            calibration = artifact.as_dict()
         policy = {**base_policy, "payout_prior_weight": prior_weight}
         search_result = successive_halving_search(
             packed,
@@ -244,7 +280,10 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         )
         prior_results.append({
             "payout_prior_weight": prior_weight,
+            "raw_packed_tickets": raw_packed.tickets,
             "packed_tickets": packed.tickets,
+            "calibration_days": calibration_days,
+            "ev_calibration": calibration,
             "candidate_ev_calibration": candidate_ev_calibration(packed),
             **search_result,
         })
@@ -291,6 +330,28 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         },
         payout_prior_weight=float(selected_policy["payout_prior_weight"]),
     )
+    final_ev_calibration = None
+    if args.ev_calibration_mode != "none":
+        selection_packed = packed_candidates_from_rows(
+            selection_rows,
+            payouts=payouts,
+            train_races=selection_train_races,
+            payout_prior_weight=float(selected_policy["payout_prior_weight"]),
+        )
+        artifact = fit_packed_contextual_ev(
+            selection_packed,
+            prediction_date=holdout_packed.dates[0],
+            bootstrap_samples=args.calibration_bootstrap_samples,
+            seed=args.seed,
+        )
+        estimate = (
+            "point" if args.ev_calibration_mode == "contextual_point"
+            else "lcb95"
+        )
+        holdout_packed = apply_contextual_ev(
+            holdout_packed, artifact, estimate=estimate
+        )
+        final_ev_calibration = artifact.as_dict()
     holdout_bankroll = evaluate_packed_policy(holdout_packed, selected_policy)
     holdout_ev_calibration = candidate_ev_calibration(holdout_packed)
     holdout_confidence = bootstrap_daily_bankroll(
@@ -309,17 +370,20 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "temporal_stability": holdout_temporal_stability,
     })
     result = {
-        "model": (
-            "bankroll_policy_optimized_newton_v2"
-            if args.coefficient_optimizer == "newton_cg"
-            else "bankroll_policy_optimized_v1"
-        ),
+        "model": "_".join(filter(None, (
+            "bankroll_policy_optimized",
+            "newton" if args.coefficient_optimizer == "newton_cg" else "adam",
+            args.ev_calibration_mode if args.ev_calibration_mode != "none" else None,
+            "v3",
+        ))),
         "comparison_role": "bankroll_policy_model",
         "source_search_result": str(search_path),
         "feature_schema_version": search["feature_schema_version"],
         "race_universe_sha256": race_ids_sha256(race_keys),
         "selected_prediction_model": selected,
         "coefficient_optimizer": args.coefficient_optimizer,
+        "ev_calibration_mode": args.ev_calibration_mode,
+        "ev_calibration": final_ev_calibration,
         "evaluation_from": evaluation_from.isoformat(),
         "evaluation_through": evaluation_through.isoformat(),
         "evaluation_days": args.evaluation_days,
@@ -352,7 +416,11 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "race_hit_rate": holdout_bankroll["race_hit_rate"],
         "bankroll": holdout_bankroll,
         "holdout_candidate_ev_calibration": holdout_ev_calibration,
-        "ev_calibration_usage": "reporting_only_not_used_for_selection",
+        "ev_calibration_usage": (
+            "prior_selection_fit_then_applied_to_policy_and_holdout"
+            if args.ev_calibration_mode != "none"
+            else "reporting_only_not_used_for_selection"
+        ),
         "bankroll_confidence": holdout_confidence,
         "promotion_gate": holdout_gate,
         "recent_allocation": recent_allocation,
@@ -439,6 +507,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cg-iterations", type=int, default=75)
     parser.add_argument("--gradient-tolerance", type=float, default=0.0001)
     parser.add_argument("--cg-tolerance", type=float, default=0.001)
+    parser.add_argument(
+        "--ev-calibration-mode",
+        choices=("none", "contextual_point", "contextual_lcb95"),
+        default="none",
+    )
+    parser.add_argument("--calibration-fraction", type=float, default=0.50)
+    parser.add_argument(
+        "--calibration-bootstrap-samples", type=int, default=2_000
+    )
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--candidate-count", type=int, default=24)
     parser.add_argument("--finalists", type=int, default=6)
