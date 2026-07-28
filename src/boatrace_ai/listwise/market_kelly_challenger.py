@@ -107,6 +107,7 @@ def evaluate_attached_market_kelly_challenger(
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
         "evaluated_races": evaluated_races,
         "tickets": sum(row["tickets"] for row in daily),
+        "hit_tickets": sum(row["hit_tickets"] for row in daily),
         "stake_yen": stake_yen,
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
@@ -142,7 +143,11 @@ def _promotion_gate(
     gates = {
         "minimum_purchase_days": 30,
         "minimum_tickets": 300,
-        "sample_size_pass": purchase_days >= 30 and tickets >= 300,
+        "minimum_hits": 20,
+        "sample_size_pass": (
+            purchase_days >= 30 and tickets >= 300
+            and sum(int(row["hit_tickets"]) for row in daily) >= 20
+        ),
         "roi_pass": bool(stake_yen and return_yen > stake_yen),
         "largest_hit_excluded_roi_pass": bool(
             float(reliability.get("roi_without_largest_hit") or 0.0) > 1.0
