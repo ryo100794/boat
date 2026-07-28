@@ -62,6 +62,18 @@ def _packed_for_rows(rows_by_race):
         })
     return pack_candidates(candidates, evaluated)
 
+def _checkpoint_stats() -> dict:
+    return {
+        "enabled": False,
+        "checkpoint_version": nested.FOLD_CHECKPOINT_VERSION,
+        "checkpoint_sha256": "e" * 64,
+        "resumed_fold_count": 0,
+        "built_fold_count": 5,
+        "invalid_fold_count": 0,
+    }
+
+
+
 
 def test_fold_builder_isolates_model_and_payout_training_boundaries(
     monkeypatch,
@@ -120,7 +132,7 @@ def test_fold_builder_isolates_model_and_payout_training_boundaries(
     monkeypatch.setattr(nested, "evaluate_range", evaluate)
     monkeypatch.setattr(nested, "packed_candidates_from_rows", pack)
 
-    fold_inputs, audits = nested.build_fold_inputs(
+    fold_inputs, audits, checkpoint = nested.build_fold_inputs(
         dataset,
         boundaries=boundaries,
         payouts={},
@@ -159,6 +171,9 @@ def test_fold_builder_isolates_model_and_payout_training_boundaries(
     assert audits[0]["payout_prior"]["holdout_teacher_date_through"] == "2020-01-08"
     assert audits[0]["boundary_audit"]["holdout_training_stops_at_selection_end"] is True
     assert audits[0]["boundary_audit"]["passed"] is True
+    assert checkpoint["enabled"] is False
+    assert checkpoint["built_fold_count"] == 1
+    assert checkpoint["resumed_fold_count"] == 0
 
 
 def test_fold_builder_rejects_prediction_rows_crossing_boundary(monkeypatch) -> None:
@@ -278,6 +293,7 @@ def test_run_records_source_search_cache_and_candidate_hashes(
          for index in range(1, 6)],
         [{"fold": index, "boundary_audit": {"passed": True}}
          for index in range(1, 6)],
+        _checkpoint_stats(),
     ))
     monkeypatch.setattr(nested, "evaluate_annual_walk_forward", lambda *args, **kwargs: {
         "policy_candidates_sha256": candidate_hash,
@@ -310,6 +326,8 @@ def test_run_records_source_search_cache_and_candidate_hashes(
     assert provenance["cache_manifest_sha256"] == "b" * 64
     assert provenance["cache_bundle_sha256"] == "c" * 64
     assert provenance["policy_candidates_sha256"] == candidate_hash
+    assert provenance["payouts_sha256"]
+    assert result["checkpoint"]["checkpoint_version"] == nested.FOLD_CHECKPOINT_VERSION
     assert json.loads(output.read_text())["provenance"] == provenance
 
 
@@ -336,7 +354,8 @@ def test_three_fold_run_cannot_promote(tmp_path, monkeypatch) -> None:
     })
     monkeypatch.setattr(nested, "_load_trifecta_payouts", lambda conn: {})
     monkeypatch.setattr(nested, "build_fold_inputs", lambda *args, **kwargs: (
-        [{"fold": index} for index in range(1, 4)], []
+        [{"fold": index} for index in range(1, 4)], [],
+        _checkpoint_stats(),
     ))
     monkeypatch.setattr(nested, "evaluate_annual_walk_forward", lambda *args, **kwargs: {
         "policy_candidates_sha256": "d" * 64, "promotion_eligible": True,
@@ -357,3 +376,203 @@ def test_three_fold_run_cannot_promote(tmp_path, monkeypatch) -> None:
     assert result["research_only"] is True
     assert result["promotion_eligible"] is False
     assert result["evaluation"]["promotion_eligible"] is False
+
+
+def _install_checkpoint_pipeline(monkeypatch, calls: dict[str, int]) -> None:
+    def select(_dataset, **_kwargs):
+        calls["select"] = calls.get("select", 0) + 1
+        return ({
+            "target": "winner",
+            "alpha": 1e-4,
+            "inner_train_races": 3,
+            "validation_races": 1,
+        }, [{"target": "winner", "alpha": 1e-4}])
+
+    def fit(_dataset, **_kwargs):
+        calls["fit"] = calls.get("fit", 0) + 1
+        return object(), [{"epoch": 1, "loss": 0.5}]
+
+    def evaluate(dataset, _model, **kwargs):
+        calls["evaluate"] = calls.get("evaluate", 0) + 1
+        start, stop = kwargs["race_start"], kwargs["race_end"]
+        rows = {}
+        for race_id, race_date, jcd, rno in dataset.race_keys[start:stop]:
+            rows[race_id] = [{
+                "race_id": race_id,
+                "race_date": race_date,
+                "jcd": jcd,
+                "rno": rno,
+                "lane": lane,
+                "rank": lane,
+                "probability": 1 / 6,
+            } for lane in range(1, 7)]
+        return {"evaluated_races": stop - start, "loss": 0.4}, rows
+
+    monkeypatch.setattr(nested, "nested_select_candidate", select)
+    monkeypatch.setattr(nested, "_fit_selected_model", fit)
+    monkeypatch.setattr(nested, "evaluate_range", evaluate)
+    monkeypatch.setattr(
+        nested, "packed_candidates_from_rows",
+        lambda rows, **_kwargs: _packed_for_rows(rows),
+    )
+
+
+def _checkpoint_build(
+    dataset: HashedRaceDataset,
+    checkpoint_dir,
+    *,
+    provenance: dict,
+):
+    boundaries = build_annual_walk_forward_folds(
+        sorted({row[1] for row in dataset.race_keys}),
+        selection_days=4,
+        outer_days=1,
+        folds=1,
+        embargo_days=1,
+    )
+    return nested.build_fold_inputs(
+        dataset,
+        boundaries=boundaries,
+        payouts={},
+        targets=("winner",),
+        alphas=(1e-4,),
+        base_policy=_policy(),
+        learning_rate=0.02,
+        epochs=1,
+        batch_races=2,
+        validation_fraction=0.2,
+        min_validation_races=1,
+        provenance=provenance,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+
+def test_complete_fold_checkpoint_resumes_exact_packed_arrays_and_audit(
+    tmp_path, monkeypatch,
+) -> None:
+    dataset = _dataset()
+    checkpoint_dir = tmp_path / "folds"
+    provenance = {"source_race_universe_sha256": "a" * 64}
+    calls: dict[str, int] = {}
+    _install_checkpoint_pipeline(monkeypatch, calls)
+
+    first_inputs, first_audits, first_stats = _checkpoint_build(
+        dataset, checkpoint_dir, provenance=provenance
+    )
+    assert first_stats["built_fold_count"] == 1
+    assert first_stats["resumed_fold_count"] == 0
+    assert first_stats["invalid_fold_count"] == 0
+    assert sorted(path.name for path in checkpoint_dir.iterdir()) == [
+        "fold-01.json", "fold-01.npz",
+    ]
+    metadata = json.loads((checkpoint_dir / "fold-01.json").read_text())
+    assert metadata["complete"] is True
+    assert metadata["checkpoint_version"] == nested.FOLD_CHECKPOINT_VERSION
+    assert metadata["boundary_audit"] == first_inputs[0]["boundary_audit"]
+    assert metadata["model_audit"] == first_audits[0]
+    metadata_payload = dict(metadata)
+    metadata_hash = metadata_payload.pop("metadata_sha256")
+    assert metadata_hash == nested._sha256(
+        nested._canonical_json_bytes(metadata_payload)
+    )
+    with np.load(checkpoint_dir / "fold-01.npz", allow_pickle=False) as archive:
+        assert all(archive[key].dtype.kind != "O" for key in archive.files)
+        assert archive["selection__dates"].dtype.kind == "U"
+        assert archive["holdout__dates"].dtype.kind == "U"
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("complete matching fold must not be rebuilt")
+
+    for name in (
+        "nested_select_candidate", "_fit_selected_model", "evaluate_range",
+        "packed_candidates_from_rows",
+    ):
+        monkeypatch.setattr(nested, name, unexpected)
+    resumed_inputs, resumed_audits, resumed_stats = _checkpoint_build(
+        dataset, checkpoint_dir, provenance=provenance
+    )
+    assert resumed_stats["built_fold_count"] == 0
+    assert resumed_stats["resumed_fold_count"] == 1
+    assert resumed_stats["invalid_fold_count"] == 0
+    assert resumed_stats["checkpoint_sha256"] == first_stats["checkpoint_sha256"]
+    assert resumed_inputs[0]["boundary_audit"] == first_inputs[0]["boundary_audit"]
+    assert resumed_audits == first_audits
+    for label in ("selection", "holdout"):
+        original = first_inputs[0][label]
+        resumed = resumed_inputs[0][label]
+        assert resumed.dates == original.dates
+        for field in nested._PACKED_ARRAY_DTYPES:
+            original_array = getattr(original, field)
+            resumed_array = getattr(resumed, field)
+            assert resumed_array.dtype == original_array.dtype
+            np.testing.assert_array_equal(resumed_array, original_array)
+
+
+def test_corrupt_npz_is_not_resumed_and_fold_is_rebuilt(
+    tmp_path, monkeypatch,
+) -> None:
+    dataset = _dataset()
+    checkpoint_dir = tmp_path / "folds"
+    provenance = {"source_race_universe_sha256": "a" * 64}
+    calls: dict[str, int] = {}
+    _install_checkpoint_pipeline(monkeypatch, calls)
+    _checkpoint_build(dataset, checkpoint_dir, provenance=provenance)
+    (checkpoint_dir / "fold-01.npz").write_bytes(b"not-a-valid-npz")
+
+    rebuilt_inputs, rebuilt_audits, stats = _checkpoint_build(
+        dataset, checkpoint_dir, provenance=provenance
+    )
+    assert stats["resumed_fold_count"] == 0
+    assert stats["built_fold_count"] == 1
+    assert stats["invalid_fold_count"] == 1
+    assert calls["select"] == 2
+    assert rebuilt_inputs[0]["boundary_audit"]["passed"] is True
+    assert rebuilt_audits[0]["boundary_audit"]["passed"] is True
+    metadata = json.loads((checkpoint_dir / "fold-01.json").read_text())
+    assert metadata["npz_sha256"] == nested._file_sha256(
+        checkpoint_dir / "fold-01.npz"
+    )
+
+
+def test_stale_provenance_checkpoint_is_rebuilt_then_resumable(
+    tmp_path, monkeypatch,
+) -> None:
+    dataset = _dataset()
+    checkpoint_dir = tmp_path / "folds"
+    calls: dict[str, int] = {}
+    _install_checkpoint_pipeline(monkeypatch, calls)
+    _old_inputs, _old_audits, old_stats = _checkpoint_build(
+        dataset, checkpoint_dir,
+        provenance={"source_race_universe_sha256": "a" * 64},
+    )
+    _new_inputs, _new_audits, new_stats = _checkpoint_build(
+        dataset, checkpoint_dir,
+        provenance={"source_race_universe_sha256": "b" * 64},
+    )
+    assert new_stats["checkpoint_sha256"] != old_stats["checkpoint_sha256"]
+    assert new_stats["resumed_fold_count"] == 0
+    assert new_stats["built_fold_count"] == 1
+    assert new_stats["invalid_fold_count"] == 1
+    assert calls["select"] == 2
+
+    _inputs, _audits, resumed_stats = _checkpoint_build(
+        dataset, checkpoint_dir,
+        provenance={"source_race_universe_sha256": "b" * 64},
+    )
+    assert resumed_stats["resumed_fold_count"] == 1
+    assert resumed_stats["built_fold_count"] == 0
+    assert calls["select"] == 2
+
+
+def test_checkpoint_directory_requires_explicit_cli_flag(tmp_path) -> None:
+    required = [
+        "--db", "db", "--search-result", "search.json",
+        "--cache-prefix", "cache", "--output", "output.json",
+    ]
+    disabled = nested.build_parser().parse_args(required)
+    assert disabled.checkpoint_dir is None
+
+    enabled = nested.build_parser().parse_args([
+        *required, "--checkpoint-dir", str(tmp_path / "folds"),
+    ])
+    assert enabled.checkpoint_dir == str(tmp_path / "folds")
