@@ -128,6 +128,30 @@ def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_archive_closing_odds_command_is_rate_limited_and_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "archive_closing_odds_backfill",
+            {
+                "from_date": "2026-07-01",
+                "through_date": "2026-07-27",
+                "sleep_seconds": 1.5,
+                "max_pages": 50,
+                "timeout_seconds": 3600,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.archive_closing_odds"]
+    assert command[command.index("--sleep-seconds") + 1] == "1.5"
+    assert command[command.index("--max-pages") + 1] == "50"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
 def test_calibrated_mlp_recency_search_profile() -> None:
     assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
         "category": "evaluation",
