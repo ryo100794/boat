@@ -2854,7 +2854,20 @@ def _database_evaluation_artifacts(
     daily: dict[str, list[dict[str, Any]]] = {}
     seen_models: set[str] = set()
     root = model_dir.resolve()
-    for candidate in queue_status.get("candidates") or []:
+    candidates = list(queue_status.get("candidates") or [])
+    # Search jobs can emit one artifact per GA island. Keep this bounded scan
+    # focused on candidates that explain realized or adaptive bankroll results.
+    candidates.sort(
+        key=lambda candidate: not any(
+            candidate.get(key) is not None
+            for key in (
+                "payout_feature_candidate_roi",
+                "roi",
+                "profit_yen",
+            )
+        )
+    )
+    for candidate in candidates:
         model_key = str(candidate.get("model_key") or "").strip()
         if not model_key or model_key in seen_models:
             continue
