@@ -2187,6 +2187,8 @@ METRIC_KEYS = (
     "entry_brier", "winner_log_loss", "trifecta_log_loss", "calibrated_trifecta_log_loss",
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
     "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
+    "roi_ci95_lower", "roi_ci95_upper", "probability_roi_above_one",
+    "profit_ci95_lower_yen", "profit_ci95_upper_yen",
     "selected_races", "hit_races", "tickets", "hit_tickets",
     "race_selection_rate", "avg_tickets_per_selected_race",
     "ticket_hit_rate", "ticket_hit_rate_ci95_lower", "ticket_hit_rate_ci95_upper",
@@ -2227,6 +2229,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[key] = value[key]
         for key in (
             "metrics", "holdout", "holdout_after_newton", "bankroll",
+            "selection_prediction_metrics", "holdout_prediction_metrics",
+            "bankroll_confidence",
             "closing_odds_forecast",
             "conditional_order", "venue_conditional_order",
             "momentum_newton_residual",

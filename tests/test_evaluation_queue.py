@@ -1165,6 +1165,31 @@ def test_result_summary_preserves_bankroll_model_protocol() -> None:
     }
 
 
+def test_result_summary_combines_bankroll_and_nested_prediction_metrics() -> None:
+    summary = summarize_result({
+        "roi": 0.92,
+        "profit_yen": -17000,
+        "holdout_prediction_metrics": {
+            "entry_log_loss": 0.327,
+            "winner_top1_accuracy": 0.568,
+            "trifecta_top5_hit_rate": 0.330,
+        },
+        "bankroll_confidence": {
+            "roi_ci95_lower": 0.805,
+            "roi_ci95_upper": 1.042,
+            "probability_roi_above_one": 0.098,
+        },
+    })
+
+    assert summary["roi"] == 0.92
+    assert summary["entry_log_loss"] == 0.327
+    assert summary["winner_top1_accuracy"] == 0.568
+    assert summary["trifecta_top5_hit_rate"] == 0.330
+    assert summary["roi_ci95_lower"] == 0.805
+    assert summary["roi_ci95_upper"] == 1.042
+    assert summary["probability_roi_above_one"] == 0.098
+
+
 def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     summary = summarize_result({
         "status": "completed",
