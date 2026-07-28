@@ -1141,6 +1141,30 @@ def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
     assert summary["holdout_temporal_fold_rois"] == [1.10, 0.94, 1.03]
 
 
+def test_result_summary_preserves_bankroll_model_protocol() -> None:
+    summary = summarize_result({
+        "comparison_role": "bankroll_policy_model",
+        "coefficient_optimizer": "newton_cg",
+        "ev_calibration_mode": "contextual_point",
+        "ev_calibration_usage": "prior_selection_fit_then_applied_to_policy_and_holdout",
+        "evaluation_from": "2025-07-25",
+        "evaluation_through": "2026-07-24",
+        "selection_races": 74331,
+        "holdout_races": 49506,
+    })
+
+    assert summary == {
+        "comparison_role": "bankroll_policy_model",
+        "coefficient_optimizer": "newton_cg",
+        "ev_calibration_mode": "contextual_point",
+        "ev_calibration_usage": "prior_selection_fit_then_applied_to_policy_and_holdout",
+        "evaluation_from": "2025-07-25",
+        "evaluation_through": "2026-07-24",
+        "selection_races": 74331,
+        "holdout_races": 49506,
+    }
+
+
 def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     summary = summarize_result({
         "status": "completed",
