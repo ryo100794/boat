@@ -152,6 +152,30 @@ def test_archive_closing_odds_command_is_rate_limited_and_bounded(tmp_path) -> N
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "archive_market_oracle",
+            {
+                "from_date": "2025-07-25",
+                "through_date": "2026-07-24",
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "daily_budget_yen": 10000,
+                "timeout_seconds": 43200,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.listwise.archive_market_oracle"]
+    assert command[command.index("--from-date") + 1] == "2025-07-25"
+    assert command[command.index("--daily-budget-yen") + 1] == "10000"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
 def test_calibrated_mlp_recency_search_profile() -> None:
     assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
         "category": "evaluation",
