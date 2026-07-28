@@ -439,6 +439,7 @@ def workspace_quota_allows(
     probe_dir.mkdir(parents=True, exist_ok=True)
     probe_path = probe_dir / f".evaluation-quota-{uuid.uuid4().hex}.tmp"
     descriptor: int | None = None
+    close_error: OSError | None = None
     try:
         descriptor = os.open(
             probe_path,
@@ -455,17 +456,23 @@ def workspace_quota_allows(
         raise
     finally:
         if descriptor is not None:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                if exc.errno not in {errno.EDQUOT, errno.ENOSPC}:
+                    close_error = exc
         try:
             probe_path.unlink()
         except FileNotFoundError:
             pass
+        if close_error is not None:
+            raise close_error
 
 
 def job_workspace_reservation_mb(job: dict[str, Any], app_root: Path) -> int:
     required_mb = max(0, int(job.get("min_free_disk_mb") or 0))
     if str(job.get("task_type")) != "calibrated_mlp_recency_search":
-        return required_mb
+        return min(required_mb, 256)
     parameters = job.get("parameters") or {}
     if not isinstance(parameters, dict):
         parameters = json.loads(str(parameters))

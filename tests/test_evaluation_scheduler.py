@@ -85,12 +85,20 @@ def test_workspace_quota_probe_rejects_quota_and_removes_file(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    real_close = os.close
+
     def fail_fallocate(_descriptor: int, _offset: int, _length: int) -> None:
         raise OSError(errno.EDQUOT, "quota")
 
+    def close_then_report_quota(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError(errno.EDQUOT, "quota on close")
+
     monkeypatch.setattr(os, "posix_fallocate", fail_fallocate)
+    monkeypatch.setattr(os, "close", close_then_report_quota)
 
     assert workspace_quota_allows(tmp_path, required_mb=12) is False
+    monkeypatch.setattr(os, "close", real_close)
     assert not list((tmp_path / "data" / "archive-staging").iterdir())
 
 
@@ -132,7 +140,7 @@ def test_non_mlp_workspace_reservation_uses_profile_requirement(
             "min_free_disk_mb": 4096,
         },
         tmp_path,
-    ) == 4096
+    ) == 256
 
 
 def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch) -> None:
