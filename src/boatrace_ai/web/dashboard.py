@@ -2874,6 +2874,33 @@ def _database_evaluation_artifacts(
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
                     daily[walk_label] = walk_daily
+        for component_key in (
+            "market_offset_multinomial_kelly_walk_forward",
+            "market_offset_registered_policy_walk_forward",
+            "registered_ev_band_walk_forward",
+            "prospective_normalized_ev_walk_forward",
+        ):
+            component = data.get(component_key)
+            if not isinstance(component, dict) or not component:
+                continue
+            if not any(
+                component.get(key) is not None
+                for key in ("roi", "stake_yen", "tickets", "evaluation_days")
+            ):
+                continue
+            component_label = f"{label}_{component_key}"
+            component_result = {
+                **prediction_metrics,
+                **component,
+                "model": f"{data.get('model') or model_key}_{component_key}",
+                "generated_at": data.get("generated_at"),
+            }
+            bankroll_rows.append(
+                _bankroll_summary(path, component_label, component_result)
+            )
+            component_daily = _daily_report_rows(component.get("daily") or [])
+            if component_daily:
+                daily[component_label] = component_daily
         if len(seen_models) >= max(1, int(maximum_artifacts)):
             break
     return backtests, bankroll_rows, daily

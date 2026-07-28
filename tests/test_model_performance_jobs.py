@@ -253,6 +253,21 @@ def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
                         "roi_delta_ci95_upper": 0.5,
                     },
                 },
+                "market_offset_multinomial_kelly_walk_forward": {
+                    "evaluation_days": 6,
+                    "evaluated_races": 918,
+                    "tickets": 28,
+                    "hit_tickets": 3,
+                    "stake_yen": 3000,
+                    "return_yen": 3130,
+                    "profit_yen": 130,
+                    "roi": 1.0433333333333332,
+                    "daily": [{
+                        "race_date": "2026-07-23",
+                        "stake_yen": 3000,
+                        "return_yen": 3130,
+                    }],
+                },
             }
         ),
         encoding="utf-8",
@@ -277,11 +292,15 @@ def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
     assert [row["name"] for row in bankroll] == [
         "calibrated_mlp_recency_selected",
         "calibrated_mlp_recency_selected_conditional_payout_walk_forward",
+        "calibrated_mlp_recency_selected_market_offset_multinomial_kelly_walk_forward",
     ]
     assert daily["calibrated_mlp_recency_selected"][0]["roi_delta"] == -0.2
     assert daily[
         "calibrated_mlp_recency_selected_conditional_payout_walk_forward"
     ][0]["roi_delta"] == 0.2
+    assert daily[
+        "calibrated_mlp_recency_selected_market_offset_multinomial_kelly_walk_forward"
+    ][0]["roi_delta"] == 0.043333333333333335
 
 
 def test_database_evaluation_artifact_rejects_paths_outside_model_dir(
