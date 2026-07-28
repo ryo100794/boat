@@ -66,6 +66,9 @@ def test_nested_annual_queue_builds_strict_five_fold_command(tmp_path) -> None:
     assert command[command.index("--embargo-days") + 1] == "1"
     assert command[command.index("--targets") + 1] == "winner,top3_pl"
     assert command[command.index("--cache-prefix") + 1] == str(cache)
+    assert command[command.index("--checkpoint-dir") + 1] == str(
+        root / "data/models/evaluation_cache/nested_annual/job-00000077"
+    )
     assert output == root / "data/models/evaluation_queue/job-00000077.json"
 
 

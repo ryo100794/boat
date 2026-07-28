@@ -1716,6 +1716,10 @@ def build_command(
             raise ValueError("nested finalists must not exceed candidate_count")
         selection_days = _integer(params, "selection_days", 365, 365, 365)
         outer_days = _integer(params, "outer_days", 365, 365, 365)
+        checkpoint_dir = (
+            app_root / "data/models/evaluation_cache/nested_annual"
+            / f"job-{job_id:08d}"
+        )
         command = [
             str(python), "-m",
             "boatrace_ai.listwise.bankroll_policy_nested_evaluation",
@@ -1723,6 +1727,7 @@ def build_command(
             "--search-result", str(source_result),
             "--cache-prefix", str(cache_prefix),
             "--output", str(output),
+            "--checkpoint-dir", str(checkpoint_dir),
             "--source-job-id", str(source_job_id),
             "--folds", "5",
             "--selection-days", str(selection_days),
