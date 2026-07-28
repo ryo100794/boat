@@ -4,6 +4,7 @@ import pytest
 
 from boatrace_ai.bankroll_policy_search import (
     CONSERVATIVE_POLICY_ANCHORS,
+    TAIL_POLICY_ANCHORS,
     canonicalize_policy_candidates,
     policy_candidates,
     promotion_gate,
@@ -165,6 +166,8 @@ def test_policy_candidates_preserve_conservative_anchors() -> None:
 
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
         assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
+    for overrides in TAIL_POLICY_ANCHORS:
+        assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
 
     assert max(candidate["ev_threshold"] for candidate in candidates) >= 2.0
 
@@ -174,6 +177,24 @@ def test_policy_candidates_preserve_conservative_anchors() -> None:
         and candidate["min_estimated_odds"] >= 100.0
         for candidate in candidates
     )
+
+
+def test_eight_finalists_preserve_registered_tail_hypotheses() -> None:
+    result = successive_halving_search(
+        _packed_days(),
+        POLICY,
+        candidate_count=12,
+        finalists=8,
+        bootstrap_samples=100,
+        seed=7,
+    )
+
+    finalist_policies = [row["policy"] for row in result["finalists"]]
+    for overrides in CONSERVATIVE_POLICY_ANCHORS + TAIL_POLICY_ANCHORS:
+        assert {**POLICY, "min_estimated_odds": None, **overrides} in finalist_policies
+    assert [
+        row["protected_anchor_count"] for row in result["stages"]
+    ] == [7, 7, 7]
 
 
 def test_candidate_registry_canonicalizes_legacy_minimum_odds() -> None:

@@ -84,12 +84,66 @@ CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
 )
 
 
+TAIL_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
+    {
+        "ev_threshold": 1.35,
+        "min_ticket_probability": 0.0,
+        "min_estimated_odds": 101.0,
+        "max_estimated_odds": None,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 20,
+    },
+    {
+        "ev_threshold": 2.00,
+        "min_ticket_probability": 0.002,
+        "min_estimated_odds": 101.0,
+        "max_estimated_odds": None,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 20,
+    },
+    {
+        "ev_threshold": 2.50,
+        "min_ticket_probability": 0.0,
+        "min_estimated_odds": 200.0,
+        "max_estimated_odds": None,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 20,
+    },
+)
+
+
 def _conservative_anchor_policies(
     base_policy: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     anchors = []
     seen = set()
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
+        candidate = {**base_policy, **overrides}
+        key = _policy_key(candidate)
+        if _valid_caps(candidate) and key not in seen:
+            seen.add(key)
+            anchors.append(candidate)
+    return anchors
+
+
+def _tail_anchor_policies(
+    base_policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    anchors = []
+    seen = set()
+    for overrides in TAIL_POLICY_ANCHORS:
         candidate = {**base_policy, **overrides}
         key = _policy_key(candidate)
         if _valid_caps(candidate) and key not in seen:
@@ -111,7 +165,11 @@ def policy_candidates(
     canonical_base.setdefault("min_estimated_odds", None)
     candidates = [canonical_base]
     seen = {_policy_key(candidates[0])}
-    for candidate in _conservative_anchor_policies(canonical_base):
+    anchors = (
+        _conservative_anchor_policies(canonical_base)
+        + _tail_anchor_policies(canonical_base)
+    )
+    for candidate in anchors:
         if len(candidates) >= count:
             break
         key = _policy_key(candidate)
@@ -173,26 +231,35 @@ def canonicalize_policy_candidates(
     return tuple(normalized), digest
 
 
-def _retain_conservative_anchors(
+def _retain_registered_anchors(
     rows: Sequence[dict[str, Any]],
     *,
     keep: int,
     base_policy: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     selected = list(rows[:keep])
-    anchor_keys = {
+    protected = (
+        _conservative_anchor_policies(base_policy)
+        + _tail_anchor_policies(base_policy)
+    )[:keep]
+    anchor_keys = tuple(
         _policy_key(policy)
-        for policy in _conservative_anchor_policies(base_policy)
-    }
+        for policy in protected
+    )
+    anchor_key_set = set(anchor_keys)
     selected_keys = {_policy_key(row["policy"]) for row in selected}
-    for row in rows:
+    rows_by_key = {_policy_key(row["policy"]): row for row in rows}
+    for anchor_key in anchor_keys:
+        row = rows_by_key.get(anchor_key)
+        if row is None:
+            continue
         key = _policy_key(row["policy"])
-        if key not in anchor_keys or key in selected_keys:
+        if key not in anchor_key_set or key in selected_keys:
             continue
         replace_at = next(
             (
                 index for index in range(len(selected) - 1, -1, -1)
-                if _policy_key(selected[index]["policy"]) not in anchor_keys
+                if _policy_key(selected[index]["policy"]) not in anchor_key_set
             ),
             None,
         )
@@ -289,13 +356,16 @@ def successive_halving_search(
             if fraction < 1.0
             else finalists
         )
-        retained = _retain_conservative_anchors(
+        retained = _retain_registered_anchors(
             rows, keep=keep, base_policy=base_policy
         )
         active = [row["policy"] for row in retained]
         anchor_keys = {
             _policy_key(policy)
-            for policy in _conservative_anchor_policies(base_policy)
+            for policy in (
+                _conservative_anchor_policies(base_policy)
+                + _tail_anchor_policies(base_policy)
+            )[:keep]
         }
         stages.append({
             "fraction": fraction,
