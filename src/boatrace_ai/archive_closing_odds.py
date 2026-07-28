@@ -23,6 +23,7 @@ from .odds_quality import (
 SOURCE_KEY = "kyotei_club_official_mirror_closing_v1"
 PARSER_VERSION = "archive_closing_odds_dom_v3"
 DEFAULT_BASE_URL = "https://odds.kyotei24.jp"
+MAX_INVALID_ATTEMPTS = 3
 
 
 POSTGRES_SCHEMA = """
@@ -292,17 +293,34 @@ def pending_races(
         SELECT r.race_id, r.race_date, r.jcd, r.rno,
                p.combination, p.payout_yen
         FROM races r
-        JOIN payouts p ON p.race_id = r.race_id
+        JOIN (
+          SELECT race_id, MIN(combination) AS combination,
+                 MIN(payout_yen) AS payout_yen
+          FROM payouts
+          WHERE bet_type = '3連単' AND payout_yen IS NOT NULL
+          GROUP BY race_id
+          HAVING COUNT(*) = 1
+        ) p ON p.race_id = r.race_id
         WHERE r.race_date BETWEEN ? AND ?
-          AND p.bet_type = '3連単'
-          AND p.payout_yen IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM archive_closing_odds_snapshots a
             WHERE a.race_id = r.race_id AND a.source_key = ?
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM archive_closing_odds_attempts a
+            WHERE a.race_id = r.race_id AND a.source_key = ?
+              AND a.status = 'invalid'
+              AND a.attempt_count >= ?
+          )
         ORDER BY r.race_date DESC, r.deadline_at DESC, r.jcd DESC, r.rno DESC
         """,
-        (from_date, through_date, SOURCE_KEY),
+        (
+            from_date,
+            through_date,
+            SOURCE_KEY,
+            SOURCE_KEY,
+            MAX_INVALID_ATTEMPTS,
+        ),
     ).fetchall()
     return [{key: row[key] for key in row.keys()} for row in rows]
 
