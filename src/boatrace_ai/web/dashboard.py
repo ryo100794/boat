@@ -2479,6 +2479,49 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 LIMIT 100
                 """
             ).fetchall()
+            try:
+                parent_ids = [
+                    int(row["parent_job_id"])
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT parent_job_id
+                        FROM (
+                          SELECT parent_job_id
+                          FROM model_evaluation_jobs
+                          WHERE category = 'evaluation'
+                          ORDER BY job_id DESC
+                          LIMIT 100
+                        ) recent
+                        WHERE parent_job_id IS NOT NULL
+                        """
+                    ).fetchall()
+                ]
+                known_ids = {int(row["job_id"]) for row in rows}
+                missing_parent_ids = [
+                    job_id for job_id in parent_ids if job_id not in known_ids
+                ]
+                if missing_parent_ids:
+                    placeholders = ",".join("?" for _ in missing_parent_ids)
+                    parent_rows = conn.execute(
+                        f"""
+                        SELECT j.job_id, j.task_type, j.model_key, j.status,
+                               j.parameters, j.attempt, j.max_attempts,
+                               j.started_at, j.completed_at, j.decision,
+                               j.result_summary, j.result_path, j.error,
+                               c.metrics AS candidate_metrics,
+                               c.parameters AS candidate_parameters,
+                               c.created_at AS candidate_created_at
+                        FROM model_evaluation_jobs j
+                        LEFT JOIN model_improvement_candidates c
+                          ON c.job_id = j.job_id
+                        WHERE j.job_id IN ({placeholders})
+                        """,
+                        tuple(missing_parent_ids),
+                    ).fetchall()
+                    rows = list(rows) + list(parent_rows)
+            except Exception:
+                # Legacy SQLite report fixtures predate parent_job_id.
+                pass
             current_attempt_started = {}
             try:
                 run_rows = conn.execute(

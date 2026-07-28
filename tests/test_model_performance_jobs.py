@@ -203,6 +203,63 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["candidates"][0]["payout_feature_roi_delta_ci95_lower"] == 0.02
 
 
+def test_database_evaluation_status_includes_parent_of_recent_job(tmp_path) -> None:
+    db_path = tmp_path / "queue.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE model_evaluation_jobs (
+          job_id INTEGER PRIMARY KEY, task_type TEXT, category TEXT,
+          model_key TEXT, status TEXT, parameters TEXT,
+          attempt INTEGER, max_attempts INTEGER,
+          started_at TEXT, completed_at TEXT, decision TEXT,
+          result_summary TEXT, result_path TEXT, error TEXT,
+          parent_job_id INTEGER
+        );
+        CREATE TABLE model_improvement_candidates (
+          job_id INTEGER PRIMARY KEY, metrics TEXT, parameters TEXT,
+          created_at TEXT
+        );
+        """
+    )
+    rows = []
+    for job_id in range(1, 103):
+        parent_job_id = 1 if job_id == 102 else None
+        summary = json.dumps({"roi": 0.81}) if job_id == 1 else "{}"
+        rows.append(
+            (
+                job_id,
+                "listwise_feature_search",
+                "evaluation",
+                f"job-{job_id}",
+                "completed",
+                "{}",
+                1,
+                2,
+                None,
+                "2026-07-28T00:00:00+00:00",
+                None,
+                summary,
+                None,
+                None,
+                parent_job_id,
+            )
+        )
+    conn.executemany(
+        "INSERT INTO model_evaluation_jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    status = _database_evaluation_status(db_path)
+
+    by_name = {row["name"]: row for row in status["jobs"]}
+    assert "job-1" in by_name
+    assert by_name["job-1"]["roi"] == 0.81
+    assert "job-2" not in by_name
+
+
 def test_database_evaluation_status_quarantines_invalid_data_source(tmp_path) -> None:
     db_path = tmp_path / "queue.sqlite"
     conn = sqlite3.connect(db_path)
