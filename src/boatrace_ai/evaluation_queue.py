@@ -2178,6 +2178,12 @@ def build_command(
 
 METRIC_KEYS = (
     "cached", "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
+    "comparison_role", "coefficient_optimizer", "ev_calibration_mode",
+    "ev_calibration_usage", "evaluation_from", "evaluation_through",
+    "selection_races", "holdout_races",
+    "comparison_role", "coefficient_optimizer", "ev_calibration_mode",
+    "ev_calibration_usage", "evaluation_from", "evaluation_through",
+    "selection_races", "holdout_races",
     "entry_brier", "winner_log_loss", "trifecta_log_loss", "calibrated_trifecta_log_loss",
     "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
     "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
