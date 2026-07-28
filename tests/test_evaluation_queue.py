@@ -152,6 +152,44 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_archive_closing_backfill_is_rate_limited_and_serial(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "archive_closing_backfill",
+            {
+                "from_date": "2026-06-01",
+                "through_date": "2026-06-30",
+                "sleep_seconds": 1.5,
+                "max_pages": 4000,
+                "timeout_seconds": 86400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["archive_closing_backfill"] == {
+        "category": "collection",
+        "memory_mb": 512,
+        "disk_mb": 256,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+    assert command[1:3] == ["-m", "boatrace_ai.archive_closing_odds"]
+    assert command[command.index("--sleep-seconds") + 1] == "1.5"
+    assert command[command.index("--max-pages") + 1] == "4000"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_archive_closing_backfill_result_is_collection_not_rejection() -> None:
+    assert result_decision(
+        "archive_closing_backfill",
+        {"archive_stored": 4000, "archive_remaining": 12000},
+    ) == "collection_complete"
+
+
 def test_calibrated_mlp_recency_search_profile() -> None:
     assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
         "category": "evaluation",
