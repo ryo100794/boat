@@ -79,7 +79,7 @@ def test_archive_winner_must_match_official_payout() -> None:
     payout = int(round(odds[winner] * 100))
     assert verify_winning_payout(
         odds, combination=winner, payout_yen=payout
-    )["status"] == "winner_payout_match"
+    )["status"] == "winner_only_match_unverified_market"
     with pytest.raises(ValueError, match="payout mismatch"):
         verify_winning_payout(odds, combination=winner, payout_yen=payout + 10)
 

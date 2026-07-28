@@ -171,7 +171,7 @@ def verify_winning_payout(
             f"expected={expected} actual={actual}"
         )
     return {
-        "status": "winner_payout_match",
+        "status": "winner_only_match_unverified_market",
         "winning_combination": combination,
         "winning_odds": float(odds[combination]),
         "payout_yen": actual,
@@ -322,7 +322,7 @@ def backfill_archive_closing_odds(
     counters = {
         "status": "completed",
         "source_key": SOURCE_KEY,
-        "source_role": "secondary_archive_research_only",
+        "source_role": "secondary_archive_candidate_unverified",
         "from_date": from_date,
         "through_date": through_date,
         "targets": len(targets),

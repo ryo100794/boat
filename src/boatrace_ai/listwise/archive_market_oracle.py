@@ -74,7 +74,7 @@ def load_archive_markets(
         JOIN races r ON r.race_id = a.race_id
         JOIN payouts p ON p.race_id = a.race_id AND p.bet_type = '3連単'
         WHERE a.source_key = ?
-          AND a.verification_status = 'winner_payout_match'
+          AND a.verification_status = 'all_market_official_match'
           AND r.race_date BETWEEN ? AND ?
         ORDER BY r.race_date, r.jcd, r.rno
         """,

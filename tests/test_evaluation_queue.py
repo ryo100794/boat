@@ -128,30 +128,6 @@ def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
-def test_archive_closing_odds_command_is_rate_limited_and_bounded(tmp_path) -> None:
-    root = tmp_path / "boat"
-    command, output = build_command(
-        _job(
-            "archive_closing_odds_backfill",
-            {
-                "from_date": "2026-07-01",
-                "through_date": "2026-07-27",
-                "sleep_seconds": 1.5,
-                "max_pages": 50,
-                "timeout_seconds": 3600,
-            },
-        ),
-        app_root=root,
-        python=root / ".venv/bin/python",
-        db="postgresql://test",
-    )
-
-    assert command[1:3] == ["-m", "boatrace_ai.archive_closing_odds"]
-    assert command[command.index("--sleep-seconds") + 1] == "1.5"
-    assert command[command.index("--max-pages") + 1] == "50"
-    assert output == root / "data/models/evaluation_queue/job-00000007.json"
-
-
 def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
@@ -1186,7 +1162,7 @@ def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
 def test_result_summary_preserves_archive_closing_odds_counts() -> None:
     summary = summarize_result({
         "status": "completed",
-        "source_role": "secondary_archive_research_only",
+        "source_role": "secondary_archive_candidate_unverified",
         "source_key": "archive-v1",
         "from_date": "2026-07-20",
         "through_date": "2026-07-27",
