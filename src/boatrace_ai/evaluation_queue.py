@@ -1489,7 +1489,13 @@ def build_command(
                 f"market source model is not available yet: {model_input}"
             )
         strategy = str(params.get("calibrator_strategy", "newton_residual"))
-        if strategy not in {"grid", "newton_residual", "orthogonal_residual", "odds_path_return"}:
+        if strategy not in {
+            "grid",
+            "newton_residual",
+            "orthogonal_residual",
+            "odds_path_return",
+            "odds_path_probability",
+        }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
             str(python), "-m", "boatrace_ai.listwise.market_calibration",
@@ -3693,6 +3699,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_return",
     ),
+    (
+        "odds_path_probability_only_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_probability",
+    ),
 )
 
 
@@ -3742,7 +3754,14 @@ def seed_daily_market_jobs(
             "min_calibration_days": 2,
             "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
-            "timeout_seconds": 7200 if calibrator_strategy == "odds_path_return" else 3600,
+            "timeout_seconds": (
+                7200
+                if calibrator_strategy in {
+                    "odds_path_return",
+                    "odds_path_probability",
+                }
+                else 3600
+            ),
         }
         range_key = formal_from.strftime("%Y%m%d") + f"-{through.day:02d}"
         job_id = enqueue_job(
@@ -3750,7 +3769,14 @@ def seed_daily_market_jobs(
             task_type="market_residual_walk_forward",
             model_key=f"{label}:market_residual:{range_key}",
             parameters=parameters,
-            priority=98 if calibrator_strategy == "odds_path_return" else 96,
+            priority=(
+                98
+                if calibrator_strategy in {
+                    "odds_path_return",
+                    "odds_path_probability",
+                }
+                else 96
+            ),
             max_attempts=2,
         )
         if job_id is not None:
