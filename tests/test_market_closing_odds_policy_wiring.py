@@ -151,6 +151,42 @@ def test_unavailable_forecast_explicitly_falls_back_to_observed_t5(
     assert decision_odds(item) == item["odds"]
 
 
+def test_conformal_lower_policy_input_is_attached_without_lookahead() -> None:
+    races = _races(2)
+    inputs = {
+        "policy_forecasts_by_race_id": {
+            str(races[1]["race_id"]): {
+                "estimated_final_odds": {
+                    combination: value * 0.7
+                    for combination, value in races[1]["odds"].items()
+                },
+                "closing_odds_forecast_target": (
+                    "adaptive_conformal_lower_bound"
+                ),
+                "closing_odds_model_trained_through_date": "2026-01-01",
+            }
+        }
+    }
+
+    attached = (
+        market_calibration.apply_prequential_conformal_lower_odds_policy_inputs(
+            races, inputs
+        )
+    )
+
+    assert attached[0]["closing_odds_policy_fallback"] is True
+    assert attached[0]["closing_odds_policy_fallback_reason"] == (
+        "insufficient_conformal_closing_odds_teachers"
+    )
+    assert attached[1]["closing_odds_policy_input"] == (
+        "oof_adaptive_conformal_lower_from_real_t5"
+    )
+    assert attached[1]["closing_odds_model_trained_through_date"] < (
+        attached[1]["race_date"]
+    )
+    assert decision_odds(attached[1]) == attached[1]["estimated_final_odds"]
+
+
 def test_walk_forward_connects_oof_prices_to_calibration_and_holdout(
     monkeypatch,
 ) -> None:

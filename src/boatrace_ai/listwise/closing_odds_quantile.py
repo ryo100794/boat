@@ -302,6 +302,7 @@ def walk_forward_closing_odds_quantiles(
     minimum_training_days: int = 1,
     regularization: float = 0.001,
     adaptive_rate: float = 0.5,
+    include_policy_forecasts: bool = False,
 ) -> dict[str, Any]:
     if minimum_training_days < 1:
         raise ValueError("minimum_training_days must be positive")
@@ -327,6 +328,7 @@ def walk_forward_closing_odds_quantiles(
         "age": 0.0,
     }
     tickets = rank_races = age_races = 0
+    policy_forecasts_by_race_id: dict[str, dict[str, Any]] = {}
     alpha = INITIAL_ADAPTIVE_ALPHA
     for index in range(minimum_training_days, len(dates)):
         training = [race for day in dates[:index] for race in by_day[day]]
@@ -338,6 +340,22 @@ def walk_forward_closing_odds_quantiles(
             alpha=alpha,
         )
         metrics = closing_odds_quantile_metrics(holdout, model)
+        if include_policy_forecasts:
+            for race in holdout:
+                race_id = str(race.get("race_id") or "")
+                forecast = forecast_closing_odds_quantiles(race, model)
+                lower_odds = forecast["q10"]
+                if not race_id or len(lower_odds) != 120:
+                    continue
+                policy_forecasts_by_race_id[race_id] = {
+                    "estimated_final_odds": lower_odds,
+                    "closing_odds_forecast_target": "adaptive_conformal_lower_bound",
+                    "closing_odds_model_training_days": len(dates[:index]),
+                    "closing_odds_model_training_races": len(training),
+                    "closing_odds_model_trained_through_date": dates[index - 1],
+                    "closing_odds_interval_alpha": float(alpha),
+                    "closing_odds_lower_quantile": float(alpha / 2.0),
+                }
         fold_tickets = int(metrics["evaluation_tickets"])
         fold_races = int(metrics["evaluation_races"])
         fold_age_races = int(metrics["snapshot_age_races"])
@@ -423,7 +441,7 @@ def walk_forward_closing_odds_quantiles(
         for fold in folds
         if fold["calibration_method"] == CROSS_CONFORMAL_METHOD
     ]
-    return {
+    result = {
         "evaluation_method": "expanding_daily_walk_forward",
         "adaptive_conformal_method": ADAPTIVE_CONFORMAL_METHOD,
         "adaptive_conformal_target_coverage": TARGET_INTERVAL_COVERAGE,
@@ -470,3 +488,6 @@ def walk_forward_closing_odds_quantiles(
         "metrics": aggregate_metrics,
         "folds": folds,
     }
+    if include_policy_forecasts:
+        result["policy_forecasts_by_race_id"] = policy_forecasts_by_race_id
+    return result

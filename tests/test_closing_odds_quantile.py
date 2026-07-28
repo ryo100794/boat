@@ -153,6 +153,37 @@ def test_daily_walk_forward_does_not_learn_from_future_targets() -> None:
     assert baseline["evaluation_tickets"] == 240
 
 
+def test_policy_forecasts_are_strictly_prior_lower_bounds() -> None:
+    races = [
+        _race("2026-07-20", "day-1", log_residual=-0.20),
+        _race("2026-07-21", "day-2", log_residual=0.10),
+        _race("2026-07-22", "day-3", log_residual=0.30),
+    ]
+    changed_future = copy.deepcopy(races)
+    changed_future[-1]["closing_odds"] = {
+        combination: value * 20.0
+        for combination, value in changed_future[-1]["closing_odds"].items()
+    }
+
+    baseline = walk_forward_closing_odds_quantiles(
+        races, minimum_training_days=1, include_policy_forecasts=True
+    )
+    mutated = walk_forward_closing_odds_quantiles(
+        changed_future,
+        minimum_training_days=1,
+        include_policy_forecasts=True,
+    )
+    baseline_forecast = baseline["policy_forecasts_by_race_id"]["day-2"]
+    mutated_forecast = mutated["policy_forecasts_by_race_id"]["day-2"]
+
+    assert baseline_forecast == mutated_forecast
+    assert baseline_forecast["closing_odds_model_trained_through_date"] < (
+        "2026-07-21"
+    )
+    assert baseline_forecast["closing_odds_lower_quantile"] == pytest.approx(0.10)
+    assert len(baseline_forecast["estimated_final_odds"]) == 120
+
+
 def test_walk_forward_uses_daily_cross_conformal_residuals() -> None:
     races = [
         _race("2026-07-20", "day-1", log_residual=-0.40),
