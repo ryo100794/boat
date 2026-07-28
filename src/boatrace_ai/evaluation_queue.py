@@ -462,6 +462,35 @@ def workspace_quota_allows(
             pass
 
 
+def job_workspace_reservation_mb(job: dict[str, Any], app_root: Path) -> int:
+    required_mb = max(0, int(job.get("min_free_disk_mb") or 0))
+    if str(job.get("task_type")) != "calibrated_mlp_recency_search":
+        return required_mb
+    parameters = job.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        parameters = json.loads(str(parameters))
+    drop_feature_groups = _drop_feature_groups(parameters)
+    cache_suffix = (
+        ""
+        if drop_feature_groups == "research_correlates"
+        else "__drop_" + drop_feature_groups.replace(",", "_")
+    )
+    prefix = (
+        app_root
+        / "data"
+        / "models"
+        / ("calibrated_shadow_features_16384" + cache_suffix)
+    )
+    cache_files = (
+        Path(f"{prefix}.matrix.npz"),
+        Path(f"{prefix}.ranks.npy"),
+        Path(f"{prefix}.manifest.json"),
+    )
+    if all(path.is_file() and path.stat().st_size > 0 for path in cache_files):
+        return min(required_mb, 1024)
+    return required_mb
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -3632,7 +3661,9 @@ def run_worker(args: argparse.Namespace) -> int:
             try:
                 if not workspace_quota_allows(
                     app_root,
-                    required_mb=int(job["min_free_disk_mb"]),
+                    required_mb=job_workspace_reservation_mb(
+                        job, app_root
+                    ),
                 ):
                     raise JobDependencyUnavailable(
                         "workspace quota cannot reserve the job disk requirement"

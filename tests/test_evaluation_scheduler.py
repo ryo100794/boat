@@ -9,6 +9,7 @@ from boatrace_ai.evaluation_queue import (
     ResourceSnapshot,
     SCHEMA,
     build_command,
+    job_workspace_reservation_mb,
     resources_allow,
     seed_periodic_jobs,
     workspace_quota_allows,
@@ -91,6 +92,47 @@ def test_workspace_quota_probe_rejects_quota_and_removes_file(
 
     assert workspace_quota_allows(tmp_path, required_mb=12) is False
     assert not list((tmp_path / "data" / "archive-staging").iterdir())
+
+
+def test_mlp_workspace_reservation_drops_after_complete_cache(
+    tmp_path: Path,
+) -> None:
+    job = {
+        "task_type": "calibrated_mlp_recency_search",
+        "min_free_disk_mb": 12288,
+        "parameters": {
+            "drop_feature_groups": (
+                "raw_equipment_identifiers,speculative_research,"
+                "live_official_context"
+            )
+        },
+    }
+
+    assert job_workspace_reservation_mb(job, tmp_path) == 12288
+
+    prefix = (
+        tmp_path
+        / "data/models/"
+        "calibrated_shadow_features_16384__drop_"
+        "raw_equipment_identifiers_speculative_research_live_official_context"
+    )
+    prefix.parent.mkdir(parents=True)
+    for suffix in ("matrix.npz", "ranks.npy", "manifest.json"):
+        Path(f"{prefix}.{suffix}").write_bytes(b"complete")
+
+    assert job_workspace_reservation_mb(job, tmp_path) == 1024
+
+
+def test_non_mlp_workspace_reservation_uses_profile_requirement(
+    tmp_path: Path,
+) -> None:
+    assert job_workspace_reservation_mb(
+        {
+            "task_type": "bankroll_policy_nested_annual",
+            "min_free_disk_mb": 4096,
+        },
+        tmp_path,
+    ) == 4096
 
 
 def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch) -> None:
