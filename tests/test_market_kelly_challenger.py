@@ -247,3 +247,65 @@ def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
     assert profitable["bootstrap"]["probability_roi_above_one"] == 1.0
     assert profitable["promotion_gate"]["bootstrap_lower_95_pass"] is True
     assert profitable["promotion_gate"]["sample_size_pass"] is False
+
+
+def test_walk_forward_can_select_regularization_from_prior_days(monkeypatch) -> None:
+    from boatrace_ai.listwise import market_offset_selection
+
+    selection_calls = []
+    fit_calls = []
+
+    def select(records, *, prediction_date):
+        rows = list(records)
+        selection_calls.append((prediction_date, rows))
+        return {
+            "selected_regularization": 0.1,
+            "validation_date": "2026-07-07",
+            "fallback_reason": None,
+        }
+
+    class Artifact:
+        fitted = True
+        converged = True
+        fallback_reason = None
+
+        def __init__(self, prediction_date, records, regularization):
+            self.prediction_date = prediction_date
+            self.training_dates = tuple(
+                sorted({str(row["race_date"]) for row in records})
+            )
+            self.training_races = len(records)
+            self.trained_through_date = self.training_dates[-1]
+            self.regularization = regularization
+
+        def predict(self, model, market, odds, *, prediction_date):
+            del model, odds
+            assert prediction_date == self.prediction_date
+            return SimpleNamespace(probabilities=dict(market))
+
+    def fit(records, *, prediction_date, regularization, **kwargs):
+        rows = list(records)
+        fit_calls.append((prediction_date, regularization, kwargs, rows))
+        return Artifact(prediction_date, rows, regularization)
+
+    monkeypatch.setattr(
+        market_offset_selection,
+        "select_market_offset_regularization",
+        select,
+    )
+    monkeypatch.setattr(challenger, "fit_market_offset_calibration", fit)
+    races = _prior_pool() + [_race("2026-07-08", "holdout-8")]
+
+    annotated, summary = challenger.attach_prequential_market_offsets(
+        races,
+        select_regularization=True,
+    )
+
+    assert len(selection_calls) == 1
+    assert all(row["race_date"] < "2026-07-08" for row in selection_calls[0][1])
+    assert fit_calls[0][1] == 0.1
+    audit = next(row for row in annotated if row["race_id"] == "holdout-8")[
+        "_market_kelly_calibration"
+    ]
+    assert audit["regularization_selection"]["selected_regularization"] == 0.1
+    assert summary["ready_days"] == 1

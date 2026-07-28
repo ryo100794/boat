@@ -76,7 +76,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 27
+MARKET_EVALUATION_VERSION = 28
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
@@ -1717,7 +1717,10 @@ def walk_forward_evaluate(
     )
     if market_offset_input_ready:
         market_offset_policy_races, market_offset_calibration = (
-            attach_prequential_market_offsets(all_closing_policy_races)
+            attach_prequential_market_offsets(
+                all_closing_policy_races,
+                select_regularization=True,
+            )
         )
     else:
         market_offset_policy_races = []
