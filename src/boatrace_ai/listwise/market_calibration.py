@@ -1624,19 +1624,26 @@ def evaluate_closing_odds_quantiles(
 def prequential_conformal_lower_odds_policy_inputs(
     races: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build lower-bound policy prices without changing the report API."""
+    """Build lower-bound policy prices and their shared forecast report."""
     eligible = verifiable_closing_odds_races(races)
     days = sorted({str(race["race_date"]) for race in eligible})
     if len(days) < 2:
         return {
             "status": "insufficient_independent_snapshots",
+            "teacher": "last_preclose_odds_with_verified_source_or_value_change",
+            "eligible_races": len(eligible),
+            "eligible_days": len(days),
+            "minimum_evaluation_days": 2,
             "policy_forecasts_by_race_id": {},
         }
-    return walk_forward_closing_odds_quantiles(
+    result = walk_forward_closing_odds_quantiles(
         eligible,
         minimum_training_days=1,
         include_policy_forecasts=True,
     )
+    result["status"] = "evaluated"
+    result["teacher"] = "last_preclose_odds_with_verified_source_or_value_change"
+    return result
 
 
 def fit_deployment_configuration(
@@ -1783,8 +1790,12 @@ def walk_forward_evaluate(
         )
 
     closing_policy_inputs = prequential_closing_odds_policy_inputs(races)
-    closing_odds_forecast = evaluate_closing_odds_quantiles(races)
     conformal_lower_inputs = prequential_conformal_lower_odds_policy_inputs(races)
+    closing_odds_forecast = {
+        key: value
+        for key, value in conformal_lower_inputs.items()
+        if key != "policy_forecasts_by_race_id"
+    }
     conformal_lower_policy_races = (
         apply_prequential_conformal_lower_odds_policy_inputs(
             races, conformal_lower_inputs
