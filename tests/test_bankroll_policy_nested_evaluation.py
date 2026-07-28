@@ -68,7 +68,11 @@ def test_fold_builder_isolates_model_and_payout_training_boundaries(
 ) -> None:
     dataset = _dataset()
     boundaries = build_annual_walk_forward_folds(
-        _dates("2020-01-01", 10), selection_days=4, outer_days=1, folds=1
+        _dates("2020-01-01", 10),
+        selection_days=4,
+        outer_days=1,
+        folds=1,
+        embargo_days=1,
     )
     selected_calls = []
     fit_calls = []
@@ -131,28 +135,29 @@ def test_fold_builder_isolates_model_and_payout_training_boundaries(
         provenance={"source_search_result_sha256": "a" * 64},
     )
 
-    # Last five available days are used: selection Jan 6-9, holdout Jan 10.
-    assert selected_calls == [10]
-    assert fit_calls == [10, 18]
-    assert evaluate_calls == [(10, 18), (18, 20)]
+    # Jan 9 is embargoed: no model or payout teacher may consume it.
+    assert selected_calls == [8]
+    assert fit_calls == [8, 16]
+    assert evaluate_calls == [(8, 16), (18, 20)]
     assert payout_calls == [
-        {row[0] for row in dataset.race_keys[:10]},
-        {row[0] for row in dataset.race_keys[:18]},
+        {row[0] for row in dataset.race_keys[:8]},
+        {row[0] for row in dataset.race_keys[:16]},
     ]
     assert fold_inputs[0]["selection"].dates == (
-        "2020-01-06", "2020-01-07", "2020-01-08", "2020-01-09"
+        "2020-01-05", "2020-01-06", "2020-01-07", "2020-01-08"
     )
     assert fold_inputs[0]["holdout"].dates == ("2020-01-10",)
     assert audits[0]["indices"] == {
-        "selection_train_end": 10,
-        "selection_prediction_start": 10,
-        "selection_prediction_end": 18,
-        "holdout_train_end": 18,
+        "selection_train_end": 8,
+        "selection_prediction_start": 8,
+        "selection_prediction_end": 16,
+        "holdout_train_end": 16,
         "holdout_prediction_start": 18,
         "holdout_prediction_end": 20,
     }
-    assert audits[0]["payout_prior"]["selection_teacher_date_through"] == "2020-01-05"
-    assert audits[0]["payout_prior"]["holdout_teacher_date_through"] == "2020-01-09"
+    assert audits[0]["payout_prior"]["selection_teacher_date_through"] == "2020-01-04"
+    assert audits[0]["payout_prior"]["holdout_teacher_date_through"] == "2020-01-08"
+    assert audits[0]["boundary_audit"]["holdout_training_stops_at_selection_end"] is True
     assert audits[0]["boundary_audit"]["passed"] is True
 
 

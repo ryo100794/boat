@@ -114,9 +114,12 @@ def build_fold_inputs(
             payout_prior_weight=payout_prior_weight,
         )
 
+        # The holdout model may learn through the selection window, while an
+        # explicit embargo remains unseen by every fitted component.
+        holdout_train_end = selection_end
         holdout_model, holdout_history = _fit_selected_model(
             dataset,
-            race_end=holdout_start,
+            race_end=holdout_train_end,
             selected=selected,
             learning_rate=learning_rate,
             epochs=epochs,
@@ -131,7 +134,7 @@ def build_fold_inputs(
             keep_rows=True,
         )
         holdout_prior_races = {
-            race_id for race_id, *_rest in race_keys[:holdout_start]
+            race_id for race_id, *_rest in race_keys[:holdout_train_end]
         }
         holdout_packed = packed_candidates_from_rows(
             holdout_rows,
@@ -145,6 +148,7 @@ def build_fold_inputs(
             boundary=boundary,
             selection_start=selection_start,
             selection_end=selection_end,
+            holdout_train_end=holdout_train_end,
             holdout_start=holdout_start,
             holdout_end=holdout_end,
             selection_rows=selection_rows,
@@ -173,7 +177,7 @@ def build_fold_inputs(
                 "selection_train_end": selection_start,
                 "selection_prediction_start": selection_start,
                 "selection_prediction_end": selection_end,
-                "holdout_train_end": holdout_start,
+                "holdout_train_end": holdout_train_end,
                 "holdout_prediction_start": holdout_start,
                 "holdout_prediction_end": holdout_end,
             },
@@ -181,7 +185,7 @@ def build_fold_inputs(
                 "selection_teacher_races": len(selection_prior_races),
                 "selection_teacher_date_through": str(race_keys[selection_start - 1][1]),
                 "holdout_teacher_races": len(holdout_prior_races),
-                "holdout_teacher_date_through": str(race_keys[holdout_start - 1][1]),
+                "holdout_teacher_date_through": str(race_keys[holdout_train_end - 1][1]),
                 "weight": payout_prior_weight,
             },
             "boundary_audit": audit,
@@ -372,6 +376,7 @@ def _fold_boundary_audit(
     boundary: Mapping[str, Any],
     selection_start: int,
     selection_end: int,
+    holdout_train_end: int,
     holdout_start: int,
     holdout_end: int,
     selection_rows: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -388,7 +393,7 @@ def _fold_boundary_audit(
         str(entry["race_date"]) for rows in holdout_rows.values() for entry in rows
     }
     selection_train_ids = {str(row[0]) for row in race_keys[:selection_start]}
-    holdout_train_ids = {str(row[0]) for row in race_keys[:holdout_start]}
+    holdout_train_ids = {str(row[0]) for row in race_keys[:holdout_train_end]}
     audit = {
         "declared_boundary_passed": bool(boundary["boundary_audit"]["passed"]),
         "selection_training_strictly_prior_day": (
@@ -396,8 +401,11 @@ def _fold_boundary_audit(
             < str(race_keys[selection_start][1])
         ),
         "holdout_training_strictly_prior_day": (
-            str(race_keys[holdout_start - 1][1])
+            str(race_keys[holdout_train_end - 1][1])
             < str(race_keys[holdout_start][1])
+        ),
+        "holdout_training_stops_at_selection_end": (
+            holdout_train_end == selection_end <= holdout_start
         ),
         "selection_predictions_only_selection_dates": (
             selection_prediction_dates == selection_dates

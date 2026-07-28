@@ -59,6 +59,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
+    "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 24576, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -1649,6 +1650,125 @@ def build_command(
             "--evaluation-days", str(evaluation_days),
             "--research-only", str(research_only).lower(),
         ], output
+    if task_type == "bankroll_policy_nested_annual":
+        allowed = {
+            "source_job_id", "learning_rate", "epochs", "batch_races",
+            "targets", "alphas", "candidate_count", "finalists",
+            "selection_bootstrap_samples", "aggregate_bootstrap_samples",
+            "selection_days", "outer_days", "embargo_days",
+            "validation_fraction", "min_validation_races",
+            "daily_budget_yen", "ev_threshold", "seed", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported bankroll_policy_nested_annual parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        source_job_id = _integer(
+            params, "source_job_id", 0, 1, 9_999_999_999
+        )
+        if source_job_id == 3995:
+            raise ObsoleteJob("legacy job 3995 cannot source nested evaluation")
+        source_result = (
+            app_root / "data/models/evaluation_queue"
+            / f"job-{source_job_id:08d}.json"
+        ).resolve()
+        if not source_result.is_file():
+            raise JobDependencyUnavailable(
+                f"nested source result is not available yet: {source_result}"
+            )
+        source_payload = json.loads(source_result.read_text(encoding="utf-8"))
+        source_schema = source_payload.get("feature_schema_version")
+        if source_schema != FEATURE_SCHEMA_VERSION:
+            raise ObsoleteJob(
+                "nested source feature schema is obsolete: "
+                f"{source_schema} != {FEATURE_SCHEMA_VERSION}"
+            )
+        cache_value = source_payload.get("selected_cache_prefix")
+        if not cache_value:
+            raise ValueError("nested source result lacks selected_cache_prefix")
+        cache_prefix = Path(str(cache_value)).resolve()
+        cache_root = (app_root / "data/models/evaluation_cache").resolve()
+        if cache_root not in cache_prefix.parents:
+            raise ValueError("nested selected cache must be inside evaluation_cache")
+        if not cache_prefix.with_suffix(".manifest.json").is_file():
+            raise JobDependencyUnavailable(
+                f"nested selected cache is not available yet: {cache_prefix}"
+            )
+
+        targets = str(params.get("targets", "winner,top3_pl"))
+        if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
+            raise ValueError("unsupported nested prediction targets")
+        alpha_values = [
+            float(value) for value in str(
+                params.get("alphas", "0.00001,0.0001,0.001")
+            ).split(",") if value.strip()
+        ]
+        if not 1 <= len(alpha_values) <= 4 or not all(
+            math.isfinite(value) and 1e-7 <= value <= 1e-2
+            for value in alpha_values
+        ):
+            raise ValueError("nested alphas must contain 1-4 values in [1e-7, 1e-2]")
+        candidate_count = _integer(params, "candidate_count", 64, 8, 128)
+        finalists = _integer(params, "finalists", 8, 2, 16)
+        if finalists > candidate_count:
+            raise ValueError("nested finalists must not exceed candidate_count")
+        selection_days = _integer(params, "selection_days", 365, 365, 365)
+        outer_days = _integer(params, "outer_days", 365, 365, 365)
+        command = [
+            str(python), "-m",
+            "boatrace_ai.listwise.bankroll_policy_nested_evaluation",
+            "--db", db,
+            "--search-result", str(source_result),
+            "--cache-prefix", str(cache_prefix),
+            "--output", str(output),
+            "--source-job-id", str(source_job_id),
+            "--folds", "5",
+            "--selection-days", str(selection_days),
+            "--outer-days", str(outer_days),
+            "--embargo-days", str(
+                _integer(params, "embargo_days", 0, 0, 30)
+            ),
+            "--targets", targets,
+            "--alphas", ",".join(f"{value:.12g}" for value in alpha_values),
+            "--learning-rate", str(
+                _number(params, "learning_rate", 0.02, 0.001, 0.2)
+            ),
+            "--epochs", str(_integer(params, "epochs", 2, 1, 6)),
+            "--batch-races", str(
+                _integer(params, "batch_races", 1000, 250, 5000)
+            ),
+            "--validation-fraction", str(
+                _number(params, "validation_fraction", 0.2, 0.05, 0.4)
+            ),
+            "--min-validation-races", str(
+                _integer(params, "min_validation_races", 1000, 500, 15000)
+            ),
+            "--daily-budget-yen", str(
+                _integer(params, "daily_budget_yen", 10000, 100, 1000000)
+            ),
+            "--ev-threshold", str(
+                _number(params, "ev_threshold", 1.2, 1.0, 3.0)
+            ),
+            "--candidate-count", str(candidate_count),
+            "--finalists", str(finalists),
+            "--selection-bootstrap-samples", str(
+                _integer(
+                    params, "selection_bootstrap_samples", 20000, 100, 100000
+                )
+            ),
+            "--aggregate-bootstrap-samples", str(
+                _integer(
+                    params, "aggregate_bootstrap_samples", 20000, 100, 100000
+                )
+            ),
+            "--seed", str(
+                _integer(params, "seed", 20260728, 0, 2_147_483_647)
+            ),
+        ]
+        _integer(params, "timeout_seconds", 86400, 300, 86400)
+        return command, output
     if task_type == "conditional_payout_tail":
         allowed = {
             "training_through", "evaluation_from", "evaluation_through",
@@ -2184,6 +2304,40 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["payout_feature_legacy_schema"] = payout_comparison.get(
             "legacy_schema"
         )
+    nested_evaluation = payload.get("evaluation")
+    if (
+        payload.get("model") == "bankroll_policy_nested_annual_v1"
+        and isinstance(nested_evaluation, dict)
+    ):
+        aggregate = nested_evaluation.get("aggregate")
+        if isinstance(aggregate, dict):
+            visit(aggregate, 1)
+            summary["fold_count"] = aggregate.get("fold_count")
+            summary["minimum_fold_roi"] = aggregate.get("minimum_fold_roi")
+            summary["profitable_folds"] = aggregate.get("profitable_folds")
+            summary["largest_hit_excluded_roi"] = aggregate.get(
+                "largest_hit_excluded_roi"
+            )
+            summary["fold_rois"] = [
+                row.get("roi") for row in (aggregate.get("folds") or [])
+                if isinstance(row, dict)
+            ]
+            confidence = aggregate.get("bootstrap")
+            if isinstance(confidence, dict):
+                summary["roi_ci95_lower"] = confidence.get("roi_ci95_lower")
+                summary["roi_ci95_upper"] = confidence.get("roi_ci95_upper")
+                summary["probability_roi_above_one"] = confidence.get(
+                    "probability_roi_above_one"
+                )
+        gate = nested_evaluation.get("promotion_gate")
+        if isinstance(gate, dict):
+            checks = {key: bool(value) for key, value in gate.items()}
+            summary["promotion_gate_passed"] = sum(checks.values())
+            summary["promotion_gate_total"] = len(checks)
+            summary["promotion_gate_failed"] = [
+                key for key, passed in checks.items() if not passed
+            ]
+        summary["promotion_eligible"] = payload.get("promotion_eligible")
     summary.setdefault("model", payload.get("model"))
     summary.setdefault("status", payload.get("status"))
     return {key: value for key, value in summary.items() if value is not None}
@@ -2196,6 +2350,10 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
         return "accumulate_formal_evidence"
+    if task_type == "bankroll_policy_nested_annual":
+        if summary.get("promotion_eligible") is True:
+            return "promotion_candidate"
+        return "nested_gate_failed"
     if task_type == "conditional_payout_tail":
         if summary.get("payout_feature_promotion_eligible") is True:
             return "payout_feature_promotion_candidate"
