@@ -30,6 +30,7 @@ def evaluate_market_kelly_challenger(
     races: Iterable[Mapping[str, Any]],
     *,
     regularization: float = 1.0,
+    evaluation_dates: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -42,15 +43,41 @@ def evaluate_market_kelly_challenger(
         races,
         regularization=regularization,
     )
-    daily = _simulate_daily(calibrated_races)
-    evaluated_races = len(calibrated_races)
+    return evaluate_attached_market_kelly_challenger(
+        calibrated_races,
+        calibration=calibration,
+        evaluation_dates=evaluation_dates,
+    )
+
+
+def evaluate_attached_market_kelly_challenger(
+    calibrated_races: Iterable[Mapping[str, Any]],
+    *,
+    calibration: Mapping[str, Any],
+    evaluation_dates: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate already prequentially calibrated races without refitting."""
+
+    calibrated_races = [dict(race) for race in calibrated_races]
+    requested_dates = (
+        None
+        if evaluation_dates is None
+        else {_iso_day(value, "evaluation_date") for value in evaluation_dates}
+    )
+    evaluation_races = [
+        race
+        for race in calibrated_races
+        if requested_dates is None or str(race["race_date"]) in requested_dates
+    ]
+    daily = _simulate_daily(evaluation_races)
+    evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
     return_yen = sum(row["return_yen"] for row in daily)
     reliability = bankroll_reliability_metrics(
         daily,
         evaluated_races=evaluated_races,
     )
-    log_loss = _log_loss_comparison(calibrated_races)
+    log_loss = _log_loss_comparison(evaluation_races)
     return {
         "challenger": "market_offset_discrete_multinomial_kelly",
         "policy": {
@@ -63,24 +90,58 @@ def evaluate_market_kelly_challenger(
             "profit_reinvested_within_day": True,
         },
         "evaluation_days": len(daily),
+        "evaluation_dates": sorted({row["race_date"] for row in daily}),
         "evaluated_races": evaluated_races,
         "tickets": sum(row["tickets"] for row in daily),
         "stake_yen": stake_yen,
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
+        "purchase_days": sum(int(row["stake_yen"] > 0) for row in daily),
         "max_drawdown_yen": max(
             (row["max_drawdown_yen"] for row in daily), default=0
         ),
         "max_drawdown_rate": max(
             (row["max_drawdown_rate"] for row in daily), default=0.0
         ),
-        "calibration": calibration,
+        "calibration": dict(calibration),
         "log_loss": log_loss,
+        **reliability,
         "reliability": reliability,
+        "promotion_gate": _promotion_gate(daily, reliability),
         "daily": daily,
-        "races": calibrated_races,
     }
+
+
+def _promotion_gate(
+    daily: list[dict[str, Any]], reliability: Mapping[str, Any]
+) -> dict[str, Any]:
+    tickets = sum(int(row["tickets"]) for row in daily)
+    purchase_days = sum(int(row["stake_yen"] > 0) for row in daily)
+    stake_yen = sum(int(row["stake_yen"]) for row in daily)
+    return_yen = sum(int(row["return_yen"]) for row in daily)
+    gates = {
+        "minimum_purchase_days": 30,
+        "minimum_tickets": 300,
+        "sample_size_pass": purchase_days >= 30 and tickets >= 300,
+        "roi_pass": bool(stake_yen and return_yen > stake_yen),
+        "largest_hit_excluded_roi_pass": bool(
+            float(reliability.get("roi_without_largest_hit") or 0.0) > 1.0
+        ),
+        "bootstrap_lower_95_pass": False,
+        "bootstrap_status": "not_yet_computed",
+    }
+    gates["pass"] = all(
+        gates[key]
+        for key in (
+            "sample_size_pass",
+            "roi_pass",
+            "largest_hit_excluded_roi_pass",
+            "bootstrap_lower_95_pass",
+        )
+    )
+    return gates
 
 
 def attach_prequential_market_offsets(
