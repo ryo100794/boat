@@ -136,6 +136,17 @@ PROSPECTIVE_NORMALIZED_EV_POLICY: dict[str, Any] = {
     "min_model_market_ratio": 1.0,
     "staking_mode": "normalized_010",
 }
+PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER = "2026-07-28"
+PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
+    "name": "registered_top5_ev1.00_to1.05_flat100_v1",
+    "max_model_rank": 5,
+    "min_odds": None,
+    "max_odds": None,
+    "ev_threshold": 1.0,
+    "max_estimated_ev": 1.05,
+    "min_model_market_ratio": 0.0,
+    "stake_per_ticket_yen": STAKE_YEN,
+}
 
 
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
@@ -1336,6 +1347,12 @@ def waiting_walk_forward_result(
             policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
             registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
         ),
+        "prospective_top5_narrow_ev_walk_forward": summarize_registered_policy_daily(
+            [],
+            evaluated_races=0,
+            policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
+            registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
+        ),
         "market_offset_registered_policy_walk_forward": {
             "comparison_role": "market_offset_with_registered_policy_challenger",
             "status": "waiting_for_clean_evaluation_day",
@@ -1929,6 +1946,8 @@ def walk_forward_evaluate(
     registered_evaluated_races = 0
     prospective_daily_rows = []
     prospective_evaluated_races = 0
+    prospective_top5_daily_rows = []
+    prospective_top5_evaluated_races = 0
     edge_diagnostic_records = []
     empirical_history_records: list[dict[str, Any]] = []
     empirical_daily_rows: list[dict[str, Any]] = []
@@ -2031,6 +2050,14 @@ def walk_forward_evaluate(
                 calibrator=calibrator,
                 policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
                 daily_budget_yen=daily_budget_yen,
+            )
+        prospective_top5_bankroll = None
+        if evaluation_date > PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER:
+            prospective_top5_bankroll = simulate_flat_policy(
+                holdout_policy_races,
+                calibrator=calibrator,
+                policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
+                probability_blender=blend_probabilities,
             )
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
@@ -2153,6 +2180,15 @@ def walk_forward_evaluate(
                     if prospective_bankroll is not None
                     else None
                 ),
+                "prospective_top5_narrow_ev_bankroll": (
+                    {
+                        key: value
+                        for key, value in prospective_top5_bankroll.items()
+                        if key != "daily"
+                    }
+                    if prospective_top5_bankroll is not None
+                    else None
+                ),
                 "empirical_lcb_bankroll": {
                     key: value
                     for key, value in empirical_bankroll.items()
@@ -2168,6 +2204,11 @@ def walk_forward_evaluate(
         if prospective_bankroll is not None:
             prospective_daily_rows.extend(prospective_bankroll["daily"])
             prospective_evaluated_races += len(holdout_policy_races)
+        if prospective_top5_bankroll is not None:
+            prospective_top5_daily_rows.extend(
+                prospective_top5_bankroll["daily"]
+            )
+            prospective_top5_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
         empirical_daily_rows.extend(empirical_bankroll["daily"])
@@ -2503,6 +2544,12 @@ def walk_forward_evaluate(
             evaluated_races=prospective_evaluated_races,
             policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
             registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
+        ),
+        "prospective_top5_narrow_ev_walk_forward": summarize_registered_policy_daily(
+            prospective_top5_daily_rows,
+            evaluated_races=prospective_top5_evaluated_races,
+            policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
+            registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
         ),
         "market_offset_registered_policy_walk_forward": (
             market_offset_registered

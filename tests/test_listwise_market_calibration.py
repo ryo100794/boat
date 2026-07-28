@@ -601,3 +601,10 @@ def test_prospective_normalized_ev_uses_only_unseen_days_after_registration() ->
     folds = {row["evaluation_date"]: row for row in result["folds"]}
     assert folds["2026-07-27"]["prospective_normalized_ev_bankroll"] is None
     assert folds["2026-07-28"]["prospective_normalized_ev_bankroll"] is not None
+    top5 = result["prospective_top5_narrow_ev_walk_forward"]
+    assert top5["registered_after"] == "2026-07-28"
+    assert top5["evaluation_days"] == 1
+    assert top5["evaluated_races"] == 3
+    assert [row["race_date"] for row in top5["daily"]] == ["2026-07-29"]
+    assert folds["2026-07-28"]["prospective_top5_narrow_ev_bankroll"] is None
+    assert folds["2026-07-29"]["prospective_top5_narrow_ev_bankroll"] is not None
