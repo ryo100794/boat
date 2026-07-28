@@ -245,6 +245,8 @@ def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
     ])
     assert profitable["bootstrap"]["roi_ci95_lower"] == pytest.approx(12.3)
     assert profitable["bootstrap"]["probability_roi_above_one"] == 1.0
+    assert profitable["hit_tickets"] == 1
+    assert profitable["promotion_gate"]["minimum_hits"] == 20
     assert profitable["promotion_gate"]["bootstrap_lower_95_pass"] is True
     assert profitable["promotion_gate"]["sample_size_pass"] is False
 
