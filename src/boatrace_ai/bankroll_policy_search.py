@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from math import isfinite
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .adaptive_allocation import validate_policy
 from .listwise.direct_bankroll import bootstrap_daily_bankroll
 from .packed_bankroll import PackedCandidates, evaluate_packed_policy
 
@@ -105,6 +109,42 @@ def policy_candidates(
     return candidates
 
 
+def canonicalize_policy_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    """Validate and fingerprint one immutable policy candidate registry."""
+    if isinstance(candidates, (str, bytes)) or not isinstance(candidates, Sequence):
+        raise ValueError("policy candidates must be a non-empty sequence")
+    normalized: list[dict[str, Any]] = []
+    canonical_rows: list[str] = []
+    seen: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, Mapping):
+            raise ValueError(f"policy candidate {index} must be a mapping")
+        policy = dict(candidate)
+        try:
+            _validate_policy_candidate(policy)
+            canonical = json.dumps(
+                policy,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid policy candidate at index {index}: {exc}") from exc
+        if canonical in seen:
+            raise ValueError(f"duplicate policy candidate at index {index}")
+        seen.add(canonical)
+        normalized.append(policy)
+        canonical_rows.append(canonical)
+    if not normalized:
+        raise ValueError("policy candidates must be a non-empty sequence")
+    payload = "[" + ",".join(canonical_rows) + "]"
+    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
+    return tuple(normalized), digest
+
+
 def _retain_conservative_anchors(
     rows: Sequence[dict[str, Any]],
     *,
@@ -182,12 +222,19 @@ def successive_halving_search(
     finalists: int = 8,
     bootstrap_samples: int = 20_000,
     seed: int = 20260726,
+    candidates: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if len(packed.dates) < 4:
         raise ValueError("at least four policy-selection days are required")
-    if not 1 <= finalists <= candidate_count:
+    if candidates is None:
+        generated = policy_candidates(base_policy, count=candidate_count, seed=seed)
+    else:
+        generated = candidates
+    registered, candidates_sha256 = canonicalize_policy_candidates(generated)
+    actual_candidate_count = len(registered)
+    if not 1 <= finalists <= actual_candidate_count:
         raise ValueError("finalists must be between one and candidate count")
-    active = policy_candidates(base_policy, count=candidate_count, seed=seed)
+    active = list(registered)
     stages = []
     for fraction in (0.25, 0.50, 1.0):
         stage_data = slice_days(
@@ -262,7 +309,8 @@ def successive_halving_search(
     selected["promotion_gate"] = promotion_gate(selected)
     return {
         "method": "chronological_successive_halving_then_daily_bootstrap",
-        "candidate_count": candidate_count,
+        "candidate_count": actual_candidate_count,
+        "policy_candidates_sha256": candidates_sha256,
         "bootstrap_samples": bootstrap_samples,
         "stages": stages,
         "finalists": final_rows,
@@ -407,6 +455,75 @@ def _valid_caps(policy: Mapping[str, Any]) -> bool:
         and policy["ticket_cap_fraction"] <= policy["race_cap_fraction"]
         and policy["race_cap_fraction"]
         <= policy["max_daily_exposure_fraction"]
+    )
+
+
+def _validate_policy_candidate(policy: Mapping[str, Any]) -> None:
+    required = {
+        "daily_budget_yen",
+        "fractional_kelly",
+        "max_daily_exposure_fraction",
+        "min_daily_exposure_fraction",
+        "race_cap_fraction",
+        "ticket_cap_fraction",
+        "allocation_mode",
+        "stake_granularity_yen",
+        "min_stake_yen",
+        *SEARCH_SPACE,
+    }
+    missing = sorted(required - policy.keys())
+    if missing:
+        raise ValueError(f"missing required fields: {', '.join(missing)}")
+    for name in (
+        "daily_budget_yen",
+        "fractional_kelly",
+        "max_daily_exposure_fraction",
+        "min_daily_exposure_fraction",
+        "race_cap_fraction",
+        "ticket_cap_fraction",
+        "stake_granularity_yen",
+        "min_stake_yen",
+        "ev_threshold",
+        "min_ticket_probability",
+    ):
+        value = policy[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+            raise ValueError(f"{name} must be numeric")
+        if not isfinite(float(value)):
+            raise ValueError(f"{name} must be finite")
+    maximum_odds = policy["max_estimated_odds"]
+    if maximum_odds is not None and (
+        isinstance(maximum_odds, bool)
+        or not isinstance(maximum_odds, (int, float, np.number))
+        or not isfinite(float(maximum_odds))
+        or float(maximum_odds) <= 1.0
+    ):
+        raise ValueError("max_estimated_odds must be null or finite and above one")
+    max_tickets = policy["max_daily_tickets"]
+    if max_tickets is not None and (
+        isinstance(max_tickets, bool)
+        or not isinstance(max_tickets, (int, np.integer))
+    ):
+        raise ValueError("max_daily_tickets must be null or an integer")
+    if max_tickets is not None and int(max_tickets) <= 0:
+        raise ValueError("max_daily_tickets must be positive when set")
+    if not _valid_caps(policy):
+        raise ValueError("policy exposure caps are inconsistent")
+    if float(policy["ev_threshold"]) < 0.0:
+        raise ValueError("ev_threshold must be non-negative")
+    if not 0.0 <= float(policy["min_ticket_probability"]) <= 1.0:
+        raise ValueError("min_ticket_probability must be between zero and one")
+    validate_policy(
+        daily_budget_yen=int(policy["daily_budget_yen"]),
+        fractional_kelly=float(policy["fractional_kelly"]),
+        max_daily_exposure_fraction=float(policy["max_daily_exposure_fraction"]),
+        min_daily_exposure_fraction=float(policy["min_daily_exposure_fraction"]),
+        race_cap_fraction=float(policy["race_cap_fraction"]),
+        ticket_cap_fraction=float(policy["ticket_cap_fraction"]),
+        max_daily_tickets=(int(max_tickets) if max_tickets is not None else None),
+        allocation_mode=str(policy["allocation_mode"]),
+        stake_granularity_yen=int(policy["stake_granularity_yen"]),
+        min_stake_yen=int(policy["min_stake_yen"]),
     )
 
 

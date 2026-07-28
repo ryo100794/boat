@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from boatrace_ai.bankroll_policy_search import (
     CONSERVATIVE_POLICY_ANCHORS,
+    canonicalize_policy_candidates,
     policy_candidates,
     promotion_gate,
     recent_allocation_diagnostics,
@@ -70,6 +73,64 @@ def test_policy_candidates_are_unique_and_reproducible() -> None:
         ))
         for candidate in first
     }) == 16
+
+
+def test_candidate_registry_has_canonical_order_sensitive_hash() -> None:
+    first = policy_candidates(POLICY, count=4, seed=7)
+    reordered_keys = [{key: row[key] for key in reversed(row)} for row in first]
+
+    normalized, digest = canonicalize_policy_candidates(first)
+    same_normalized, same_digest = canonicalize_policy_candidates(reordered_keys)
+
+    assert normalized == same_normalized
+    assert digest == same_digest
+    assert len(digest) == 64
+    _, reverse_digest = canonicalize_policy_candidates(tuple(reversed(first)))
+    assert reverse_digest != digest
+
+
+def test_external_candidates_are_used_without_regeneration(monkeypatch) -> None:
+    registered = policy_candidates(POLICY, count=4, seed=9)
+
+    def unexpected_generation(*args, **kwargs):
+        raise AssertionError("external registry must prevent candidate generation")
+
+    monkeypatch.setattr(
+        "boatrace_ai.bankroll_policy_search.policy_candidates",
+        unexpected_generation,
+    )
+    result = successive_halving_search(
+        _packed_days(),
+        POLICY,
+        finalists=2,
+        bootstrap_samples=100,
+        candidates=registered,
+        seed=7,
+    )
+
+    assert result["candidate_count"] == 4
+    assert result["policy_candidates_sha256"] == canonicalize_policy_candidates(
+        registered
+    )[1]
+
+
+def test_external_candidates_reject_duplicates_and_invalid_values() -> None:
+    candidate = policy_candidates(POLICY, count=1, seed=7)[0]
+    with pytest.raises(ValueError, match="duplicate"):
+        successive_halving_search(
+            _packed_days(), POLICY, finalists=1, candidates=[candidate, candidate]
+        )
+
+    invalid = {**candidate, "fractional_kelly": float("nan")}
+    with pytest.raises(ValueError, match="invalid policy candidate"):
+        successive_halving_search(
+            _packed_days(), POLICY, finalists=1, candidates=[invalid]
+        )
+
+    missing = dict(candidate)
+    del missing["daily_budget_yen"]
+    with pytest.raises(ValueError, match="missing required fields"):
+        canonicalize_policy_candidates([missing])
 
 
 def test_successive_halving_bootstraps_only_finalists() -> None:
