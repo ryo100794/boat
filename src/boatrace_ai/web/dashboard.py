@@ -1068,6 +1068,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             label,
             data,
             _bankroll_prediction_metrics(data),
+            component_label_prefix=path.stem,
         )
         bankroll.extend(component_rows)
         bankroll_daily.update(component_daily)
@@ -2888,10 +2889,13 @@ def _bankroll_component_summaries(
     label: str,
     data: dict[str, Any],
     prediction_metrics: dict[str, Any],
+    *,
+    component_label_prefix: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     rows: list[dict[str, Any]] = []
     daily: dict[str, list[dict[str, Any]]] = {}
     model_name = data.get("model") or label
+    label_prefix = component_label_prefix or label
     for component_key in _BANKROLL_COMPONENT_KEYS:
         component = data.get(component_key)
         if not isinstance(component, dict) or not component:
@@ -2901,7 +2905,7 @@ def _bankroll_component_summaries(
             for key in ("roi", "stake_yen", "tickets", "evaluation_days")
         ):
             continue
-        component_label = f"{label}_{component_key}"
+        component_label = f"{label_prefix}_{component_key}"
         component_result = {
             **prediction_metrics,
             **component,
