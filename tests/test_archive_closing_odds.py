@@ -10,6 +10,7 @@ from boatrace_ai.archive_closing_odds import (
     ensure_archive_schema,
     parse_archive_closing_odds_html,
     pending_races,
+    record_attempt,
     store_archive_closing_odds,
     verify_winning_payout,
 )
@@ -144,3 +145,68 @@ def test_archive_url_is_stable() -> None:
     assert archive_url(date(2026, 7, 27), "1", 2) == (
         "https://odds.kyotei24.jp/od-20260727-01-2.html"
     )
+
+
+def test_pending_races_retries_invalid_three_times_then_quarantines(tmp_path) -> None:
+    db_path = tmp_path / "archive-retry.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-07-28",
+                "jcd": "01",
+                "venue_name": "桐生",
+                "rno": 1,
+                "status": "final",
+            },
+        )
+        conn.execute(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', '1-2-3', 1230)",
+            (race_id,),
+        )
+        ensure_archive_schema(conn)
+        for attempt in range(3):
+            assert len(
+                pending_races(
+                    conn, from_date="2026-07-28", through_date="2026-07-28"
+                )
+            ) == 1
+            record_attempt(
+                conn,
+                race_id=race_id,
+                status="invalid",
+                error=f"mismatch {attempt + 1}",
+            )
+        assert pending_races(
+            conn, from_date="2026-07-28", through_date="2026-07-28"
+        ) == []
+
+
+def test_pending_races_excludes_multi_payout_dead_heat(tmp_path) -> None:
+    db_path = tmp_path / "archive-dead-heat.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-07-28",
+                "jcd": "01",
+                "venue_name": "桐生",
+                "rno": 1,
+                "status": "final",
+            },
+        )
+        conn.executemany(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', ?, ?)",
+            [
+                (race_id, "1-2-3", 1230),
+                (race_id, "1-2-4", 1450),
+            ],
+        )
+        ensure_archive_schema(conn)
+        assert pending_races(
+            conn, from_date="2026-07-28", through_date="2026-07-28"
+        ) == []
