@@ -24,6 +24,11 @@ from ..ingestion.live import (
 )
 
 
+PRIORITY_ODDS_TIMEOUT_SECONDS = 5.0
+PRIORITY_ODDS_RETRIES = 0
+SCHEDULE_REFRESH_GUARD_SECONDS = 20 * 60.0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Adaptive odds/results loop using stored race-start times and no-odds v8.")
     parser.add_argument("--db", default="data/boatrace.sqlite")
@@ -82,10 +87,13 @@ def main(argv: list[str] | None = None) -> int:
             "program_entries": 0,
         }
         with connection(args.db) as conn:
+            rows = scheduled_races(conn, target_date)
             refresh_due = fixed_date is None and (
                 schedule_date != target_date or time.monotonic() >= next_schedule_refresh
             )
-            if refresh_due:
+            if refresh_due and schedule_refresh_blocked(rows, now=now):
+                counters["program_status"] = "deferred_priority_window"
+            elif refresh_due:
                 try:
                     counters.update(load_daily_program(conn, race_date=target_date, raw_dir=raw_dir))
                 except Exception as exc:
@@ -99,17 +107,16 @@ def main(argv: list[str] | None = None) -> int:
                 counters.update(schedule)
                 schedule_date = target_date
                 next_schedule_refresh = time.monotonic() + 15 * 60
-            rows = scheduled_races(conn, target_date)
+                rows = scheduled_races(conn, target_date)
             priority_odds_ids: set[str] = set()
             for priority_row in t5_priority_rows(rows, now=now):
                 race_id = str(priority_row["race_id"])
                 counters["t5_priority_targets"] += 1
                 counters["odds_targets"] += 1
-                ok = collect_odds(
+                ok = collect_priority_odds(
                     conn,
                     race_date=target_date,
-                    jcd=priority_row["jcd"],
-                    rno=int(priority_row["rno"]),
+                    row=priority_row,
                     raw_dir=raw_dir,
                 )
                 conn.commit()
@@ -135,11 +142,10 @@ def main(argv: list[str] | None = None) -> int:
                 race_id = str(closing_row["race_id"])
                 counters["closing_priority_targets"] += 1
                 counters["odds_targets"] += 1
-                ok = collect_odds(
+                ok = collect_priority_odds(
                     conn,
                     race_date=target_date,
-                    jcd=closing_row["jcd"],
-                    rno=int(closing_row["rno"]),
+                    row=closing_row,
                     raw_dir=raw_dir,
                     cache_bust=True,
                 )
@@ -510,7 +516,7 @@ def t5_guard_rows(
     *,
     now: datetime,
     satisfied_race_ids: set[str] | None = None,
-    guard_seconds: float = 90.0,
+    guard_seconds: float = 300.0,
 ) -> list[tuple[float, Any]]:
     """Reserve the collector for an imminent T-5 capture window."""
     satisfied = satisfied_race_ids or set()
@@ -538,6 +544,49 @@ def t5_guard_rows(
             continue
         candidates.append((seconds, row))
     return sorted(candidates, key=lambda item: item[0])
+
+
+def schedule_refresh_blocked(
+    rows: list[Any],
+    *,
+    now: datetime,
+    guard_seconds: float = SCHEDULE_REFRESH_GUARD_SECONDS,
+) -> bool:
+    """Defer serial program requests while any betting cutoff is imminent."""
+    for row in rows:
+        start_at = stored_start_time(row["deadline_at"])
+        cutoff_at = estimated_deadline_from_start(start_at)
+        if cutoff_at is None:
+            continue
+        seconds = (cutoff_at - now).total_seconds()
+        if 0.0 <= seconds <= guard_seconds:
+            return True
+    return False
+
+
+def collect_priority_odds(
+    conn,
+    *,
+    race_date: date,
+    row: Any,
+    raw_dir: Path,
+    cache_bust: bool = False,
+) -> bool:
+    """Keep one slow venue from starving other time-critical captures."""
+    try:
+        return collect_odds(
+            conn,
+            race_date=race_date,
+            jcd=row["jcd"],
+            rno=int(row["rno"]),
+            raw_dir=raw_dir,
+            cache_bust=cache_bust,
+            timeout=PRIORITY_ODDS_TIMEOUT_SECONDS,
+            retries=PRIORITY_ODDS_RETRIES,
+        )
+    except Exception:
+        conn.rollback()
+        return False
 
 
 def t5_priority_rows(rows: list[Any], *, now: datetime) -> list[Any]:
