@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 from boatrace_ai.evaluation_queue import (
@@ -9,6 +11,7 @@ from boatrace_ai.evaluation_queue import (
     build_command,
     resources_allow,
     seed_periodic_jobs,
+    workspace_quota_allows,
 )
 
 
@@ -58,6 +61,36 @@ def test_resource_gate_requires_memory_disk_and_idle_cpu() -> None:
         min_free_disk_mb=4_096,
         min_idle_cpu_percent=50.0,
     )
+
+
+def test_workspace_quota_probe_reserves_target_and_removes_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def fake_fallocate(descriptor: int, offset: int, length: int) -> None:
+        assert os.fstat(descriptor).st_size == 0
+        calls.append((offset, length))
+
+    monkeypatch.setattr(os, "posix_fallocate", fake_fallocate)
+
+    assert workspace_quota_allows(tmp_path, required_mb=12) is True
+    assert calls == [(0, 12 * 1024**2)]
+    assert not list((tmp_path / "data" / "archive-staging").iterdir())
+
+
+def test_workspace_quota_probe_rejects_quota_and_removes_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_fallocate(_descriptor: int, _offset: int, _length: int) -> None:
+        raise OSError(errno.EDQUOT, "quota")
+
+    monkeypatch.setattr(os, "posix_fallocate", fail_fallocate)
+
+    assert workspace_quota_allows(tmp_path, required_mb=12) is False
+    assert not list((tmp_path / "data" / "archive-staging").iterdir())
 
 
 def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch) -> None:
