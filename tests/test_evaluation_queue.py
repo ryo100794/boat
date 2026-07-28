@@ -1521,12 +1521,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4]
+    assert inserted == [1, 2, 3, 4, 5]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
         "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
         "odds_path_operational_daily:market_residual:20260718-25",
+        "odds_path_probability_only_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1545,6 +1546,12 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert odds_path["priority"] == 98
     assert odds_path["parameters"]["timeout_seconds"] == 7200
+    probability_only = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"] == "odds_path_probability"
+    )
+    assert probability_only["priority"] == 98
+    assert probability_only["parameters"]["timeout_seconds"] == 7200
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []

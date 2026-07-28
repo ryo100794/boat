@@ -149,6 +149,14 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 }
 
 
+def odds_path_model_name(calibrator_strategy: str) -> str:
+    if calibrator_strategy == "odds_path_return":
+        return "odds_path_operational_v1"
+    if calibrator_strategy == "odds_path_probability":
+        return "odds_path_probability_only_v2"
+    return MODEL_NAME
+
+
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
     return normalize_drop_feature_groups(
         artifact.get("drop_feature_groups") or (),
@@ -1270,11 +1278,7 @@ def waiting_walk_forward_result(
         "no_lookahead_pass": True,
     }
     return {
-        "model": (
-            "odds_path_operational_v1"
-            if calibrator_strategy == "odds_path_return"
-            else MODEL_NAME
-        ),
+        "model": odds_path_model_name(calibrator_strategy),
         "status": "waiting_for_clean_evaluation_day",
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
@@ -1708,8 +1712,11 @@ def fit_deployment_configuration(
     calibrator_selection: dict[str, Any] | None = None
     calibrator_candidates = 0
     operational_model = None
-    if calibrator_strategy == "odds_path_return":
-        operational_model = fit_odds_path_model(races)
+    if calibrator_strategy in {"odds_path_return", "odds_path_probability"}:
+        operational_model = fit_odds_path_model(
+            races,
+            use_return_multipliers=calibrator_strategy == "odds_path_return",
+        )
         races = attach_odds_path_model(races, operational_model)
         from .market_residual import (
             fit_fixed_regularization,
@@ -1958,8 +1965,11 @@ def walk_forward_evaluate(
         holdout = by_day[evaluation_date]
         calibrator_selection = None
         operational_model = None
-        if calibrator_strategy == "odds_path_return":
-            operational_model = fit_odds_path_model(calibration_races)
+        if calibrator_strategy in {"odds_path_return", "odds_path_probability"}:
+            operational_model = fit_odds_path_model(
+                calibration_races,
+                use_return_multipliers=calibrator_strategy == "odds_path_return",
+            )
             calibration_races = attach_odds_path_model(
                 calibration_races, operational_model
             )
@@ -2473,11 +2483,7 @@ def walk_forward_evaluate(
         evaluated_races=len(evaluation_races),
     )
     return {
-        "model": (
-            "odds_path_operational_v1"
-            if calibrator_strategy == "odds_path_return"
-            else MODEL_NAME
-        ),
+        "model": odds_path_model_name(calibrator_strategy),
         "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
         "calibrator_strategy": calibrator_strategy,
         "validation_design": (
@@ -3450,7 +3456,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-calibration-days", type=int, default=2)
     parser.add_argument(
         "--calibrator-strategy",
-        choices=("grid", "newton_residual", "orthogonal_residual", "odds_path_return"),
+        choices=(
+            "grid",
+            "newton_residual",
+            "orthogonal_residual",
+            "odds_path_return",
+            "odds_path_probability",
+        ),
         default="grid",
     )
     parser.add_argument("--scored-cache")

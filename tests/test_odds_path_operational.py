@@ -70,6 +70,19 @@ def test_holdout_result_and_payout_do_not_change_inference() -> None:
     assert first_prediction["historical_return_multipliers"] == second_prediction["historical_return_multipliers"]
 
 
+def test_probability_only_model_does_not_double_count_closing_price_drift() -> None:
+    model = fit_odds_path_model(
+        [_race(0), _race(1)],
+        max_iterations=10,
+        use_return_multipliers=False,
+    )
+    attached = attach_odds_path_model([_race(9)], model)[0]
+
+    assert model["model_type"] == "odds_path_probability_only_v2"
+    assert model["return_multiplier_mode"] == "disabled_for_forecast_closing_price"
+    assert set(attached["historical_return_multipliers"].values()) == {1.0}
+
+
 def test_performance_priors_shrink_sparse_hit_and_payout_rates() -> None:
     priors = fit_performance_priors([_race(0)])
 

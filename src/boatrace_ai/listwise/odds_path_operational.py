@@ -126,7 +126,13 @@ def _objective(matrix, actual_indices, weights, prior_weights, regularization):
     return loss + 0.5 * regularization * float(delta @ delta)
 
 
-def fit_odds_path_model(races: list[dict[str, Any]], *, regularization: float = 0.1, max_iterations: int = 40) -> dict[str, Any]:
+def fit_odds_path_model(
+    races: list[dict[str, Any]],
+    *,
+    regularization: float = 0.1,
+    max_iterations: int = 40,
+    use_return_multipliers: bool = True,
+) -> dict[str, Any]:
     if not races:
         raise ValueError("odds-path model requires races")
     priors = fit_performance_priors(races)
@@ -200,7 +206,16 @@ def fit_odds_path_model(races: list[dict[str, Any]], *, regularization: float = 
             converged = True
             break
     return {
-        "model_type": "odds_path_probability_and_return_v1",
+        "model_type": (
+            "odds_path_probability_and_return_v1"
+            if use_return_multipliers
+            else "odds_path_probability_only_v2"
+        ),
+        "return_multiplier_mode": (
+            "historical_t5_to_payout_bucket"
+            if use_return_multipliers
+            else "disabled_for_forecast_closing_price"
+        ),
         "feature_names": FEATURE_NAMES,
         "weights": weights.tolist(), "regularization": float(regularization),
         "iterations": iteration, "converged": converged, "objective": float(objective),
@@ -220,6 +235,8 @@ def attach_odds_path_model(races: list[dict[str, Any]], model: dict[str, Any]) -
         item = dict(race)
         item["base_model_probabilities"] = race["model_probabilities"]
         item["model_probabilities"] = dict(zip(combinations, probabilities.tolist()))
+        if model.get("return_multiplier_mode") == "disabled_for_forecast_closing_price":
+            multipliers = np.ones_like(multipliers)
         item["historical_return_multipliers"] = dict(zip(combinations, multipliers.tolist()))
         item["operational_probability_source"] = model["model_type"]
         result.append(item)
