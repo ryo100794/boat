@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 from sklearn.feature_extraction import FeatureHasher
 
 from ..bankroll_backtest import _load_trifecta_payouts
@@ -20,6 +22,7 @@ from ..hashed_feature_dataset import (
     load_hashed_dataset,
     race_ids_sha256,
 )
+from ..packed_bankroll import PackedCandidates
 from .bankroll_policy_evaluation import packed_candidates_from_rows
 from .bankroll_policy_walk_forward import (
     PROTOCOL_VERSION,
@@ -31,6 +34,17 @@ from .model import evaluate_range, fit_scaler, train_listwise_model
 from .newton_refine import search_race_date_through, validate_search_race_universe
 from .validation import default_policy, nested_select_candidate
 
+FOLD_CHECKPOINT_VERSION = 1
+_PACKED_ARRAY_DTYPES = {
+    "offsets": np.dtype(np.int64),
+    "evaluated_races": np.dtype(np.int32),
+    "race_codes": np.dtype(np.int32),
+    "estimated_odds": np.dtype(np.float32),
+    "estimated_ev": np.dtype(np.float32),
+    "probability": np.dtype(np.float32),
+    "actual_payout_yen": np.dtype(np.int32),
+    "hit": np.dtype(np.bool_),
+}
 
 FORBIDDEN_SOURCE_JOB_IDS = frozenset({3995})
 
@@ -49,18 +63,35 @@ def build_fold_inputs(
     validation_fraction: float,
     min_validation_races: int,
     provenance: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Fit fold-local prediction models and return policy-layer inputs.
-
-    Every index is the first race of a calendar day. A training end is therefore
-    exclusive and cannot contain labels from the prediction boundary day.
-    """
+    checkpoint_dir: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Fit fold-local models, resuming only complete provenance-matched folds."""
     race_keys = dataset.race_keys
     first_index = _first_index_by_date(race_keys)
     fold_inputs: list[dict[str, Any]] = []
     model_audits: list[dict[str, Any]] = []
     payout_prior_weight = float(base_policy["payout_prior_weight"])
     payout_lookup = payouts if isinstance(payouts, dict) else dict(payouts)
+    checkpoint_sha256 = _checkpoint_config_sha256(
+        provenance=provenance,
+        boundaries=boundaries,
+        targets=targets,
+        alphas=alphas,
+        base_policy=base_policy,
+        learning_rate=learning_rate,
+        epochs=epochs,
+        batch_races=batch_races,
+        validation_fraction=validation_fraction,
+        min_validation_races=min_validation_races,
+    )
+    checkpoint_stats = {
+        "enabled": checkpoint_dir is not None,
+        "checkpoint_version": FOLD_CHECKPOINT_VERSION,
+        "checkpoint_sha256": checkpoint_sha256,
+        "resumed_fold_count": 0,
+        "built_fold_count": 0,
+        "invalid_fold_count": 0,
+    }
 
     for expected_fold, boundary in enumerate(boundaries, start=1):
         fold = int(boundary.get("fold", expected_fold))
@@ -75,6 +106,22 @@ def build_fold_inputs(
 
         if not 0 < selection_start < selection_end <= holdout_start < holdout_end:
             raise ValueError(f"fold {fold} has invalid chronological race boundaries")
+        fold_sha256 = _fold_checkpoint_sha256(checkpoint_sha256, fold, boundary)
+        if checkpoint_dir is not None:
+            resumed, invalid = _load_fold_checkpoint(
+                checkpoint_dir,
+                fold=fold,
+                config_sha256=checkpoint_sha256,
+                fold_sha256=fold_sha256,
+                provenance=provenance,
+            )
+            if resumed is not None:
+                fold_input, model_audit = resumed
+                fold_inputs.append(fold_input)
+                model_audits.append(model_audit)
+                checkpoint_stats["resumed_fold_count"] += 1
+                continue
+            checkpoint_stats["invalid_fold_count"] += int(invalid)
 
         selected, candidates = nested_select_candidate(
             dataset,
@@ -87,7 +134,6 @@ def build_fold_inputs(
             validation_fraction=validation_fraction,
             min_validation_races=min_validation_races,
         )
-
         selection_model, selection_history = _fit_selected_model(
             dataset,
             race_end=selection_start,
@@ -97,70 +143,48 @@ def build_fold_inputs(
             batch_races=batch_races,
         )
         selection_metrics, selection_rows = evaluate_range(
-            dataset,
-            selection_model,
-            race_start=selection_start,
-            race_end=selection_end,
-            batch_races=batch_races,
-            keep_rows=True,
+            dataset, selection_model, race_start=selection_start,
+            race_end=selection_end, batch_races=batch_races, keep_rows=True,
         )
+        del selection_model
         selection_prior_races = {
             race_id for race_id, *_rest in race_keys[:selection_start]
         }
         selection_packed = packed_candidates_from_rows(
-            selection_rows,
-            payouts=payout_lookup,
-            train_races=selection_prior_races,
+            selection_rows, payouts=payout_lookup, train_races=selection_prior_races,
             payout_prior_weight=payout_prior_weight,
         )
 
-        # The holdout model may learn through the selection window, while an
-        # explicit embargo remains unseen by every fitted component.
+        # Selection labels may train the holdout model; embargo labels remain unseen.
         holdout_train_end = selection_end
         holdout_model, holdout_history = _fit_selected_model(
-            dataset,
-            race_end=holdout_train_end,
-            selected=selected,
-            learning_rate=learning_rate,
-            epochs=epochs,
-            batch_races=batch_races,
+            dataset, race_end=holdout_train_end, selected=selected,
+            learning_rate=learning_rate, epochs=epochs, batch_races=batch_races,
         )
         holdout_metrics, holdout_rows = evaluate_range(
-            dataset,
-            holdout_model,
-            race_start=holdout_start,
-            race_end=holdout_end,
-            batch_races=batch_races,
-            keep_rows=True,
+            dataset, holdout_model, race_start=holdout_start,
+            race_end=holdout_end, batch_races=batch_races, keep_rows=True,
         )
+        del holdout_model
         holdout_prior_races = {
             race_id for race_id, *_rest in race_keys[:holdout_train_end]
         }
         holdout_packed = packed_candidates_from_rows(
-            holdout_rows,
-            payouts=payout_lookup,
-            train_races=holdout_prior_races,
+            holdout_rows, payouts=payout_lookup, train_races=holdout_prior_races,
             payout_prior_weight=payout_prior_weight,
         )
-
         audit = _fold_boundary_audit(
-            race_keys,
-            boundary=boundary,
-            selection_start=selection_start,
-            selection_end=selection_end,
-            holdout_train_end=holdout_train_end,
-            holdout_start=holdout_start,
-            holdout_end=holdout_end,
-            selection_rows=selection_rows,
-            holdout_rows=holdout_rows,
+            race_keys, boundary=boundary, selection_start=selection_start,
+            selection_end=selection_end, holdout_train_end=holdout_train_end,
+            holdout_start=holdout_start, holdout_end=holdout_end,
+            selection_rows=selection_rows, holdout_rows=holdout_rows,
             selection_prior_races=selection_prior_races,
             holdout_prior_races=holdout_prior_races,
         )
         if not audit["passed"]:
             failed = ", ".join(key for key, passed in audit.items() if passed is False)
             raise ValueError(f"fold {fold} leakage/boundary audit failed: {failed}")
-
-        model_audits.append({
+        model_audit = {
             "fold": fold,
             "selected_candidate": {
                 "target": str(selected["target"]),
@@ -189,15 +213,301 @@ def build_fold_inputs(
                 "weight": payout_prior_weight,
             },
             "boundary_audit": audit,
-        })
-        fold_inputs.append({
+        }
+        fold_input = {
             "fold": fold,
             "selection": selection_packed,
             "holdout": holdout_packed,
             "boundary_audit": {**dict(boundary["boundary_audit"]), **audit},
             "provenance": dict(provenance),
-        })
-    return fold_inputs, model_audits
+        }
+        del selection_rows, holdout_rows
+        del selection_prior_races, holdout_prior_races
+        if checkpoint_dir is not None:
+            _write_fold_checkpoint(
+                checkpoint_dir, fold_input=fold_input, model_audit=model_audit,
+                config_sha256=checkpoint_sha256, fold_sha256=fold_sha256,
+                boundary=boundary,
+            )
+        fold_inputs.append(fold_input)
+        model_audits.append(model_audit)
+        checkpoint_stats["built_fold_count"] += 1
+    return fold_inputs, model_audits, checkpoint_stats
+
+def _checkpoint_config_sha256(
+    *,
+    provenance: Mapping[str, Any],
+    boundaries: Sequence[Mapping[str, Any]],
+    targets: Sequence[str],
+    alphas: Sequence[float],
+    base_policy: Mapping[str, Any],
+    learning_rate: float,
+    epochs: int,
+    batch_races: int,
+    validation_fraction: float,
+    min_validation_races: int,
+) -> str:
+    payload = {
+        "checkpoint_version": FOLD_CHECKPOINT_VERSION,
+        "provenance": dict(provenance),
+        "boundaries": [dict(value) for value in boundaries],
+        "targets": [str(value) for value in targets],
+        "alphas": [float(value) for value in alphas],
+        "base_policy": dict(base_policy),
+        "training": {
+            "learning_rate": float(learning_rate),
+            "epochs": int(epochs),
+            "batch_races": int(batch_races),
+            "validation_fraction": float(validation_fraction),
+            "min_validation_races": int(min_validation_races),
+        },
+    }
+    return _sha256(_canonical_json_bytes(payload))
+
+
+def _fold_checkpoint_sha256(
+    config_sha256: str, fold: int, boundary: Mapping[str, Any]
+) -> str:
+    return _sha256(_canonical_json_bytes({
+        "config_sha256": config_sha256,
+        "fold": int(fold),
+        "boundary": dict(boundary),
+    }))
+
+
+def _checkpoint_paths(checkpoint_dir: Path, fold: int) -> tuple[Path, Path]:
+    stem = f"fold-{int(fold):02d}"
+    return checkpoint_dir / f"{stem}.json", checkpoint_dir / f"{stem}.npz"
+
+
+def _write_fold_checkpoint(
+    checkpoint_dir: Path,
+    *,
+    fold_input: Mapping[str, Any],
+    model_audit: Mapping[str, Any],
+    config_sha256: str,
+    fold_sha256: str,
+    boundary: Mapping[str, Any],
+) -> None:
+    fold = int(fold_input["fold"])
+    metadata_path, arrays_path = _checkpoint_paths(checkpoint_dir, fold)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    arrays = {}
+    for label in ("selection", "holdout"):
+        packed = fold_input[label]
+        if not isinstance(packed, PackedCandidates):
+            raise TypeError(f"fold {fold} {label} is not PackedCandidates")
+        arrays.update(_packed_checkpoint_arrays(label, packed))
+    descriptors = {
+        key: {"dtype": value.dtype.str, "shape": list(value.shape)}
+        for key, value in arrays.items()
+    }
+    temporary = arrays_path.with_name(
+        f".{arrays_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        with temporary.open("wb") as handle:
+            np.savez_compressed(handle, **arrays)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, arrays_path)
+        _fsync_directory(checkpoint_dir)
+    finally:
+        temporary.unlink(missing_ok=True)
+    metadata: dict[str, Any] = {
+        "checkpoint_version": FOLD_CHECKPOINT_VERSION,
+        "complete": True,
+        "config_sha256": config_sha256,
+        "fold_sha256": fold_sha256,
+        "fold": fold,
+        "boundary": dict(boundary),
+        "npz_file": arrays_path.name,
+        "npz_sha256": _file_sha256(arrays_path),
+        "arrays": descriptors,
+        "boundary_audit": dict(fold_input["boundary_audit"]),
+        "model_audit": dict(model_audit),
+    }
+    metadata["metadata_sha256"] = _sha256(
+        _canonical_json_bytes(metadata)
+    )
+    _write_json_atomic(metadata_path, _json_ready(metadata))
+
+
+def _load_fold_checkpoint(
+    checkpoint_dir: Path,
+    *,
+    fold: int,
+    config_sha256: str,
+    fold_sha256: str,
+    provenance: Mapping[str, Any],
+) -> tuple[tuple[dict[str, Any], dict[str, Any]] | None, bool]:
+    metadata_path, arrays_path = _checkpoint_paths(checkpoint_dir, fold)
+    exists = metadata_path.exists() or arrays_path.exists()
+    if not metadata_path.is_file() or not arrays_path.is_file():
+        return None, exists
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return None, True
+        metadata_hash = metadata.get("metadata_sha256")
+        metadata_without_hash = {
+            key: value for key, value in metadata.items()
+            if key != "metadata_sha256"
+        }
+        if (
+            metadata_hash != _sha256(_canonical_json_bytes(metadata_without_hash))
+            or not isinstance(metadata.get("boundary"), dict)
+            or _fold_checkpoint_sha256(config_sha256, fold, metadata["boundary"]) != fold_sha256
+            or metadata.get("checkpoint_version") != FOLD_CHECKPOINT_VERSION
+            or metadata.get("complete") is not True
+            or metadata.get("config_sha256") != config_sha256
+            or metadata.get("fold_sha256") != fold_sha256
+            or int(metadata.get("fold")) != fold
+            or metadata.get("npz_file") != arrays_path.name
+            or metadata.get("npz_sha256") != _file_sha256(arrays_path)
+        ):
+            return None, True
+        selection, holdout = _load_packed_arrays(
+            arrays_path, descriptors=metadata["arrays"]
+        )
+        boundary_audit = metadata["boundary_audit"]
+        model_audit = metadata["model_audit"]
+        if (
+            not isinstance(boundary_audit, dict)
+            or boundary_audit.get("passed") is not True
+            or not isinstance(model_audit, dict)
+            or int(model_audit.get("fold")) != fold
+            or not isinstance(model_audit.get("boundary_audit"), dict)
+            or model_audit["boundary_audit"].get("passed") is not True
+        ):
+            return None, True
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None, True
+    fold_input = {
+        "fold": fold,
+        "selection": selection,
+        "holdout": holdout,
+        "boundary_audit": boundary_audit,
+        "provenance": dict(provenance),
+    }
+    return (fold_input, model_audit), False
+
+
+def _packed_checkpoint_arrays(
+    label: str, packed: PackedCandidates
+) -> dict[str, np.ndarray]:
+    arrays = {f"{label}__dates": np.asarray(packed.dates, dtype=np.str_)}
+    for name, expected_dtype in _PACKED_ARRAY_DTYPES.items():
+        value = getattr(packed, name)
+        if not isinstance(value, np.ndarray) or value.dtype != expected_dtype:
+            raise TypeError(
+                f"{label}.{name} dtype must be {expected_dtype}, got "
+                f"{getattr(value, 'dtype', None)}"
+            )
+        arrays[f"{label}__{name}"] = value
+    _validate_packed(packed, label=label)
+    return arrays
+
+
+def _load_packed_arrays(
+    path: Path, *, descriptors: Mapping[str, Any]
+) -> tuple[PackedCandidates, PackedCandidates]:
+    expected_keys = {
+        f"{label}__{name}"
+        for label in ("selection", "holdout")
+        for name in ("dates", *_PACKED_ARRAY_DTYPES)
+    }
+    loaded: dict[str, np.ndarray] = {}
+    with np.load(path, allow_pickle=False) as archive:
+        if set(archive.files) != expected_keys or set(descriptors) != expected_keys:
+            raise ValueError("checkpoint NPZ has missing or unexpected arrays")
+        for key in sorted(expected_keys):
+            value = np.asarray(archive[key])
+            descriptor = descriptors[key]
+            if (
+                not isinstance(descriptor, Mapping)
+                or descriptor.get("dtype") != value.dtype.str
+                or descriptor.get("shape") != list(value.shape)
+                or value.ndim != 1
+            ):
+                raise ValueError(f"checkpoint array descriptor mismatch: {key}")
+            loaded[key] = value
+    result = []
+    for label in ("selection", "holdout"):
+        dates_array = loaded.pop(f"{label}__dates")
+        if dates_array.dtype.kind != "U":
+            raise ValueError(f"checkpoint {label} dates must be unicode")
+        values = {}
+        for name, expected_dtype in _PACKED_ARRAY_DTYPES.items():
+            value = loaded.pop(f"{label}__{name}")
+            if value.dtype != expected_dtype:
+                raise ValueError(f"checkpoint {label}.{name} has stale dtype")
+            values[name] = value
+        packed = PackedCandidates(
+            dates=tuple(str(value) for value in dates_array.tolist()),
+            **values,
+        )
+        _validate_packed(packed, label=label)
+        result.append(packed)
+    return result[0], result[1]
+
+
+def _validate_packed(packed: PackedCandidates, *, label: str) -> None:
+    day_count = len(packed.dates)
+    if len(set(packed.dates)) != day_count or tuple(sorted(packed.dates)) != packed.dates:
+        raise ValueError(f"checkpoint {label} dates are not unique and sorted")
+    if packed.offsets.shape != (day_count + 1,) or packed.evaluated_races.shape != (day_count,):
+        raise ValueError(f"checkpoint {label} day arrays have inconsistent lengths")
+    if not len(packed.offsets) or int(packed.offsets[0]) != 0:
+        raise ValueError(f"checkpoint {label} offsets must start at zero")
+    if np.any(np.diff(packed.offsets) < 0):
+        raise ValueError(f"checkpoint {label} offsets are not monotonic")
+    tickets = int(packed.offsets[-1])
+    for name in _PACKED_ARRAY_DTYPES:
+        if name in {"offsets", "evaluated_races"}:
+            continue
+        if getattr(packed, name).shape != (tickets,):
+            raise ValueError(f"checkpoint {label}.{name} ticket count mismatch")
+    if np.any(packed.evaluated_races < 0) or np.any(packed.race_codes < 0):
+        raise ValueError(f"checkpoint {label} has negative count/code")
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        _json_ready(value), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
 
 
 def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
@@ -253,16 +563,19 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         daily_budget_yen=int(args.daily_budget_yen),
         ev_threshold=float(args.ev_threshold),
     )
+    payouts = _load_trifecta_payouts(conn)
     provenance = {
         "protocol_version": PROTOCOL_VERSION,
         "source_job_id": args.source_job_id,
         "source_schema_version": search["feature_schema_version"],
         "source_race_universe_sha256": race_ids_sha256(race_keys),
         "search_result_sha256": _sha256(search_bytes),
+        "payouts_sha256": _payouts_sha256(payouts, race_keys),
         **cache_metadata,
     }
-    payouts = _load_trifecta_payouts(conn)
-    fold_inputs, model_audits = build_fold_inputs(
+    checkpoint_value = getattr(args, "checkpoint_dir", None)
+    checkpoint_dir = Path(checkpoint_value).resolve() if checkpoint_value else None
+    fold_inputs, model_audits, checkpoint = build_fold_inputs(
         dataset,
         boundaries=boundaries,
         payouts=payouts,
@@ -275,7 +588,9 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         validation_fraction=float(args.validation_fraction),
         min_validation_races=int(args.min_validation_races),
         provenance=provenance,
+        checkpoint_dir=checkpoint_dir,
     )
+    checkpoint["directory"] = str(checkpoint_dir) if checkpoint_dir else None
     evaluation = evaluate_annual_walk_forward(
         fold_inputs,
         base_policy,
@@ -304,6 +619,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "alphas": list(alphas),
         "boundaries": [dict(value) for value in boundaries],
         "fold_model_audits": model_audits,
+        "checkpoint": checkpoint,
         "provenance": {
             **provenance,
             "policy_candidates_sha256": evaluation["policy_candidates_sha256"],
@@ -517,6 +833,20 @@ def _cache_metadata(prefix: Path) -> dict[str, str]:
     }
 
 
+def _payouts_sha256(
+    payouts: Mapping[str, Mapping[str, Any]],
+    race_keys: Sequence[tuple[str, str, str, int]],
+) -> str:
+    digest = hashlib.sha256()
+    for race_id, *_rest in race_keys:
+        payload = _canonical_json_bytes([
+            str(race_id), payouts.get(str(race_id)),
+        ])
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -529,6 +859,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-result", required=True)
     parser.add_argument("--cache-prefix", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--checkpoint-dir")
     parser.add_argument("--source-job-id", type=int)
     parser.add_argument("--folds", type=int, choices=(3, 5), default=5)
     parser.add_argument("--allow-research-three-folds", action="store_true")
@@ -564,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
         "evaluation_mode": result["evaluation_mode"],
         "fold_count": result["fold_count"],
         "promotion_eligible": result["promotion_eligible"],
+        "checkpoint": result["checkpoint"],
         "provenance": result["provenance"],
     }, ensure_ascii=False, indent=2), flush=True)
     return 0
