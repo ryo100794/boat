@@ -56,7 +56,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
-    "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 12288},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 24576, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
