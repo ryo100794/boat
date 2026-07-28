@@ -121,10 +121,12 @@ def score_archive_markets(
     target_ids = set(markets)
     races: list[dict[str, Any]] = []
     skipped_incomplete = skipped_probability = 0
+    feature_scored_ids: set[str] = set()
     for feature_rows, probabilities in iter_scored_artifact_feature_rows(
         conn, target_ids=target_ids, artifact=artifact
     ):
         race_id = str(feature_rows[0]["meta"]["race_id"])
+        feature_scored_ids.add(race_id)
         market = markets.get(race_id)
         if market is None:
             continue
@@ -162,6 +164,7 @@ def score_archive_markets(
         "partial_market_races": sum(
             int(len(row["odds"]) < 120) for row in races
         ),
+        "skipped_no_complete_features": len(target_ids - feature_scored_ids),
         "skipped_incomplete_archive": skipped_incomplete,
         "skipped_probability_mismatch": skipped_probability,
     }
