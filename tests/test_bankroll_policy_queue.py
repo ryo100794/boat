@@ -302,6 +302,44 @@ def test_probability_ranks_are_grouped_by_race_and_stable_on_ties() -> None:
     assert probability_ranks(packed).tolist() == [2, 1, 1, 2]
 
 
+def test_vectorized_contextual_ev_matches_artifact_predictions() -> None:
+    candidates = {}
+    evaluated = {}
+    for day in range(1, 41):
+        race_date = f"2026-01-{day:02d}" if day <= 31 else f"2026-02-{day - 31:02d}"
+        evaluated[race_date] = 1
+        candidates[race_date] = [
+            {"race_id": f"r-{day}", "estimated_odds": odds,
+             "estimated_ev": ev, "probability": probability,
+             "actual_payout_yen": int(odds * 100), "hit": day % hit_every == 0}
+            for odds, ev, probability, hit_every in (
+                (10.0, 1.1, 0.20, 5),
+                (30.0, 1.8, 0.10, 10),
+                (70.0, 3.0, 0.05, 20),
+                (150.0, 6.0, 0.01, 40),
+            )
+        ] * 2
+    training = pack_candidates(candidates, evaluated)
+    artifact = fit_packed_contextual_ev(
+        training, prediction_date="2026-03-01", bootstrap_samples=100, seed=11
+    )
+    future = pack_candidates(
+        {"2026-03-01": candidates["2026-01-01"]}, {"2026-03-01": 1}
+    )
+    ranks = probability_ranks(future)
+    expected = [
+        artifact.predict(
+            float(future.estimated_ev[index]), int(ranks[index]),
+            float(future.estimated_odds[index]),
+        )["empirical_ev"]
+        for index in range(future.tickets)
+    ]
+
+    actual = apply_contextual_ev(future, artifact, estimate="point")
+
+    assert actual.estimated_ev.tolist() == pytest.approx(expected)
+
+
 def test_train_model_can_refine_adam_with_newton(monkeypatch) -> None:
     calls = {}
     monkeypatch.setattr(
