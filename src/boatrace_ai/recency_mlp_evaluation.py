@@ -251,10 +251,16 @@ def score_range(
         raise ValueError("scored entry count does not match the requested range")
     if any(len(rows) != 6 for rows in predictions.values()):
         raise ValueError("scored range contains incomplete races")
+    race_keys = dataset.race_keys[race_start:race_end]
+    trifecta_metrics = evaluate_probabilities(
+        trifecta_probability_matrix(dict(predictions), race_keys),
+        dataset.ranks[race_start:race_end],
+    )
     metrics = {
         "entry_log_loss": safe_log_loss(labels, probabilities),
         "entry_brier": float(brier_score_loss(labels, probabilities)),
         **_race_level_metrics(predictions),
+        "trifecta_log_loss": float(trifecta_metrics["trifecta_log_loss"]),
     }
     return metrics, dict(predictions)
 
@@ -354,6 +360,7 @@ def select_recency_half_life(
         selected = min(
             eligible,
             key=lambda row: (
+                float(row["trifecta_log_loss"]),
                 -float(row["trifecta_top5_hit_rate"]),
                 -float(row["winner_top1_accuracy"]),
                 float(row["entry_log_loss"]),
@@ -363,9 +370,9 @@ def select_recency_half_life(
             ),
         )
         selection_criterion = (
-            "highest calibration trifecta_top5_hit_rate among candidates within "
+            "minimum calibration trifecta_log_loss among candidates within "
             f"{selection_entry_log_loss_tolerance:g} of best entry_log_loss; "
-            "winner_top1_accuracy tie-break"
+            "trifecta_top5_hit_rate and winner_top1_accuracy tie-breaks"
         )
     else:
         selected = min(

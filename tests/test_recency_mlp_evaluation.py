@@ -210,10 +210,12 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
         del batch_size
         scored.append((race_start, race_end))
         loss = 0.4 if bundle["half_life"] in {None, 730.0} else 0.5
+        trifecta_loss = 3.8 if bundle["half_life"] is None else 3.9
         return (
             {
                 "entry_log_loss": loss,
                 "entry_brier": 0.1,
+                "trifecta_log_loss": trifecta_loss,
                 "winner_top1_accuracy": 0.2,
                 "trifecta_top1_hit_rate": 0.01,
                 "trifecta_top5_hit_rate": 0.05,
@@ -244,6 +246,59 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
     assert split["calibration_end"] == "2026-01-11"
     assert all(row["calibration_races"] == 2 for row in candidates)
     assert selected_predictions == {"calibration": [{"half_life": None}]}
+
+
+def test_selection_prioritizes_trifecta_log_loss_inside_entry_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = make_dataset(
+        [
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-03",
+            "2026-01-10",
+            "2026-01-11",
+        ]
+    )
+
+    def fake_train(_dataset: HashedRaceDataset, **kwargs: object) -> dict[str, object]:
+        return {"half_life": kwargs["recency_half_life_days"]}
+
+    def fake_score(
+        _dataset: HashedRaceDataset,
+        *,
+        bundle: dict[str, object],
+        race_start: int,
+        race_end: int,
+        batch_size: int,
+    ) -> tuple[dict[str, float | int], dict[str, list[dict[str, object]]]]:
+        del batch_size, race_start, race_end
+        half_life = bundle["half_life"]
+        return (
+            {
+                "entry_log_loss": 0.3000 if half_life is None else 0.3004,
+                "entry_brier": 0.1,
+                "trifecta_log_loss": 3.9 if half_life is None else 3.7,
+                "winner_top1_accuracy": 0.5,
+                "trifecta_top1_hit_rate": 0.1,
+                "trifecta_top5_hit_rate": 0.3 if half_life is None else 0.29,
+                "evaluated_races": 2,
+            },
+            {"calibration": [{"half_life": half_life}]},
+        )
+
+    monkeypatch.setattr(recency, "train_bundle_from_dataset", fake_train)
+    monkeypatch.setattr(recency, "score_range", fake_score)
+
+    selected, _candidates, split = recency.select_recency_half_life(
+        dataset,
+        outer_train_end=5,
+        half_lives=(None, 365.0),
+        calibration_days=2,
+    )
+
+    assert selected == 365.0
+    assert "minimum calibration trifecta_log_loss" in split["selection_criterion"]
 
 
 def test_trifecta_probability_matrix_is_ordered_and_normalized() -> None:

@@ -146,6 +146,7 @@ def test_lightgbm_structural_selection_is_nested_inside_training_fold(
             {
                 "entry_log_loss": loss,
                 "entry_brier": 0.1,
+                "trifecta_log_loss": 3.8,
                 "winner_top1_accuracy": 0.5,
                 "trifecta_top1_hit_rate": 0.1,
                 "trifecta_top5_hit_rate": 0.3,
@@ -214,6 +215,7 @@ def test_multimetric_selection_protects_top5_within_loss_tolerance(
             {
                 "entry_log_loss": 0.3205 if interaction else 0.3208,
                 "entry_brier": 0.1,
+                "trifecta_log_loss": 3.8,
                 "winner_top1_accuracy": 0.56 if interaction else 0.57,
                 "trifecta_top1_hit_rate": 0.1,
                 "trifecta_top5_hit_rate": 0.318 if interaction else 0.322,
