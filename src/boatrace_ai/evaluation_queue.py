@@ -2229,7 +2229,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[key] = value[key]
         for key in (
             "metrics", "holdout", "holdout_after_newton", "bankroll",
-            "selection_prediction_metrics", "holdout_prediction_metrics",
+            "holdout_prediction_metrics", "selection_prediction_metrics",
             "bankroll_confidence",
             "closing_odds_forecast",
             "conditional_order", "venue_conditional_order",
