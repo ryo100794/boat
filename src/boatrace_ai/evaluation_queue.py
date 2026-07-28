@@ -70,6 +70,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "repository_sync": {"category": "maintenance", "memory_mb": 256, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "archive_closing_backfill": {"category": "collection", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "archive_market_oracle": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
@@ -2107,6 +2108,37 @@ def build_command(
             "--from-date", _date(params, "from_date"),
             "--output", str(output),
         ], output
+    if task_type == "archive_closing_backfill":
+        allowed = {
+            "from_date", "through_date", "sleep_seconds", "max_pages",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported archive closing backfill parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        from_date = _date(params, "from_date")
+        through_date = _date(params, "through_date")
+        if from_date > through_date:
+            raise ValueError("archive closing from_date must not exceed through_date")
+        sleep_seconds = _number(params, "sleep_seconds", 1.0, 0.5, 60.0)
+        _integer(params, "timeout_seconds", 86400, 600, 172800)
+        command = [
+            str(python), "-m", "boatrace_ai.archive_closing_odds",
+            "--db", db,
+            "--from-date", from_date,
+            "--through-date", through_date,
+            "--sleep-seconds", str(sleep_seconds),
+            "--output", str(output),
+        ]
+        if params.get("max_pages") is not None:
+            command.extend([
+                "--max-pages",
+                str(_integer(params, "max_pages", 1, 1, 100000)),
+            ])
+        return command, output
     if task_type == "archive_market_oracle":
         allowed = {
             "from_date", "through_date", "model_input", "daily_budget_yen",
@@ -2574,6 +2606,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "aggregation_complete"
     if task_type in {"gdrive_raw_archive", "gdrive_model_cache_archive"}:
         return "backup_complete"
+    if task_type == "archive_closing_backfill":
+        return "collection_complete"
     if task_type == "repository_sync":
         if str(summary.get("action") or "").startswith("deferred_"):
             return "repository_sync_deferred"

@@ -13,6 +13,7 @@ from boatrace_ai.archive_closing_odds import (
     store_archive_closing_odds,
     verify_winning_payout,
 )
+from boatrace_ai.listwise.archive_market_oracle import load_archive_markets
 from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.odds_quality import TRIFECTA_COMBINATION_KEYS
 
@@ -125,6 +126,12 @@ def test_archive_storage_is_separate_and_pending_runs_newest_first(tmp_path) -> 
             "SELECT COUNT(*) FROM archive_closing_odds WHERE race_id = ? AND source_key = ?",
             (pending[0]["race_id"], SOURCE_KEY),
         ).fetchone()[0] == 120
+        market = load_archive_markets(
+            conn, from_date="2026-07-27", through_date="2026-07-27"
+        )[pending[0]["race_id"]]
+        assert market["archive_verification_status"] == (
+            "winner_only_match_unverified_market"
+        )
         assert len(
             pending_races(
                 conn, from_date="2026-07-26", through_date="2026-07-27"

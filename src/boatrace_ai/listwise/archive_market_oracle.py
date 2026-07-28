@@ -68,13 +68,17 @@ def load_archive_markets(
     for row in conn.execute(
         """
         SELECT a.race_id, r.race_date, r.jcd, r.rno, a.odds_count,
+               a.verification_status,
                p.combination AS actual_combination,
                p.payout_yen AS actual_payout_yen
         FROM archive_closing_odds_snapshots a
         JOIN races r ON r.race_id = a.race_id
         JOIN payouts p ON p.race_id = a.race_id AND p.bet_type = '3連単'
         WHERE a.source_key = ?
-          AND a.verification_status = 'all_market_official_match'
+          AND a.verification_status IN (
+            'all_market_official_match',
+            'winner_only_match_unverified_market'
+          )
           AND r.race_date BETWEEN ? AND ?
         ORDER BY r.race_date, r.jcd, r.rno
         """,
@@ -87,6 +91,7 @@ def load_archive_markets(
             "jcd": str(row["jcd"]),
             "rno": int(row["rno"]),
             "archive_odds_count": int(row["odds_count"]),
+            "archive_verification_status": str(row["verification_status"]),
             "actual_combination": str(row["actual_combination"]),
             "actual_payout_yen": int(row["actual_payout_yen"]),
             "odds": {},
@@ -167,6 +172,17 @@ def score_archive_markets(
         "skipped_no_complete_features": len(target_ids - feature_scored_ids),
         "skipped_incomplete_archive": skipped_incomplete,
         "skipped_probability_mismatch": skipped_probability,
+        "fully_official_verified_races": sum(
+            int(row["archive_verification_status"] == "all_market_official_match")
+            for row in races
+        ),
+        "winner_verified_secondary_races": sum(
+            int(
+                row["archive_verification_status"]
+                == "winner_only_match_unverified_market"
+            )
+            for row in races
+        ),
     }
 
 
@@ -218,6 +234,10 @@ def evaluate_archive_oracle(
         "model": MODEL_NAME,
         "status": "completed",
         "comparison_role": "unavailable_at_decision_closing_oracle_research_only",
+        "market_source_scope": (
+            "secondary closing archive; each winning price matches official payout, "
+            "losing prices are not independently official-verified"
+        ),
         "production_transfer_required": True,
         "promotion_eligible": False,
         "research_gate_pass": all(research_gate.values()),
