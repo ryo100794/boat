@@ -50,7 +50,7 @@ def test_nested_annual_queue_builds_strict_five_fold_command(tmp_path) -> None:
 
     assert TASK_PROFILES["bankroll_policy_nested_annual"] == {
         "category": "evaluation",
-        "memory_mb": 24576,
+        "memory_mb": 23552,
         "disk_mb": 4096,
         "idle_cpu": 15.0,
         "max_parallel": 1,
