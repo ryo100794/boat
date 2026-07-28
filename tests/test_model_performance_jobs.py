@@ -296,6 +296,68 @@ def test_database_evaluation_artifact_rejects_paths_outside_model_dir(
     ) == ([], [], {})
 
 
+def test_database_evaluation_artifact_prioritizes_bankroll_results(
+    tmp_path,
+) -> None:
+    model_dir = tmp_path / "models"
+    queue_dir = model_dir / "evaluation_queue"
+    queue_dir.mkdir(parents=True)
+    search_path = queue_dir / "job-00000001.json"
+    search_path.write_text(
+        json.dumps({"entry_log_loss": 0.34, "evaluated_races": 100}),
+        encoding="utf-8",
+    )
+    bankroll_path = queue_dir / "job-00000002.json"
+    bankroll_path.write_text(
+        json.dumps(
+            {
+                "entry_log_loss": 0.32,
+                "evaluated_races": 100,
+                "bankroll": {"roi": 0.8, "stake_yen": 1000},
+                "conditional_payout_walk_forward": {
+                    "bankroll": {
+                        "roi": 0.0,
+                        "stake_yen": 0,
+                        "policy": {
+                            "no_bet": True,
+                            "no_bet_reason": "selection_gate_no_bet",
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue_status = {
+        "candidates": [
+            {
+                "model_key": "search-only",
+                "result_path": str(search_path),
+                "roi": None,
+            },
+            {
+                "model_key": "bankroll-model",
+                "result_path": str(bankroll_path),
+                "roi": 0.8,
+                "payout_feature_candidate_roi": 0.0,
+            },
+        ]
+    }
+
+    _, bankroll, _ = _database_evaluation_artifacts(
+        queue_status,
+        model_dir,
+        maximum_artifacts=1,
+    )
+
+    assert [row["name"] for row in bankroll] == [
+        "bankroll-model",
+        "bankroll-model_conditional_payout_walk_forward",
+    ]
+    assert bankroll[1]["no_bet"] is True
+    assert bankroll[1]["no_bet_reason"] == "selection_gate_no_bet"
+
+
 def test_database_evaluation_status_uses_current_attempt_elapsed(tmp_path) -> None:
     db_path = tmp_path / "queue.sqlite"
     conn = sqlite3.connect(db_path)
