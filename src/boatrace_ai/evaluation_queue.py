@@ -1640,6 +1640,8 @@ def build_command(
             "source_job_id", "source_kind", "learning_rate", "epochs", "batch_races",
             "candidate_count", "finalists", "bootstrap_samples",
             "payout_prior_weights", "evaluation_days", "research_only", "seed", "timeout_seconds",
+            "coefficient_optimizer", "max_newton_iterations",
+            "max_cg_iterations", "gradient_tolerance", "cg_tolerance",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1704,6 +1706,23 @@ def build_command(
         )
         epochs = _integer(params, "epochs", 2, 1, 6)
         batch_races = _integer(params, "batch_races", 1000, 250, 5000)
+        coefficient_optimizer = str(
+            params.get("coefficient_optimizer", "adam")
+        )
+        if coefficient_optimizer not in {"adam", "newton_cg"}:
+            raise ValueError("unsupported coefficient_optimizer")
+        max_newton_iterations = _integer(
+            params, "max_newton_iterations", 10, 1, 30
+        )
+        max_cg_iterations = _integer(
+            params, "max_cg_iterations", 75, 5, 300
+        )
+        gradient_tolerance = _number(
+            params, "gradient_tolerance", 0.0001, 1e-8, 0.1
+        )
+        cg_tolerance = _number(
+            params, "cg_tolerance", 0.001, 1e-8, 0.1
+        )
         candidate_count = _integer(
             params, "candidate_count", 24, 8, 128
         )
@@ -1743,6 +1762,11 @@ def build_command(
             "--learning-rate", str(learning_rate),
             "--epochs", str(epochs),
             "--batch-races", str(batch_races),
+            "--coefficient-optimizer", coefficient_optimizer,
+            "--max-newton-iterations", str(max_newton_iterations),
+            "--max-cg-iterations", str(max_cg_iterations),
+            "--gradient-tolerance", str(gradient_tolerance),
+            "--cg-tolerance", str(cg_tolerance),
             "--candidate-count", str(candidate_count),
             "--finalists", str(finalists),
             "--bootstrap-samples", str(bootstrap_samples),

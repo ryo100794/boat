@@ -12,7 +12,9 @@ from boatrace_ai.evaluation_queue import (
     build_command,
 )
 from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
+from boatrace_ai.listwise import bankroll_policy_evaluation
 from boatrace_ai.listwise.bankroll_policy_evaluation import (
+    _train_model,
     build_parser,
     flat_top_k_diagnostic,
     prior_selection_key,
@@ -138,6 +140,7 @@ def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
     assert command[command.index("--payout-prior-weights") + 1] == "10,30,100"
     assert command[command.index("--evaluation-days") + 1] == "365"
     assert command[command.index("--research-only") + 1] == "true"
+    assert command[command.index("--coefficient-optimizer") + 1] == "adam"
 
 
 def test_bankroll_policy_search_uses_fixed_standardized_source(
@@ -185,6 +188,79 @@ def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:
     parser = build_parser()
     args = parser.parse_args(["--db", "x", "--search-result", "x", "--cache-prefix", "x", "--output", "x"])
     assert args.evaluation_days == 365
+    assert args.coefficient_optimizer == "adam"
+
+
+def test_bankroll_policy_search_builds_newton_command(tmp_path) -> None:
+    root = tmp_path / "boat"
+    _source(root)
+    command, _output = build_command(
+        _job(
+            {
+                "source_job_id": 3565,
+                "coefficient_optimizer": "newton_cg",
+                "max_newton_iterations": 8,
+                "max_cg_iterations": 60,
+                "gradient_tolerance": 0.0002,
+                "cg_tolerance": 0.002,
+            }
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--coefficient-optimizer") + 1] == "newton_cg"
+    assert command[command.index("--max-newton-iterations") + 1] == "8"
+    assert command[command.index("--max-cg-iterations") + 1] == "60"
+    assert command[command.index("--gradient-tolerance") + 1] == "0.0002"
+    assert command[command.index("--cg-tolerance") + 1] == "0.002"
+
+
+def test_train_model_can_refine_adam_with_newton(monkeypatch) -> None:
+    calls = {}
+    monkeypatch.setattr(
+        bankroll_policy_evaluation,
+        "fit_scaler",
+        lambda *args, **kwargs: "scaler",
+    )
+    monkeypatch.setattr(
+        bankroll_policy_evaluation,
+        "train_listwise_model",
+        lambda *args, **kwargs: ("adam-model", [{"epoch": 1}]),
+    )
+
+    def refine(dataset, model, **kwargs):
+        calls.update(kwargs)
+        return "newton-model", {"converged": True}
+
+    monkeypatch.setattr(bankroll_policy_evaluation, "refine_newton_cg", refine)
+
+    model, history = _train_model(
+        object(),
+        race_end=100,
+        selected={"target": "top3_pl", "alpha": 0.001},
+        learning_rate=0.02,
+        epochs=2,
+        batch_races=50,
+        coefficient_optimizer="newton_cg",
+        max_newton_iterations=8,
+        max_cg_iterations=60,
+        gradient_tolerance=0.0002,
+        cg_tolerance=0.002,
+    )
+
+    assert model == "newton-model"
+    assert history["adam_history"] == [{"epoch": 1}]
+    assert history["newton_convergence"] == {"converged": True}
+    assert calls == {
+        "train_race_end": 100,
+        "batch_races": 50,
+        "max_newton_iterations": 8,
+        "max_cg_iterations": 60,
+        "gradient_tolerance": 0.0002,
+        "cg_tolerance": 0.002,
+    }
 
 
 def test_prior_selection_prefers_temporal_stability_before_bootstrap_ci() -> None:

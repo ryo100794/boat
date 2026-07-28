@@ -34,6 +34,7 @@ from .direct_bankroll import bootstrap_daily_bankroll
 from .feature_search import _write_json_atomic
 from .model import evaluate_range, fit_scaler, train_listwise_model
 from .newton_refine import (
+    refine_newton_cg,
     search_race_date_through,
     validate_search_race_universe,
 )
@@ -187,6 +188,11 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         learning_rate=args.learning_rate,
         epochs=args.epochs,
         batch_races=args.batch_races,
+        coefficient_optimizer=args.coefficient_optimizer,
+        max_newton_iterations=args.max_newton_iterations,
+        max_cg_iterations=args.max_cg_iterations,
+        gradient_tolerance=args.gradient_tolerance,
+        cg_tolerance=args.cg_tolerance,
     )
     selection_metrics, selection_rows = evaluate_range(
         dataset,
@@ -260,6 +266,11 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         learning_rate=args.learning_rate,
         epochs=args.epochs,
         batch_races=args.batch_races,
+        coefficient_optimizer=args.coefficient_optimizer,
+        max_newton_iterations=args.max_newton_iterations,
+        max_cg_iterations=args.max_cg_iterations,
+        gradient_tolerance=args.gradient_tolerance,
+        cg_tolerance=args.cg_tolerance,
     )
     holdout_metrics, holdout_rows = evaluate_range(
         dataset,
@@ -298,12 +309,17 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         "temporal_stability": holdout_temporal_stability,
     })
     result = {
-        "model": "bankroll_policy_optimized_v1",
+        "model": (
+            "bankroll_policy_optimized_newton_v2"
+            if args.coefficient_optimizer == "newton_cg"
+            else "bankroll_policy_optimized_v1"
+        ),
         "comparison_role": "bankroll_policy_model",
         "source_search_result": str(search_path),
         "feature_schema_version": search["feature_schema_version"],
         "race_universe_sha256": race_ids_sha256(race_keys),
         "selected_prediction_model": selected,
+        "coefficient_optimizer": args.coefficient_optimizer,
         "evaluation_from": evaluation_from.isoformat(),
         "evaluation_through": evaluation_through.isoformat(),
         "evaluation_days": args.evaluation_days,
@@ -359,9 +375,14 @@ def _train_model(
     learning_rate: float,
     epochs: int,
     batch_races: int,
-) -> tuple[Any, list[dict[str, Any]]]:
+    coefficient_optimizer: str = "adam",
+    max_newton_iterations: int = 10,
+    max_cg_iterations: int = 75,
+    gradient_tolerance: float = 0.0001,
+    cg_tolerance: float = 0.001,
+) -> tuple[Any, Any]:
     scaler = fit_scaler(dataset, race_end=race_end, batch_rows=batch_races * 6)
-    return train_listwise_model(
+    model, adam_history = train_listwise_model(
         dataset,
         train_race_end=race_end,
         target=str(selected["target"]),
@@ -371,6 +392,25 @@ def _train_model(
         batch_races=batch_races,
         scaler=scaler,
     )
+    if coefficient_optimizer == "adam":
+        return model, adam_history
+    if coefficient_optimizer != "newton_cg":
+        raise ValueError(f"unsupported coefficient optimizer: {coefficient_optimizer}")
+    refined, convergence = refine_newton_cg(
+        dataset,
+        model,
+        train_race_end=race_end,
+        batch_races=batch_races,
+        max_newton_iterations=max_newton_iterations,
+        max_cg_iterations=max_cg_iterations,
+        gradient_tolerance=gradient_tolerance,
+        cg_tolerance=cg_tolerance,
+    )
+    return refined, {
+        "coefficient_optimizer": "adam_warm_start_matrix_free_newton_cg",
+        "adam_history": adam_history,
+        "newton_convergence": convergence,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -390,6 +430,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=0.02)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-races", type=int, default=1_000)
+    parser.add_argument(
+        "--coefficient-optimizer",
+        choices=("adam", "newton_cg"),
+        default="adam",
+    )
+    parser.add_argument("--max-newton-iterations", type=int, default=10)
+    parser.add_argument("--max-cg-iterations", type=int, default=75)
+    parser.add_argument("--gradient-tolerance", type=float, default=0.0001)
+    parser.add_argument("--cg-tolerance", type=float, default=0.001)
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--candidate-count", type=int, default=24)
     parser.add_argument("--finalists", type=int, default=6)
