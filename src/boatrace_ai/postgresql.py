@@ -36,6 +36,14 @@ class CompatCursor:
         self._scalar = scalar
         self._has_scalar = has_scalar
 
+    @property
+    def rowcount(self) -> int:
+        if self._has_scalar:
+            return 1
+        if self._cursor is None:
+            return -1
+        return int(self._cursor.rowcount)
+
     def _names(self) -> list[str]:
         if self._cursor is None or self._cursor.description is None:
             return []
