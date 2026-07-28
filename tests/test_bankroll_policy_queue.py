@@ -16,9 +16,16 @@ from boatrace_ai.listwise import bankroll_policy_evaluation
 from boatrace_ai.listwise.bankroll_policy_evaluation import (
     _train_model,
     build_parser,
+    calibration_day_count,
     flat_top_k_diagnostic,
     prior_selection_key,
 )
+from boatrace_ai.listwise.packed_ev_calibration import (
+    apply_contextual_ev,
+    fit_packed_contextual_ev,
+    probability_ranks,
+)
+from boatrace_ai.packed_bankroll import pack_candidates
 
 
 def test_flat_top5_diagnostic_converts_hit_rate_to_realized_roi() -> None:
@@ -189,6 +196,7 @@ def test_bankroll_policy_evaluation_defaults_to_standard_365_days() -> None:
     args = parser.parse_args(["--db", "x", "--search-result", "x", "--cache-prefix", "x", "--output", "x"])
     assert args.evaluation_days == 365
     assert args.coefficient_optimizer == "adam"
+    assert args.ev_calibration_mode == "none"
 
 
 def test_bankroll_policy_search_builds_newton_command(tmp_path) -> None:
@@ -203,6 +211,9 @@ def test_bankroll_policy_search_builds_newton_command(tmp_path) -> None:
                 "max_cg_iterations": 60,
                 "gradient_tolerance": 0.0002,
                 "cg_tolerance": 0.002,
+                "ev_calibration_mode": "contextual_point",
+                "calibration_fraction": 0.4,
+                "calibration_bootstrap_samples": 500,
             }
         ),
         app_root=root,
@@ -215,6 +226,80 @@ def test_bankroll_policy_search_builds_newton_command(tmp_path) -> None:
     assert command[command.index("--max-cg-iterations") + 1] == "60"
     assert command[command.index("--gradient-tolerance") + 1] == "0.0002"
     assert command[command.index("--cg-tolerance") + 1] == "0.002"
+    assert command[command.index("--ev-calibration-mode") + 1] == "contextual_point"
+    assert command[command.index("--calibration-fraction") + 1] == "0.4"
+    assert command[command.index("--calibration-bootstrap-samples") + 1] == "500"
+
+
+def test_contextual_ev_calibration_is_prior_only_and_changes_ev() -> None:
+    candidates = {}
+    evaluated = {}
+    for day in range(1, 41):
+        race_date = f"2026-01-{day:02d}" if day <= 31 else f"2026-02-{day - 31:02d}"
+        evaluated[race_date] = 1
+        candidates[race_date] = [
+            {
+                "race_id": f"r-{day}",
+                "estimated_odds": 10.0,
+                "estimated_ev": 2.0,
+                "probability": 0.2,
+                "actual_payout_yen": 1000,
+                "hit": day % 5 == 0,
+            },
+            {
+                "race_id": f"r-{day}",
+                "estimated_odds": 40.0,
+                "estimated_ev": 3.0,
+                "probability": 0.05,
+                "actual_payout_yen": 4000,
+                "hit": day % 20 == 0,
+            },
+        ] * 4
+    packed = pack_candidates(candidates, evaluated)
+    artifact = fit_packed_contextual_ev(
+        packed,
+        prediction_date="2026-03-01",
+        bootstrap_samples=100,
+        seed=7,
+    )
+    future = pack_candidates(
+        {"2026-03-01": candidates["2026-01-01"]},
+        {"2026-03-01": 1},
+    )
+    calibrated = apply_contextual_ev(future, artifact, estimate="point")
+
+    assert artifact.trained_through_date == "2026-02-09"
+    assert calibrated.estimated_ev.shape == future.estimated_ev.shape
+    assert not (calibrated.estimated_ev == future.estimated_ev).all()
+    with pytest.raises(ValueError, match="trained before"):
+        apply_contextual_ev(packed, artifact, estimate="point")
+
+
+def test_calibration_day_count_preserves_prior_and_policy_windows() -> None:
+    assert calibration_day_count(100, 0.4) == 40
+    assert calibration_day_count(100, 0.8) == 70
+    with pytest.raises(ValueError, match="61 days"):
+        calibration_day_count(60, 0.5)
+    with pytest.raises(ValueError, match="between"):
+        calibration_day_count(100, 0.9)
+
+
+def test_probability_ranks_are_grouped_by_race_and_stable_on_ties() -> None:
+    packed = pack_candidates(
+        {"2026-01-01": [
+            {"race_id": "a", "estimated_odds": 2, "estimated_ev": 1.1,
+             "probability": 0.2, "actual_payout_yen": 0, "hit": False},
+            {"race_id": "b", "estimated_odds": 2, "estimated_ev": 1.1,
+             "probability": 0.4, "actual_payout_yen": 0, "hit": False},
+            {"race_id": "a", "estimated_odds": 2, "estimated_ev": 1.1,
+             "probability": 0.3, "actual_payout_yen": 0, "hit": False},
+            {"race_id": "b", "estimated_odds": 2, "estimated_ev": 1.1,
+             "probability": 0.4, "actual_payout_yen": 0, "hit": False},
+        ]},
+        {"2026-01-01": 2},
+    )
+
+    assert probability_ranks(packed).tolist() == [2, 1, 1, 2]
 
 
 def test_train_model_can_refine_adam_with_newton(monkeypatch) -> None:
