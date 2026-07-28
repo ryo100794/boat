@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -12,11 +13,15 @@ from bs4 import BeautifulSoup
 
 from .db import connection
 from .http import FetchError, fetch_text
-from .odds_quality import TRIFECTA_COMBINATION_KEYS, plausible_trifecta_odds
+from .odds_quality import (
+    MAX_LANE_MARKER_ODDS,
+    TRIFECTA_COMBINATION_KEYS,
+    plausible_trifecta_odds,
+)
 
 
 SOURCE_KEY = "kyotei_club_official_mirror_closing_v1"
-PARSER_VERSION = "archive_closing_odds_dom_v2"
+PARSER_VERSION = "archive_closing_odds_dom_v3"
 DEFAULT_BASE_URL = "https://odds.kyotei24.jp"
 
 
@@ -98,6 +103,7 @@ def parse_archive_closing_odds_html(html: str) -> dict[str, Any]:
             raise ValueError("trifecta odds table is missing")
 
     odds: dict[str, float] = {}
+    unavailable: set[str] = set()
     for row in container.find_all("tr"):
         lanes = [node.get_text(strip=True) for node in row.select(".rgs3 .rb")]
         if len(lanes) != 3 or any(value not in "123456" for value in lanes):
@@ -111,25 +117,43 @@ def parse_archive_closing_odds_html(html: str) -> dict[str, Any]:
         if len(cells) != 1:
             continue
         combination = "-".join(lanes)
+        raw_value = cells[0].get_text("", strip=True).replace(",", "")
+        if raw_value in {"-", "--", "---"}:
+            if combination in odds or combination in unavailable:
+                raise ValueError(f"duplicate odds combination: {combination}")
+            unavailable.add(combination)
+            continue
         try:
-            value = float(cells[0].get_text("", strip=True).replace(",", ""))
+            value = float(raw_value)
         except ValueError as exc:
             raise ValueError(f"invalid odds for {combination}") from exc
-        if combination in odds:
+        if combination in odds or combination in unavailable:
             raise ValueError(f"duplicate odds combination: {combination}")
         odds[combination] = value
 
-    if not plausible_trifecta_odds(odds):
-        missing = sorted(set(TRIFECTA_COMBINATION_KEYS) - set(odds))
+    expected = set(TRIFECTA_COMBINATION_KEYS)
+    accounted = set(odds) | unavailable
+    numeric_values = list(odds.values())
+    numeric_plausible = (
+        bool(numeric_values)
+        and all(math.isfinite(value) and value >= 1.0 for value in numeric_values)
+        and sum(value in {1.0, 2.0, 3.0, 4.0, 5.0, 6.0} for value in numeric_values)
+        <= MAX_LANE_MARKER_ODDS
+    )
+    if accounted != expected or set(odds) & unavailable or not numeric_plausible:
+        missing = sorted(expected - accounted)
         raise ValueError(
             f"archive trifecta odds are incomplete or implausible: "
-            f"count={len(odds)} missing={missing[:3]}"
+            f"numeric={len(odds)} unavailable={len(unavailable)} "
+            f"missing={missing[:3]}"
         )
     return {
         "parser_version": PARSER_VERSION,
         "market_time": "closing",
         "source_key": SOURCE_KEY,
         "odds_count": len(odds),
+        "unavailable_count": len(unavailable),
+        "unavailable_combinations": sorted(unavailable),
         "odds": odds,
     }
 
@@ -173,13 +197,24 @@ def store_archive_closing_odds(
     fetched_at: str | None = None,
 ) -> None:
     odds = {str(key): float(value) for key, value in parsed["odds"].items()}
-    if not plausible_trifecta_odds(odds):
+    unavailable = {str(value) for value in parsed.get("unavailable_combinations", [])}
+    expected = set(TRIFECTA_COMBINATION_KEYS)
+    if set(odds) | unavailable != expected or set(odds) & unavailable:
+        raise ValueError("refusing to store incomplete archive odds")
+    if not unavailable and not plausible_trifecta_odds(odds):
         raise ValueError("refusing to store implausible archive odds")
+    if unavailable and (
+        not odds
+        or any(not math.isfinite(value) or value < 1.0 for value in odds.values())
+    ):
+        raise ValueError("refusing to store implausible partial archive odds")
     ensure_archive_schema(conn)
     fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     raw = {
         "source_kind": "secondary_archive_of_official_closing_display",
         "market_time": "closing",
+        "total_combination_count": len(expected),
+        "unavailable_combinations": sorted(unavailable),
         "verification": dict(verification),
     }
     conn.execute(

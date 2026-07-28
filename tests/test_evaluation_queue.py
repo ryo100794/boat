@@ -1159,6 +1159,27 @@ def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
     assert summary["staging_files"] == 0
 
 
+def test_result_summary_preserves_archive_closing_odds_counts() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "source_role": "secondary_archive_research_only",
+        "source_key": "archive-v1",
+        "from_date": "2026-07-20",
+        "through_date": "2026-07-27",
+        "targets": 50,
+        "stored": 48,
+        "invalid": 2,
+        "fetch_failed": 0,
+        "not_found": 0,
+        "remaining": 1223,
+    })
+
+    assert summary["archive_targets"] == 50
+    assert summary["archive_stored"] == 48
+    assert summary["archive_invalid"] == 2
+    assert summary["archive_remaining"] == 1223
+
+
 def test_standardized_manifest_summary_reports_selected_and_best_candidate() -> None:
     summary = summarize_result({
         "protocol_id": "standard_365d_v2",

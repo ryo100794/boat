@@ -2180,6 +2180,14 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if payload.get("source_role") == "secondary_archive_research_only":
+        for key in (
+            "targets", "stored", "not_found", "invalid", "fetch_failed",
+            "remaining", "from_date", "through_date", "source_key",
+            "source_role",
+        ):
+            if key in payload:
+                summary[f"archive_{key}"] = payload[key]
     top5_flat = payload.get("holdout_top5_flat_diagnostic")
     if isinstance(top5_flat, dict):
         for key in (

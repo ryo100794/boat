@@ -17,8 +17,9 @@ from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.odds_quality import TRIFECTA_COMBINATION_KEYS
 
 
-def _html(*, drop_last: bool = False) -> str:
+def _html(*, drop_last: bool = False, unavailable: set[str] | None = None) -> str:
     combinations = TRIFECTA_COMBINATION_KEYS[:-1] if drop_last else TRIFECTA_COMBINATION_KEYS
+    unavailable = unavailable or set()
     rows = []
     for index, combination in enumerate(combinations, start=1):
         lanes = "".join(
@@ -29,7 +30,8 @@ def _html(*, drop_last: bool = False) -> str:
             '<tr><td><div class="rgs3">'
             + lanes
             + '</div></td><td class="od_text" align="right">'
-            + f"{1.0 + index / 10:.1f}</td></tr>"
+            + ("---" if combination in unavailable else f"{1.0 + index / 10:.1f}")
+            + "</td></tr>"
         )
     return (
         '<div id="brOddslist"><div>締切時オッズ</div><table>'
@@ -60,6 +62,15 @@ def test_archive_parser_supports_odds_bank_layout_without_closing_label() -> Non
     parsed = parse_archive_closing_odds_html(_odds_bank_html())
     assert parsed["odds_count"] == 120
     assert set(parsed["odds"]) == set(TRIFECTA_COMBINATION_KEYS)
+
+
+def test_archive_parser_accounts_for_unavailable_closing_combinations() -> None:
+    unavailable = {"1-2-3", "6-5-4"}
+    parsed = parse_archive_closing_odds_html(_html(unavailable=unavailable))
+    assert parsed["odds_count"] == 118
+    assert parsed["unavailable_count"] == 2
+    assert set(parsed["unavailable_combinations"]) == unavailable
+    assert set(parsed["odds"]) | unavailable == set(TRIFECTA_COMBINATION_KEYS)
 
 
 def test_archive_winner_must_match_official_payout() -> None:
