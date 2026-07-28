@@ -60,7 +60,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
-    "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 23552, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 21504, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -248,7 +248,17 @@ def ensure_schema(conn: Any) -> None:
           AND task_type = ?
           AND min_free_memory_mb = ?
         """,
-        (23552, "bankroll_policy_nested_annual", 24576),
+        (21504, "bankroll_policy_nested_annual", 24576),
+    )
+    conn.execute(
+        """
+        UPDATE model_evaluation_jobs
+        SET min_free_memory_mb = ?
+        WHERE status = 'queued'
+          AND task_type = ?
+          AND min_free_memory_mb = ?
+        """,
+        (21504, "bankroll_policy_nested_annual", 23552),
     )
     conn.execute(
         """
