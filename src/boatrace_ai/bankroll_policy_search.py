@@ -22,6 +22,7 @@ PROMOTION_MAX_DRAWDOWN_STAKE_FRACTION = 0.50
 SEARCH_SPACE: dict[str, tuple[Any, ...]] = {
     "ev_threshold": (1.00, 1.10, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50),
     "min_ticket_probability": (0.0, 0.002, 0.005, 0.01, 0.02),
+    "min_estimated_odds": (None, 5.0, 6.0, 30.0, 100.0, 101.0),
     "max_estimated_odds": (None, 30.0, 50.0, 100.0, 200.0),
     "fractional_kelly": (0.10, 0.25, 0.50),
     "max_daily_exposure_fraction": (0.30, 0.60, 0.80),
@@ -56,6 +57,30 @@ CONSERVATIVE_POLICY_ANCHORS: tuple[dict[str, Any], ...] = (
         "ticket_cap_fraction": 0.02,
         "max_daily_tickets": 30,
     },
+    {
+        "ev_threshold": 1.75,
+        "min_ticket_probability": 0.0,
+        "min_estimated_odds": 6.0,
+        "max_estimated_odds": 30.0,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.02,
+        "max_daily_tickets": 30,
+    },
+    {
+        "ev_threshold": 2.00,
+        "min_ticket_probability": 0.0,
+        "min_estimated_odds": 101.0,
+        "max_estimated_odds": 200.0,
+        "fractional_kelly": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+        "min_daily_exposure_fraction": 0.0,
+        "race_cap_fraction": 0.05,
+        "ticket_cap_fraction": 0.01,
+        "max_daily_tickets": 30,
+    },
 )
 
 
@@ -82,9 +107,11 @@ def policy_candidates(
     if count < 1:
         raise ValueError("candidate count must be positive")
     rng = np.random.default_rng(seed)
-    candidates = [dict(base_policy)]
+    canonical_base = dict(base_policy)
+    canonical_base.setdefault("min_estimated_odds", None)
+    candidates = [canonical_base]
     seen = {_policy_key(candidates[0])}
-    for candidate in _conservative_anchor_policies(base_policy):
+    for candidate in _conservative_anchor_policies(canonical_base):
         if len(candidates) >= count:
             break
         key = _policy_key(candidate)
@@ -94,7 +121,7 @@ def policy_candidates(
     attempts = 0
     while len(candidates) < count and attempts < count * 100:
         attempts += 1
-        candidate = dict(base_policy)
+        candidate = dict(canonical_base)
         for name, values in SEARCH_SPACE.items():
             candidate[name] = values[int(rng.integers(0, len(values)))]
         if not _valid_caps(candidate):
@@ -122,6 +149,7 @@ def canonicalize_policy_candidates(
         if not isinstance(candidate, Mapping):
             raise ValueError(f"policy candidate {index} must be a mapping")
         policy = dict(candidate)
+        policy.setdefault("min_estimated_odds", None)
         try:
             _validate_policy_candidate(policy)
             canonical = json.dumps(
@@ -449,12 +477,19 @@ def promotion_gate(row: Mapping[str, Any]) -> dict[str, bool]:
 
 
 def _valid_caps(policy: Mapping[str, Any]) -> bool:
+    minimum_odds = policy.get("min_estimated_odds")
+    maximum_odds = policy.get("max_estimated_odds")
     return (
         policy["min_daily_exposure_fraction"]
         <= policy["max_daily_exposure_fraction"]
         and policy["ticket_cap_fraction"] <= policy["race_cap_fraction"]
         and policy["race_cap_fraction"]
         <= policy["max_daily_exposure_fraction"]
+        and (
+            minimum_odds is None
+            or maximum_odds is None
+            or float(minimum_odds) <= float(maximum_odds)
+        )
     )
 
 
@@ -491,6 +526,14 @@ def _validate_policy_candidate(policy: Mapping[str, Any]) -> None:
             raise ValueError(f"{name} must be numeric")
         if not isfinite(float(value)):
             raise ValueError(f"{name} must be finite")
+    minimum_odds = policy["min_estimated_odds"]
+    if minimum_odds is not None and (
+        isinstance(minimum_odds, bool)
+        or not isinstance(minimum_odds, (int, float, np.number))
+        or not isfinite(float(minimum_odds))
+        or float(minimum_odds) <= 1.0
+    ):
+        raise ValueError("min_estimated_odds must be null or finite and above one")
     maximum_odds = policy["max_estimated_odds"]
     if maximum_odds is not None and (
         isinstance(maximum_odds, bool)
@@ -499,6 +542,12 @@ def _validate_policy_candidate(policy: Mapping[str, Any]) -> None:
         or float(maximum_odds) <= 1.0
     ):
         raise ValueError("max_estimated_odds must be null or finite and above one")
+    if (
+        minimum_odds is not None
+        and maximum_odds is not None
+        and float(minimum_odds) > float(maximum_odds)
+    ):
+        raise ValueError("min_estimated_odds must not exceed max_estimated_odds")
     max_tickets = policy["max_daily_tickets"]
     if max_tickets is not None and (
         isinstance(max_tickets, bool)
