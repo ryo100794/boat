@@ -2379,6 +2379,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in prospective_policy:
                 summary[f"prospective_normalized_ev_{key}"] = prospective_policy[key]
+    prospective_top5 = payload.get("prospective_top5_narrow_ev_walk_forward")
+    if isinstance(prospective_top5, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "roi",
+            "profit_yen",
+        ):
+            if key in prospective_top5:
+                summary[f"prospective_top5_narrow_ev_{key}"] = (
+                    prospective_top5[key]
+                )
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (

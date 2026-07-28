@@ -49,7 +49,18 @@ def simulate_flat_policy(
     probability_blender: Callable[..., dict[str, float]],
 ) -> dict[str, Any]:
     by_day: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"evaluated_races": 0, "tickets": 0, "hits": 0, "stake_yen": 0, "return_yen": 0}
+        lambda: {
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hits": 0,
+            "hit_tickets": 0,
+            "races_bet": 0,
+            "hit_races": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "largest_hit_return_yen": 0,
+            "hit_return_square_sum_yen2": 0,
+        }
     )
     for race in races:
         day = by_day[str(race["race_date"])]
@@ -72,7 +83,13 @@ def simulate_flat_policy(
                 continue
             if policy.get("max_odds") is not None and odds > float(policy["max_odds"]):
                 continue
-            if probability * odds < float(policy["ev_threshold"]):
+            estimated_ev = probability * odds
+            if estimated_ev < float(policy["ev_threshold"]):
+                continue
+            if (
+                policy.get("max_estimated_ev") is not None
+                and estimated_ev > float(policy["max_estimated_ev"])
+            ):
                 continue
             if probability / max(1e-15, market_probability) < float(
                 policy["min_model_market_ratio"]
@@ -81,10 +98,18 @@ def simulate_flat_policy(
             selected.append(combination)
         day["tickets"] += len(selected)
         day["stake_yen"] += len(selected) * STAKE_YEN
+        day["races_bet"] += int(bool(selected))
         actual = str(race["actual_combination"])
         if actual in selected:
             day["hits"] += 1
-            day["return_yen"] += int(race["actual_payout_yen"])
+            day["hit_tickets"] += 1
+            day["hit_races"] += 1
+            hit_return = int(race["actual_payout_yen"])
+            day["return_yen"] += hit_return
+            day["largest_hit_return_yen"] = max(
+                day["largest_hit_return_yen"], hit_return
+            )
+            day["hit_return_square_sum_yen2"] += hit_return * hit_return
 
     daily = []
     cumulative_profit = peak_profit = max_drawdown = 0

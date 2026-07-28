@@ -2859,6 +2859,16 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
             "roi": 0.0,
             "profit_yen": 0,
         },
+        "prospective_top5_narrow_ev_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-07-28",
+            "evaluation_days": 0,
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "roi": 0.0,
+            "profit_yen": 0,
+        },
     })
 
     assert summary["roi"] == 0.33
@@ -2868,3 +2878,7 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
         "waiting_for_first_unseen_day"
     )
     assert summary["prospective_normalized_ev_registered_after"] == "2026-07-27"
+    assert summary["prospective_top5_narrow_ev_status"] == (
+        "waiting_for_first_unseen_day"
+    )
+    assert summary["prospective_top5_narrow_ev_registered_after"] == "2026-07-28"
