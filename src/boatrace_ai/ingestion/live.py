@@ -124,6 +124,8 @@ def collect_odds(
     rno: int,
     raw_dir: Path,
     cache_bust: bool = False,
+    timeout: float = 30.0,
+    retries: int = 2,
 ) -> bool:
     rid = race_id(race_date.isoformat(), jcd, rno)
     url = race_page_url("odds3t", race_date, jcd, rno)
@@ -136,6 +138,8 @@ def collect_odds(
         url=url,
         raw_dir=raw_dir,
         cache_bust=cache_bust,
+        timeout=timeout,
+        retries=retries,
     )
     if not html:
         return False
@@ -214,8 +218,15 @@ def _fetch_page(
     url: str,
     raw_dir: Path,
     cache_bust: bool = False,
+    timeout: float = 30.0,
+    retries: int = 2,
 ) -> str | None:
-    status_code, html, payload = fetch_text(url, cache_bust=cache_bust)
+    status_code, html, payload = fetch_text(
+        url,
+        cache_bust=cache_bust,
+        timeout=timeout,
+        retries=retries,
+    )
     if status_code != 200:
         return None
     captured = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

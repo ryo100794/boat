@@ -197,11 +197,13 @@ def test_only_cache_busted_fetch_adds_nonce_and_no_cache_headers(monkeypatch) ->
 
 
 def test_collect_odds_cache_bust_is_opt_in(monkeypatch, tmp_path) -> None:
-    observed: list[bool] = []
+    observed: list[tuple[bool, float, int]] = []
     odds = _odds()
 
     def fake_fetch_page(*args, **kwargs):
-        observed.append(kwargs["cache_bust"])
+        observed.append(
+            (kwargs["cache_bust"], kwargs["timeout"], kwargs["retries"])
+        )
         return "html"
 
     monkeypatch.setattr(live, "_fetch_page", fake_fetch_page)
@@ -225,5 +227,7 @@ def test_collect_odds_cache_bust_is_opt_in(monkeypatch, tmp_path) -> None:
         "raw_dir": tmp_path,
     }
     assert live.collect_odds(object(), **common)
-    assert live.collect_odds(object(), **common, cache_bust=True)
-    assert observed == [False, True]
+    assert live.collect_odds(
+        object(), **common, cache_bust=True, timeout=5.0, retries=0
+    )
+    assert observed == [(False, 30.0, 2), (True, 5.0, 0)]

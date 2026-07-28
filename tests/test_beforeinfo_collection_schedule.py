@@ -1,4 +1,7 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import boatrace_ai.runtime.collector as collector
 
 from boatrace_ai.runtime.collector import (
     beforeinfo_interval,
@@ -6,6 +9,7 @@ from boatrace_ai.runtime.collector import (
     closing_priority_rows,
     closing_snapshot_is_fresh,
     odds_interval,
+    schedule_refresh_blocked,
     t5_guard_rows,
     t5_priority_due,
 )
@@ -108,10 +112,10 @@ def test_t5_guard_reserves_imminent_window_until_snapshot_is_fresh() -> None:
         "latest_odds_at": None,
     }
 
-    guarded = t5_guard_rows([row], now=model_cutoff - timedelta(seconds=90))
+    guarded = t5_guard_rows([row], now=model_cutoff - timedelta(seconds=300))
     assert len(guarded) == 1
-    assert guarded[0][0] == 90.0
-    assert t5_guard_rows([row], now=model_cutoff - timedelta(seconds=91)) == []
+    assert guarded[0][0] == 300.0
+    assert t5_guard_rows([row], now=model_cutoff - timedelta(seconds=301)) == []
     assert t5_guard_rows([row], now=model_cutoff + timedelta(seconds=1)) == []
 
     row["latest_odds_at"] = (model_cutoff - timedelta(seconds=30)).isoformat()
@@ -131,3 +135,59 @@ def test_t5_guard_skips_capture_completed_in_current_loop() -> None:
         now=model_cutoff - timedelta(seconds=10),
         satisfied_race_ids={row["race_id"]},
     ) == []
+
+
+def test_schedule_refresh_is_deferred_near_a_betting_cutoff() -> None:
+    now = datetime(2026, 7, 28, 14, 0, tzinfo=JST)
+    imminent = {
+        "deadline_at": (now + timedelta(minutes=24, seconds=59)).isoformat()
+    }
+    outside_guard = {
+        "deadline_at": (now + timedelta(minutes=25, seconds=1)).isoformat()
+    }
+
+    assert schedule_refresh_blocked([imminent], now=now)
+    assert not schedule_refresh_blocked([outside_guard], now=now)
+    assert not schedule_refresh_blocked([], now=now)
+
+
+def test_priority_odds_uses_short_timeout_without_retry(monkeypatch, tmp_path) -> None:
+    observed = {}
+
+    def fake_collect_odds(*args, **kwargs):
+        observed.update(kwargs)
+        return True
+
+    monkeypatch.setattr(collector, "collect_odds", fake_collect_odds)
+    row = {"jcd": "01", "rno": 3}
+    assert collector.collect_priority_odds(
+        object(),
+        race_date=date(2026, 7, 28),
+        row=row,
+        raw_dir=Path(tmp_path),
+        cache_bust=True,
+    )
+    assert observed["timeout"] == 5.0
+    assert observed["retries"] == 0
+    assert observed["cache_bust"] is True
+
+
+def test_priority_odds_failure_is_isolated_to_one_race(monkeypatch, tmp_path) -> None:
+    class Connection:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    def fail(*args, **kwargs):
+        raise TimeoutError("official endpoint stalled")
+
+    monkeypatch.setattr(collector, "collect_odds", fail)
+    conn = Connection()
+    assert not collector.collect_priority_odds(
+        conn,
+        race_date=date(2026, 7, 28),
+        row={"jcd": "01", "rno": 3},
+        raw_dir=Path(tmp_path),
+    )
+    assert conn.rolled_back
