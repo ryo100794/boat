@@ -121,6 +121,24 @@ def evaluate_packed_policy(
     allocation_mode = str(policy["allocation_mode"])
     granularity = int(policy["stake_granularity_yen"])
     min_stake = int(policy["min_stake_yen"])
+    minimum_odds = policy.get("min_estimated_odds")
+    maximum_odds = policy.get("max_estimated_odds")
+    for name, value in (
+        ("min_estimated_odds", minimum_odds),
+        ("max_estimated_odds", maximum_odds),
+    ):
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float, np.number))
+            or not np.isfinite(float(value))
+            or float(value) <= 1.0
+        ):
+            raise ValueError(f"{name} must be null or finite and above one")
+    if minimum_odds is not None and maximum_odds is not None:
+        if float(minimum_odds) > float(maximum_odds):
+            raise ValueError(
+                "min_estimated_odds must not exceed max_estimated_odds"
+            )
     validate_policy(
         daily_budget_yen=daily_budget,
         fractional_kelly=fractional_kelly,
@@ -137,6 +155,7 @@ def evaluate_packed_policy(
     totals = {
         "raw_candidate_tickets": packed.tickets,
         "candidate_tickets": 0,
+        "min_odds_excluded_tickets": 0,
         "positive_edge_tickets": 0,
         "allocation_candidate_tickets": 0,
         "evaluated_races": int(packed.evaluated_races.sum()),
@@ -168,7 +187,8 @@ def evaluate_packed_policy(
         result["cumulative_profit_yen"] = cumulative_profit
         daily.append(result)
         for key in (
-            "candidate_tickets", "positive_edge_tickets", "allocation_candidate_tickets", "tickets",
+            "candidate_tickets", "min_odds_excluded_tickets", "positive_edge_tickets",
+            "allocation_candidate_tickets", "tickets",
             "selected_races", "hit_tickets", "hit_races", "stake_yen", "return_yen",
         ):
             totals[key] += int(result[key])
@@ -207,6 +227,7 @@ def _evaluate_day(
     threshold = float(policy.get("ev_threshold", 1.0))
     minimum_probability = float(policy.get("min_ticket_probability", 0.0))
     maximum_odds = policy.get("max_estimated_odds")
+    minimum_odds = policy.get("min_estimated_odds")
     candidate_mask = (
         (ev >= threshold)
         & (probability >= minimum_probability)
@@ -214,12 +235,17 @@ def _evaluate_day(
     )
     if maximum_odds is not None:
         candidate_mask &= odds <= float(maximum_odds)
+    minimum_odds_excluded = 0
+    if minimum_odds is not None:
+        below_minimum = candidate_mask & np.isfinite(odds) & (odds < float(minimum_odds))
+        minimum_odds_excluded = int(below_minimum.sum())
+        candidate_mask &= odds >= float(minimum_odds)
     candidate_count = int(candidate_mask.sum())
     valid = candidate_mask & (odds > 1.0) & (edge > 0.0) & np.isfinite(odds)
     indices = np.flatnonzero(valid)
     positive_count = int(indices.size)
     if not positive_count:
-        return _empty_day(candidate_count)
+        return _empty_day(candidate_count, minimum_odds_excluded)
 
     kelly = edge[indices] / (odds[indices] - 1.0)
     valid_kelly = (kelly > 0.0) & np.isfinite(kelly)
@@ -267,6 +293,7 @@ def _evaluate_day(
         "candidate_tickets": candidate_count,
         "positive_edge_tickets": positive_count,
         "allocation_candidate_tickets": int(len(fractions)),
+        "min_odds_excluded_tickets": minimum_odds_excluded,
         "tickets": int(len(indices)),
         "selected_races": int(np.unique(selected_races).size),
         "hit_tickets": int(hit_mask.sum()),
@@ -309,11 +336,15 @@ def _fill_normalized_stakes(
         race_stakes[inverse[chosen]] += granularity
 
 
-def _empty_day(candidate_count: int) -> dict[str, int]:
+def _empty_day(
+    candidate_count: int,
+    min_odds_excluded_tickets: int = 0,
+) -> dict[str, int]:
     return {
         "candidate_tickets": candidate_count,
         "positive_edge_tickets": 0,
         "allocation_candidate_tickets": 0,
+        "min_odds_excluded_tickets": min_odds_excluded_tickets,
         "tickets": 0,
         "selected_races": 0,
         "hit_tickets": 0,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from boatrace_ai.adaptive_allocation import allocate_adaptive_day
 from boatrace_ai.packed_bankroll import (
     candidate_ev_calibration,
@@ -118,3 +120,40 @@ def test_probability_and_odds_tail_filters_apply_without_repacking() -> None:
     })
 
     assert result["candidate_tickets"] == 1
+
+
+def test_minimum_odds_filter_excludes_low_odds_and_selects_101x_ticket() -> None:
+    candidates = [
+        _candidate("r1", "1-2-3", 0.25, 5.0),
+        _candidate("r1", "2-1-3", 0.02, 101.0, hit=True),
+    ]
+    packed = pack_candidates(
+        {"2026-07-01": candidates},
+        {"2026-07-01": 1},
+    )
+    result = evaluate_packed_policy(packed, {
+        **POLICY,
+        "fractional_kelly": 1.0,
+        "min_estimated_odds": 100.0,
+        "min_daily_exposure_fraction": 0.0,
+    })
+
+    assert result["min_odds_excluded_tickets"] == 1
+    assert result["candidate_tickets"] == 1
+    assert result["tickets"] == 1
+    assert result["hit_tickets"] == 1
+    assert result["return_yen"] == 10_100
+
+
+def test_packed_policy_rejects_inverted_estimated_odds_band() -> None:
+    packed = pack_candidates(
+        {"2026-07-01": [_candidate("r1", "1-2-3", 0.02, 101.0)]},
+        {"2026-07-01": 1},
+    )
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        evaluate_packed_policy(packed, {
+            **POLICY,
+            "min_estimated_odds": 101.0,
+            "max_estimated_odds": 100.0,
+        })

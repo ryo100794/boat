@@ -63,10 +63,11 @@ def test_policy_candidates_are_unique_and_reproducible() -> None:
     first = policy_candidates(POLICY, count=16, seed=7)
     second = policy_candidates(POLICY, count=16, seed=7)
     assert first == second
-    assert first[0] == POLICY
+    assert first[0] == {**POLICY, "min_estimated_odds": None}
     assert len({
         tuple(candidate[key] for key in (
-            "ev_threshold", "min_ticket_probability", "max_estimated_odds",
+            "ev_threshold", "min_ticket_probability", "min_estimated_odds",
+            "max_estimated_odds",
             "fractional_kelly", "max_daily_exposure_fraction",
             "min_daily_exposure_fraction", "race_cap_fraction",
             "ticket_cap_fraction", "max_daily_tickets",
@@ -138,18 +139,18 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
         _packed_days(),
         POLICY,
         candidate_count=9,
-        finalists=2,
+        finalists=4,
         bootstrap_samples=100,
         seed=7,
     )
-    assert [row["evaluated_candidates"] for row in result["stages"]] == [9, 3, 2]
-    assert len(result["finalists"]) == 2
+    assert [row["evaluated_candidates"] for row in result["stages"]] == [9, 4, 4]
+    assert len(result["finalists"]) == 4
     finalist_policies = [row["policy"] for row in result["finalists"]]
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
-        assert {**POLICY, **overrides} in finalist_policies
+        assert {**POLICY, "min_estimated_odds": None, **overrides} in finalist_policies
     assert [
         row["protected_anchor_count"] for row in result["stages"]
-    ] == [2, 2, 2]
+    ] == [4, 4, 4]
     assert result["selected"] == result["finalists"][0]
     assert "roi_ci95_lower" in result["selected"]["confidence"]
     assert len(result["selected"]["temporal_stability"]["folds"]) == 3
@@ -160,12 +161,40 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
 
 
 def test_policy_candidates_preserve_conservative_anchors() -> None:
-    candidates = policy_candidates(POLICY, count=4, seed=7)
+    candidates = policy_candidates(POLICY, count=8, seed=7)
 
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
-        assert {**POLICY, **overrides} in candidates
+        assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
 
     assert max(candidate["ev_threshold"] for candidate in candidates) >= 2.0
+
+    assert any(candidate["min_estimated_odds"] == 6.0 for candidate in candidates)
+    assert any(
+        candidate["min_estimated_odds"] is not None
+        and candidate["min_estimated_odds"] >= 100.0
+        for candidate in candidates
+    )
+
+
+def test_candidate_registry_canonicalizes_legacy_minimum_odds() -> None:
+    legacy = dict(POLICY)
+    normalized, digest = canonicalize_policy_candidates([legacy])
+    explicit, explicit_digest = canonicalize_policy_candidates([
+        {**legacy, "min_estimated_odds": None}
+    ])
+
+    assert normalized[0]["min_estimated_odds"] is None
+    assert normalized == explicit
+    assert digest == explicit_digest
+
+
+def test_candidate_registry_rejects_inverted_odds_band() -> None:
+    with pytest.raises(ValueError, match="must not exceed"):
+        canonicalize_policy_candidates([{
+            **POLICY,
+            "min_estimated_odds": 101.0,
+            "max_estimated_odds": 100.0,
+        }])
 
 
 def test_slice_day_range_rebases_offsets() -> None:
