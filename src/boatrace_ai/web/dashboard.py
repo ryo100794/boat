@@ -2471,6 +2471,36 @@ def _remote_job_fold_progress(job: dict[str, Any]) -> tuple[int, int | None]:
     return completed_folds, expected_folds
 
 
+def _nested_checkpoint_fold_progress(
+    job_id: int,
+    *,
+    root: Path | None = None,
+) -> int:
+    checkpoint_dir = (
+        (root or PROJECT_ROOT)
+        / "data/models/evaluation_cache/nested_annual"
+        / f"job-{int(job_id):08d}"
+    )
+    completed: set[int] = set()
+    for metadata_path in checkpoint_dir.glob("fold-*.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            fold = int(metadata.get("fold"))
+            arrays_path = checkpoint_dir / str(metadata.get("npz_file") or "")
+            if (
+                metadata.get("checkpoint_version") == 1
+                and metadata.get("complete") is True
+                and 1 <= fold <= 5
+                and arrays_path.is_file()
+                and isinstance(metadata.get("boundary_audit"), dict)
+                and metadata["boundary_audit"].get("passed") is True
+            ):
+                completed.add(fold)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return len(completed)
+
+
 def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
@@ -2552,6 +2582,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         metrics = _json_mapping(row.get("result_summary"))
         parameters = _json_mapping(row.get("parameters"))
         status = str(row.get("status") or "")
+        task_type = str(row.get("task_type") or "")
+        nested_expected_folds = 5 if task_type == "bankroll_policy_nested_annual" else None
+        nested_completed_folds = (
+            _nested_checkpoint_fold_progress(int(row["job_id"]))
+            if nested_expected_folds is not None
+            else None
+        )
+        if nested_expected_folds is not None and status == "completed":
+            nested_completed_folds = max(
+                int(nested_completed_folds or 0),
+                int(metrics.get("fold_count") or 0),
+            )
         jobs.append(
             {
                 "db_job_id": row.get("job_id"),
@@ -2616,6 +2658,19 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "holdout_temporal_fold_rois": (
                     metrics.get("holdout_temporal_fold_rois") or []
                 ),
+                "fold_count": metrics.get("fold_count"),
+                "fold_rois": metrics.get("fold_rois") or [],
+                "minimum_fold_roi": _float_or_none(
+                    metrics.get("minimum_fold_roi")
+                ),
+                "largest_hit_excluded_roi": _float_or_none(
+                    metrics.get("largest_hit_excluded_roi")
+                ),
+                "roi_ci95_lower": _float_or_none(metrics.get("roi_ci95_lower")),
+                "roi_ci95_upper": _float_or_none(metrics.get("roi_ci95_upper")),
+                "probability_roi_above_one": _float_or_none(
+                    metrics.get("probability_roi_above_one")
+                ),
                 "running": status == "running",
                 "elapsed": _database_job_elapsed(
                     current_attempt_started.get(
@@ -2623,8 +2678,8 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     ),
                     status,
                 ),
-                "completed_folds": None,
-                "expected_folds": None,
+                "completed_folds": nested_completed_folds,
+                "expected_folds": nested_expected_folds,
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
                 "evaluated_races": metrics.get("evaluated_races")

@@ -6,6 +6,7 @@ from boatrace_ai.web.dashboard import (
     MODEL_REPORT_HTML,
     _database_evaluation_artifacts,
     _database_evaluation_status,
+    _nested_checkpoint_fold_progress,
     _remote_evaluation_job_summaries,
     genetic_evolution_report,
 )
@@ -54,6 +55,31 @@ def test_remote_job_summary_reports_fold_progress_and_metrics() -> None:
     assert rows[1]["profit_yen"] == -900
 
 
+def test_nested_checkpoint_progress_counts_only_complete_valid_folds(tmp_path) -> None:
+    checkpoint = (
+        tmp_path / "data/models/evaluation_cache/nested_annual/job-00000077"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "fold-01.npz").write_bytes(b"arrays")
+    (checkpoint / "fold-01.json").write_text(json.dumps({
+        "checkpoint_version": 1,
+        "complete": True,
+        "fold": 1,
+        "npz_file": "fold-01.npz",
+        "boundary_audit": {"passed": True},
+    }), encoding="utf-8")
+    (checkpoint / "fold-02.json").write_text(json.dumps({
+        "checkpoint_version": 1,
+        "complete": True,
+        "fold": 2,
+        "npz_file": "missing.npz",
+        "boundary_audit": {"passed": True},
+    }), encoding="utf-8")
+    (checkpoint / "fold-03.json").write_text("not-json", encoding="utf-8")
+
+    assert _nested_checkpoint_fold_progress(77, root=tmp_path) == 1
+
+
 def test_model_report_contains_live_evaluation_table() -> None:
     assert 'id="evaluationRows"' in MODEL_REPORT_HTML
     assert 'id="candidateRows"' in MODEL_REPORT_HTML
@@ -83,6 +109,10 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
     assert "promotion_gate_passed" in MODEL_REPORT_HTML
     assert "gateTitle" in MODEL_REPORT_HTML
+    assert "minimum_fold_roi" in MODEL_REPORT_HTML
+    assert "largest_hit_excluded_roi" in MODEL_REPORT_HTML
+    assert "probability_roi_above_one" in MODEL_REPORT_HTML
+    assert "5F min" in MODEL_REPORT_HTML
 
 
 def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -> None:
@@ -127,6 +157,13 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "promotion_gate_failed": ["minimum_betting_days"],
         "holdout_temporal_minimum_roi": 0.94,
         "holdout_temporal_fold_rois": [1.10, 0.94, 1.03],
+        "fold_count": 5,
+        "fold_rois": [1.10, 1.04, 0.98, 1.02, 1.06],
+        "minimum_fold_roi": 0.98,
+        "largest_hit_excluded_roi": 1.01,
+        "roi_ci95_lower": 0.97,
+        "roi_ci95_upper": 1.09,
+        "probability_roi_above_one": 0.91,
     }
     conn.execute(
         "INSERT INTO model_evaluation_jobs VALUES (273, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -153,6 +190,11 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["promotion_gate_total"] == 10
     assert status["jobs"][0]["promotion_gate_failed"] == ["minimum_betting_days"]
     assert status["jobs"][0]["holdout_temporal_minimum_roi"] == 0.94
+    assert status["jobs"][0]["fold_count"] == 5
+    assert status["jobs"][0]["minimum_fold_roi"] == 0.98
+    assert status["jobs"][0]["largest_hit_excluded_roi"] == 1.01
+    assert status["jobs"][0]["roi_ci95_lower"] == 0.97
+    assert status["jobs"][0]["probability_roi_above_one"] == 0.91
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
     assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200
