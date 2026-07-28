@@ -66,7 +66,7 @@ def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> Non
     model_dir = tmp_path / "models"
     model_dir.mkdir()
     artifact = {
-        "model": "stagewise_market_shadow",
+        "model": "shared_market_calibrated_model_name",
         "generated_at": "2026-07-28T08:00:00+00:00",
         "winner_top1_accuracy": 0.56,
         "trifecta_top5_hit_rate": 0.36,
