@@ -2775,6 +2775,8 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
 _BANKROLL_COMPONENT_KEYS = (
     "market_offset_multinomial_kelly_walk_forward",
     "conservative_market_offset_kelly_walk_forward",
+    "conformal_lower_market_offset_kelly_diagnostic",
+    "conformal_lower_market_offset_kelly_walk_forward",
     "market_offset_registered_policy_walk_forward",
     "registered_ev_band_walk_forward",
     "prospective_normalized_ev_walk_forward",
