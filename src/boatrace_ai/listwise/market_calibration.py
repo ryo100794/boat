@@ -75,7 +75,7 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 25
+MARKET_EVALUATION_VERSION = 26
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
@@ -1329,6 +1329,25 @@ def waiting_walk_forward_result(
             policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
             registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
         ),
+        "market_offset_registered_policy_walk_forward": {
+            "comparison_role": "market_offset_with_registered_policy_challenger",
+            "status": "waiting_for_clean_evaluation_day",
+            "evaluated_races": 0,
+            "evaluation_days": 0,
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0.0,
+            "promotion_eligible": False,
+            "daily": [],
+        },
+        "market_offset_multinomial_kelly_walk_forward": {
+            "challenger": "market_offset_discrete_multinomial_kelly",
+            "status": "waiting_for_clean_evaluation_day",
+            "promotion_gate": {"pass": False},
+            "daily": [],
+        },
         "promotion_gate": promotion_gate,
         "promotion_eligible": False,
     }
@@ -1681,6 +1700,34 @@ def walk_forward_evaluate(
         )
 
     closing_policy_inputs = prequential_closing_odds_policy_inputs(races)
+    from .market_kelly_challenger import (
+        attach_prequential_market_offsets,
+    )
+
+    all_closing_policy_races = apply_prequential_closing_odds_policy_inputs(
+        races,
+        closing_policy_inputs,
+    )
+    market_offset_input_ready = bool(all_closing_policy_races) and all(
+        len(race.get("model_probabilities") or {}) == 120
+        and len(race.get("market_probabilities") or {}) == 120
+        and len(decision_odds(race)) == 120
+        for race in all_closing_policy_races
+    )
+    if market_offset_input_ready:
+        market_offset_policy_races, market_offset_calibration = (
+            attach_prequential_market_offsets(all_closing_policy_races)
+        )
+    else:
+        market_offset_policy_races = []
+        market_offset_calibration = {
+            "status": "unavailable_incomplete_120_outcome_input",
+            "ready_days": 0,
+            "fallback_days": len(dates),
+            "ready_races": 0,
+            "fallback_races": len(all_closing_policy_races),
+            "days": [],
+        }
     folds = []
     evaluation_races: list[dict[str, Any]] = []
     evaluation_policy_races: list[dict[str, Any]] = []
@@ -1948,6 +1995,38 @@ def walk_forward_evaluate(
             raise AssertionError("empirical EV fold produced a mismatched teacher date")
         empirical_history_records.extend(current_empirical_records)
 
+    evaluation_date_set = {date for _calibration, date in fold_dates}
+    market_offset_evaluation_races = [
+        race
+        for race in market_offset_policy_races
+        if str(race["race_date"]) in evaluation_date_set
+    ]
+    if not market_offset_input_ready:
+        # Keep legacy small-vector fixtures and explicit incomplete inputs
+        # evaluable while the 120-outcome challenger remains unavailable.
+        market_offset_evaluation_races = list(evaluation_policy_races)
+    market_offset_registered = simulate_policy(
+        market_offset_evaluation_races,
+        calibrator={"model_weight": 0.0, "temperature": 1.0},
+        policy=REGISTERED_EV_BAND_POLICY,
+        daily_budget_yen=daily_budget_yen,
+    )
+    market_offset_registered.update(
+        {
+            "comparison_role": "market_offset_with_registered_policy_challenger",
+            "calibration": market_offset_calibration,
+            "promotion_eligible": False,
+        }
+    )
+    from .market_kelly_challenger import (
+        evaluate_attached_market_kelly_challenger,
+    )
+    market_offset_multinomial_kelly = evaluate_attached_market_kelly_challenger(
+        market_offset_policy_races,
+        calibration=market_offset_calibration,
+        evaluation_dates=evaluation_date_set,
+    )
+
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
     cumulative_profit = peak_profit = max_drawdown_yen = 0
@@ -2097,6 +2176,10 @@ def walk_forward_evaluate(
             policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
             registered_after=PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER,
         ),
+        "market_offset_registered_policy_walk_forward": (
+            market_offset_registered
+        ),
+        "market_offset_multinomial_kelly_walk_forward": market_offset_multinomial_kelly,
         "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(

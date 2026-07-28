@@ -198,3 +198,23 @@ def test_actual_return_uses_actual_stake_and_payout_per_100_yen() -> None:
     assert result["log_loss"]["challenger"] == pytest.approx(
         -math.log(0.9)
     )
+
+
+def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> None:
+    races = [
+        _race("2026-07-20", "teacher-1", favourite="1-2-3"),
+        _race("2026-07-21", "holdout-1", favourite="1-2-3"),
+    ]
+    result = challenger.evaluate_market_kelly_challenger(
+        races,
+        evaluation_dates=["2026-07-21"],
+    )
+
+    assert result["evaluation_dates"] == ["2026-07-21"]
+    assert result["evaluation_days"] == 1
+    assert result["evaluated_races"] == 1
+    assert result["daily"][0]["race_date"] == "2026-07-21"
+    assert result["calibration"]["days"][1]["training_races"] == 1
+    assert "races" not in result
+    assert result["promotion_gate"]["sample_size_pass"] is False
+    assert result["promotion_gate"]["pass"] is False
