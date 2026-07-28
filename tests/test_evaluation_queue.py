@@ -1169,6 +1169,11 @@ def test_result_summary_combines_bankroll_and_nested_prediction_metrics() -> Non
     summary = summarize_result({
         "roi": 0.92,
         "profit_yen": -17000,
+        "selection_prediction_metrics": {
+            "entry_log_loss": 0.400,
+            "winner_top1_accuracy": 0.500,
+            "trifecta_top5_hit_rate": 0.250,
+        },
         "holdout_prediction_metrics": {
             "entry_log_loss": 0.327,
             "winner_top1_accuracy": 0.568,
