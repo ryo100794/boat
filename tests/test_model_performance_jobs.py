@@ -268,6 +268,17 @@ def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
                         "return_yen": 3130,
                     }],
                 },
+                "conservative_market_offset_kelly_walk_forward": {
+                    "status": "waiting_for_first_unseen_day",
+                    "registered_after": "2026-07-28",
+                    "evaluation_days": 0,
+                    "evaluated_races": 0,
+                    "tickets": 0,
+                    "stake_yen": 0,
+                    "return_yen": 0,
+                    "profit_yen": 0,
+                    "roi": 0.0,
+                },
             }
         ),
         encoding="utf-8",
@@ -293,6 +304,7 @@ def test_database_evaluation_artifact_exposes_daily_and_payout_walk_forward(
         "calibrated_mlp_recency_selected",
         "calibrated_mlp_recency_selected_conditional_payout_walk_forward",
         "calibrated_mlp_recency_selected_market_offset_multinomial_kelly_walk_forward",
+        "calibrated_mlp_recency_selected_conservative_market_offset_kelly_walk_forward",
     ]
     assert daily["calibrated_mlp_recency_selected"][0]["roi_delta"] == -0.2
     assert daily[

@@ -76,9 +76,13 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 29
+MARKET_EVALUATION_VERSION = 30
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
+CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
+# exp(0.177 observed closing-odds log-MAE) is about 1.19. Register the
+# rounded 1.20 haircut before evaluating any later unseen day.
+CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR = 1.20
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 SCORED_CACHE_VERSION = 12
 MIN_CLOSING_ODDS_TRAINING_DAYS = 7
@@ -1349,6 +1353,29 @@ def waiting_walk_forward_result(
             "promotion_gate": {"pass": False},
             "daily": [],
         },
+        "conservative_market_offset_kelly_walk_forward": {
+            "challenger": "conservative_market_offset_discrete_multinomial_kelly",
+            "comparison_role": (
+                "pure prospective market-offset Kelly with a registered odds-error haircut"
+            ),
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER,
+            "policy": {
+                "odds_safety_factor": (
+                    CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR
+                ),
+                "zero_bet_allowed": True,
+            },
+            "evaluated_races": 0,
+            "evaluation_days": 0,
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0.0,
+            "promotion_gate": {"pass": False},
+            "daily": [],
+        },
         "promotion_gate": promotion_gate,
         "promotion_eligible": False,
     }
@@ -2066,6 +2093,32 @@ def walk_forward_evaluate(
         calibration=market_offset_calibration,
         evaluation_dates=evaluation_date_set,
     )
+    conservative_evaluation_dates = sorted(
+        race_date
+        for race_date in evaluation_date_set
+        if race_date > CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER
+    )
+    conservative_market_offset_kelly = evaluate_attached_market_kelly_challenger(
+        market_offset_policy_races,
+        calibration=market_offset_calibration,
+        evaluation_dates=conservative_evaluation_dates,
+        odds_safety_factor=CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR,
+    )
+    conservative_market_offset_kelly.update({
+        "challenger": "conservative_market_offset_discrete_multinomial_kelly",
+        "comparison_role": (
+            "pure prospective market-offset Kelly with a registered odds-error haircut"
+        ),
+        "registered_after": CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER,
+        "status": (
+            "evaluating"
+            if conservative_evaluation_dates
+            else "waiting_for_first_unseen_day"
+        ),
+        "promotion_eligible": bool(
+            conservative_market_offset_kelly["promotion_gate"]["pass"]
+        ),
+    })
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
@@ -2220,6 +2273,9 @@ def walk_forward_evaluate(
             market_offset_registered
         ),
         "market_offset_multinomial_kelly_walk_forward": market_offset_multinomial_kelly,
+        "conservative_market_offset_kelly_walk_forward": (
+            conservative_market_offset_kelly
+        ),
         "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(
