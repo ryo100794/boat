@@ -63,6 +63,10 @@ EXPECTED_COMBINED_VARIANTS = (
         ("base_pastlog", "research_correlates"),
     ),
     (
+        "drop_base_pastlog_speculative_research",
+        ("base_pastlog", "speculative_research"),
+    ),
+    (
         "drop_research_correlates_rolling_history",
         ("research_correlates", "rolling_history"),
     ),
@@ -119,8 +123,11 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
-    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 8
+    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 9
     assert ("base_pastlog", "research_correlates") in {
+        drops for _name, drops in COMBINED_FEATURE_VARIANTS
+    }
+    assert ("base_pastlog", "speculative_research") in {
         drops for _name, drops in COMBINED_FEATURE_VARIANTS
     }
     assert ("research_correlates", "rolling_history") in {
@@ -249,9 +256,9 @@ def test_combined_checkpoint_exposes_atomic_candidate_and_variant_progress(
     candidate_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert candidate_payload["progress"] == {
         "completed_candidates": 1,
-        "total_candidates": 32,
+        "total_candidates": 36,
         "completed_variants": 0,
-        "total_variants": 8,
+        "total_variants": 9,
         "last_completed": {
             "kind": "candidate",
             "feature_variant": "drop_base_pastlog",
