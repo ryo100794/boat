@@ -1544,10 +1544,15 @@ def build_command(
             if task_type == "combined_feature_search":
                 from .listwise.combined_feature_search import (
                     COMBINED_FEATURE_VARIANTS,
+                    RESEARCH_PARTITION_FEATURE_VARIANTS,
                 )
 
                 available_variants = {
-                    name for name, _drops in COMBINED_FEATURE_VARIANTS
+                    name
+                    for name, _drops in (
+                        *COMBINED_FEATURE_VARIANTS,
+                        *RESEARCH_PARTITION_FEATURE_VARIANTS,
+                    )
                 }
             else:
                 from .listwise.feature_search import feature_variants
