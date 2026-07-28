@@ -10,9 +10,19 @@ from boatrace_ai.db import connection, init_db
 from boatrace_ai.listwise import feature_search as feature_search_module
 from boatrace_ai.listwise.combined_feature_search import (
     COMBINED_FEATURE_VARIANTS,
+    RESEARCH_PARTITION_FEATURE_VARIANTS,
     build_parser,
     parse_combined_feature_variants,
 )
+
+
+def test_combined_search_can_keep_official_and_drop_speculative_research() -> None:
+    assert ("drop_speculative_research", ("speculative_research",)) in (
+        RESEARCH_PARTITION_FEATURE_VARIANTS
+    )
+    assert parse_combined_feature_variants("drop_speculative_research") == (
+        ("drop_speculative_research", ("speculative_research",)),
+    )
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
     _checkpoint_payload,

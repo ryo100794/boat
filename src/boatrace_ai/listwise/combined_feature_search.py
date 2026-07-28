@@ -46,9 +46,15 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     ),
 )
 
+RESEARCH_PARTITION_FEATURE_VARIANTS: FeatureVariants = (
+    ("drop_speculative_research", ("speculative_research",)),
+)
+
 
 def parse_combined_feature_variants(value: str) -> FeatureVariants:
-    available = dict(COMBINED_FEATURE_VARIANTS)
+    available = dict(
+        (*COMBINED_FEATURE_VARIANTS, *RESEARCH_PARTITION_FEATURE_VARIANTS)
+    )
     names = tuple(dict.fromkeys(
         item.strip() for item in value.split(",") if item.strip()
     ))
