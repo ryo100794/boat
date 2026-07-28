@@ -2867,6 +2867,8 @@ _BANKROLL_COMPONENT_KEYS = (
     "conservative_market_offset_kelly_walk_forward",
     "conformal_lower_market_offset_kelly_diagnostic",
     "conformal_lower_market_offset_kelly_walk_forward",
+    "trend_point_market_offset_kelly_diagnostic",
+    "trend_point_market_offset_kelly_walk_forward",
     "market_offset_registered_policy_walk_forward",
     "registered_ev_band_walk_forward",
     "prospective_normalized_ev_walk_forward",

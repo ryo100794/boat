@@ -76,11 +76,12 @@ from ..fast_math import TRIFECTA_COMBINATIONS
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 31
+MARKET_EVALUATION_VERSION = 32
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
 CONFORMAL_LOWER_KELLY_REGISTERED_AFTER = "2026-07-28"
+TREND_POINT_KELLY_REGISTERED_AFTER = "2026-07-28"
 # exp(0.177 observed closing-odds log-MAE) is about 1.19. Register the
 # rounded 1.20 haircut before evaluating any later unseen day.
 CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR = 1.20
@@ -1568,7 +1569,40 @@ def apply_prequential_conformal_lower_odds_policy_inputs(
     races: list[dict[str, Any]], inputs: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """Attach strictly-prior conformal lower closing odds for a challenger."""
-    forecasts = inputs.get("policy_forecasts_by_race_id") or {}
+    return _apply_prequential_quantile_odds_policy_inputs(
+        races,
+        inputs,
+        forecasts_key="policy_forecasts_by_race_id",
+        policy_input="oof_adaptive_conformal_lower_from_real_t5",
+        missing_reason="insufficient_conformal_closing_odds_teachers",
+        incomplete_reason="incomplete_conformal_closing_odds_forecast",
+    )
+
+
+def apply_prequential_trend_point_odds_policy_inputs(
+    races: list[dict[str, Any]], inputs: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Attach strictly-prior trend-model median closing odds for a challenger."""
+    return _apply_prequential_quantile_odds_policy_inputs(
+        races,
+        inputs,
+        forecasts_key="point_policy_forecasts_by_race_id",
+        policy_input="oof_trend_conditional_median_from_real_t5",
+        missing_reason="insufficient_trend_closing_odds_teachers",
+        incomplete_reason="incomplete_trend_closing_odds_forecast",
+    )
+
+
+def _apply_prequential_quantile_odds_policy_inputs(
+    races: list[dict[str, Any]],
+    inputs: dict[str, Any],
+    *,
+    forecasts_key: str,
+    policy_input: str,
+    missing_reason: str,
+    incomplete_reason: str,
+) -> list[dict[str, Any]]:
+    forecasts = inputs.get(forecasts_key) or {}
     result = []
     for race in races:
         item = dict(race)
@@ -1576,7 +1610,7 @@ def apply_prequential_conformal_lower_odds_policy_inputs(
         if not isinstance(forecast, dict):
             result.extend(
                 _attach_t5_policy_fallback(
-                    [item], reason="insufficient_conformal_closing_odds_teachers"
+                    [item], reason=missing_reason
                 )
             )
             continue
@@ -1584,14 +1618,12 @@ def apply_prequential_conformal_lower_odds_policy_inputs(
         if len(estimated) != 120 or set(estimated) != set(race.get("odds") or {}):
             result.extend(
                 _attach_t5_policy_fallback(
-                    [item], reason="incomplete_conformal_closing_odds_forecast"
+                    [item], reason=incomplete_reason
                 )
             )
             continue
         item.update(forecast)
-        item["closing_odds_policy_input"] = (
-            "oof_adaptive_conformal_lower_from_real_t5"
-        )
+        item["closing_odds_policy_input"] = policy_input
         item["closing_odds_policy_fallback"] = False
         item.pop("closing_odds_policy_fallback_reason", None)
         result.append(item)
@@ -1794,12 +1826,19 @@ def walk_forward_evaluate(
     closing_odds_forecast = {
         key: value
         for key, value in conformal_lower_inputs.items()
-        if key != "policy_forecasts_by_race_id"
+        if key
+        not in {
+            "policy_forecasts_by_race_id",
+            "point_policy_forecasts_by_race_id",
+        }
     }
     conformal_lower_policy_races = (
         apply_prequential_conformal_lower_odds_policy_inputs(
             races, conformal_lower_inputs
         )
+    )
+    trend_point_policy_races = apply_prequential_trend_point_odds_policy_inputs(
+        races, conformal_lower_inputs
     )
     from .market_kelly_challenger import (
         attach_prequential_market_offsets,
@@ -1853,6 +1892,29 @@ def walk_forward_evaluate(
             "fallback_days": len(dates),
             "ready_races": 0,
             "fallback_races": len(conformal_lower_policy_races),
+            "days": [],
+        }
+    trend_point_input_ready = bool(trend_point_policy_races) and all(
+        len(race.get("model_probabilities") or {}) == 120
+        and len(race.get("market_probabilities") or {}) == 120
+        and len(decision_odds(race)) == 120
+        for race in trend_point_policy_races
+    )
+    if trend_point_input_ready:
+        trend_point_market_races, trend_point_market_calibration = (
+            attach_prequential_market_offsets(
+                trend_point_policy_races,
+                select_regularization=True,
+            )
+        )
+    else:
+        trend_point_market_races = []
+        trend_point_market_calibration = {
+            "status": "unavailable_incomplete_120_outcome_input",
+            "ready_days": 0,
+            "fallback_days": len(dates),
+            "ready_races": 0,
+            "fallback_races": len(trend_point_policy_races),
             "days": [],
         }
     folds = []
@@ -2254,6 +2316,45 @@ def walk_forward_evaluate(
             conformal_lower_prospective["promotion_gate"]["pass"]
         ),
     })
+    trend_point_diagnostic = evaluate_attached_market_kelly_challenger(
+        trend_point_market_races,
+        calibration=trend_point_market_calibration,
+        evaluation_dates=evaluation_date_set,
+    )
+    trend_point_diagnostic.update({
+        "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
+        "comparison_role": (
+            "retrospective research diagnostic using a strictly-prior trend-model "
+            "conditional median closing-odds forecast"
+        ),
+        "promotion_eligible": False,
+    })
+    trend_point_evaluation_dates = sorted(
+        race_date
+        for race_date in evaluation_date_set
+        if race_date > TREND_POINT_KELLY_REGISTERED_AFTER
+    )
+    trend_point_prospective = evaluate_attached_market_kelly_challenger(
+        trend_point_market_races,
+        calibration=trend_point_market_calibration,
+        evaluation_dates=trend_point_evaluation_dates,
+    )
+    trend_point_prospective.update({
+        "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
+        "comparison_role": (
+            "pure prospective Kelly using a registered trend-model conditional "
+            "median closing-odds forecast"
+        ),
+        "registered_after": TREND_POINT_KELLY_REGISTERED_AFTER,
+        "status": (
+            "evaluating"
+            if trend_point_evaluation_dates
+            else "waiting_for_first_unseen_day"
+        ),
+        "promotion_eligible": bool(
+            trend_point_prospective["promotion_gate"]["pass"]
+        ),
+    })
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
@@ -2416,6 +2517,8 @@ def walk_forward_evaluate(
         "conformal_lower_market_offset_kelly_walk_forward": (
             conformal_lower_prospective
         ),
+        "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
+        "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
         "deployment_configuration": deployment_configuration,
         "promotion_gate": promotion_gate,
         "promotion_eligible": all(

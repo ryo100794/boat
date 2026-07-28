@@ -176,8 +176,11 @@ def test_policy_forecasts_are_strictly_prior_lower_bounds() -> None:
     )
     baseline_forecast = baseline["policy_forecasts_by_race_id"]["day-2"]
     mutated_forecast = mutated["policy_forecasts_by_race_id"]["day-2"]
+    baseline_point = baseline["point_policy_forecasts_by_race_id"]["day-2"]
+    mutated_point = mutated["point_policy_forecasts_by_race_id"]["day-2"]
 
     assert baseline_forecast == mutated_forecast
+    assert baseline_point == mutated_point
     assert baseline_forecast["closing_odds_model_trained_through_date"] < (
         "2026-07-21"
     )
@@ -186,6 +189,14 @@ def test_policy_forecasts_are_strictly_prior_lower_bounds() -> None:
     )
     assert baseline_forecast["closing_odds_lower_quantile"] == pytest.approx(0.10)
     assert len(baseline_forecast["estimated_final_odds"]) == 120
+    assert baseline_point["closing_odds_forecast_target"] == "conditional_median"
+    assert baseline_point["closing_odds_model_trained_through_date"] < "2026-07-21"
+    assert len(baseline_point["estimated_final_odds"]) == 120
+    assert any(
+        baseline_point["estimated_final_odds"][combination]
+        > baseline_forecast["estimated_final_odds"][combination]
+        for combination in COMBINATIONS
+    )
 
 
 def test_walk_forward_uses_daily_cross_conformal_residuals() -> None:

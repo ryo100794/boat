@@ -187,6 +187,39 @@ def test_conformal_lower_policy_input_is_attached_without_lookahead() -> None:
     assert decision_odds(attached[1]) == attached[1]["estimated_final_odds"]
 
 
+def test_trend_point_policy_input_is_attached_without_lookahead() -> None:
+    races = _races(2)
+    inputs = {
+        "point_policy_forecasts_by_race_id": {
+            str(races[1]["race_id"]): {
+                "estimated_final_odds": {
+                    combination: value * 0.9
+                    for combination, value in races[1]["odds"].items()
+                },
+                "closing_odds_forecast_target": "conditional_median",
+                "closing_odds_model_type": "ridge_log_location_odds_path_v2",
+                "closing_odds_model_trained_through_date": "2026-01-01",
+            }
+        }
+    }
+
+    attached = market_calibration.apply_prequential_trend_point_odds_policy_inputs(
+        races, inputs
+    )
+
+    assert attached[0]["closing_odds_policy_fallback"] is True
+    assert attached[0]["closing_odds_policy_fallback_reason"] == (
+        "insufficient_trend_closing_odds_teachers"
+    )
+    assert attached[1]["closing_odds_policy_input"] == (
+        "oof_trend_conditional_median_from_real_t5"
+    )
+    assert attached[1]["closing_odds_model_trained_through_date"] < (
+        attached[1]["race_date"]
+    )
+    assert decision_odds(attached[1]) == attached[1]["estimated_final_odds"]
+
+
 def test_walk_forward_connects_oof_prices_to_calibration_and_holdout(
     monkeypatch,
 ) -> None:
