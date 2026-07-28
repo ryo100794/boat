@@ -7,6 +7,8 @@ import numpy as np
 
 from ..packed_bankroll import PackedCandidates
 from .contextual_empirical_ev_calibration import (
+    ODDS_BANDS,
+    RANK_GROUPS,
     ContextualEmpiricalEVCalibrationArtifact,
     fit_contextual_empirical_ev_calibration,
 )
@@ -99,14 +101,38 @@ def apply_contextual_ev(
     ):
         raise ValueError("EV calibration must be trained before evaluation dates")
     ranks = probability_ranks(packed)
-    calibrated = np.zeros(packed.tickets, dtype=np.float32)
     field = "empirical_ev" if estimate == "point" else "empirical_ev_lcb95"
-    for index in range(packed.tickets):
-        prediction = artifact.predict(
-            float(packed.estimated_ev[index]),
-            int(ranks[index]),
-            float(packed.estimated_odds[index]),
-        )
-        value = prediction.get(field)
-        calibrated[index] = max(0.0, float(value)) if value is not None else 0.0
+    cells = {
+        (cell.rank_group, cell.odds_band): cell
+        for cell in artifact.cells
+    }
+    lookup = np.zeros(
+        (len(RANK_GROUPS), len(ODDS_BANDS), len(CONTEXTUAL_EV_BIN_EDGES) - 1),
+        dtype=np.float32,
+    )
+    for rank_index, rank_group in enumerate(RANK_GROUPS):
+        for odds_index, odds_band in enumerate(ODDS_BANDS):
+            cell = cells[(rank_group, odds_band)]
+            for bin_index, bin_ in enumerate(cell.bins):
+                value = getattr(bin_, field)
+                lookup[rank_index, odds_index, bin_index] = (
+                    max(0.0, float(value)) if value is not None else 0.0
+                )
+    rank_indices = np.select(
+        (ranks <= 5, ranks <= 20),
+        (0, 1),
+        default=2,
+    )
+    odds = packed.estimated_odds
+    odds_indices = np.select(
+        (odds < 20.0, odds < 50.0, odds < 101.0),
+        (0, 1, 2),
+        default=3,
+    )
+    bin_indices = np.searchsorted(
+        np.asarray(CONTEXTUAL_EV_BIN_EDGES[1:]),
+        packed.estimated_ev,
+        side="right",
+    )
+    calibrated = lookup[rank_indices, odds_indices, bin_indices]
     return replace(packed, estimated_ev=calibrated)
