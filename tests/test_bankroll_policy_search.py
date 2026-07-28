@@ -4,6 +4,7 @@ import pytest
 
 from boatrace_ai.bankroll_policy_search import (
     CONSERVATIVE_POLICY_ANCHORS,
+    SPARSE_POLICY_ANCHORS,
     TAIL_POLICY_ANCHORS,
     canonicalize_policy_candidates,
     policy_candidates,
@@ -147,11 +148,9 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
     assert [row["evaluated_candidates"] for row in result["stages"]] == [9, 4, 4]
     assert len(result["finalists"]) == 4
     finalist_policies = [row["policy"] for row in result["finalists"]]
-    for overrides in CONSERVATIVE_POLICY_ANCHORS:
-        assert {**POLICY, "min_estimated_odds": None, **overrides} in finalist_policies
     assert [
         row["protected_anchor_count"] for row in result["stages"]
-    ] == [4, 4, 4]
+    ] == [1, 1, 0]
     assert result["selected"] == result["finalists"][0]
     assert "roi_ci95_lower" in result["selected"]["confidence"]
     assert len(result["selected"]["temporal_stability"]["folds"]) == 3
@@ -162,11 +161,13 @@ def test_successive_halving_bootstraps_only_finalists() -> None:
 
 
 def test_policy_candidates_preserve_conservative_anchors() -> None:
-    candidates = policy_candidates(POLICY, count=8, seed=7)
+    candidates = policy_candidates(POLICY, count=10, seed=7)
 
     for overrides in CONSERVATIVE_POLICY_ANCHORS:
         assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
     for overrides in TAIL_POLICY_ANCHORS:
+        assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
+    for overrides in SPARSE_POLICY_ANCHORS:
         assert {**POLICY, "min_estimated_odds": None, **overrides} in candidates
 
     assert max(candidate["ev_threshold"] for candidate in candidates) >= 2.0
@@ -179,7 +180,7 @@ def test_policy_candidates_preserve_conservative_anchors() -> None:
     )
 
 
-def test_eight_finalists_preserve_registered_tail_hypotheses() -> None:
+def test_eight_finalists_are_not_occupied_by_forced_anchor_hypotheses() -> None:
     result = successive_halving_search(
         _packed_days(),
         POLICY,
@@ -189,12 +190,10 @@ def test_eight_finalists_preserve_registered_tail_hypotheses() -> None:
         seed=7,
     )
 
-    finalist_policies = [row["policy"] for row in result["finalists"]]
-    for overrides in CONSERVATIVE_POLICY_ANCHORS + TAIL_POLICY_ANCHORS:
-        assert {**POLICY, "min_estimated_odds": None, **overrides} in finalist_policies
     assert [
         row["protected_anchor_count"] for row in result["stages"]
-    ] == [7, 7, 7]
+    ] == [2, 2, 0]
+    assert len(result["finalists"]) == 8
 
 
 def test_candidate_registry_canonicalizes_legacy_minimum_odds() -> None:

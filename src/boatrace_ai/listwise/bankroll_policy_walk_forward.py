@@ -17,7 +17,7 @@ from ..bankroll_policy_search import (
 from ..packed_bankroll import PackedCandidates, _evaluate_day, evaluate_packed_policy
 
 
-PROTOCOL_VERSION = "nested-annual-v1"
+PROTOCOL_VERSION = "nested-annual-v2-balanced-halving"
 FORBIDDEN_LEGACY_JOB_IDS = frozenset({3995})
 
 NESTED_FOLD_MIN_TICKETS = 60
