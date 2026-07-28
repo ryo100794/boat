@@ -71,6 +71,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "series_feature_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "archive_closing_odds_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
+    "archive_market_oracle": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
@@ -2086,6 +2087,36 @@ def build_command(
             "--through-date", through_date,
             "--sleep-seconds", str(sleep_seconds),
             "--max-pages", str(max_pages),
+            "--output", str(output),
+        ], output
+    if task_type == "archive_market_oracle":
+        allowed = {
+            "from_date", "through_date", "model_input", "daily_budget_yen",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported archive market oracle parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        from_date = _date(params, "from_date")
+        through_date = _date(params, "through_date")
+        if from_date > through_date:
+            raise ValueError("oracle from_date must not be after through_date")
+        model_input = (app_root / str(params["model_input"])).resolve()
+        model_root = (app_root / "data" / "models").resolve()
+        if model_root not in model_input.parents:
+            raise ValueError("oracle model_input must be inside data/models")
+        daily_budget = _integer(params, "daily_budget_yen", 10000, 100, 10000000)
+        _integer(params, "timeout_seconds", 43200, 600, 172800)
+        return [
+            str(python), "-m", "boatrace_ai.listwise.archive_market_oracle",
+            "--db", db,
+            "--model", str(model_input),
+            "--from-date", from_date,
+            "--through-date", through_date,
+            "--daily-budget-yen", str(daily_budget),
             "--output", str(output),
         ], output
     if task_type == "listwise_newton_refine":
