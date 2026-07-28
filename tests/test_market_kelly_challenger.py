@@ -178,6 +178,37 @@ def test_exact_kelly_can_choose_zero_bet() -> None:
     assert result["reliability"]["selected_races"] == 0
 
 
+def test_odds_safety_factor_requires_a_larger_forecast_edge() -> None:
+    race = _race(
+        "2026-07-20",
+        "race-1",
+        favourite="1-2-3",
+        actual="1-2-3",
+    )
+
+    baseline = challenger.evaluate_market_kelly_challenger([race])
+    conservative = challenger.evaluate_market_kelly_challenger(
+        [race],
+        odds_safety_factor=2.0,
+    )
+
+    assert baseline["tickets"] == 1
+    assert baseline["daily"][0]["decisions"][0]["allocations"][0] == {
+        "selection": "1-2-3",
+        "units": 5,
+        "stake_yen": 500,
+        "probability": 0.9,
+        "forecast_odds": 2.0,
+        "kelly_effective_odds": 2.0,
+    }
+    assert conservative["policy"]["odds_safety_factor"] == 2.0
+    assert conservative["tickets"] == 0
+    with pytest.raises(ValueError, match="odds_safety_factor"):
+        challenger.evaluate_market_kelly_challenger(
+            [race], odds_safety_factor=0.99
+        )
+
+
 def test_actual_return_uses_actual_stake_and_payout_per_100_yen() -> None:
     race = _race(
         "2026-07-20",

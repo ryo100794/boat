@@ -2876,6 +2876,7 @@ def _database_evaluation_artifacts(
                     daily[walk_label] = walk_daily
         for component_key in (
             "market_offset_multinomial_kelly_walk_forward",
+            "conservative_market_offset_kelly_walk_forward",
             "market_offset_registered_policy_walk_forward",
             "registered_ev_band_walk_forward",
             "prospective_normalized_ev_walk_forward",

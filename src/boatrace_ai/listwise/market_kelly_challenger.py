@@ -33,6 +33,7 @@ def evaluate_market_kelly_challenger(
     regularization: float = 1.0,
     evaluation_dates: Iterable[str] | None = None,
     select_regularization: bool = False,
+    odds_safety_factor: float = 1.0,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -50,6 +51,7 @@ def evaluate_market_kelly_challenger(
         calibrated_races,
         calibration=calibration,
         evaluation_dates=evaluation_dates,
+        odds_safety_factor=odds_safety_factor,
     )
 
 
@@ -58,8 +60,10 @@ def evaluate_attached_market_kelly_challenger(
     *,
     calibration: Mapping[str, Any],
     evaluation_dates: Iterable[str] | None = None,
+    odds_safety_factor: float = 1.0,
 ) -> dict[str, Any]:
     """Evaluate already prequentially calibrated races without refitting."""
+    odds_safety_factor = _odds_safety_factor(odds_safety_factor)
 
     calibrated_races = [dict(race) for race in calibrated_races]
     requested_dates = (
@@ -72,7 +76,10 @@ def evaluate_attached_market_kelly_challenger(
         for race in calibrated_races
         if requested_dates is None or str(race["race_date"]) in requested_dates
     ]
-    daily = _simulate_daily(evaluation_races)
+    daily = _simulate_daily(
+        evaluation_races,
+        odds_safety_factor=odds_safety_factor,
+    )
     evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
     return_yen = sum(row["return_yen"] for row in daily)
@@ -102,6 +109,7 @@ def evaluate_attached_market_kelly_challenger(
             "outcomes_per_race": EXPECTED_COMBINATIONS,
             "zero_bet_allowed": True,
             "profit_reinvested_within_day": True,
+            "odds_safety_factor": odds_safety_factor,
         },
         "evaluation_days": len(daily),
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
@@ -332,7 +340,12 @@ def _audit_artifact_boundary(artifact: Any, prediction_day: str) -> None:
             raise ValueError("market offset artifact contains same-day or future teachers")
 
 
-def _simulate_daily(races: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _simulate_daily(
+    races: list[dict[str, Any]],
+    *,
+    odds_safety_factor: float = 1.0,
+) -> list[dict[str, Any]]:
+    odds_safety_factor = _odds_safety_factor(odds_safety_factor)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         grouped[_iso_day(race.get("race_date"), "race_date")].append(race)
@@ -369,7 +382,10 @@ def _simulate_daily(races: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 MultinomialKellyCandidate(
                     selection=selection,
                     probability=probabilities[selection],
-                    final_odds=_positive_float(odds[selection], "decision odds"),
+                    final_odds=(
+                        _positive_float(odds[selection], "decision odds")
+                        / odds_safety_factor
+                    ),
                 )
                 for selection in sorted(probabilities)
             ]
@@ -432,7 +448,10 @@ def _simulate_daily(races: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "units": row.units,
                         "stake_yen": row.stake_yen,
                         "probability": row.probability,
-                        "forecast_odds": row.final_odds,
+                        "forecast_odds": _positive_float(
+                            odds[row.selection], "decision odds"
+                        ),
+                        "kelly_effective_odds": row.final_odds,
                     }
                     for row in purchased
                 ],
@@ -578,6 +597,13 @@ def _normalized(values: Mapping[str, Any], name: str) -> dict[str, float]:
     if total <= 0.0:
         raise ValueError(f"{name} must contain positive mass")
     return {key: value / total for key, value in prepared.items()}
+
+
+def _odds_safety_factor(value: Any) -> float:
+    factor = float(value)
+    if not math.isfinite(factor) or factor < 1.0:
+        raise ValueError("odds_safety_factor must be finite and at least 1.0")
+    return factor
 
 
 def _iso_day(value: Any, name: str) -> str:
