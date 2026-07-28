@@ -37,6 +37,10 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
         ("base_pastlog", "research_correlates"),
     ),
     (
+        "drop_base_pastlog_speculative_research",
+        ("base_pastlog", "speculative_research"),
+    ),
+    (
         "drop_research_correlates_rolling_history",
         ("research_correlates", "rolling_history"),
     ),
