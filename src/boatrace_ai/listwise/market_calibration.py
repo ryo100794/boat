@@ -17,6 +17,7 @@ import joblib
 import numpy as np
 
 from ..adaptive_allocation import allocate_adaptive_day
+from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
 from ..feature_tuning import (
@@ -2017,6 +2018,42 @@ def walk_forward_evaluate(
             "calibration": market_offset_calibration,
             "promotion_eligible": False,
         }
+    )
+    market_offset_bootstrap = bootstrap_daily_roi(market_offset_registered["daily"])
+    market_offset_registered["bootstrap"] = market_offset_bootstrap
+    market_offset_registered["promotion_gate"] = {
+        "minimum_purchase_days": 30,
+        "minimum_tickets": 300,
+        "sample_size_pass": (
+            sum(
+                int((row.get("stake_yen") or 0) > 0)
+                for row in market_offset_registered["daily"]
+            )
+            >= 30
+            and int(market_offset_registered["tickets"]) >= 300
+        ),
+        "roi_pass": float(market_offset_registered["roi"] or 0.0) > 1.0,
+        "largest_hit_excluded_roi_pass": (
+            float(market_offset_registered.get("roi_without_largest_hit") or 0.0)
+            > 1.0
+        ),
+        "bootstrap_lower_95_pass": (
+            float(market_offset_bootstrap.get("roi_ci95_lower") or 0.0) > 1.0
+        ),
+        "bootstrap_probability_pass": (
+            float(market_offset_bootstrap.get("probability_roi_above_one") or 0.0)
+            >= 0.95
+        ),
+    }
+    market_offset_registered["promotion_gate"]["pass"] = all(
+        market_offset_registered["promotion_gate"][key]
+        for key in (
+            "sample_size_pass",
+            "roi_pass",
+            "largest_hit_excluded_roi_pass",
+            "bootstrap_lower_95_pass",
+            "bootstrap_probability_pass",
+        )
     )
     from .market_kelly_challenger import (
         evaluate_attached_market_kelly_challenger,
