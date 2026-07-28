@@ -1727,7 +1727,9 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
         lambda *_a, **_k: events.append("seed-periodic"),
     )
     resources = ResourceSnapshot(32000, 10000, 100.0, 16, 0.0)
-    monkeypatch.setattr(evaluation_queue, "system_resources", lambda: resources)
+    monkeypatch.setattr(
+        evaluation_queue, "system_resources", lambda **_kwargs: resources
+    )
     monkeypatch.setattr(
         evaluation_queue,
         "claim_job",

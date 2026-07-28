@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import errno
 import hashlib
 import json
 import math
@@ -353,7 +354,11 @@ def _cgroup_quota_available_mb(
     )
 
 
-def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
+def system_resources(
+    sample_seconds: float = 0.15,
+    *,
+    disk_path: str | Path = "/tmp",
+) -> ResourceSnapshot:
     meminfo = {}
     for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
         key, value = line.split(":", 1)
@@ -384,7 +389,7 @@ def system_resources(sample_seconds: float = 0.15) -> ResourceSnapshot:
     idle_percent = max(0.0, min(100.0, (idle_after - idle_before) * 100.0 / total_delta))
     return ResourceSnapshot(
         available_memory_mb=host_available_mb,
-        available_disk_mb=int(shutil.disk_usage("/tmp").free // 1024**2),
+        available_disk_mb=int(shutil.disk_usage(disk_path).free // 1024**2),
         idle_cpu_percent=idle_percent,
         cpu_count=len(cpu_ids) if cpu_ids else (os.cpu_count() or 1),
         load_1m=float(os.getloadavg()[0]),
@@ -419,6 +424,42 @@ def resources_allow(
         and snapshot.available_disk_mb >= int(min_free_disk_mb)
         and snapshot.idle_cpu_percent >= float(min_idle_cpu_percent)
     )
+
+
+def workspace_quota_allows(
+    app_root: Path,
+    *,
+    required_mb: int,
+) -> bool:
+    """Probe the target filesystem because network-volume statvfs ignores quotas."""
+    required_bytes = max(0, int(required_mb)) * 1024**2
+    if required_bytes == 0:
+        return True
+    probe_dir = app_root / "data" / "archive-staging"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    probe_path = probe_dir / f".evaluation-quota-{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            probe_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        os.posix_fallocate(descriptor, 0, required_bytes)
+        return True
+    except OSError as exc:
+        if exc.errno in {errno.EDQUOT, errno.ENOSPC}:
+            return False
+        if exc.errno in {errno.ENOSYS, errno.EOPNOTSUPP}:
+            return shutil.disk_usage(probe_dir).free >= required_bytes
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            probe_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _json(value: Any) -> str:
@@ -3580,7 +3621,7 @@ def run_worker(args: argparse.Namespace) -> int:
                     last_seed = now
                 if scheduled_periodic:
                     last_schedule = now
-            resources = system_resources()
+            resources = system_resources(disk_path=app_root)
             with connection(args.db) as conn:
                 job = claim_job(conn, worker_id=worker_id, resources=resources)
             if job is None:
@@ -3589,6 +3630,13 @@ def run_worker(args: argparse.Namespace) -> int:
                 time.sleep(args.poll_seconds)
                 continue
             try:
+                if not workspace_quota_allows(
+                    app_root,
+                    required_mb=int(job["min_free_disk_mb"]),
+                ):
+                    raise JobDependencyUnavailable(
+                        "workspace quota cannot reserve the job disk requirement"
+                    )
                 result_path, summary, decision = execute_job(
                     job,
                     app_root=app_root,
