@@ -88,6 +88,25 @@ def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> Non
                 }
             ],
         },
+        "conformal_lower_market_offset_kelly_diagnostic": {
+            "status": "evaluated",
+            "evaluation_days": 6,
+            "tickets": 12,
+            "stake_yen": 1_200,
+            "return_yen": 1_050,
+            "profit_yen": -150,
+            "roi": 0.875,
+            "promotion_eligible": False,
+        },
+        "conformal_lower_market_offset_kelly_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "evaluation_days": 0,
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0,
+        },
     }
     artifact_path = model_dir / "stagewise_market_shadow.json"
     artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
@@ -110,6 +129,15 @@ def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> Non
     assert row["roi"] == 0
     assert row["entry_log_loss"] == 3.735
     assert expected_name in report["bankroll_daily"]
+    conformal_names = {
+        item["name"]
+        for item in report["bankroll"]
+        if "conformal_lower_market_offset" in item["name"]
+    }
+    assert conformal_names == {
+        "stagewise_market_shadow_conformal_lower_market_offset_kelly_diagnostic",
+        "stagewise_market_shadow_conformal_lower_market_offset_kelly_walk_forward",
+    }
 
 
 def test_empirical_lcb_database_metrics_restore_compact_result() -> None:
