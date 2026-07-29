@@ -154,7 +154,7 @@ def test_model_tracks_keep_missing_safe_and_legacy_ablation_separate(tmp_path) -
     assert "旧スキーマ" in legacy["teacher"]
 
 
-def test_odds_path_v4_and_v6_tracks_share_complete_web_metrics(tmp_path) -> None:
+def test_odds_path_v4_v6_v7_tracks_share_complete_web_metrics(tmp_path) -> None:
     jobs = [
         {
             "db_job_id": 101,
@@ -180,6 +180,13 @@ def test_odds_path_v4_and_v6_tracks_share_complete_web_metrics(tmp_path) -> None
             "name": "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-28",
             "status": "実行中",
         },
+        {
+            "db_job_id": 103,
+            "name": "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-28",
+            "status": "待機中",
+            "closing_q20_pinball_loss": 0.04,
+            "closing_q20_lower_coverage": 0.81,
+        },
     ]
 
     rows = _model_track_summaries(
@@ -191,6 +198,7 @@ def test_odds_path_v4_and_v6_tracks_share_complete_web_metrics(tmp_path) -> None
     by_id = {row["id"]: row for row in rows}
     v4 = by_id["odds_path_observed_closing_return_v4"]
     v6 = by_id["odds_path_prequential_shrinkage_return_v6"]
+    v7 = by_id["odds_path_crossfit_conservative_ev_v7"]
 
     assert v4["trifecta_log_loss"] == 3.71
     assert v4["winner_top1_accuracy"] == 0.561
@@ -211,3 +219,8 @@ def test_odds_path_v4_and_v6_tracks_share_complete_web_metrics(tmp_path) -> None
     assert "inner日だけ" in v6["teacher"]
     assert "11特徴" in v6["training"]
     assert "18候補" in v6["training"]
+    assert v7["status"] == "待機中"
+    assert v7["closing_q20_pinball_loss"] == 0.04
+    assert v7["closing_q20_lower_coverage"] == 0.81
+    assert "10年履歴base" in v7["teacher"]
+    assert "固定safe EV" in v7["training"]

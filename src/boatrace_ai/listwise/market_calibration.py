@@ -184,6 +184,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_hit_shrunk_closing_return_v5"
     if calibrator_strategy == "odds_path_prequential_shrinkage_return":
         return "odds_path_prequential_shrinkage_return_v6"
+    if calibrator_strategy == "odds_path_crossfit_conservative_ev":
+        return "odds_path_crossfit_conservative_ev_v7"
     return MODEL_NAME
 
 
@@ -2149,6 +2151,15 @@ def walk_forward_evaluate(
     calibrator_strategy: str = "grid",
     evaluation_dates: Iterable[str] | None = None,
 ) -> dict[str, Any]:
+    if calibrator_strategy == "odds_path_crossfit_conservative_ev":
+        from .odds_path_conservative_v7 import walk_forward_evaluate_v7
+
+        return walk_forward_evaluate_v7(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+        )
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         by_day[str(race["race_date"])].append(race)
@@ -3936,6 +3947,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
+            "odds_path_crossfit_conservative_ev",
         ),
         default="grid",
     )

@@ -1970,6 +1970,14 @@ _ODDS_PATH_TRACK_SPECS = (
         "過去的中lift） / inner prequentialでhit prior×倍率境界18候補を選択 / "
         "外側完全日walk-forward・1日1万円",
     ),
+    (
+        "odds_path_crossfit_conservative_ev_v7",
+        "Crossfit保守EV v7",
+        "10年履歴base三連単確率、各outer日以前のT-5結果、公式closingオッズ",
+        "baseをoffsetとする純粋120クラスT-5 residual / "
+        "log(closing/T-5) q20 / 日次cluster probability LCB / "
+        "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
+    ),
 )
 
 
@@ -2016,6 +2024,12 @@ def _odds_path_model_tracks(
                 "closing_odds_interval_coverage": job.get(
                     "closing_odds_interval_coverage"
                 ),
+                "closing_q20_pinball_loss": job.get(
+                    "closing_q20_pinball_loss"
+                ),
+                "closing_q20_lower_coverage": job.get(
+                    "closing_q20_lower_coverage"
+                ),
                 "closing_snapshot_age_seconds": job.get(
                     "closing_snapshot_age_seconds"
                 ),
@@ -2028,6 +2042,13 @@ def _odds_path_model_tracks(
                 "hit_tickets": job.get("hit_tickets"),
                 "roi_without_largest_hit": job.get(
                     "roi_without_largest_hit"
+                ),
+                "daily_cluster_bootstrap_roi_lower_95": job.get(
+                    "daily_cluster_bootstrap_roi_lower_95"
+                ),
+                "effective_hit_count": job.get("effective_hit_count"),
+                "largest_hit_return_share": job.get(
+                    "largest_hit_return_share"
                 ),
             }
         )
@@ -2804,6 +2825,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "roi_without_largest_hit": _float_or_none(
                     metrics.get("roi_without_largest_hit")
                 ),
+                "daily_cluster_bootstrap_roi_lower_95": _float_or_none(
+                    metrics.get("daily_cluster_bootstrap_roi_lower_95")
+                ),
+                "closing_q20_pinball_loss": _float_or_none(
+                    metrics.get("closing_q20_pinball_loss")
+                ),
+                "closing_q20_lower_coverage": _float_or_none(
+                    metrics.get("closing_q20_lower_coverage")
+                ),
                 "evaluated_races": metrics.get("evaluated_races")
                 or metrics.get("evaluation_races"),
                 "benchmark_status": metrics.get("benchmark_status"),
@@ -2888,6 +2918,36 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                         )
                     )
                 ),
+                "prospective_v7_status": metrics.get(
+                    "prospective_v7_status"
+                ),
+                "prospective_v7_registered_after": metrics.get(
+                    "prospective_v7_registered_after"
+                ),
+                "prospective_v7_evaluation_days": metrics.get(
+                    "prospective_v7_evaluation_days"
+                ),
+                "prospective_v7_tickets": metrics.get(
+                    "prospective_v7_tickets"
+                ),
+                "prospective_v7_hit_tickets": metrics.get(
+                    "prospective_v7_hit_tickets"
+                ),
+                "prospective_v7_roi": _float_or_none(
+                    metrics.get("prospective_v7_roi")
+                ),
+                "prospective_v7_roi_without_largest_hit": _float_or_none(
+                    metrics.get(
+                        "prospective_v7_roi_without_largest_hit"
+                    )
+                ),
+                "prospective_v7_daily_cluster_bootstrap_roi_lower_95": (
+                    _float_or_none(
+                        metrics.get(
+                            "prospective_v7_daily_cluster_bootstrap_roi_lower_95"
+                        )
+                    )
+                ),
                 "empirical_lcb_walk_forward": (
                     _empirical_lcb_walk_forward_from_metrics(metrics)
                 ),
@@ -2909,9 +2969,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "trifecta_log_loss": _float_or_none(
                     metrics.get("trifecta_log_loss")
+                    if metrics.get("trifecta_log_loss") is not None
+                    else metrics.get("calibrated_trifecta_log_loss")
                 ),
                 "trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("trifecta_top5_hit_rate")
+                    if metrics.get("trifecta_top5_hit_rate") is not None
+                    else metrics.get(
+                        "calibrated_trifecta_top5_hit_rate"
+                    )
                 ),
                 "closing_odds_log_mae": _float_or_none(
                     metrics.get("closing_odds_log_mae")

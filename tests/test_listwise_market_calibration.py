@@ -639,6 +639,19 @@ def test_cli_accepts_v6_calibrator_strategy() -> None:
     assert args.calibrator_strategy == "odds_path_prequential_shrinkage_return"
 
 
+def test_cli_accepts_v7_calibrator_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_crossfit_conservative_ev",
+        ]
+    )
+
+    assert args.calibrator_strategy == "odds_path_crossfit_conservative_ev"
+
+
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     races = [
         _race(race_date, rno)
