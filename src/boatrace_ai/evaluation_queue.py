@@ -830,6 +830,85 @@ def reconcile_queue_state(conn: Any) -> int:
     return len(rows)
 
 
+def _validated_reconciliation_result_path(
+    result_path: str,
+    *,
+    app_root: Path,
+) -> Path:
+    root = app_root.resolve(strict=True)
+    candidate = Path(result_path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("result_path is outside app_root") from exc
+    if not resolved.is_file():
+        raise ValueError("result_path is not a regular file")
+    return resolved
+
+
+def reconcile_completed_job_runs(
+    conn: Any,
+    *,
+    app_root: Path,
+    limit: int = 16,
+) -> int:
+    """Recover parent jobs whose matching attempt already produced a result."""
+    rows = conn.execute(
+        """
+        SELECT jobs.*, runs.run_id, runs.result_path AS run_result_path
+        FROM model_evaluation_jobs AS jobs
+        JOIN model_evaluation_job_runs AS runs
+          ON runs.job_id = jobs.job_id AND runs.attempt = jobs.attempt
+        WHERE jobs.status = 'running'
+          AND runs.status = 'completed'
+          AND runs.result_path IS NOT NULL
+          AND runs.result_path <> ''
+        ORDER BY jobs.job_id
+        FOR UPDATE OF jobs, runs SKIP LOCKED
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        job = {key: row[key] for key in row.keys()}
+        parameters = job.get("parameters")
+        job["parameters"] = (
+            parameters
+            if isinstance(parameters, dict)
+            else json.loads(parameters or "{}")
+        )
+        try:
+            result_path = _validated_reconciliation_result_path(
+                str(job["run_result_path"]),
+                app_root=app_root,
+            )
+            _payload, summary = _load_result(result_path)
+            decision = result_decision(str(job["task_type"]), summary)
+        except Exception as exc:
+            fail_job(
+                conn,
+                job=job,
+                error=(
+                    "completed run reconciliation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+            continue
+        complete_job(
+            conn,
+            job=job,
+            result_path=result_path,
+            summary=summary,
+            decision=decision,
+        )
+        recovered += 1
+    return recovered
+
+
 def retry_pending_jobs(
     conn: Any,
     *,
@@ -4439,6 +4518,10 @@ def run_worker(args: argparse.Namespace) -> int:
                 seeded_defaults = False
                 scheduled_periodic = False
                 with connection(args.db) as conn:
+                    reconcile_completed_job_runs(
+                        conn,
+                        app_root=app_root,
+                    )
                     requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
                     reconcile_queue_state(conn)
                 seed_defaults_now = (
@@ -4563,6 +4646,10 @@ def run_scheduler(args: argparse.Namespace) -> int:
             seeded_defaults = False
             scheduled_periodic = False
             with connection(args.db) as conn:
+                reconcile_completed_job_runs(
+                    conn,
+                    app_root=app_root,
+                )
                 requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
                 reconcile_queue_state(conn)
             seed_defaults_now = (

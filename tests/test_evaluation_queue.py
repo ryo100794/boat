@@ -2009,6 +2009,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(evaluation_queue, "seed_work_tickets", lambda _conn: 0)
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "requeue_stale_jobs",
         lambda *_a, **_k: events.append("requeue"),
     )
@@ -2072,6 +2077,8 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     ])
 
     assert evaluation_queue.run_worker(args) == 0
+    assert events.index("recover-completed") < events.index("requeue")
+    assert events.index("recover-completed") < events.index("commit:cleanup")
     assert events.index("reconcile") < events.index("commit:cleanup")
     assert events.index("commit:cleanup") < events.index("enter:seeding")
     assert events.index("seed-market") < events.index("commit:seeding")
@@ -2098,6 +2105,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
         evaluation_queue,
         "seed_work_tickets",
         lambda _conn: events.append("seed-work"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
     )
     monkeypatch.setattr(
         evaluation_queue,
@@ -2151,7 +2163,7 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "requeue", "reconcile", "commit",
+        "enter", "recover-completed", "requeue", "reconcile", "commit",
         "enter", "seed-defaults", "seed-market", "seed-periodic", "commit",
     ]
 
@@ -2496,6 +2508,176 @@ def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
         "queue reconciliation cancelled exhausted job: "
         "attempt reached max_attempts",
     )
+
+
+class _CompletedRunReconciliationConnection:
+    def __init__(self, result_path: Path, *, max_attempts: int = 2):
+        self.parent = {
+            "job_id": 7855,
+            "task_type": "market_residual_walk_forward",
+            "category": "evaluation",
+            "model_key": "realtime_odds_shadow",
+            "parameters": json.dumps({"evaluation_date": "2026-07-29"}),
+            "status": "running",
+            "attempt": 1,
+            "max_attempts": max_attempts,
+            "worker_id": "evaluator-03",
+        }
+        self.run = {
+            "run_id": 9001,
+            "status": "completed",
+            "result_path": str(result_path),
+            "error": None,
+        }
+        self.candidates = []
+        self.calls = []
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        self.calls.append((sql, parameters))
+        if sql.startswith("SELECT jobs.*"):
+            if (
+                self.parent["status"] == "running"
+                and self.run["status"] == "completed"
+                and self.run["result_path"]
+            ):
+                row = dict(self.parent)
+                row.update({
+                    "run_id": self.run["run_id"],
+                    "run_result_path": self.run["result_path"],
+                })
+                return _RowsResult([row])
+            return _RowsResult([])
+        if (
+            sql.startswith("UPDATE model_evaluation_jobs")
+            and "SET status = 'completed'" in sql
+        ):
+            self.parent.update({
+                "status": "completed",
+                "result_path": parameters[0],
+                "result_summary": json.loads(parameters[1]),
+                "decision": parameters[2],
+                "worker_id": None,
+                "error": None,
+            })
+            return _RowsResult()
+        if (
+            sql.startswith("UPDATE model_evaluation_job_runs")
+            and "SET status = 'completed'" in sql
+        ):
+            self.run.update({
+                "status": "completed",
+                "result_path": parameters[0],
+                "error": None,
+            })
+            return _RowsResult()
+        if sql.startswith("INSERT INTO model_improvement_candidates"):
+            self.candidates.append(parameters)
+            return _RowsResult()
+        if sql.startswith("UPDATE model_evaluation_jobs"):
+            self.parent.update({
+                "status": parameters[0],
+                "error": parameters[2],
+                "worker_id": None,
+            })
+            return _RowsResult()
+        if (
+            sql.startswith("UPDATE model_evaluation_job_runs")
+            and "SET status = 'failed'" in sql
+        ):
+            self.run.update({
+                "status": "failed",
+                "error": parameters[0],
+            })
+            return _RowsResult()
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class _RowsResult:
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+
+    def fetchall(self):
+        return self.rows
+
+
+def _write_reconciliation_result(app_root: Path) -> Path:
+    path = app_root / "data" / "models" / "evaluation_queue" / "job-00007855.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({
+            "model": "realtime_odds_shadow",
+            "bankroll": {
+                "roi": 1.2,
+                "profit_yen": 200,
+            },
+            "promotion_eligible": False,
+        }),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_reconcile_completed_job_run_updates_parent_and_candidate(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    result_path = _write_reconciliation_result(app_root)
+    conn = _CompletedRunReconciliationConnection(result_path)
+
+    recovered = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert recovered == 1
+    assert conn.parent["status"] == "completed"
+    assert conn.parent["result_path"] == str(result_path.resolve())
+    assert conn.parent["result_summary"]["roi"] == 1.2
+    assert conn.parent["decision"] == "accumulate_formal_evidence"
+    assert conn.run["status"] == "completed"
+    assert len(conn.candidates) == 1
+    select_sql, select_parameters = conn.calls[0]
+    assert "runs.attempt = jobs.attempt" in select_sql
+    assert "FOR UPDATE OF jobs, runs SKIP LOCKED" in select_sql
+    assert select_parameters == (16,)
+
+
+def test_reconcile_completed_job_run_requeues_invalid_path(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    outside_path = tmp_path / "outside.json"
+    outside_path.write_text("{}", encoding="utf-8")
+    conn = _CompletedRunReconciliationConnection(outside_path)
+
+    recovered = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert recovered == 0
+    assert conn.parent["status"] == "queued"
+    assert conn.run["status"] == "failed"
+    assert "result_path is outside app_root" in conn.parent["error"]
+    assert conn.run["error"] == conn.parent["error"]
+    assert conn.candidates == []
+
+
+def test_reconcile_completed_job_run_is_idempotent(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    result_path = _write_reconciliation_result(app_root)
+    conn = _CompletedRunReconciliationConnection(result_path)
+
+    first = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+    second = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert (first, second) == (1, 0)
+    assert conn.parent["status"] == "completed"
+    assert len(conn.candidates) == 1
 
 
 def test_retry_pending_jobs_locks_targets_in_consistent_order() -> None:
