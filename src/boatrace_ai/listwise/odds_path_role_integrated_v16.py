@@ -26,6 +26,10 @@ from .strict_prior_t300_divergence_passthrough_v16 import (
     REGISTERED_DIVERGENCE_UPPER,
     fit_strict_prior_t300_divergence_passthrough_v16,
 )
+from .v16_fixed_band_ranking_diagnostics import (
+    aggregate_v16_fixed_band_ranking_diagnostics,
+    compare_v16_fixed_band_ranking_rules,
+)
 
 
 MODEL_NAME = "odds_path_role_integrated_fixed_band_passthrough_v16"
@@ -83,6 +87,7 @@ def walk_forward_evaluate_v16(
         probability_lcb_fit=(
             fit_strict_prior_t300_divergence_passthrough_v16
         ),
+        probability_lcb_metrics=compare_v16_fixed_band_ranking_rules,
         selection_conformal_fit=_fit_closing_envelope,
         selection_observation_append=append_closing_envelope_observations_v15,
         initial_selection_observations=prewarm_observations,
@@ -154,6 +159,9 @@ def walk_forward_evaluate_v16(
     artifacts = result.pop("selection_conformal_artifacts_by_date", {})
     result.pop("selection_conformal", None)
     summary = _aggregate_closing_envelopes(folds)
+    fixed_band_ranking_diagnostics = (
+        aggregate_v16_fixed_band_ranking_diagnostics(folds)
+    )
     result.update({
         "model": MODEL_NAME,
         "calibrator_strategy": STRATEGY_NAME,
@@ -180,6 +188,7 @@ def walk_forward_evaluate_v16(
             "uses_payout": False,
         },
         "closing_envelope_conformal": summary,
+        "fixed_band_ranking_diagnostics": fixed_band_ranking_diagnostics,
         "closing_envelope_conformal_artifacts_by_date": artifacts,
         "selection_free_closing_envelope": True,
         "evaluation_population_hash": _evaluation_population_hash(races),

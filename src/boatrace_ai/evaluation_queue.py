@@ -2762,6 +2762,13 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     closing_envelope_v15 = payload.get("closing_envelope_conformal")
     if isinstance(closing_envelope_v15, dict):
         summary["closing_envelope_conformal"] = dict(closing_envelope_v15)
+    fixed_band_ranking_diagnostics = payload.get(
+        "fixed_band_ranking_diagnostics"
+    )
+    if isinstance(fixed_band_ranking_diagnostics, dict):
+        summary["fixed_band_ranking_diagnostics"] = dict(
+            fixed_band_ranking_diagnostics
+        )
     prospective_v15 = payload.get("prospective_role_integrated_v15_walk_forward")
     if isinstance(prospective_v15, dict):
         for key in (

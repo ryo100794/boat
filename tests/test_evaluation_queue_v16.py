@@ -247,10 +247,17 @@ def test_v16_summary_preserves_web_report_metrics_and_diagnostics() -> None:
         "promotion_gate": promotion_gate,
     }
 
+    fixed_band_diagnostics = {
+        "real_betting_enabled": False,
+        "post_hoc_best_rule_is_promotion_evidence": False,
+        "folds": [{"fold": 1, "rules": {}}],
+        "rules": {"safe_ev_desc": {"days": 1, "roi": 1.1}},
+    }
     summary = summarize_result({
         "model": STRATEGY,
         "closing_envelope_conformal": closing_envelope,
         "prospective_role_integrated_v16_walk_forward": prospective,
+        "fixed_band_ranking_diagnostics": fixed_band_diagnostics,
     })
 
     assert summary["closing_envelope_conformal"] == closing_envelope
@@ -262,3 +269,4 @@ def test_v16_summary_preserves_web_report_metrics_and_diagnostics() -> None:
         prospective_envelope
     )
     assert summary["prospective_v16_promotion_gate"] == promotion_gate
+    assert summary["fixed_band_ranking_diagnostics"] == fixed_band_diagnostics
