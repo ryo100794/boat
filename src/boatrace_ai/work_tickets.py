@@ -24,6 +24,7 @@ def add_ticket(
     status: str,
     progress: int,
     source: str,
+    due_at: str | None = None,
 ) -> None:
     if status not in STATUSES:
         raise ValueError("invalid ticket status")
@@ -33,14 +34,15 @@ def add_ticket(
         """
         INSERT INTO work_tickets(
           ticket_key, title, area, description, acceptance_criteria,
-          owner, priority, status, progress, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          owner, priority, status, progress, source, due_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticket_key) DO UPDATE SET
           title = excluded.title, area = excluded.area,
           description = excluded.description,
           acceptance_criteria = excluded.acceptance_criteria,
           owner = excluded.owner, priority = excluded.priority,
-          source = excluded.source, updated_at = CURRENT_TIMESTAMP
+          source = excluded.source, due_at = excluded.due_at,
+          updated_at = CURRENT_TIMESTAMP
         """,
         (
             ticket_key,
@@ -53,6 +55,7 @@ def add_ticket(
             status,
             progress,
             source,
+            due_at,
         ),
     )
 
@@ -62,7 +65,7 @@ def list_tickets(conn: Any) -> list[dict[str, Any]]:
         """
         SELECT ticket_key, title, area, owner, priority, status, progress,
                related_job_id, source, created_at, updated_at, completed_at,
-               description, acceptance_criteria
+               description, acceptance_criteria, due_at
         FROM work_tickets
         ORDER BY
           CASE status WHEN 'in_progress' THEN 0 WHEN 'queued' THEN 1
@@ -90,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--status", choices=sorted(STATUSES), default="queued")
     add.add_argument("--progress", type=int, default=0)
     add.add_argument("--source", default="user")
+    add.add_argument("--due-at")
     update = sub.add_parser("update")
     update.add_argument("--key", required=True)
     update.add_argument("--status", choices=sorted(STATUSES), required=True)
@@ -119,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 status=args.status,
                 progress=args.progress,
                 source=args.source,
+                due_at=args.due_at,
             )
         elif args.command == "update":
             update_work_ticket(

@@ -138,6 +138,16 @@ def test_managed_block_replaces_legacy_marker_and_preserves_human_text():
     assert sync.parse_managed_metadata(updated)["ticket_key"] == "MODEL-OPT-001"
 
 
+def test_managed_block_exposes_due_at_without_changing_ticket_state():
+    ticket = sync.Ticket(**ticket_row(due_at="2026-07-25T09:00:00Z"))
+
+    block = sync.render_managed_block(ticket)
+
+    assert "Due at: `2026-07-25T09:00:00Z`" in block
+    assert sync.parse_managed_metadata(block)["due_at"] == "2026-07-25T09:00:00Z"
+    assert sync.parse_managed_metadata(block)["status"] == "in_progress"
+
+
 def test_prefix_title_adopts_pre_json_issue_and_duplicate_is_conflict():
     ticket = sync.Ticket(**ticket_row())
     first = issue_for(ticket_row(), number=2, body="legacy", state="open")
@@ -298,7 +308,7 @@ def test_apply_schema_is_idempotent_postgresql_ddl():
     sync.ensure_sync_schema(conn)
 
     statements = [sql for sql, _ in conn.calls]
-    assert sum("ADD COLUMN IF NOT EXISTS" in sql for sql in statements) == 10
+    assert sum("ADD COLUMN IF NOT EXISTS" in sql for sql in statements) == 12
     assert sum("CREATE UNIQUE INDEX IF NOT EXISTS" in sql for sql in statements) == 2
 
 

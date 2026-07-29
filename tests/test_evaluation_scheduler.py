@@ -259,6 +259,7 @@ def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
         "github_issue_url",
         "github_issue_updated_at",
         "last_synced_at",
+        "due_at",
     ):
         assert f"ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS {column}" in SCHEMA
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_tickets_github_issue" in SCHEMA

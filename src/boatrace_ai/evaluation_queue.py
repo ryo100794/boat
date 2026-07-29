@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS work_tickets (
   github_issue_url TEXT NOT NULL DEFAULT '',
   github_issue_updated_at TIMESTAMPTZ,
   last_synced_at TIMESTAMPTZ,
+  due_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TIMESTAMPTZ
@@ -169,6 +170,7 @@ ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_number INTEGER;
 ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_updated_at TIMESTAMPTZ;
 ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
+ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS work_ticket_events (
   event_id BIGSERIAL PRIMARY KEY,
   ticket_key TEXT NOT NULL REFERENCES work_tickets(ticket_key),
@@ -4006,6 +4008,37 @@ def update_work_ticket(
     )
 
 
+def record_overdue_work_ticket_events(conn: Any) -> int:
+    """Audit overdue work without blocking unrelated evaluation jobs."""
+    row = conn.execute(
+        """
+        WITH inserted AS (
+          INSERT INTO work_ticket_events(ticket_key, status, progress, note)
+          SELECT ticket.ticket_key, ticket.status, ticket.progress,
+                 json_build_object(
+                   'source', 'evaluation_scheduler',
+                   'action', 'deadline_overdue',
+                   'due_at', ticket.due_at,
+                   'corrective_action',
+                   'continue_independent_jobs_and_replan_overdue_ticket'
+                 )::text
+          FROM work_tickets AS ticket
+          WHERE ticket.due_at < CURRENT_TIMESTAMP
+            AND ticket.status IN ('queued', 'in_progress', 'blocked')
+            AND NOT EXISTS (
+              SELECT 1 FROM work_ticket_events AS event
+              WHERE event.ticket_key = ticket.ticket_key
+                AND event.created_at >= ticket.due_at
+                AND event.note LIKE '%"action"%deadline_overdue%'
+            )
+          RETURNING event_id
+        )
+        SELECT COUNT(*) AS count FROM inserted
+        """
+    ).fetchone()
+    return int(row["count"] if row is not None else 0)
+
+
 def standardized_evaluation_due(
     conn: Any,
     *,
@@ -4524,6 +4557,7 @@ def run_worker(args: argparse.Namespace) -> int:
                     )
                     requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
                     reconcile_queue_state(conn)
+                    record_overdue_work_ticket_events(conn)
                 seed_defaults_now = (
                     args.seed_defaults
                     and now - last_seed >= args.seed_interval
@@ -4652,6 +4686,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
                 )
                 requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
                 reconcile_queue_state(conn)
+                record_overdue_work_ticket_events(conn)
             seed_defaults_now = (
                 args.seed_defaults and now - last_seed >= args.seed_interval
             )

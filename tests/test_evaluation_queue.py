@@ -2024,6 +2024,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "record_overdue_work_ticket_events",
+        lambda *_a, **_k: events.append("audit-overdue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_default_jobs",
         lambda *_a, **_k: events.append("seed-defaults"),
     )
@@ -2080,6 +2085,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert events.index("recover-completed") < events.index("requeue")
     assert events.index("recover-completed") < events.index("commit:cleanup")
     assert events.index("reconcile") < events.index("commit:cleanup")
+    assert events.index("audit-overdue") < events.index("commit:cleanup")
     assert events.index("commit:cleanup") < events.index("enter:seeding")
     assert events.index("seed-market") < events.index("commit:seeding")
     assert events.index("seed-genetic") < events.index("commit:seeding")
@@ -2123,6 +2129,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "record_overdue_work_ticket_events",
+        lambda *_a, **_k: events.append("audit-overdue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_default_jobs",
         lambda *_a, **_k: events.append("seed-defaults"),
     )
@@ -2163,7 +2174,7 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "recover-completed", "requeue", "reconcile", "commit",
+        "enter", "recover-completed", "requeue", "reconcile", "audit-overdue", "commit",
         "enter", "seed-defaults", "seed-market", "seed-periodic", "commit",
     ]
 
@@ -2384,6 +2395,7 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert not any(event.startswith("LOCK TABLE") for event in conn.events)
     assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
     assert "parent.status = 'completed'" in conn.candidate_sql
+    assert "work_tickets" not in conn.candidate_sql
     assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
     assert "started_at = CURRENT_TIMESTAMP" in conn.update_sql
 
@@ -2401,6 +2413,26 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed_again is not None
     assert claimed_again["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200, 43200]
+
+
+def test_overdue_ticket_records_corrective_event_without_state_transition() -> None:
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, statement, parameters=()):
+            self.sql = " ".join(statement.split())
+            return _QueryResult({"count": 2})
+
+    conn = Connection()
+
+    assert evaluation_queue.record_overdue_work_ticket_events(conn) == 2
+    assert "INSERT INTO work_ticket_events" in conn.sql
+    assert "deadline_overdue" in conn.sql
+    assert "continue_independent_jobs_and_replan_overdue_ticket" in conn.sql
+    assert "UPDATE work_tickets" not in conn.sql
+    assert "UPDATE model_evaluation_jobs" not in conn.sql
+    assert "event.created_at >= ticket.due_at" in conn.sql
 
 
 def test_recover_worker_closes_interrupted_attempt() -> None:
