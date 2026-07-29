@@ -2009,6 +2009,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(evaluation_queue, "seed_work_tickets", lambda _conn: 0)
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "requeue_stale_jobs",
         lambda *_a, **_k: events.append("requeue"),
     )
@@ -2077,6 +2082,8 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     ])
 
     assert evaluation_queue.run_worker(args) == 0
+    assert events.index("recover-completed") < events.index("requeue")
+    assert events.index("recover-completed") < events.index("commit:maintenance")
     assert events.index("commit:maintenance") < events.index("enter:claim")
     assert events.index("seed-market") < events.index("commit:maintenance")
     assert events.index("reconcile") < events.index("commit:maintenance")
@@ -2103,6 +2110,11 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
         evaluation_queue,
         "seed_work_tickets",
         lambda _conn: events.append("seed-work"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
     )
     monkeypatch.setattr(
         evaluation_queue,
@@ -2161,7 +2173,7 @@ def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
     assert evaluation_queue.run_scheduler(args) == 0
     assert events == [
         "enter", "seed-work", "commit",
-        "enter", "requeue", "reconcile", "seed-defaults",
+        "enter", "recover-completed", "requeue", "reconcile", "seed-defaults",
         "cancel-superseded", "seed-market", "seed-periodic", "commit",
     ]
 
