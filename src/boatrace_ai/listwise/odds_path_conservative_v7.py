@@ -25,6 +25,7 @@ MIN_PROMOTION_TICKETS = 300
 MIN_EFFECTIVE_HITS = 20.0
 MAX_LARGEST_HIT_RETURN_SHARE = 0.15
 SAFE_EV_THRESHOLD = 1.05
+SAFE_EV_DIAGNOSTIC_THRESHOLDS = (1.00, 1.02, 1.05, 1.10)
 MAX_TICKETS_PER_RACE = 2
 FRACTIONAL_KELLY = 0.25
 MAX_DAILY_EXPOSURE_FRACTION = 0.20
@@ -561,21 +562,97 @@ def _policy_candidate(
     }
 
 
-def simulate_fixed_safe_ev_policy(
+def _new_purchase_diagnostic_accumulator() -> dict[str, Any]:
+    return {
+        "total_races": 0,
+        "closing_forecast_missing_races": 0,
+        "lcb_not_ready_races": 0,
+        "evaluated_combinations": 0,
+        "safe_ev_values": [],
+        "safe_ev_at_least": {
+            f"{threshold:.2f}": 0
+            for threshold in SAFE_EV_DIAGNOSTIC_THRESHOLDS
+        },
+        "threshold_pass_candidates": 0,
+        "candidates_after_race_cap": 0,
+        "purchases_after_allocation": 0,
+    }
+
+
+def _summarize_purchase_diagnostics(
+    accumulators: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    combined = _new_purchase_diagnostic_accumulator()
+    for source in accumulators:
+        for key in (
+            "total_races",
+            "closing_forecast_missing_races",
+            "lcb_not_ready_races",
+            "evaluated_combinations",
+            "threshold_pass_candidates",
+            "candidates_after_race_cap",
+            "purchases_after_allocation",
+        ):
+            combined[key] += int(source.get(key) or 0)
+        combined["safe_ev_values"].extend(
+            float(value) for value in source.get("safe_ev_values") or []
+        )
+        source_thresholds = source.get("safe_ev_at_least") or {}
+        for threshold in SAFE_EV_DIAGNOSTIC_THRESHOLDS:
+            label = f"{threshold:.2f}"
+            combined["safe_ev_at_least"][label] += int(
+                source_thresholds.get(label) or 0
+            )
+
+    safe_ev_values = np.asarray(combined.pop("safe_ev_values"), dtype=float)
+    if safe_ev_values.size:
+        distribution = {
+            "safe_ev_max": float(np.max(safe_ev_values)),
+            **{
+                f"safe_ev_p{percentile}": float(
+                    np.percentile(safe_ev_values, percentile)
+                )
+                for percentile in (50, 90, 95, 99)
+            },
+        }
+    else:
+        distribution = {
+            "safe_ev_max": None,
+            "safe_ev_p50": None,
+            "safe_ev_p90": None,
+            "safe_ev_p95": None,
+            "safe_ev_p99": None,
+        }
+    return {
+        **combined,
+        **distribution,
+        "safe_ev_threshold": SAFE_EV_THRESHOLD,
+        "max_tickets_per_race": MAX_TICKETS_PER_RACE,
+    }
+
+
+def _simulate_fixed_safe_ev_policy(
     races: list[dict[str, Any]],
     *,
     closing_forecasts: dict[str, dict[str, float]],
     probability_lcb: dict[str, Any],
     daily_budget_yen: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     by_day_candidates: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_day_races: dict[str, set[str]] = defaultdict(set)
+    diagnostic = _new_purchase_diagnostic_accumulator()
+    diagnostic["total_races"] = len(races)
+    lcb_ready = bool(probability_lcb.get("ready"))
     for race in races:
         date = str(race["race_date"])
         race_id = str(race["race_id"])
         by_day_races[date].add(race_id)
         closing = closing_forecasts.get(race_id) or {}
-        if len(closing) != 120 or not probability_lcb.get("ready"):
+        if len(closing) != 120:
+            diagnostic["closing_forecast_missing_races"] += 1
+        if not lcb_ready:
+            diagnostic["lcb_not_ready_races"] += 1
+        if len(closing) != 120 or not lcb_ready:
             continue
         candidates = []
         probabilities = race["model_probabilities"]
@@ -586,6 +663,13 @@ def simulate_fixed_safe_ev_policy(
                 factors.get(rank_groups[combination], 0.0)
             )
             safe_ev = safe_probability * float(odds)
+            diagnostic["evaluated_combinations"] += 1
+            diagnostic["safe_ev_values"].append(safe_ev)
+            for threshold in SAFE_EV_DIAGNOSTIC_THRESHOLDS:
+                if safe_ev >= threshold:
+                    diagnostic["safe_ev_at_least"][
+                        f"{threshold:.2f}"
+                    ] += 1
             if safe_ev < SAFE_EV_THRESHOLD:
                 continue
             candidates.append(
@@ -597,12 +681,13 @@ def simulate_fixed_safe_ev_policy(
                     safe_ev=safe_ev,
                 )
             )
+        diagnostic["threshold_pass_candidates"] += len(candidates)
         candidates.sort(
             key=lambda row: (row["safe_ev"], row["probability"]), reverse=True
         )
-        by_day_candidates[date].extend(
-            candidates[:MAX_TICKETS_PER_RACE]
-        )
+        capped_candidates = candidates[:MAX_TICKETS_PER_RACE]
+        diagnostic["candidates_after_race_cap"] += len(capped_candidates)
+        by_day_candidates[date].extend(capped_candidates)
 
     daily = []
     cumulative_profit = peak_profit = max_drawdown = 0
@@ -627,9 +712,34 @@ def simulate_fixed_safe_ev_policy(
         max_drawdown = max(max_drawdown, peak_profit - cumulative_profit)
         row["cumulative_profit_yen"] = cumulative_profit
         daily.append(row)
-    return _summarize_bankroll(
-        daily, evaluated_races=len(races), max_drawdown_yen=max_drawdown
+    diagnostic["purchases_after_allocation"] = sum(
+        int(row.get("tickets") or 0) for row in daily
     )
+    return (
+        _summarize_bankroll(
+            daily,
+            evaluated_races=len(races),
+            max_drawdown_yen=max_drawdown,
+            purchase_diagnostic_accumulators=[diagnostic],
+        ),
+        diagnostic,
+    )
+
+
+def simulate_fixed_safe_ev_policy(
+    races: list[dict[str, Any]],
+    *,
+    closing_forecasts: dict[str, dict[str, float]],
+    probability_lcb: dict[str, Any],
+    daily_budget_yen: int,
+) -> dict[str, Any]:
+    result, _diagnostic = _simulate_fixed_safe_ev_policy(
+        races,
+        closing_forecasts=closing_forecasts,
+        probability_lcb=probability_lcb,
+        daily_budget_yen=daily_budget_yen,
+    )
+    return result
 
 
 def _summarize_bankroll(
@@ -637,6 +747,9 @@ def _summarize_bankroll(
     *,
     evaluated_races: int,
     max_drawdown_yen: int | None = None,
+    purchase_diagnostic_accumulators: (
+        Iterable[dict[str, Any]] | None
+    ) = None,
 ) -> dict[str, Any]:
     tickets = sum(int(row.get("tickets") or 0) for row in daily)
     hits = sum(int(row.get("hit_tickets") or 0) for row in daily)
@@ -671,7 +784,7 @@ def _summarize_bankroll(
             drawdown = max(drawdown, peak - cumulative)
         max_drawdown_yen = drawdown
     return_without_largest = max(0, returned - largest_hit)
-    return {
+    result = {
         "evaluated_races": evaluated_races,
         "evaluation_days": len(daily),
         "tickets": tickets,
@@ -704,6 +817,13 @@ def _summarize_bankroll(
         "tail_portfolio_diagnostics": diagnostics,
         "daily": daily,
     }
+    if purchase_diagnostic_accumulators is not None:
+        result["purchase_decision_diagnostics"] = (
+            _summarize_purchase_diagnostics(
+                purchase_diagnostic_accumulators
+            )
+        )
+    return result
 
 
 def _cumulative_daily(
@@ -912,12 +1032,18 @@ def _aggregate_closing_metrics(
 def _prospective_summary(
     folds: list[dict[str, Any]],
     daily: list[dict[str, Any]],
+    *,
+    purchase_diagnostic_accumulators: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
     daily = _cumulative_daily(daily)
     probability = _weighted_probability_metrics(folds)
     closing = _aggregate_closing_metrics(folds)
     bankroll = _summarize_bankroll(
-        daily, evaluated_races=int(probability["evaluated_races"])
+        daily,
+        evaluated_races=int(probability["evaluated_races"]),
+        purchase_diagnostic_accumulators=(
+            purchase_diagnostic_accumulators
+        ),
     )
     coverage = closing.get("closing_q20_lower_coverage")
     cluster_lower = bankroll.get(
@@ -1092,7 +1218,9 @@ def walk_forward_evaluate_v7(
         >= min_calibration_days
     ]
     if not fold_dates:
-        empty = _prospective_summary([], [])
+        empty = _prospective_summary(
+            [], [], purchase_diagnostic_accumulators=[]
+        )
         return {
             "model": MODEL_NAME,
             "calibrator_strategy": STRATEGY_NAME,
@@ -1118,6 +1246,7 @@ def walk_forward_evaluate_v7(
     all_crossfit_rows = _crossfit_probability_rows(races)
     folds = []
     daily = []
+    purchase_diagnostics_by_date: dict[str, dict[str, Any]] = {}
     for evaluation_date in fold_dates:
         calibration_dates = [
             date for date in dates if date < evaluation_date
@@ -1156,11 +1285,16 @@ def walk_forward_evaluate_v7(
                 )
                 for race in transformed_holdout
             }
-        bankroll = simulate_fixed_safe_ev_policy(
-            transformed_holdout,
-            closing_forecasts=closing_forecasts,
-            probability_lcb=probability_lcb,
-            daily_budget_yen=daily_budget_yen,
+        bankroll, purchase_diagnostic_accumulator = (
+            _simulate_fixed_safe_ev_policy(
+                transformed_holdout,
+                closing_forecasts=closing_forecasts,
+                probability_lcb=probability_lcb,
+                daily_budget_yen=daily_budget_yen,
+            )
+        )
+        purchase_diagnostics_by_date[evaluation_date] = (
+            purchase_diagnostic_accumulator
         )
         metrics = probability_metrics(transformed_holdout)
         closing_metrics = closing_q20_metrics(
@@ -1219,7 +1353,11 @@ def walk_forward_evaluate_v7(
     probability = _weighted_probability_metrics(folds)
     closing = _aggregate_closing_metrics(folds)
     bankroll = _summarize_bankroll(
-        daily, evaluated_races=int(probability["evaluated_races"])
+        daily,
+        evaluated_races=int(probability["evaluated_races"]),
+        purchase_diagnostic_accumulators=(
+            purchase_diagnostics_by_date.values()
+        ),
     )
     prospective_folds = [
         fold
@@ -1235,7 +1373,12 @@ def walk_forward_evaluate_v7(
         if str(row["race_date"]) in prospective_dates
     ]
     prospective = _prospective_summary(
-        prospective_folds, prospective_daily
+        prospective_folds,
+        prospective_daily,
+        purchase_diagnostic_accumulators=(
+            purchase_diagnostics_by_date[date]
+            for date in prospective_dates
+        ),
     )
     deployment = _deployment_configuration(
         races, daily_budget_yen=daily_budget_yen
