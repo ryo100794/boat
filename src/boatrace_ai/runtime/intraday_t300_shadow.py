@@ -768,17 +768,182 @@ class V14RegisteredBandModelAdapter(V12RoleModelAdapter):
     def decide(
         self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
     ) -> ShadowDecision:
+        if bankroll_yen < STAKE_GRANULARITY_YEN:
+            return _no_bet("simulated_bankroll_below_minimum_stake")
+        probability_model = self._component("probability_model", "operational_model")
+        probability_lcb = self._component("probability_lcb")
+        closing_model = self._component(
+            "closing_t300_v12_model", "closing_v12_model", "closing_model"
+        )
         conformal = self._component("selection_conformal")
+        for name, artifact in (
+            ("probability_lcb", probability_lcb),
+            ("closing_v12", closing_model),
+            ("selection_conformal", conformal),
+        ):
+            trained = artifact.get("trained_through_date")
+            if trained is not None and str(trained) >= race.race_date:
+                raise ValueError(f"{name} is not strictly prior to race date")
+        if not probability_lcb.get("ready"):
+            return _no_bet("probability_lcb_not_ready")
+        if not closing_model.get("ready"):
+            return _no_bet("closing_v12_not_ready")
         if not conformal.get("ready"):
             diagnostic = self._registered_band_diagnostic(conn, race, snapshot)
             return _no_bet(
                 "selection_conformal_not_ready",
                 diagnostics={"v14_registered_band": diagnostic},
             )
-        decision = super().decide(
-            conn, race, snapshot, bankroll_yen=bankroll_yen
+        point = normalize_odds_checkpoint(
+            {"snapshot_id": snapshot.snapshot_id,
+             "captured_at": snapshot.captured_at.isoformat(),
+             "source_update_time": snapshot.source_update_time,
+             "raw_json": snapshot.raw_json,
+             "betting_deadline_at": race.betting_deadline_at.isoformat(),
+             "odds": snapshot.odds},
+            target_offset_seconds=T300_OFFSET_SECONDS,
         )
-        return decision
+        if point is None:
+            return _no_bet("inconsistent_t300_snapshot")
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return _no_bet("inconsistent_probability_combination_set")
+        model_race = {
+            "race_id": race.race_id, "race_date": race.race_date,
+            "jcd": race.jcd, "rno": race.rno, "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base, "market_probabilities": market,
+            "odds": dict(snapshot.odds), "odds_checkpoints": {"300": point},
+            "odds_path": [{"minutes_before_decision": 0.0,
+                           "snapshot_id": snapshot.snapshot_id,
+                           "captured_at": snapshot.captured_at.isoformat(),
+                           "market_probabilities": market}],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_probability_v8(
+            [model_race], dict(probability_model)
+        )[0]
+        probabilities = {
+            str(key): float(value)
+            for key, value in transformed["model_probabilities"].items()
+        }
+        if (
+            len(probabilities) != 120
+            or set(probabilities) != set(snapshot.odds)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)
+        ):
+            return _no_bet("invalid_v14_probability_output")
+        forecast = forecast_closing_odds_t300_nonlinear_v12(
+            transformed, closing_model, prediction_date=race.race_date
+        )
+        if forecast.get("future_checkpoint_offsets_used"):
+            raise ValueError("V12 forecast used a post-T300 checkpoint")
+        if not forecast.get("ready"):
+            return _no_bet(str(forecast.get("reason") or "closing_forecast_not_ready"))
+        closing = {
+            str(key): float(value)
+            for key, value in (forecast.get("lower_final_odds") or {}).items()
+        }
+        if len(closing) != 120 or set(closing) != set(probabilities):
+            return _no_bet("invalid_v12_closing_lower_output")
+
+        raw_candidates = []
+        all_details = {}
+        for combination in sorted(closing):
+            detail = probability_lower_bound_details_v14(
+                transformed, combination, probability_lcb
+            )
+            all_details[combination] = detail
+            probability = float(detail.get("probability") or 0.0)
+            raw_safe_ev = probability * closing[combination]
+            if raw_safe_ev < SAFE_EV_THRESHOLD:
+                continue
+            raw_candidates.append({
+                "combination": combination,
+                "probability": probability,
+                "predicted_closing": closing[combination],
+                "raw_safe_ev": raw_safe_ev,
+                "probability_lcb_detail": detail,
+            })
+        raw_candidates.sort(key=lambda row: (
+            -float(row["raw_safe_ev"]),
+            -float(row["probability"]),
+            str(row["combination"]),
+        ))
+        raw_selected = raw_candidates[:MAX_TICKETS_PER_RACE]
+
+        haircut = float(conformal["haircut"])
+        candidates = []
+        for item in raw_selected:
+            guarded_odds = float(item["predicted_closing"]) * haircut
+            probability = float(item["probability"])
+            guarded_safe_ev = probability * guarded_odds
+            if guarded_safe_ev < SAFE_EV_THRESHOLD:
+                continue
+            candidate = {
+                "race_id": race.race_id,
+                "race_date": race.race_date,
+                "jcd": race.jcd,
+                "rno": race.rno,
+                "combination": str(item["combination"]),
+                "probability": probability,
+                "estimated_odds": guarded_odds,
+                "estimated_ev": guarded_safe_ev,
+                "safe_ev": guarded_safe_ev,
+                "real_odds_snapshot_id": snapshot.snapshot_id,
+                "real_odds_captured_at": snapshot.captured_at.isoformat(),
+                "real_odds_combinations": len(snapshot.odds),
+                "predicted_closing": float(item["predicted_closing"]),
+                "selection_conformal_haircut": haircut,
+                "raw_safe_ev": float(item["raw_safe_ev"]),
+                "probability_lcb_detail": item["probability_lcb_detail"],
+                "odds_source": "v12_t300_lower_v14_lcb_times_selection_conformal",
+            }
+            candidates.append(candidate)
+        allocated = allocate_discrete_log_day(
+            race.race_date,
+            candidates,
+            {race.race_id},
+            daily_budget_yen=bankroll_yen,
+            max_daily_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
+            race_cap_fraction=RACE_CAP_FRACTION,
+            ticket_cap_fraction=TICKET_CAP_FRACTION,
+            max_daily_tickets=None,
+            stake_granularity_yen=STAKE_GRANULARITY_YEN,
+            min_stake_yen=STAKE_GRANULARITY_YEN,
+            max_tickets_per_race=MAX_TICKETS_PER_RACE,
+        )
+        selected = tuple(
+            {key: value for key, value in row.items() if key not in {"hit", "return_yen"}}
+            for row in allocated["selected_sample"]
+        )
+        reason = None if selected else _zero_reason(
+            conformal_ready=True,
+            total_races=1,
+            raw_candidates=len(raw_selected),
+            guarded_candidates=len(candidates),
+            allocation_candidates=int(allocated["allocation_candidate_tickets"]),
+        )
+        diagnostics = {
+            "v14_registered_band": {
+                "status": "recorded",
+                "checkpoint": "t300",
+                "source_snapshot_id": snapshot.snapshot_id,
+                "registered_divergence_band": "[0.5,1.0)",
+                "registered_combination_count": sum(
+                    bool(detail.get("in_registered_divergence_band"))
+                    for detail in all_details.values()
+                ),
+                "raw_safe_ev_candidates": len(raw_candidates),
+                "top2_candidates": len(raw_selected),
+                "guarded_candidates": len(candidates),
+                "uses_result": False,
+                "uses_payout": False,
+            }
+        }
+        return ShadowDecision(
+            probabilities, closing, selected, reason, diagnostics
+        )
 
 
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {

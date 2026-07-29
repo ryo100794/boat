@@ -288,7 +288,9 @@ def _v14_evaluation() -> dict[str, Any]:
     }
 
 
-def _write_v14_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+def _write_v14_artifacts(
+    tmp_path: Path, *, conformal_ready: bool = False,
+) -> tuple[Path, Path]:
     merged_bundle = tmp_path / "v14-merged.joblib"
     base_model = tmp_path / "base.joblib"
     deployment = _v14_evaluation()["deployment_configuration"]
@@ -301,8 +303,9 @@ def _write_v14_artifacts(tmp_path: Path) -> tuple[Path, Path]:
             "point_model": {"estimator": object()},
         },
         "selection_conformal": {
-            "ready": False,
+            "ready": conformal_ready,
             "trained_through_date": "2026-07-29",
+            "haircut": 0.9,
         },
     })
     joblib.dump({
@@ -398,6 +401,96 @@ def test_v14_decision_uses_only_pre_result_race_payload(
     assert "payout" not in seen[0]
     assert seen[0]["snapshot_id"] == point.snapshot_id
     assert seen[0]["odds_checkpoints"]["300"]["snapshot_id"] == point.snapshot_id
+
+
+def test_v14_ready_path_never_calls_v13_and_allocates_v14_top2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merged_bundle, base_model = _write_v14_artifacts(
+        tmp_path, conformal_ready=True
+    )
+    adapter = V14RegisteredBandModelAdapter(
+        model_key="v14", bundle_path=merged_bundle, base_model_path=base_model,
+    )
+    row = race("2026-07-30")
+    point = snapshot(row.target_t300_at)
+    uniform = {key: 1.0 / 120.0 for key in COMBINATIONS}
+    v14_calls: list[str] = []
+    allocator_candidates: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(adapter, "_base_probabilities", lambda conn, race: uniform)
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.attach_odds_path_probability_v8",
+        lambda races, model: races,
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.forecast_closing_odds_t300_nonlinear_v12",
+        lambda race_payload, model, prediction_date: {
+            "ready": True,
+            "future_checkpoint_offsets_used": [],
+            "lower_final_odds": {key: 10.0 for key in COMBINATIONS},
+        },
+    )
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("V13 probability API must not be called by V14")
+
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.selected_safe_ev_candidates",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.selection_conformal.probability_lower_bound_details",
+        forbidden,
+    )
+
+    def v14_detail(
+        race_payload: dict[str, Any], combination: str, artifact: dict[str, Any],
+    ) -> dict[str, Any]:
+        v14_calls.append(combination)
+        assert "actual_combination" not in race_payload
+        assert "payout" not in race_payload
+        probability = 0.2 if combination in COMBINATIONS[:3] else 0.0
+        return {
+            "probability": probability,
+            "raw_probability": uniform[combination],
+            "factor": 1.0 if probability else 0.0,
+            "in_registered_divergence_band": bool(probability),
+            "resolution": "cell_min_parent_and_cell_lower",
+        }
+
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.probability_lower_bound_details_v14",
+        v14_detail,
+    )
+
+    def allocate(
+        day: str, candidates: list[dict[str, Any]], race_ids: set[str], **kwargs: Any,
+    ) -> dict[str, Any]:
+        allocator_candidates.extend(copy.deepcopy(candidates))
+        return {
+            "selected_sample": [
+                {**candidate, "stake_yen": 100} for candidate in candidates
+            ],
+            "allocation_candidate_tickets": len(candidates),
+        }
+
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.allocate_discrete_log_day",
+        allocate,
+    )
+    decision = adapter.decide(object(), row, point, bankroll_yen=10_000)
+
+    assert v14_calls == sorted(COMBINATIONS)
+    assert [item["combination"] for item in allocator_candidates] == COMBINATIONS[:2]
+    assert all(item["estimated_odds"] == 9.0 for item in allocator_candidates)
+    assert all(
+        item["odds_source"] == "v12_t300_lower_v14_lcb_times_selection_conformal"
+        for item in allocator_candidates
+    )
+    assert decision.status == "selected"
+    assert decision.no_bet_reason is None
+    assert decision.diagnostics["v14_registered_band"]["top2_candidates"] == 2
 
 
 @pytest.mark.parametrize("field", ["uses_payout", "registered_divergence_band"])
