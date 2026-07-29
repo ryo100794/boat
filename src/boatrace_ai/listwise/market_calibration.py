@@ -8,7 +8,7 @@ import math
 import os
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable
@@ -17,6 +17,7 @@ import joblib
 import numpy as np
 
 from ..adaptive_allocation import allocate_adaptive_day
+from ..archive_closing_odds import SOURCE_KEY as OFFICIAL_CLOSING_SOURCE_KEY
 from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
@@ -90,7 +91,10 @@ TREND_POINT_KELLY_REGISTERED_AFTER = "2026-07-28"
 # rounded 1.20 haircut before evaluating any later unseen day.
 CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR = 1.20
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
-SCORED_CACHE_VERSION = 12
+ODDS_CHECKPOINT_SCHEMA_VERSION = 1
+ODDS_CHECKPOINT_OFFSETS_SECONDS = (300, 120, 60, 30, 10)
+PREFETCH_CHECKPOINTS_KEY = "odds_checkpoints"
+SCORED_CACHE_VERSION = 13
 MIN_CLOSING_ODDS_TRAINING_DAYS = 7
 MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
@@ -3165,10 +3169,16 @@ def score_real_odds_races(
         if str(race_date) >= from_date
         and (through_date is None or str(race_date) <= through_date)
     }
+    checkpoint_diagnostics: dict[str, int] = defaultdict(int)
     prefetched_snapshots = prefetch_trifecta_snapshots(
         conn,
         target_ids=target_ids,
         max_snapshot_age_seconds=max_snapshot_age_seconds,
+        checkpoint_diagnostics=checkpoint_diagnostics,
+    )
+    official_closing_by_race = prefetch_official_closing_odds(
+        conn,
+        target_ids=target_ids,
     )
     payouts = _load_trifecta_payouts(conn)
     races = []
@@ -3271,6 +3281,20 @@ def score_real_odds_races(
                     for key in closing_odds
                 )
                 closing_odds_races += 1
+        if prefetched_snapshots is not None:
+            odds_checkpoints = dict(
+                (prefetched_snapshots.get(race_id) or {}).get(
+                    PREFETCH_CHECKPOINTS_KEY
+                )
+                or {}
+            )
+        else:
+            odds_checkpoints = load_odds_checkpoints(
+                conn,
+                race_id,
+                max_snapshot_age_seconds=max_snapshot_age_seconds,
+                diagnostics=checkpoint_diagnostics,
+            )
         odds = {key: float(value) for key, value in snapshot["odds"].items()}
         market_probabilities = normalized_market_probabilities(odds)
         if set(model_probabilities) != set(odds) or set(market_probabilities) != set(odds):
@@ -3311,6 +3335,8 @@ def score_real_odds_races(
                 "source_update_time": snapshot.get("source_update_time"),
                 "input_snapshot_age_seconds": snapshot_age,
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
+                "odds_checkpoints": odds_checkpoints,
+                **official_closing_by_race.get(race_id, {}),
                 **(
                     odds_path_fields_from_snapshots(
                         prefetched_snapshots.get(race_id) or {},
@@ -3341,6 +3367,23 @@ def score_real_odds_races(
         "skipped_invalid_momentum_interval": momentum_skipped.get("interval", 0),
         "skipped_momentum_combination_mismatch": momentum_skipped.get(
             "mismatch", 0
+        ),
+        "odds_checkpoint_races": sum(
+            int(bool(race.get("odds_checkpoints"))) for race in races
+        ),
+        **{
+            f"odds_checkpoint_{offset}_races": sum(
+                int(str(offset) in (race.get("odds_checkpoints") or {}))
+                for race in races
+            )
+            for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS
+        },
+        "official_closing_odds_races": sum(
+            int(len(race.get("official_closing_odds") or {}) == 120)
+            for race in races
+        ),
+        "odds_checkpoint_metadata_conflicts": int(
+            checkpoint_diagnostics.get("metadata_conflict", 0)
         ),
         "skipped_no_payout": skipped_no_payout,
         "odds_path_two_point_races": sum(
@@ -3504,59 +3547,293 @@ def odds_path_fields_from_snapshots(
     return {"odds_path": points, "odds_path_points": len(points)}
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="replace")
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _nonnegative_finite(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) and numeric >= 0.0 else None
+
+
+def _timestamp(value: Any, *, default_tz=timezone.utc) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=default_tz)
+    return parsed
+
+
+def _source_update_staleness_seconds(
+    source_update_time: Any, *, captured_at: datetime
+) -> float | None:
+    if source_update_time in (None, ""):
+        return None
+    source_text = str(source_update_time).strip()
+    parsed = _timestamp(
+        source_text, default_tz=captured_at.tzinfo or timezone.utc
+    )
+    if parsed is not None and "T" in source_text:
+        return max(
+            0.0,
+            (
+                captured_at
+                - parsed.astimezone(captured_at.tzinfo or timezone.utc)
+            ).total_seconds(),
+        )
+    try:
+        clock = [int(part) for part in source_text.split(":")]
+    except ValueError:
+        return None
+    if len(clock) not in (2, 3):
+        return None
+    hour, minute = clock[:2]
+    second = clock[2] if len(clock) == 3 else 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    jst = timezone(timedelta(hours=9))
+    captured_jst = captured_at.astimezone(jst)
+    source_at = captured_jst.replace(
+        hour=hour, minute=minute, second=second, microsecond=0
+    )
+    if source_at - captured_jst > timedelta(minutes=1):
+        source_at -= timedelta(days=1)
+    return max(0.0, (captured_jst - source_at).total_seconds())
+
+
+def normalize_odds_checkpoint(
+    snapshot: dict[str, Any],
+    *,
+    target_offset_seconds: int,
+    diagnostics: dict[str, int] | None = None,
+) -> dict[str, Any] | None:
+    offset = int(target_offset_seconds)
+    if offset not in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+        return None
+    odds = {
+        str(key): float(value)
+        for key, value in (snapshot.get("odds") or {}).items()
+    }
+    if len(odds) != 120 or not plausible_trifecta_odds(odds):
+        return None
+    captured = _timestamp(snapshot.get("captured_at"))
+    betting_deadline = _timestamp(
+        snapshot.get("betting_deadline_at"),
+        default_tz=(captured.tzinfo if captured is not None else timezone.utc),
+    )
+    if captured is None or betting_deadline is None:
+        return None
+    captured = captured.astimezone(betting_deadline.tzinfo or timezone.utc)
+    captured_age = (betting_deadline - captured).total_seconds()
+    if captured_age < float(offset):
+        return None
+
+    raw = _json_object(snapshot.get("raw_json"))
+    collection = _json_object(raw.get("_collection"))
+    collection_offset = collection.get("target_offset_seconds")
+    try:
+        collection_offset = (
+            int(collection_offset) if collection_offset is not None else None
+        )
+    except (TypeError, ValueError):
+        collection_offset = None
+    explicit_checkpoint = collection_offset == offset
+    measured_age = _nonnegative_finite(collection.get("captured_age_seconds"))
+    if explicit_checkpoint and measured_age is not None:
+        if (
+            measured_age < float(offset)
+            or not math.isclose(
+                measured_age, captured_age, rel_tol=0.0, abs_tol=1.0
+            )
+        ):
+            if diagnostics is not None:
+                diagnostics["metadata_conflict"] = (
+                    int(diagnostics.get("metadata_conflict", 0)) + 1
+                )
+            return None
+        captured_age = measured_age
+    source_update_time = (
+        collection.get("source_update_time")
+        if collection.get("source_update_time") not in (None, "")
+        else snapshot.get("source_update_time")
+    )
+    source_staleness = _nonnegative_finite(
+        collection.get("source_update_staleness_seconds")
+    )
+    if source_staleness is None:
+        source_staleness = _source_update_staleness_seconds(
+            source_update_time,
+            captured_at=captured,
+        )
+    provenance = {
+        "mode": (
+            "explicit_checkpoint"
+            if explicit_checkpoint
+            else "timestamp_reconstructed"
+        ),
+        "observation_label": collection.get("observation_label"),
+        "event_id": collection.get("event_id"),
+        "collection_target_offset_seconds": collection_offset,
+    }
+    return {
+        "odds": odds,
+        "market_probabilities": normalized_market_probabilities(odds),
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "captured_at": str(snapshot.get("captured_at")),
+        "target_offset_seconds": offset,
+        "captured_age_seconds": float(captured_age),
+        "source_update_time": source_update_time,
+        "source_update_staleness_seconds": source_staleness,
+        "provenance": provenance,
+    }
+
+
+def odds_checkpoints_from_snapshots(
+    snapshots: dict[int, dict[str, Any]],
+    *,
+    diagnostics: dict[str, int] | None = None,
+) -> dict[str, dict[str, Any]]:
+    checkpoints: dict[str, dict[str, Any]] = {}
+    for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+        snapshot = snapshots.get(offset)
+        if snapshot is None:
+            continue
+        point = normalize_odds_checkpoint(
+            snapshot,
+            target_offset_seconds=offset,
+            diagnostics=diagnostics,
+        )
+        if point is not None:
+            checkpoints[str(offset)] = point
+    return checkpoints
+
+
+def load_odds_checkpoints(
+    conn,
+    race_id: str,
+    *,
+    max_snapshot_age_seconds: float,
+    diagnostics: dict[str, int] | None = None,
+) -> dict[str, dict[str, Any]]:
+    snapshots: dict[int, dict[str, Any]] = {}
+    for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+        snapshot = latest_trifecta_odds_before_deadline(
+            conn,
+            race_id,
+            min_combinations=120,
+            target_offset_seconds=offset,
+            max_snapshot_age_seconds=max_snapshot_age_seconds,
+        )
+        if snapshot is not None and len(snapshot.get("odds") or {}) == 120:
+            snapshots[offset] = snapshot
+    return odds_checkpoints_from_snapshots(
+        snapshots, diagnostics=diagnostics
+    )
+
+
+def available_odds_checkpoints(
+    checkpoints: dict[str, dict[str, Any]] | None,
+    *,
+    as_of_offset_seconds: int,
+) -> dict[str, dict[str, Any]]:
+    as_of = max(0, int(as_of_offset_seconds))
+    available: dict[str, dict[str, Any]] = {}
+    source = checkpoints or {}
+    for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+        if offset < as_of:
+            continue
+        point = source.get(str(offset))
+        if not isinstance(point, dict):
+            continue
+        if int(point.get("target_offset_seconds", -1)) != offset:
+            continue
+        copied = dict(point)
+        copied["odds"] = dict(point.get("odds") or {})
+        copied["market_probabilities"] = dict(
+            point.get("market_probabilities") or {}
+        )
+        copied["provenance"] = dict(point.get("provenance") or {})
+        available[str(offset)] = copied
+    return available
+
+
 def prefetch_trifecta_snapshots(
     conn,
     *,
     target_ids: set[str],
     max_snapshot_age_seconds: float,
-) -> dict[str, dict[int, dict[str, Any]]] | None:
+    checkpoint_diagnostics: dict[str, int] | None = None,
+) -> dict[str, dict[Any, Any]] | None:
     if getattr(conn, "dialect", "sqlite") != "postgresql":
         return None
     if not target_ids:
         return {}
     captured_at = stored_jst_timestamp_sql(conn, "os.captured_at")
     start_at = stored_jst_timestamp_sql(conn, "r.deadline_at")
-    result: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    legacy_leads = {
+        0: 0, 300: 5, 420: 7, 600: 10, 1200: 20, 1800: 30
+    }
+    target_offsets = sorted(
+        set(legacy_leads) | set(ODDS_CHECKPOINT_OFFSETS_SECONDS)
+    )
+    target_values = ", ".join(f"({offset})" for offset in target_offsets)
+    snapshots_by_race: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     race_ids = sorted(target_ids)
     for chunk_start in range(0, len(race_ids), 500):
         chunk = race_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _race_id in chunk)
         rows = conn.execute(
             f"""
-            WITH leads(decision_lead_minutes) AS (
-              VALUES (0), (5), (7), (10), (20), (30)
+            WITH targets(target_offset_seconds) AS (
+              VALUES {target_values}
             )
             SELECT
               r.race_id,
-              leads.decision_lead_minutes,
+              targets.target_offset_seconds,
               selected.snapshot_id,
               selected.captured_at,
               selected.source_update_time,
+              selected.raw_json,
               selected.odds_deadline_at,
               selected.betting_deadline_at,
               ot.combination,
               ot.odds
             FROM races r
-            CROSS JOIN leads
+            CROSS JOIN targets
             JOIN LATERAL (
               SELECT
                 os.snapshot_id,
                 os.captured_at,
                 os.source_update_time,
-                {start_at} - (
-                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
-                ) AS odds_deadline_at,
+                os.raw_json,
+                {start_at} - INTERVAL '5 minutes'
+                  - (targets.target_offset_seconds * INTERVAL '1 second')
+                  AS odds_deadline_at,
                 {start_at} - INTERVAL '5 minutes' AS betting_deadline_at
               FROM odds_snapshots os
               WHERE os.race_id = r.race_id
                 AND os.bet_type = 'trifecta'
                 AND os.parser_version = ?
-                AND {captured_at} <= {start_at} - (
-                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
-                )
-                AND {captured_at} >= {start_at} - (
-                  (5 + leads.decision_lead_minutes) * INTERVAL '1 minute'
-                ) - (? * INTERVAL '1 second')
+                AND {captured_at} <= {start_at} - INTERVAL '5 minutes'
+                  - (targets.target_offset_seconds * INTERVAL '1 second')
+                AND {captured_at} >= {start_at} - INTERVAL '5 minutes'
+                  - (targets.target_offset_seconds * INTERVAL '1 second')
+                  - (? * INTERVAL '1 second')
                 AND (
                   SELECT COUNT(*)
                   FROM odds_trifecta complete_odds
@@ -3571,7 +3848,7 @@ def prefetch_trifecta_snapshots(
             WHERE r.race_id IN ({placeholders})
               AND ot.odds IS NOT NULL
               AND ot.odds > 0
-            ORDER BY r.race_id, leads.decision_lead_minutes, ot.combination
+            ORDER BY r.race_id, targets.target_offset_seconds, ot.combination
             """,
             [
                 TRIFECTA_PARSER_VERSION,
@@ -3581,25 +3858,152 @@ def prefetch_trifecta_snapshots(
         ).fetchall()
         grouped: dict[tuple[str, int], dict[str, Any]] = {}
         for row in rows:
-            key = (str(row["race_id"]), int(row["decision_lead_minutes"]))
+            key = (str(row["race_id"]), int(row["target_offset_seconds"]))
             snapshot = grouped.setdefault(
                 key,
                 {
                     "snapshot_id": int(row["snapshot_id"]),
                     "captured_at": str(row["captured_at"]),
                     "source_update_time": row["source_update_time"],
+                    "raw_json": row["raw_json"],
                     "odds_deadline_at": str(row["odds_deadline_at"]),
                     "betting_deadline_at": str(row["betting_deadline_at"]),
-                    "decision_lead_minutes": key[1],
+                    "target_offset_seconds": key[1],
+                    "decision_lead_minutes": (
+                        legacy_leads.get(key[1], key[1] / 60.0)
+                    ),
                     "odds": {},
                 },
             )
             snapshot["odds"][str(row["combination"])] = float(row["odds"])
-        for (race_id, lead), snapshot in grouped.items():
+        for (race_id, offset), snapshot in grouped.items():
             if plausible_trifecta_odds(snapshot["odds"]):
                 snapshot["odds_count"] = 120
+                snapshots_by_race[race_id][offset] = snapshot
+
+    result: dict[str, dict[Any, Any]] = defaultdict(dict)
+    for race_id, snapshots in snapshots_by_race.items():
+        for offset, lead in legacy_leads.items():
+            snapshot = snapshots.get(offset)
+            if snapshot is not None:
                 result[race_id][lead] = snapshot
+        result[race_id][PREFETCH_CHECKPOINTS_KEY] = (
+            odds_checkpoints_from_snapshots(
+                snapshots, diagnostics=checkpoint_diagnostics
+            )
+        )
     return dict(result)
+
+
+def _relation_exists(conn, relation_name: str) -> bool:
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        row = conn.execute(
+            "SELECT to_regclass(?) AS relation_name",
+            (relation_name,),
+        ).fetchone()
+        return bool(row and row["relation_name"])
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (relation_name,),
+    ).fetchone()
+    return bool(row)
+
+
+def prefetch_official_closing_odds(
+    conn,
+    *,
+    target_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not target_ids:
+        return {}
+    if not _relation_exists(
+        conn, "archive_closing_odds_snapshots"
+    ) or not _relation_exists(conn, "archive_closing_odds"):
+        return {}
+
+    grouped: dict[str, dict[str, Any]] = {}
+    race_ids = sorted(target_ids)
+    for chunk_start in range(0, len(race_ids), 500):
+        chunk = race_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _race_id in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT
+              s.race_id,
+              s.source_key,
+              s.fetched_at,
+              s.source_url,
+              s.payload_sha256,
+              s.parser_version,
+              s.odds_count,
+              s.verification_status,
+              s.raw_json,
+              o.combination,
+              o.odds
+            FROM archive_closing_odds_snapshots s
+            JOIN archive_closing_odds o
+              ON o.race_id = s.race_id
+             AND o.source_key = s.source_key
+            WHERE s.source_key = ?
+              AND s.odds_count = 120
+              AND s.race_id IN ({placeholders})
+              AND (
+                SELECT COUNT(*)
+                FROM archive_closing_odds complete_odds
+                WHERE complete_odds.race_id = s.race_id
+                  AND complete_odds.source_key = s.source_key
+                  AND complete_odds.odds IS NOT NULL
+                  AND complete_odds.odds > 0
+              ) = 120
+              AND o.odds IS NOT NULL
+              AND o.odds > 0
+            ORDER BY s.race_id, o.combination
+            """,
+            [OFFICIAL_CLOSING_SOURCE_KEY, *chunk],
+        ).fetchall()
+        for row in rows:
+            race_id = str(row["race_id"])
+            market = grouped.setdefault(
+                race_id,
+                {
+                    "source_key": str(row["source_key"]),
+                    "fetched_at": str(row["fetched_at"]),
+                    "source_url": str(row["source_url"]),
+                    "payload_sha256": str(row["payload_sha256"]),
+                    "parser_version": str(row["parser_version"]),
+                    "odds_count": int(row["odds_count"]),
+                    "verification_status": str(row["verification_status"]),
+                    "raw_json": row["raw_json"],
+                    "odds": {},
+                },
+            )
+            market["odds"][str(row["combination"])] = float(row["odds"])
+
+    result: dict[str, dict[str, Any]] = {}
+    for race_id, market in grouped.items():
+        odds = dict(market["odds"])
+        if len(odds) != 120 or not plausible_trifecta_odds(odds):
+            continue
+        raw = _json_object(market.get("raw_json"))
+        result[race_id] = {
+            "official_closing_odds": odds,
+            "official_closing_market_probabilities": (
+                normalized_market_probabilities(odds)
+            ),
+            "official_closing_source": OFFICIAL_CLOSING_SOURCE_KEY,
+            "official_closing_source_key": OFFICIAL_CLOSING_SOURCE_KEY,
+            "official_closing_provenance": {
+                "mode": "secondary_archive_of_official_closing_display",
+                "source_key": OFFICIAL_CLOSING_SOURCE_KEY,
+                "fetched_at": market["fetched_at"],
+                "source_url": market["source_url"],
+                "payload_sha256": market["payload_sha256"],
+                "parser_version": market["parser_version"],
+                "verification_status": market["verification_status"],
+                "source_kind": raw.get("source_kind"),
+            },
+        }
+    return result
 
 
 def snapshot_age_seconds(snapshot: dict[str, Any]) -> float | None:
@@ -3663,84 +4067,271 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stable_signature_fingerprint(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _archive_closing_data_signature(
+    conn,
+    *,
+    from_date: str,
+    through_date: str | None,
+) -> dict[str, Any]:
+    empty_fingerprint = _stable_signature_fingerprint([])
+    empty = {
+        "archive_closing_count": 0,
+        "archive_closing_odds_count": 0,
+        "archive_closing_update_fingerprint": empty_fingerprint,
+    }
+    if not _relation_exists(
+        conn, "archive_closing_odds_snapshots"
+    ) or not _relation_exists(conn, "archive_closing_odds"):
+        return empty
+
+    filters = ["r.race_date >= ?"]
+    params: list[Any] = [OFFICIAL_CLOSING_SOURCE_KEY, from_date]
+    if through_date is not None:
+        filters.append("r.race_date <= ?")
+        params.append(through_date)
+    rows = conn.execute(
+        f"""
+        SELECT
+          s.race_id,
+          s.source_key,
+          s.fetched_at,
+          s.payload_sha256,
+          s.parser_version,
+          s.odds_count,
+          s.verification_status,
+          COUNT(o.combination) AS stored_odds_count
+        FROM archive_closing_odds_snapshots s
+        JOIN races r ON r.race_id = s.race_id
+        JOIN archive_closing_odds o
+          ON o.race_id = s.race_id
+         AND o.source_key = s.source_key
+         AND o.odds IS NOT NULL
+         AND o.odds > 0
+        WHERE s.source_key = ?
+          AND {" AND ".join(filters)}
+          AND r.deadline_at IS NOT NULL
+          AND (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = r.race_id
+              AND rr.rank IS NOT NULL
+          ) = 6
+        GROUP BY
+          s.race_id, s.source_key, s.fetched_at, s.payload_sha256,
+          s.parser_version, s.odds_count, s.verification_status
+        HAVING s.odds_count = 120 AND COUNT(o.combination) = 120
+        ORDER BY s.race_id
+        """,
+        params,
+    ).fetchall()
+    fingerprint_rows = [
+        {
+            "race_id": str(row["race_id"]),
+            "source_key": str(row["source_key"]),
+            "fetched_at": str(row["fetched_at"]),
+            "payload_sha256": str(row["payload_sha256"]),
+            "parser_version": str(row["parser_version"]),
+            "odds_count": int(row["odds_count"]),
+            "verification_status": str(row["verification_status"]),
+            "stored_odds_count": int(row["stored_odds_count"]),
+        }
+        for row in rows
+    ]
+    return {
+        "archive_closing_count": len(fingerprint_rows),
+        "archive_closing_odds_count": sum(
+            int(row["stored_odds_count"]) for row in fingerprint_rows
+        ),
+        "archive_closing_update_fingerprint": (
+            _stable_signature_fingerprint(fingerprint_rows)
+        ),
+    }
+
+
 def odds_data_signature(
     conn,
     *,
     from_date: str,
     through_date: str | None,
-) -> dict[str, int]:
+    max_snapshot_age_seconds: float = MARKET_MAX_SNAPSHOT_AGE_SECONDS,
+) -> dict[str, Any]:
     filters = ["r.race_date >= ?"]
     params: list[Any] = [TRIFECTA_PARSER_VERSION, from_date]
     if through_date is not None:
         filters.append("r.race_date <= ?")
         params.append(through_date)
-    captured_at = stored_jst_timestamp_sql(conn, "os.captured_at")
-    start_at = stored_jst_timestamp_sql(conn, "r.deadline_at")
-    if getattr(conn, "dialect", "sqlite") == "postgresql":
-        feature_cutoff = (
-            f"{start_at} - INTERVAL "
-            f"'{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes'"
-        )
-    else:
-        feature_cutoff = (
-            f"datetime({start_at}, "
-            f"'-{MODEL_FEATURE_CUTOFF_FROM_START_MINUTES} minutes')"
-        )
-    row = conn.execute(
+    rows = conn.execute(
         f"""
-        WITH selected AS (
-          SELECT
-            r.race_id,
-            CASE WHEN EXISTS (
-              SELECT 1
-              FROM payouts p
-              WHERE p.race_id = r.race_id
-                AND p.bet_type = '3連単'
-                AND p.payout_yen IS NOT NULL
-            ) THEN 1 ELSE 0 END AS has_payout,
-            (
-              SELECT os.snapshot_id
-              FROM odds_snapshots os
-              WHERE os.race_id = r.race_id
-                AND os.bet_type = 'trifecta'
-                AND os.parser_version = ?
-                AND {captured_at} <= {feature_cutoff}
-                AND (
-                  SELECT COUNT(*)
-                  FROM odds_trifecta ot
-                  WHERE ot.snapshot_id = os.snapshot_id
-                    AND ot.odds IS NOT NULL
-                    AND ot.odds > 0
-                ) = 120
-              ORDER BY {captured_at} DESC, os.snapshot_id DESC
-              LIMIT 1
-            ) AS snapshot_id
-          FROM races r
-          WHERE {" AND ".join(filters)}
-            AND r.deadline_at IS NOT NULL
-            AND (
-              SELECT COUNT(DISTINCT rr.lane)
-              FROM race_results rr
-              WHERE rr.race_id = r.race_id
-                AND rr.rank IS NOT NULL
-            ) = 6
-        )
-        SELECT COUNT(*) AS complete_race_count,
-               COALESCE(SUM(has_payout), 0) AS payout_race_count,
-               COUNT(snapshot_id) AS snapshot_count,
-               COALESCE(SUM(snapshot_id), 0) AS snapshot_id_sum,
-               COALESCE(MAX(snapshot_id), 0) AS max_snapshot_id
-        FROM selected
+        SELECT
+          r.race_id,
+          r.deadline_at,
+          CASE WHEN EXISTS (
+            SELECT 1
+            FROM payouts p
+            WHERE p.race_id = r.race_id
+              AND p.bet_type = '3連単'
+              AND p.payout_yen IS NOT NULL
+          ) THEN 1 ELSE 0 END AS has_payout,
+          os.snapshot_id,
+          os.captured_at,
+          os.raw_json
+        FROM races r
+        LEFT JOIN odds_snapshots os
+          ON os.race_id = r.race_id
+         AND os.bet_type = 'trifecta'
+         AND os.parser_version = ?
+         AND (
+           SELECT COUNT(*)
+           FROM odds_trifecta ot
+           WHERE ot.snapshot_id = os.snapshot_id
+             AND ot.odds IS NOT NULL
+             AND ot.odds > 0
+         ) = 120
+        WHERE {" AND ".join(filters)}
+          AND r.deadline_at IS NOT NULL
+          AND (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = r.race_id
+              AND rr.rank IS NOT NULL
+          ) = 6
+        ORDER BY r.race_id, os.captured_at, os.snapshot_id
         """,
         params,
-    ).fetchone()
-    return {
-        "complete_race_count": int(row["complete_race_count"] or 0),
-        "payout_race_count": int(row["payout_race_count"] or 0),
-        "snapshot_count": int(row["snapshot_count"] or 0),
-        "snapshot_id_sum": int(row["snapshot_id_sum"] or 0),
-        "max_snapshot_id": int(row["max_snapshot_id"] or 0),
+    ).fetchall()
+
+    race_rows: dict[str, dict[str, Any]] = {}
+    jst = timezone(timedelta(hours=9))
+    for row in rows:
+        race_id = str(row["race_id"])
+        race = race_rows.setdefault(
+            race_id,
+            {
+                "deadline_at": row["deadline_at"],
+                "has_payout": int(row["has_payout"] or 0),
+                "snapshots": [],
+            },
+        )
+        if row["snapshot_id"] is None:
+            continue
+        captured = _timestamp(row["captured_at"], default_tz=jst)
+        if captured is None:
+            continue
+        race["snapshots"].append(
+            {
+                "snapshot_id": int(row["snapshot_id"]),
+                "captured_at": captured,
+                "raw_json": row["raw_json"],
+            }
+        )
+
+    selected_by_offset: dict[int, list[dict[str, Any]]] = {
+        offset: [] for offset in (0, *ODDS_CHECKPOINT_OFFSETS_SECONDS)
     }
+    collection_fingerprint_rows: list[dict[str, Any]] = []
+    for race_id, race in sorted(race_rows.items()):
+        start_at = _timestamp(race["deadline_at"], default_tz=jst)
+        if start_at is None:
+            continue
+        betting_deadline = start_at - timedelta(minutes=5)
+        for offset in selected_by_offset:
+            target_at = betting_deadline - timedelta(seconds=offset)
+            eligible = []
+            for snapshot in race["snapshots"]:
+                captured = snapshot["captured_at"].astimezone(
+                    target_at.tzinfo or jst
+                )
+                age = (target_at - captured).total_seconds()
+                if 0.0 <= age <= float(max_snapshot_age_seconds):
+                    eligible.append(
+                        (captured, int(snapshot["snapshot_id"]), snapshot)
+                    )
+            if not eligible:
+                continue
+            _captured, _snapshot_id, selected = max(
+                eligible, key=lambda item: (item[0], item[1])
+            )
+            selected_by_offset[offset].append(
+                {
+                    "race_id": race_id,
+                    "snapshot_id": int(selected["snapshot_id"]),
+                }
+            )
+            if offset in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+                collection = _json_object(
+                    _json_object(selected.get("raw_json")).get("_collection")
+                )
+                collection_fingerprint_rows.append(
+                    {
+                        "race_id": race_id,
+                        "target_offset_seconds": offset,
+                        "snapshot_id": int(selected["snapshot_id"]),
+                        "collection": collection,
+                    }
+                )
+
+    decision_rows = selected_by_offset[300]
+    closing_rows = selected_by_offset[0]
+    checkpoint_rows = [
+        row
+        for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS
+        for row in selected_by_offset[offset]
+    ]
+    checkpoint_ids = [int(row["snapshot_id"]) for row in checkpoint_rows]
+    signature: dict[str, Any] = {
+        "complete_race_count": len(race_rows),
+        "payout_race_count": sum(
+            int(race["has_payout"]) for race in race_rows.values()
+        ),
+        "snapshot_count": len(decision_rows),
+        "snapshot_id_sum": sum(
+            int(row["snapshot_id"]) for row in decision_rows
+        ),
+        "max_snapshot_id": max(
+            (int(row["snapshot_id"]) for row in decision_rows), default=0
+        ),
+        "closing_snapshot_count": len(closing_rows),
+        "closing_snapshot_id_sum": sum(
+            int(row["snapshot_id"]) for row in closing_rows
+        ),
+        "closing_max_snapshot_id": max(
+            (int(row["snapshot_id"]) for row in closing_rows), default=0
+        ),
+        "checkpoint_snapshot_count": len(checkpoint_rows),
+        "checkpoint_snapshot_id_sum": sum(checkpoint_ids),
+        "checkpoint_max_snapshot_id": max(checkpoint_ids, default=0),
+        "checkpoint_collection_count": sum(
+            int(bool(row["collection"])) for row in collection_fingerprint_rows
+        ),
+        "checkpoint_collection_fingerprint": (
+            _stable_signature_fingerprint(collection_fingerprint_rows)
+        ),
+    }
+    for offset in ODDS_CHECKPOINT_OFFSETS_SECONDS:
+        selected = selected_by_offset[offset]
+        ids = [int(row["snapshot_id"]) for row in selected]
+        signature[f"checkpoint_{offset}_snapshot_count"] = len(selected)
+        signature[f"checkpoint_{offset}_snapshot_id_sum"] = sum(ids)
+        signature[f"checkpoint_{offset}_max_snapshot_id"] = max(ids, default=0)
+    signature.update(
+        _archive_closing_data_signature(
+            conn,
+            from_date=from_date,
+            through_date=through_date,
+        )
+    )
+    return signature
 
 
 def complete_race_counts_by_date(
@@ -3893,7 +4484,7 @@ def scored_cache_contract(
     from_date: str,
     through_date: str | None,
     max_snapshot_age_seconds: float,
-    odds_signature: dict[str, int],
+    odds_signature: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "version": SCORED_CACHE_VERSION,
@@ -3904,6 +4495,13 @@ def scored_cache_contract(
         "from_date": from_date,
         "through_date": through_date,
         "max_snapshot_age_seconds": max_snapshot_age_seconds,
+        "local_closing_offset_seconds": 0,
+        "checkpoint_schema_version": ODDS_CHECKPOINT_SCHEMA_VERSION,
+        "checkpoint_offsets_seconds": list(
+            ODDS_CHECKPOINT_OFFSETS_SECONDS
+        ),
+        "official_closing_source_key": OFFICIAL_CLOSING_SOURCE_KEY,
+        "official_closing_contract_version": 1,
         "odds_data_signature": dict(odds_signature),
     }
 
@@ -4019,6 +4617,7 @@ def main(argv: list[str] | None = None) -> int:
             conn,
             from_date=args.from_date,
             through_date=args.through_date,
+            max_snapshot_age_seconds=args.max_snapshot_age_seconds,
         )
         day_targets = complete_race_counts_by_date(
             conn,
