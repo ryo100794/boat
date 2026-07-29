@@ -156,6 +156,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_probability_only_v2"
     if calibrator_strategy == "odds_path_closing_return":
         return "odds_path_closing_return_v3"
+    if calibrator_strategy == "odds_path_observed_closing_return":
+        return "odds_path_observed_closing_return_v4"
     return MODEL_NAME
 
 
@@ -174,6 +176,22 @@ def attach_forecast_closing_return_prices(
     for race in races:
         item = dict(race)
         item["performance_return_odds"] = prices_by_race_id[str(race["race_id"])]
+        result.append(item)
+    return result
+
+
+def attach_observed_closing_return_prices(
+    races: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result = []
+    for race in races:
+        observed = race.get("closing_odds") or {}
+        prices = observed if len(observed) == 120 else decision_odds(race)
+        item = dict(race)
+        item["performance_return_odds"] = {
+            str(combination): float(odds)
+            for combination, odds in prices.items()
+        }
         result.append(item)
     return result
 
@@ -1737,6 +1755,7 @@ def fit_deployment_configuration(
         "odds_path_return",
         "odds_path_probability",
         "odds_path_closing_return",
+        "odds_path_observed_closing_return",
     }:
         operational_model = fit_odds_path_model(
             races,
@@ -1744,6 +1763,8 @@ def fit_deployment_configuration(
             return_price_basis=(
                 "forecast_closing"
                 if calibrator_strategy == "odds_path_closing_return"
+                else "observed_closing"
+                if calibrator_strategy == "odds_path_observed_closing_return"
                 else "decision_t5"
             ),
         )
@@ -1999,11 +2020,16 @@ def walk_forward_evaluate(
             "odds_path_return",
             "odds_path_probability",
             "odds_path_closing_return",
+            "odds_path_observed_closing_return",
         }:
             if calibrator_strategy == "odds_path_closing_return":
                 calibration_races = attach_forecast_closing_return_prices(
                     calibration_races,
                     closing_policy_inputs,
+                )
+            elif calibrator_strategy == "odds_path_observed_closing_return":
+                calibration_races = attach_observed_closing_return_prices(
+                    calibration_races
                 )
             operational_model = fit_odds_path_model(
                 calibration_races,
@@ -2011,6 +2037,8 @@ def walk_forward_evaluate(
                 return_price_basis=(
                     "forecast_closing"
                     if calibrator_strategy == "odds_path_closing_return"
+                    else "observed_closing"
+                    if calibrator_strategy == "odds_path_observed_closing_return"
                     else "decision_t5"
                 ),
             )
@@ -2496,6 +2524,8 @@ def walk_forward_evaluate(
     deployment_races = (
         attach_forecast_closing_return_prices(races, closing_policy_inputs)
         if calibrator_strategy == "odds_path_closing_return"
+        else attach_observed_closing_return_prices(races)
+        if calibrator_strategy == "odds_path_observed_closing_return"
         else races
     )
     deployment_configuration = fit_deployment_configuration(
@@ -3512,6 +3542,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_return",
             "odds_path_probability",
             "odds_path_closing_return",
+            "odds_path_observed_closing_return",
         ),
         default="grid",
     )

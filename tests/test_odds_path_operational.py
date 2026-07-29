@@ -106,6 +106,25 @@ def test_closing_return_model_uses_separate_return_price_basis() -> None:
     )
 
 
+def test_observed_closing_return_model_records_teacher_basis() -> None:
+    races = [_race(0), _race(1)]
+    for race in races:
+        race["performance_return_odds"] = {
+            combination: odds * 0.8 for combination, odds in race["odds"].items()
+        }
+    model = fit_odds_path_model(
+        races,
+        max_iterations=10,
+        return_price_basis="observed_closing",
+    )
+
+    assert model["model_type"] == "odds_path_observed_closing_return_v4"
+    assert model["return_price_basis"] == "observed_closing"
+    assert model["return_multiplier_mode"] == (
+        "historical_observed_closing_to_payout_bucket"
+    )
+
+
 def test_performance_priors_shrink_sparse_hit_and_payout_rates() -> None:
     priors = fit_performance_priors([_race(0)])
 

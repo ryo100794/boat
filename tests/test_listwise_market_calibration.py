@@ -276,6 +276,39 @@ def test_closing_return_strategy_uses_prequential_price_teacher() -> None:
     assert deployment["operational_model"]["return_price_basis"] == "forecast_closing"
 
 
+def test_observed_closing_return_strategy_uses_prior_closing_teachers() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = {
+            combination: odds * 0.9 for combination, odds in race["odds"].items()
+        }
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_observed_closing_return",
+    )
+
+    assert result["model"] == "odds_path_observed_closing_return_v4"
+    assert result["evaluation_days"] == 2
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        assert operational_model["return_price_basis"] == "observed_closing"
+        assert operational_model["return_multiplier_mode"] == (
+            "historical_observed_closing_to_payout_bucket"
+        )
+
+
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     races = [
         _race(race_date, rno)

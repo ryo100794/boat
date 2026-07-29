@@ -139,14 +139,18 @@ def fit_odds_path_model(
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("odds-path model requires races")
-    if return_price_basis not in {"decision_t5", "forecast_closing"}:
+    if return_price_basis not in {
+        "decision_t5",
+        "forecast_closing",
+        "observed_closing",
+    }:
         raise ValueError("unsupported return_price_basis")
-    if return_price_basis == "forecast_closing" and not use_return_multipliers:
-        raise ValueError("forecast_closing basis requires return multipliers")
-    if return_price_basis == "forecast_closing" and any(
+    if return_price_basis != "decision_t5" and not use_return_multipliers:
+        raise ValueError("closing-price basis requires return multipliers")
+    if return_price_basis != "decision_t5" and any(
         len(race.get("performance_return_odds") or {}) != 120 for race in races
     ):
-        raise ValueError("forecast_closing basis requires 120 return prices per race")
+        raise ValueError("closing-price basis requires 120 return prices per race")
     priors = fit_performance_priors(races)
     prepared = []
     actual_indices = []
@@ -219,6 +223,9 @@ def fit_odds_path_model(
             break
     return {
         "model_type": (
+            "odds_path_observed_closing_return_v4"
+            if return_price_basis == "observed_closing"
+            else
             "odds_path_closing_return_v3"
             if return_price_basis == "forecast_closing"
             else
@@ -227,6 +234,9 @@ def fit_odds_path_model(
             else "odds_path_probability_only_v2"
         ),
         "return_multiplier_mode": (
+            "historical_observed_closing_to_payout_bucket"
+            if return_price_basis == "observed_closing"
+            else
             "historical_forecast_closing_to_payout_bucket"
             if return_price_basis == "forecast_closing"
             else
