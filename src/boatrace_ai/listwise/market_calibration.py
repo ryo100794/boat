@@ -137,6 +137,9 @@ PROSPECTIVE_NORMALIZED_EV_POLICY: dict[str, Any] = {
     "staking_mode": "normalized_010",
 }
 PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER = "2026-07-28"
+OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER = "2026-07-29"
+MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
+MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
     "name": "registered_top5_ev1.00_to1.05_flat100_v1",
     "max_model_rank": 5,
@@ -2021,6 +2024,8 @@ def walk_forward_evaluate(
     prospective_evaluated_races = 0
     prospective_top5_daily_rows = []
     prospective_top5_evaluated_races = 0
+    prospective_v4_daily_rows = []
+    prospective_v4_evaluated_races = 0
     edge_diagnostic_records = []
     empirical_history_records: list[dict[str, Any]] = []
     empirical_daily_rows: list[dict[str, Any]] = []
@@ -2316,6 +2321,12 @@ def walk_forward_evaluate(
             }
         )
         daily_rows.extend(bankroll["daily"])
+        if (
+            calibrator_strategy == "odds_path_observed_closing_return"
+            and evaluation_date > OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER
+        ):
+            prospective_v4_daily_rows.extend(bankroll["daily"])
+            prospective_v4_evaluated_races += len(holdout_policy_races)
         flat_daily_rows.extend(flat_bankroll["daily"])
         if registered_bankroll is not None:
             registered_daily_rows.extend(registered_bankroll["daily"])
@@ -2538,6 +2549,24 @@ def walk_forward_evaluate(
         evaluated_races=empirical_evaluated_races,
         folds=empirical_fold_rows,
     )
+    prospective_v4 = summarize_registered_policy_daily(
+        prospective_v4_daily_rows,
+        evaluated_races=prospective_v4_evaluated_races,
+        policy={
+            "name": "observed_closing_return_v4_daily_prior_selected_policy",
+            "architecture": "odds_path_observed_closing_return_v4",
+            "minimum_days": MIN_PROSPECTIVE_ARCHITECTURE_DAYS,
+            "minimum_tickets": MIN_PROSPECTIVE_ARCHITECTURE_TICKETS,
+        },
+        registered_after=OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER,
+    )
+    prospective_v4_pass = bool(
+        prospective_v4["evaluation_days"] >= MIN_PROSPECTIVE_ARCHITECTURE_DAYS
+        and prospective_v4["tickets"] >= MIN_PROSPECTIVE_ARCHITECTURE_TICKETS
+        and prospective_v4["profit_yen"] > 0
+        and float(prospective_v4["roi"] or 0.0) > 1.0
+        and float(prospective_v4["roi_without_largest_hit"] or 0.0) > 1.0
+    )
     promotion_gate = {
         "minimum_evaluation_races": 1000,
         "minimum_evaluation_days": 30,
@@ -2557,6 +2586,11 @@ def walk_forward_evaluate(
             ) > 1.0
         ),
         "no_lookahead_pass": True,
+        "prospective_architecture_pass": (
+            prospective_v4_pass
+            if calibrator_strategy == "odds_path_observed_closing_return"
+            else True
+        ),
     }
     deployment_races = (
         attach_forecast_closing_return_prices(races, closing_policy_inputs)
@@ -2583,10 +2617,20 @@ def walk_forward_evaluate(
         "days_pass": len(daily_rows) >= 7,
         "roi_pass": return_yen > stake_yen and stake_yen > 0,
         "fold_stability_pass": profitable_folds >= math.ceil(len(folds) * 0.60),
+        "prospective_architecture_pass": (
+            prospective_v4_pass
+            if calibrator_strategy == "odds_path_observed_closing_return"
+            else True
+        ),
     }
     deployment_gate["pass"] = all(
         deployment_gate[key]
-        for key in ("days_pass", "roi_pass", "fold_stability_pass")
+        for key in (
+            "days_pass",
+            "roi_pass",
+            "fold_stability_pass",
+            "prospective_architecture_pass",
+        )
     )
     deployment_configuration["walk_forward_gate"] = deployment_gate
     if not deployment_gate["pass"]:
@@ -2676,6 +2720,7 @@ def walk_forward_evaluate(
             policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
             registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
         ),
+        "prospective_observed_closing_return_v4_walk_forward": prospective_v4,
         "market_offset_registered_policy_walk_forward": (
             market_offset_registered
         ),

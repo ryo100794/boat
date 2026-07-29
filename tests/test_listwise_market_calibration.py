@@ -307,6 +307,50 @@ def test_observed_closing_return_strategy_uses_prior_closing_teachers() -> None:
         assert operational_model["return_multiplier_mode"] == (
             "historical_observed_closing_to_payout_bucket"
         )
+    prospective = result[
+        "prospective_observed_closing_return_v4_walk_forward"
+    ]
+    assert prospective["status"] == "waiting_for_first_unseen_day"
+    assert prospective["registered_after"] == "2026-07-29"
+    assert prospective["evaluation_days"] == 0
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+
+
+def test_observed_closing_v4_counts_only_dates_after_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-28",
+            "2026-07-29",
+            "2026-07-30",
+            "2026-07-31",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_observed_closing_return",
+    )
+    prospective = result[
+        "prospective_observed_closing_return_v4_walk_forward"
+    ]
+
+    assert prospective["status"] == "evaluating"
+    assert prospective["evaluation_days"] == 2
+    assert prospective["evaluated_races"] == 24
+    assert [row["race_date"] for row in prospective["daily"]] == [
+        "2026-07-30",
+        "2026-07-31",
+    ]
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+    assert result["deployment_configuration"]["walk_forward_gate"][
+        "prospective_architecture_pass"
+    ] is False
 
 
 def test_hit_shrunk_strategy_applies_conservative_prior_in_every_fold() -> None:
