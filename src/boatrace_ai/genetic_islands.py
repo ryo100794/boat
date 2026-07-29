@@ -18,17 +18,21 @@ from .hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .listwise.model import evaluate_range, fit_scaler, train_listwise_model
 
 
-# The artifact protocol is v3, while the genome contract remains v2. Keeping
-# those versions separate allows v2 champions to migrate into v3 islands.
-MODEL = "genetic_listwise_island_v3"
-ARTIFACT_VERSION = 3
-GENOME_VERSION = 2
+# Artifact v4 uses genome v3. Legacy v2/v3 artifacts remain valid immigrants:
+# their discrete target is mapped exactly to a blend endpoint.
+MODEL = "genetic_listwise_island_v4"
+ARTIFACT_VERSION = 4
+GENOME_VERSION = 3
 TARGETS = ("winner", "top3_pl")
 POLICY_EV_THRESHOLD = 1.20
 VALIDATION_SEGMENT_COUNT = 3
+MIN_EMBARGO_DAYS = 1
+MAX_EPOCHS = 6
 WORST_RANKING_PENALTY_WEIGHT = 0.50
 WINNER_STABILITY_PENALTY_WEIGHT = 0.25
 TOP5_STABILITY_PENALTY_WEIGHT = 0.20
+EPOCH_COMPLEXITY_PENALTY_WEIGHT = 0.004
+EPOCH_BOUNDARY_PENALTY = 0.002
 
 
 @dataclass(frozen=True)
@@ -38,11 +42,30 @@ class Genome:
     learning_rate: float
     epochs: int
     ev_threshold: float
+    loss_blend: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.target not in (*TARGETS, "blended"):
+            raise ValueError(f"unsupported genetic target: {self.target}")
+        blend = self.loss_blend
+        if blend is None:
+            if self.target == "blended":
+                raise ValueError("blended target requires loss_blend")
+            blend = 0.0 if self.target == "winner" else 1.0
+        blend = float(blend)
+        if not 0.0 <= blend <= 1.0:
+            raise ValueError("genetic loss_blend must be between 0 and 1")
+        if self.target == "winner" and blend != 0.0:
+            raise ValueError("winner target requires loss_blend=0")
+        if self.target == "top3_pl" and blend != 1.0:
+            raise ValueError("top3_pl target requires loss_blend=1")
+        object.__setattr__(self, "loss_blend", blend)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "genome_version": GENOME_VERSION,
             "target": self.target,
+            "loss_blend": self.loss_blend,
             "alpha": self.alpha,
             "learning_rate": self.learning_rate,
             "epochs": self.epochs,
@@ -50,9 +73,28 @@ class Genome:
         }
 
 
+@dataclass(frozen=True)
+class TemporalSplit:
+    train_end: int
+    embargo_start: int
+    validation_start: int
+    validation_end: int
+    train_dates: tuple[str, ...]
+    embargo_dates: tuple[str, ...]
+    validation_dates: tuple[str, ...]
+
+
 def genome_from_dict(value: dict[str, Any]) -> Genome:
     target = str(value.get("target") or "")
-    if target not in TARGETS:
+    blend_value = value.get("loss_blend")
+    if blend_value is None:
+        if target not in TARGETS:
+            raise ValueError(f"unsupported genetic target: {target}")
+        blend = 0.0 if target == "winner" else 1.0
+    else:
+        blend = float(blend_value)
+        target = _target_for_blend(blend)
+    if target not in (*TARGETS, "blended"):
         raise ValueError(f"unsupported genetic target: {target}")
     alpha = float(value["alpha"])
     learning_rate = float(value["learning_rate"])
@@ -62,40 +104,68 @@ def genome_from_dict(value: dict[str, Any]) -> Genome:
         raise ValueError("genetic alpha must be between 1e-7 and 1e-2")
     if not 0.001 <= learning_rate <= 0.2:
         raise ValueError("genetic learning rate must be between 0.001 and 0.2")
-    if not 1 <= epochs <= 3:
-        raise ValueError("genetic epochs must be between 1 and 3")
+    if not 1 <= epochs <= MAX_EPOCHS:
+        raise ValueError(f"genetic epochs must be between 1 and {MAX_EPOCHS}")
     if not 1.0 <= ev_threshold <= 3.0:
         raise ValueError("genetic EV threshold must be between 1.0 and 3.0")
-    return Genome(target, alpha, learning_rate, epochs, ev_threshold)
+    return Genome(target, alpha, learning_rate, epochs, ev_threshold, blend)
+
+
+def _target_for_blend(blend: float) -> str:
+    if float(blend) == 0.0:
+        return "winner"
+    if float(blend) == 1.0:
+        return "top3_pl"
+    return "blended"
+
+
+def _random_blend(rng: random.Random) -> float:
+    endpoint = rng.random()
+    if endpoint < 0.20:
+        return 0.0
+    if endpoint < 0.40:
+        return 1.0
+    return rng.random()
 
 
 def random_genome(rng: random.Random) -> Genome:
+    blend = _random_blend(rng)
     return Genome(
-        target=rng.choice(TARGETS),
+        target=_target_for_blend(blend),
         alpha=10 ** rng.uniform(-6.5, -2.5),
         learning_rate=10 ** rng.uniform(math.log10(0.004), math.log10(0.08)),
-        epochs=rng.choice((1, 1, 1, 2)),
+        epochs=rng.choice((1, 1, 2, 2, 3, 4, 5, 6)),
         ev_threshold=POLICY_EV_THRESHOLD,
+        loss_blend=blend,
     )
 
 
 def crossover(left: Genome, right: Genome, rng: random.Random) -> Genome:
+    blend = (
+        rng.choice((left.loss_blend, right.loss_blend))
+        if rng.random() < 0.5
+        else (float(left.loss_blend) + float(right.loss_blend)) / 2.0
+    )
     return Genome(
-        target=rng.choice((left.target, right.target)),
+        target=_target_for_blend(blend),
         alpha=math.sqrt(left.alpha * right.alpha),
         learning_rate=math.sqrt(left.learning_rate * right.learning_rate),
         epochs=rng.choice((left.epochs, right.epochs)),
         ev_threshold=POLICY_EV_THRESHOLD,
+        loss_blend=blend,
     )
 
 
 def mutate(genome: Genome, rng: random.Random, rate: float = 0.35) -> Genome:
-    target = genome.target
+    blend = float(genome.loss_blend)
     alpha = genome.alpha
     learning_rate = genome.learning_rate
     epochs = genome.epochs
     if rng.random() < rate:
-        target = rng.choice(TARGETS)
+        if rng.random() < 0.25:
+            blend = rng.choice((0.0, 1.0))
+        else:
+            blend = min(1.0, max(0.0, blend + rng.gauss(0.0, 0.20)))
     if rng.random() < rate:
         alpha = min(1e-2, max(1e-7, alpha * math.exp(rng.gauss(0.0, 0.8))))
     if rng.random() < rate:
@@ -104,8 +174,15 @@ def mutate(genome: Genome, rng: random.Random, rate: float = 0.35) -> Genome:
             max(0.001, learning_rate * math.exp(rng.gauss(0.0, 0.35))),
         )
     if rng.random() < rate:
-        epochs = rng.choice((1, 1, 2, 3))
-    return Genome(target, alpha, learning_rate, epochs, POLICY_EV_THRESHOLD)
+        epochs = rng.randint(1, MAX_EPOCHS)
+    return Genome(
+        _target_for_blend(blend),
+        alpha,
+        learning_rate,
+        epochs,
+        POLICY_EV_THRESHOLD,
+        blend,
+    )
 
 
 def _aggregate_speculative_score(metrics: dict[str, Any], genome: Genome) -> float:
@@ -113,7 +190,10 @@ def _aggregate_speculative_score(metrics: dict[str, Any], genome: Genome) -> flo
     entry = float(metrics["entry_log_loss"])
     winner = float(metrics["winner_top1_accuracy"])
     top5 = float(metrics["trifecta_top5_hit_rate"])
-    complexity = 0.002 * max(0, genome.epochs - 1)
+    effective_epochs = int(metrics.get("effective_epochs") or genome.epochs)
+    complexity = EPOCH_COMPLEXITY_PENALTY_WEIGHT * max(0, effective_epochs - 1)
+    if genome.epochs == MAX_EPOCHS:
+        complexity += EPOCH_BOUNDARY_PENALTY
     return -ranking - 0.35 * entry + 0.35 * winner + 0.20 * top5 - complexity
 
 
@@ -124,7 +204,15 @@ def fitness_components(metrics: dict[str, Any], genome: Genome) -> dict[str, flo
         base = _aggregate_speculative_score(metrics, genome)
         return {
             "segment_mean_score": base,
+            "worst_segment_score": base,
             "worst_segment_ranking_log_loss": float(metrics["ranking_log_loss"]),
+            "worst_segment_entry_log_loss": float(metrics["entry_log_loss"]),
+            "worst_segment_winner_top1_accuracy": float(
+                metrics["winner_top1_accuracy"]
+            ),
+            "worst_segment_trifecta_top5_hit_rate": float(
+                metrics["trifecta_top5_hit_rate"]
+            ),
             "ranking_worst_segment_penalty": 0.0,
             "winner_stability_std": 0.0,
             "winner_stability_penalty": 0.0,
@@ -150,7 +238,13 @@ def fitness_components(metrics: dict[str, Any], genome: Genome) -> dict[str, flo
     stability_penalty = ranking_penalty + winner_penalty + top5_penalty
     return {
         "segment_mean_score": segment_mean,
+        "worst_segment_score": min(segment_scores),
         "worst_segment_ranking_log_loss": worst_ranking,
+        "worst_segment_entry_log_loss": max(
+            float(row["entry_log_loss"]) for row in segments
+        ),
+        "worst_segment_winner_top1_accuracy": min(winner_rates),
+        "worst_segment_trifecta_top5_hit_rate": min(top5_rates),
         "ranking_worst_segment_penalty": ranking_penalty,
         "winner_stability_std": winner_std,
         "winner_stability_penalty": winner_penalty,
@@ -169,9 +263,10 @@ def chronological_validation_segments(
     race_start: int,
     race_end: int,
     *,
+    race_keys: list[tuple[str, str, str, int]] | None = None,
     segment_count: int = VALIDATION_SEGMENT_COUNT,
 ) -> list[tuple[int, int]]:
-    """Partition an ordered race range without shuffling, overlap, or gaps."""
+    """Partition an ordered range without splitting a date when keys are supplied."""
     race_count = race_end - race_start
     if segment_count < 1:
         raise ValueError("segment_count must be positive")
@@ -179,14 +274,56 @@ def chronological_validation_segments(
         raise ValueError(
             f"validation requires at least {segment_count} races; got {race_count}"
         )
-    quotient, remainder = divmod(race_count, segment_count)
+    if race_keys is None:
+        quotient, remainder = divmod(race_count, segment_count)
+        segments: list[tuple[int, int]] = []
+        start = race_start
+        for index in range(segment_count):
+            stop = start + quotient + (1 if index < remainder else 0)
+            segments.append((start, stop))
+            start = stop
+        return segments
+
+    groups = _date_groups(race_keys, race_start=race_start, race_end=race_end)
+    if len(groups) < segment_count:
+        raise ValueError(
+            f"validation requires at least {segment_count} complete days; "
+            f"got {len(groups)}"
+        )
+    quotient, remainder = divmod(len(groups), segment_count)
     segments: list[tuple[int, int]] = []
-    start = race_start
+    group_start = 0
     for index in range(segment_count):
-        stop = start + quotient + (1 if index < remainder else 0)
-        segments.append((start, stop))
-        start = stop
+        group_stop = group_start + quotient + (1 if index < remainder else 0)
+        segments.append((groups[group_start][1], groups[group_stop - 1][2]))
+        group_start = group_stop
     return segments
+
+
+def _date_groups(
+    race_keys: list[tuple[str, str, str, int]],
+    *,
+    race_start: int = 0,
+    race_end: int | None = None,
+) -> list[tuple[str, int, int]]:
+    stop = len(race_keys) if race_end is None else min(len(race_keys), race_end)
+    start = max(0, race_start)
+    if start >= stop:
+        return []
+    dates = [str(row[1]) for row in race_keys[start:stop]]
+    if dates != sorted(dates):
+        raise ValueError("genetic races must be ordered chronologically by race date")
+    groups: list[tuple[str, int, int]] = []
+    group_start = start
+    current = dates[0]
+    for index in range(start + 1, stop):
+        race_date = str(race_keys[index][1])
+        if race_date != current:
+            groups.append((current, group_start, index))
+            current = race_date
+            group_start = index
+    groups.append((current, group_start, stop))
+    return groups
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
@@ -299,11 +436,42 @@ def _slice_dataset(
     *,
     train_races: int,
     validation_races: int,
-) -> tuple[HashedRaceDataset, int]:
-    total = train_races + validation_races
-    if dataset.race_count < total:
-        raise ValueError(f"genetic cache has {dataset.race_count} races; {total} required")
-    start = dataset.race_count - total
+    embargo_days: int = MIN_EMBARGO_DAYS,
+) -> tuple[HashedRaceDataset, TemporalSplit]:
+    if embargo_days < MIN_EMBARGO_DAYS:
+        raise ValueError(
+            f"genetic validation requires at least {MIN_EMBARGO_DAYS} embargo day"
+        )
+    if train_races < 1 or validation_races < 1:
+        raise ValueError("train_races and validation_races must be positive")
+    groups = _date_groups(dataset.race_keys)
+    if len(groups) < embargo_days + VALIDATION_SEGMENT_COUNT + 1:
+        raise ValueError("genetic cache does not contain enough complete days")
+
+    def suffix_start(rows: list[tuple[str, int, int]], required: int) -> int:
+        count = 0
+        for index in range(len(rows) - 1, -1, -1):
+            count += rows[index][2] - rows[index][1]
+            if count >= required:
+                return index
+        raise ValueError(
+            f"genetic cache has only {count} eligible races; {required} required"
+        )
+
+    validation_group_start = min(
+        suffix_start(groups, validation_races),
+        len(groups) - VALIDATION_SEGMENT_COUNT,
+    )
+    embargo_group_start = validation_group_start - embargo_days
+    if embargo_group_start <= 0:
+        raise ValueError(
+            "genetic cache lacks a full training window before the embargo"
+        )
+    training_groups = groups[:embargo_group_start]
+    train_group_start = suffix_start(training_groups, train_races)
+    start = groups[train_group_start][1]
+    train_end_absolute = groups[embargo_group_start][1]
+    validation_start_absolute = groups[validation_group_start][1]
     sliced = HashedRaceDataset(
         matrix=dataset.matrix[dataset.row_slice(start, dataset.race_count)].tocsr(),
         race_keys=dataset.race_keys[start:],
@@ -313,7 +481,20 @@ def _slice_dataset(
         hasher_settings=dataset.hasher_settings,
         feature_schema_version=dataset.feature_schema_version,
     )
-    return sliced, train_races
+    train_end = train_end_absolute - start
+    validation_start = validation_start_absolute - start
+    split = TemporalSplit(
+        train_end=train_end,
+        embargo_start=train_end,
+        validation_start=validation_start,
+        validation_end=sliced.race_count,
+        train_dates=tuple(row[0] for row in groups[train_group_start:embargo_group_start]),
+        embargo_dates=tuple(
+            row[0] for row in groups[embargo_group_start:validation_group_start]
+        ),
+        validation_dates=tuple(row[0] for row in groups[validation_group_start:]),
+    )
+    return sliced, split
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -335,43 +516,53 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     if dataset is None:
         raise ValueError("daily genetic feature cache is absent, stale, or incompatible")
-    dataset, train_end = _slice_dataset(
+    dataset, split = _slice_dataset(
         dataset,
         train_races=args.train_races,
         validation_races=args.validation_races,
+        embargo_days=getattr(args, "embargo_days", MIN_EMBARGO_DAYS),
     )
+    train_end = split.train_end
     scaler = fit_scaler(dataset, race_end=train_end, batch_rows=args.batch_races * 6)
 
     validation_segments = chronological_validation_segments(
-        train_end, dataset.race_count
+        split.validation_start,
+        split.validation_end,
+        race_keys=dataset.race_keys,
     )
-    validation_dates = [str(row[1]) for row in dataset.race_keys[train_end:]]
-    if validation_dates != sorted(validation_dates):
-        raise ValueError(
-            "genetic validation races must be ordered chronologically by race date"
-        )
 
     def evaluate(genome: Genome) -> dict[str, Any]:
         model, history = train_listwise_model(
             dataset,
             train_race_end=train_end,
             target=genome.target,
+            loss_blend=genome.loss_blend,
             alpha=genome.alpha,
             learning_rate=genome.learning_rate,
             epochs=genome.epochs,
             batch_races=args.batch_races,
             scaler=scaler,
+            early_stopping_patience=1,
+            early_stopping_min_delta=1e-4,
         )
         metrics, _ = evaluate_range(
             dataset,
             model,
-            race_start=train_end,
-            race_end=dataset.race_count,
+            race_start=split.validation_start,
+            race_end=split.validation_end,
             batch_races=args.batch_races,
         )
-        metrics["final_training_ranking_log_loss"] = history[-1][
+        selected_epoch = next(
+            row for row in history if int(row["epoch"]) == model.epochs
+        )
+        metrics["final_training_ranking_log_loss"] = selected_epoch[
             "training_ranking_log_loss"
         ]
+        metrics["requested_epochs"] = genome.epochs
+        metrics["effective_epochs"] = model.epochs
+        metrics["observed_epochs"] = len(history)
+        metrics["early_stopped"] = bool(history[-1].get("early_stopped"))
+        metrics["loss_blend"] = genome.loss_blend
         metrics["validation_segments"] = []
         for segment_index, (segment_start, segment_end) in enumerate(
             validation_segments, start=1
@@ -389,6 +580,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "race_end": segment_end,
                 "start_race_date": str(dataset.race_keys[segment_start][1]),
                 "end_race_date": str(dataset.race_keys[segment_end - 1][1]),
+                "effective_epochs": model.epochs,
                 **segment_metrics,
             })
         return metrics
@@ -415,9 +607,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "evaluation_scope": "speculative_recent_window_not_promotion_evidence",
         "promotion_eligible": False,
         "validation_protocol": {
-            "kind": "three_contiguous_chronological_segments",
+            "kind": "three_full_day_contiguous_chronological_segments",
             "segment_count": VALIDATION_SEGMENT_COUNT,
             "shuffled": False,
+            "day_boundary_aligned": True,
+            "embargo_days": len(split.embargo_dates),
+            "embargo_dates": list(split.embargo_dates),
+            "train_date_range": [split.train_dates[0], split.train_dates[-1]],
+            "validation_date_range": [
+                split.validation_dates[0],
+                split.validation_dates[-1],
+            ],
+            "segment_date_ranges": [
+                {
+                    "segment_index": index,
+                    "start_race_date": str(dataset.race_keys[start][1]),
+                    "end_race_date": str(dataset.race_keys[stop - 1][1]),
+                    "race_count": stop - start,
+                }
+                for index, (start, stop) in enumerate(validation_segments, start=1)
+            ],
             "formal_365d_validation_separate": True,
             "fitness": (
                 "mean_segment_speculative_score_minus_worst_ranking_and_"
@@ -441,6 +650,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "configured_random_injections": args.random_injections,
         "train_races": args.train_races,
         "validation_races": args.validation_races,
+        "actual_train_races": split.train_end,
+        "actual_embargo_races": split.validation_start - split.embargo_start,
+        "actual_validation_races": split.validation_end - split.validation_start,
+        "embargo_days": len(split.embargo_dates),
+        "embargo_dates": list(split.embargo_dates),
         "cache_prefix": str(args.cache_prefix),
         "cache_race_count": len(race_keys),
         "champion": elites[0],
@@ -473,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-injections", type=int, default=1)
     parser.add_argument("--train-races", type=int, default=12_000)
     parser.add_argument("--validation-races", type=int, default=3_000)
+    parser.add_argument("--embargo-days", type=int, default=MIN_EMBARGO_DAYS)
     parser.add_argument("--batch-races", type=int, default=500)
     parser.add_argument("--n-features", type=int, default=8192)
     parser.add_argument("--immigrants-json", default="[]")

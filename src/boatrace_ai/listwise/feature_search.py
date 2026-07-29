@@ -282,7 +282,7 @@ def _checkpoint_signature(
     alphas: tuple[float, ...],
     variants: FeatureVariants | None = None,
 ) -> dict[str, Any]:
-    return {
+    signature = {
         "checkpoint_version": 1,
         "cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
@@ -301,6 +301,10 @@ def _checkpoint_signature(
             [name, list(dropped)] for name, dropped in _resolved_variants(variants)
         ],
     }
+    loss_blend = getattr(args, "loss_blend", None)
+    if loss_blend is not None:
+        signature["loss_blend"] = float(loss_blend)
+    return signature
 
 
 def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -345,6 +349,10 @@ def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[st
                 or key in completed
                 or any(field not in row for field in required_fields)
                 or row["drop_feature_groups"] != allowed_drops.get(variant_name)
+                or (
+                    signature.get("loss_blend") is not None
+                    and row.get("loss_blend") != signature["loss_blend"]
+                )
             ):
                 return {}
             completed[key] = row
@@ -417,6 +425,7 @@ def _evaluate_variant(
     variant_name = str(request["variant_name"])
     dropped = tuple(str(value) for value in request["dropped"])
     targets = tuple(str(value) for value in request["targets"])
+    loss_blend = request.get("loss_blend")
     alphas = tuple(float(value) for value in request["alphas"])
     completed = {
         _candidate_key(variant_name, str(row["target"]), float(row["alpha"])): row
@@ -453,6 +462,7 @@ def _evaluate_variant(
             dataset,
             train_race_end=int(request["train_end"]),
             target=target,
+            loss_blend=loss_blend,
             alpha=alpha,
             learning_rate=float(request["learning_rate"]),
             epochs=int(request["epochs"]),
@@ -470,6 +480,7 @@ def _evaluate_variant(
             "feature_variant": variant_name,
             "drop_feature_groups": list(dropped),
             "target": target,
+            "loss_blend": loss_blend,
             "alpha": alpha,
             "cache_source": cache_source,
             "matrix_nnz": int(dataset.matrix.nnz),
@@ -588,6 +599,9 @@ def search(
     alphas = tuple(float(value) for value in args.alphas.split(",") if value.strip())
     if not targets or any(value not in TARGETS for value in targets):
         raise ValueError(f"targets must be selected from {TARGETS}")
+    loss_blend = getattr(args, "loss_blend", None)
+    if loss_blend is not None and not 0.0 <= float(loss_blend) <= 1.0:
+        raise ValueError("loss_blend must be between 0 and 1")
     variant_workers = int(args.variant_workers)
     if variant_workers != 1:
         raise ValueError("variant workers must be 1 to avoid dataset matrix duplication")
@@ -687,6 +701,7 @@ def search(
             "targets": targets,
             "alphas": alphas,
             "learning_rate": float(args.learning_rate),
+            "loss_blend": loss_blend,
             "epochs": int(args.epochs),
             "completed_rows": [
                 completed[key] for key in candidate_keys if key in completed
@@ -845,6 +860,7 @@ def search(
         dataset,
         train_race_end=train_end,
         target=str(selected["target"]),
+        loss_blend=loss_blend,
         alpha=float(selected["alpha"]),
         learning_rate=args.learning_rate,
         epochs=args.epochs,
@@ -876,6 +892,7 @@ def search(
         dataset,
         train_race_end=selection_end,
         target=str(selected["target"]),
+        loss_blend=loss_blend,
         alpha=float(selected["alpha"]),
         learning_rate=args.learning_rate,
         epochs=args.epochs,
@@ -897,6 +914,7 @@ def search(
     policy["feature_variant"] = selected["feature_variant"]
     policy["drop_feature_groups"] = list(selected_drops)
     policy["target"] = selected["target"]
+    policy["loss_blend"] = loss_blend
     totals = zero_totals()
     daily_rows: list[dict[str, Any]] = []
     bankroll, profit_state = evaluate_bankroll_fold(
@@ -912,6 +930,21 @@ def search(
     holdout_pass = bankroll["roi"] > 1.0 and holdout_metrics["winner_top1_accuracy"] >= args.min_top1
     evaluation_hash = race_set_sha256(holdout_rows)
     bankroll["evaluation_race_set_sha256"] = evaluation_hash
+    selected_payload = {
+        key: selected[key]
+        for key in (
+            "feature_variant",
+            "drop_feature_groups",
+            "target",
+            "alpha",
+            "ranking_log_loss",
+            "entry_log_loss",
+            "winner_top1_accuracy",
+            "trifecta_top5_hit_rate",
+        )
+    }
+    if loss_blend is not None:
+        selected_payload["loss_blend"] = float(loss_blend)
     result = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model": "pastlog_listwise_feature_teacher_search_v1",
@@ -934,25 +967,14 @@ def search(
         ),
         "feature_variants": [name for name, _drops in run_variants],
         "teacher_targets": list(targets),
+        "loss_blend": loss_blend,
         "alphas": list(alphas),
         "selection_metric": (
             "ranking log loss within 0.5% of best, then maximum 3T5; "
             "winner top1 and entry log loss as tie breaks"
         ),
         "search_results": search_rows,
-        "selected": {
-            key: selected[key]
-            for key in (
-                "feature_variant",
-                "drop_feature_groups",
-                "target",
-                "alpha",
-                "ranking_log_loss",
-                "entry_log_loss",
-                "winner_top1_accuracy",
-                "trifecta_top5_hit_rate",
-            )
-        },
+        "selected": selected_payload,
         "selected_cache_source": cache_source,
         "selected_cache_prefix": str(selected_cache_prefix)
         if selected_cache_prefix is not None
@@ -1026,6 +1048,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.02)
     parser.add_argument("--targets", default="winner,top3_pl")
+    parser.add_argument("--loss-blend", type=float)
     parser.add_argument("--alphas", default="0.00001,0.0001")
     parser.add_argument("--train-fraction", type=float, default=0.75)
     parser.add_argument("--selection-fraction", type=float, default=0.90)

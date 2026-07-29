@@ -2582,6 +2582,54 @@ def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None
     ) == "refine_selected_candidate"
 
 
+def test_listwise_feature_search_command_preserves_fixed_loss_blend(tmp_path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-29",
+                "targets": "top3_pl",
+                "loss_blend": 0.375,
+                "timeout_seconds": 21600,
+            },
+            job_id=88,
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--targets") + 1] == "top3_pl"
+    assert command[command.index("--loss-blend") + 1] == "0.375"
+
+
+def test_genetic_island_command_preserves_full_day_embargo(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "genetic_island_search",
+            {
+                "evaluation_date": "2026-07-29",
+                "cohort": "ga-v4-test",
+                "generation": 0,
+                "island_id": 0,
+                "island_count": 2,
+                "seed": 17,
+                "train_races": 2000,
+                "validation_races": 500,
+                "embargo_days": 2,
+            },
+            job_id=89,
+        ),
+        app_root=tmp_path,
+        python=tmp_path / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--embargo-days") + 1] == "2"
+
+
 @pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
 def test_combined_feature_search_rejects_injected_worker_or_path(
     tmp_path, parameter

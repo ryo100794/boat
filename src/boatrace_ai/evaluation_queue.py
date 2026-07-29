@@ -1164,7 +1164,7 @@ def build_command(
             "evaluation_date", "cohort", "generation", "island_id",
             "island_count", "max_generations", "seed", "population_size",
             "local_generations", "elite_count", "train_races",
-            "validation_races", "batch_races", "immigrants", "mutation_rate",
+            "validation_races", "embargo_days", "batch_races", "immigrants", "mutation_rate",
             "random_injections", "migration_interval", "migration_applied",
             "diversity_rescue", "structural_elite_count", "timeout_seconds",
         }
@@ -1195,6 +1195,7 @@ def build_command(
         _integer(params, "migration_interval", 3, 2, 10)
         train_races = _integer(params, "train_races", 12000, 2000, 50000)
         validation_races = _integer(params, "validation_races", 3000, 500, 15000)
+        embargo_days = _integer(params, "embargo_days", 1, 1, 14)
         batch_races = _integer(params, "batch_races", 500, 100, 2000)
         _integer(params, "timeout_seconds", 7200, 300, 43200)
         immigrants = params.get("immigrants") or []
@@ -1222,6 +1223,7 @@ def build_command(
             "--random-injections", str(random_injections),
             "--train-races", str(train_races),
             "--validation-races", str(validation_races),
+            "--embargo-days", str(embargo_days),
             "--batch-races", str(batch_races),
             "--immigrants-json", _json(immigrants),
         ], output
@@ -1532,6 +1534,7 @@ def build_command(
             "epochs",
             "batch_races",
             "learning_rate",
+            "loss_blend",
             "targets",
             "alphas",
             "feature_variants",
@@ -1550,6 +1553,13 @@ def build_command(
         epochs = _integer(params, "epochs", 2, 1, 6)
         batch_races = _integer(params, "batch_races", 1000, 250, 5000)
         learning_rate = _number(params, "learning_rate", 0.02, 0.001, 0.2)
+        loss_blend = (
+            _number(params, "loss_blend", 0.0, 0.0, 1.0)
+            if params.get("loss_blend") is not None
+            else None
+        )
+        if task_type == "combined_feature_search" and loss_blend is not None:
+            raise ValueError("combined_feature_search does not support loss_blend")
         targets = str(params.get("targets", "winner,top3_pl"))
         if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
             raise ValueError("unsupported targets")
@@ -1624,6 +1634,8 @@ def build_command(
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
         ]
+        if loss_blend is not None:
+            command.extend(["--loss-blend", str(loss_blend)])
         if selected_feature_variants:
             variant_option = (
                 "--combined-feature-variants"
@@ -3214,6 +3226,18 @@ def advance_genetic_islands(
         structural_elites = {
             (
                 result["champion"]["genome"].get("target"),
+                round(
+                    float(
+                        result["champion"]["genome"].get("loss_blend")
+                        if result["champion"]["genome"].get("loss_blend") is not None
+                        else (
+                            0.0
+                            if result["champion"]["genome"].get("target") == "winner"
+                            else 1.0
+                        )
+                    ),
+                    4,
+                ),
                 round(float(result["champion"]["genome"].get("learning_rate") or 0), 4),
                 int(result["champion"]["genome"].get("epochs") or 0),
             )
@@ -3246,7 +3270,13 @@ def advance_genetic_islands(
                     continue
                 genome = row["genome"]
                 key = (
-                    genome.get("target"), float(genome.get("alpha") or 0),
+                    genome.get("target"),
+                    float(
+                        genome.get("loss_blend")
+                        if genome.get("loss_blend") is not None
+                        else (0.0 if genome.get("target") == "winner" else 1.0)
+                    ),
+                    float(genome.get("alpha") or 0),
                     float(genome.get("learning_rate") or 0),
                     int(genome.get("epochs") or 0),
                 )
@@ -3294,6 +3324,11 @@ def advance_genetic_islands(
         genome = champion["genome"]
         predictive_key = (
             genome.get("target"),
+            float(
+                genome.get("loss_blend")
+                if genome.get("loss_blend") is not None
+                else (0.0 if genome.get("target") == "winner" else 1.0)
+            ),
             float(genome.get("alpha") or 0),
             float(genome.get("learning_rate") or 0),
             int(genome.get("epochs") or 0),
@@ -3305,6 +3340,14 @@ def advance_genetic_islands(
     for rank, champion in enumerate(champions[:island_count], start=1):
         genome = dict(champion["genome"])
         genome_version = int(genome.get("genome_version") or 1)
+        loss_blend = float(
+            genome.get("loss_blend")
+            if genome.get("loss_blend") is not None
+            else (0.0 if genome.get("target") == "winner" else 1.0)
+        )
+        validation_target = str(genome.get("target") or "")
+        if validation_target not in {"winner", "top3_pl"}:
+            validation_target = "winner" if loss_blend < 0.5 else "top3_pl"
         model_key = (
             f"genetic-champion-v{genome_version}-{cohort}"
             f"-g{generation:02d}-r{rank:02d}"
@@ -3319,7 +3362,8 @@ def advance_genetic_islands(
                 "epochs": int(genome["epochs"]),
                 "batch_races": 1000,
                 "learning_rate": float(genome["learning_rate"]),
-                "targets": str(genome["target"]),
+                "targets": validation_target,
+                "loss_blend": loss_blend,
                 "alphas": f"{float(genome['alpha']):.12g}",
                 "ev_thresholds": "1.0,1.1,1.2,1.35,1.5",
                 "timeout_seconds": 43200,
