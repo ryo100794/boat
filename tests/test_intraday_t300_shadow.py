@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
+import joblib
 import pytest
 
+from boatrace_ai.listwise.edge_conditional_probability_lcb_v14 import METHOD
 from boatrace_ai.runtime.intraday_t300_shadow import (
     DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
     DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
@@ -14,6 +18,8 @@ from boatrace_ai.runtime.intraday_t300_shadow import (
     ShadowDecision,
     SnapshotCheck,
     T300Snapshot,
+    V14RegisteredBandModelAdapter,
+    build_adapter,
     build_parser,
     resolve_race_date,
     run_cycle,
@@ -252,3 +258,163 @@ def test_default_staleness_limits_and_daemon_cli_are_explicit() -> None:
     assert args.max_checkpoint_age_seconds == 75.0
     assert args.max_source_update_staleness_seconds == 100.0
     assert args.once is True
+
+
+def _v14_evaluation() -> dict[str, Any]:
+    return {
+        "deployment_configuration": {
+            "calibrator_strategy": (
+                "odds_path_role_integrated_registered_band_lcb_v14"
+            ),
+            "probability_lcb": {
+                "model_name": "edge_conditional_probability_lcb_v14",
+                "method": METHOD,
+                "ready": True,
+                "trained_through_date": "2026-07-29",
+                "uses_result_for_fit_only": True,
+                "uses_payout": False,
+                "registered_divergence_band": {
+                    "lower_inclusive": 0.5,
+                    "upper_exclusive": 1.0,
+                },
+                "rank_nodes": {},
+                "conditional_cells": {},
+            },
+            "candidate_policy": {
+                "registered_divergence_lower_inclusive": 0.5,
+                "registered_divergence_upper_exclusive": 1.0,
+            },
+        }
+    }
+
+
+def _write_v14_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    merged_bundle = tmp_path / "v14-merged.joblib"
+    base_model = tmp_path / "base.joblib"
+    deployment = _v14_evaluation()["deployment_configuration"]
+    deployment.update({
+        "operational_model": {"trained_through_date": "2026-07-29"},
+        "closing_t300_v12_model": {
+            "model_name": "closing_odds_t300_nonlinear_v12",
+            "ready": True,
+            "trained_through_date": "2026-07-29",
+            "point_model": {"estimator": object()},
+        },
+        "selection_conformal": {
+            "ready": False,
+            "trained_through_date": "2026-07-29",
+        },
+    })
+    joblib.dump({
+        "deployment": deployment,
+        "sources": {
+            "v14_evaluation": "job-00007396.json",
+            "closing_estimator": "v12_live_bundle",
+        },
+    }, merged_bundle)
+    joblib.dump({"feature_schema_version": 1}, base_model)
+    return merged_bundle, base_model
+
+
+def test_v14_evaluation_deployment_is_composed_with_v12_closing(
+    tmp_path: Path,
+) -> None:
+    merged_bundle, base_model = _write_v14_artifacts(tmp_path)
+    adapter = build_adapter(
+        f"v14-jul30:v14_registered_band_t300:{merged_bundle}:{base_model}"
+    )
+
+    assert isinstance(adapter, V14RegisteredBandModelAdapter)
+    assert adapter.identity.strategy_name == "v14_registered_band_t300"
+    assert len(adapter.identity.model_hash) == 64
+    assert adapter._component("probability_lcb")["method"] == METHOD
+    assert adapter._component("closing_t300_v12_model")["model_name"] == (
+        "closing_odds_t300_nonlinear_v12"
+    )
+
+
+def test_v12_and_v14_series_coexist_with_distinct_model_hashes(tmp_path: Path) -> None:
+    merged_bundle, base_model = _write_v14_artifacts(tmp_path)
+    v14 = V14RegisteredBandModelAdapter(
+        model_key="v14", bundle_path=merged_bundle, base_model_path=base_model,
+    )
+    row = race("2026-07-30")
+    store = MemoryStore([row], {row.race_id: snapshot(row.target_t300_at)})
+    v12 = Adapter("v12", "1" * 64, selected=False)
+
+    v14.decide = lambda *args, **kwargs: ShadowDecision(  # type: ignore[method-assign]
+        {}, {}, (), "v14_sparse_or_missing_cell_no_bet"
+    )
+    run_cycle(store, [v12, v14], now=cycle_time(row))
+
+    assert set(store.decisions) == {(row.race_id, "v12"), (row.race_id, "v14")}
+    assert store.decisions[(row.race_id, "v14")]["decision"].no_bet_reason == (
+        "v14_sparse_or_missing_cell_no_bet"
+    )
+    assert v12.identity.model_hash != v14.identity.model_hash
+
+
+def test_v14_decision_uses_only_pre_result_race_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merged_bundle, base_model = _write_v14_artifacts(tmp_path)
+    adapter = V14RegisteredBandModelAdapter(
+        model_key="v14", bundle_path=merged_bundle, base_model_path=base_model,
+    )
+    row = race("2026-07-30")
+    point = snapshot(row.target_t300_at)
+    uniform = {key: 1.0 / 120.0 for key in COMBINATIONS}
+    seen: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(adapter, "_base_probabilities", lambda conn, race: uniform)
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.attach_odds_path_probability_v8",
+        lambda races, model: races,
+    )
+    def capture(
+        race_payload: dict[str, Any], combination: str, artifact: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not seen:
+            seen.append(copy.deepcopy(race_payload))
+        return {
+            "probability": 0.0, "raw_probability": 1.0 / 120.0,
+            "factor": 0.0, "in_registered_divergence_band": False,
+            "resolution": "outside_registered_divergence_band",
+        }
+
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.probability_lower_bound_details_v14",
+        capture,
+    )
+    decision = adapter.decide(object(), row, point, bankroll_yen=10_000)
+
+    assert decision.no_bet_reason == "selection_conformal_not_ready"
+    assert decision.diagnostics["v14_registered_band"]["status"] == "recorded"
+    assert decision.diagnostics["v14_registered_band"]["uses_result"] is False
+    assert decision.diagnostics["v14_registered_band"]["uses_payout"] is False
+    assert len(seen) == 1
+    assert "actual_combination" not in seen[0]
+    assert "result" not in seen[0]
+    assert "payout" not in seen[0]
+    assert seen[0]["snapshot_id"] == point.snapshot_id
+    assert seen[0]["odds_checkpoints"]["300"]["snapshot_id"] == point.snapshot_id
+
+
+@pytest.mark.parametrize("field", ["uses_payout", "registered_divergence_band"])
+def test_v14_rejects_unsafe_or_unregistered_deployment(
+    tmp_path: Path, field: str,
+) -> None:
+    merged_bundle, base_model = _write_v14_artifacts(tmp_path)
+    payload = joblib.load(merged_bundle)
+    lcb = payload["deployment"]["probability_lcb"]
+    if field == "uses_payout":
+        lcb[field] = True
+    else:
+        lcb[field]["upper_exclusive"] = 1.1
+    joblib.dump(payload, merged_bundle)
+
+    with pytest.raises(ValueError):
+        V14RegisteredBandModelAdapter(
+            model_key="v14", bundle_path=merged_bundle,
+            base_model_path=base_model,
+        )

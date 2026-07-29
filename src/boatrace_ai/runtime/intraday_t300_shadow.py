@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -19,6 +19,13 @@ from ..feature_tuning import build_race_features
 from ..listwise.closing_odds_t300_nonlinear_v12 import (
     MODEL_NAME as V12_CLOSING_MODEL_NAME,
     forecast_closing_odds_t300_nonlinear_v12,
+)
+from ..listwise.edge_conditional_probability_lcb_v14 import (
+    METHOD as V14_PROBABILITY_LCB_METHOD,
+    REGISTERED_DIVERGENCE_LOWER,
+    REGISTERED_DIVERGENCE_UPPER,
+    probability_lower_bound_details_v14,
+    t300_snapshot_consistency,
 )
 from ..listwise.live_shadow import historical_state, load_date_races
 from ..listwise.market_calibration import (
@@ -73,6 +80,7 @@ CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
   closing_lower_odds JSONB NOT NULL,
   closing_lower_summary JSONB NOT NULL,
   selected_candidates JSONB NOT NULL,
+  diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
   total_stake_yen INTEGER NOT NULL,
   decision_hash CHAR(64) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -83,6 +91,8 @@ CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
     (decision_status = 'no_bet' AND no_bet_reason IS NOT NULL AND total_stake_yen = 0)
   )
 );
+ALTER TABLE intraday_t300_shadow_decisions
+  ADD COLUMN IF NOT EXISTS diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_intraday_t300_shadow_decisions_day_model
   ON intraday_t300_shadow_decisions(race_date, model_key, target_t300_at);
 
@@ -165,6 +175,7 @@ class ShadowDecision:
     closing_lower_odds: dict[str, float]
     selected_candidates: tuple[dict[str, Any], ...]
     no_bet_reason: str | None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_stake_yen(self) -> int:
@@ -255,8 +266,8 @@ def _value_summary(values: Mapping[str, float], *, descending: bool) -> dict[str
     return summary
 
 
-def _no_bet(reason: str) -> ShadowDecision:
-    return ShadowDecision({}, {}, (), reason)
+def _no_bet(reason: str, *, diagnostics: Mapping[str, Any] | None = None) -> ShadowDecision:
+    return ShadowDecision({}, {}, (), reason, dict(diagnostics or {}))
 
 
 def validate_snapshot(
@@ -407,6 +418,7 @@ class PostgresShadowStore:
             "bankroll_before_yen": bankroll_before_yen, "status": decision.status,
             "no_bet_reason": decision.no_bet_reason, "probabilities": probabilities,
             "closing_lower_odds": closing, "selected_candidates": selected,
+            "diagnostics": decision.diagnostics,
             "total_stake_yen": decision.total_stake_yen,
         }
         cursor = self.conn.execute(
@@ -417,9 +429,9 @@ class PostgresShadowStore:
               checkpoint_age_before_target_seconds, source_update_staleness_seconds,
               bankroll_before_yen, decision_status, no_bet_reason, probabilities,
               probability_summary, closing_lower_odds, closing_lower_summary,
-              selected_candidates, total_stake_yen, decision_hash
+              selected_candidates, diagnostics, total_stake_yen, decision_hash
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb,
-                      ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?)
+                      ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?)
             ON CONFLICT (race_id, model_key) DO NOTHING
             """,
             (
@@ -434,7 +446,9 @@ class PostgresShadowStore:
                 json.dumps(_value_summary(probabilities, descending=True), sort_keys=True),
                 json.dumps(closing, sort_keys=True),
                 json.dumps(_value_summary(closing, descending=False), sort_keys=True),
-                json.dumps(selected, sort_keys=True), decision.total_stake_yen,
+                json.dumps(selected, sort_keys=True),
+                json.dumps(decision.diagnostics, sort_keys=True),
+                decision.total_stake_yen,
                 _payload_hash(payload),
             ),
         )
@@ -577,6 +591,7 @@ class V12RoleModelAdapter:
         model_race = {
             "race_id": race.race_id, "race_date": race.race_date,
             "jcd": race.jcd, "rno": race.rno,
+            "snapshot_id": snapshot.snapshot_id,
             "model_probabilities": base, "market_probabilities": market,
             "odds": dict(snapshot.odds), "odds_checkpoints": {"300": point},
             "odds_path": [{"minutes_before_decision": 0.0,
@@ -642,10 +657,139 @@ class V12RoleModelAdapter:
         return ShadowDecision(probabilities, closing, selected, reason)
 
 
+class V14RegisteredBandModelAdapter(V12RoleModelAdapter):
+    """Apply the V14 strict-prior LCB while retaining the deployable V12 closer."""
+
+    strategy_name = "v14_registered_band_t300"
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        bundle_path: Path,
+        base_model_path: Path,
+    ) -> None:
+        super().__init__(
+            model_key=model_key,
+            bundle_path=bundle_path,
+            base_model_path=base_model_path,
+        )
+        if self._bundle.get("calibrator_strategy") != (
+            "odds_path_role_integrated_registered_band_lcb_v14"
+        ):
+            raise ValueError("V14 deployment has an unexpected calibrator strategy")
+        probability_lcb = self._bundle.get("probability_lcb")
+        if not isinstance(probability_lcb, Mapping):
+            raise ValueError("V14 deployment lacks probability_lcb")
+        if probability_lcb.get("method") != V14_PROBABILITY_LCB_METHOD:
+            raise ValueError("V14 deployment has an unexpected probability LCB")
+        registered_band = probability_lcb.get("registered_divergence_band")
+        if not isinstance(registered_band, Mapping) or (
+            float(registered_band.get("lower_inclusive", math.nan))
+            != REGISTERED_DIVERGENCE_LOWER
+            or float(registered_band.get("upper_exclusive", math.nan))
+            != REGISTERED_DIVERGENCE_UPPER
+        ):
+            raise ValueError("V14 deployment must use registered band [0.5,1.0)")
+        if probability_lcb.get("uses_payout") is not False:
+            raise ValueError("V14 probability LCB must not use payout")
+        closing = self._component(
+            "closing_t300_v12_model", "closing_v12_model", "closing_model"
+        )
+        if not closing.get("ready") or closing.get("model_name") != V12_CLOSING_MODEL_NAME:
+            raise ValueError("V14 merged bundle lacks a live V12 closing estimator")
+        estimator = (closing.get("point_model") or {}).get("estimator")
+        if estimator is None:
+            raise ValueError("V14 merged bundle lacks a fitted V12 closing estimator")
+
+    def _registered_band_diagnostic(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot
+    ) -> dict[str, Any]:
+        probability_model = self._component("probability_model", "operational_model")
+        probability_lcb = self._component("probability_lcb")
+        point = normalize_odds_checkpoint(
+            {"snapshot_id": snapshot.snapshot_id,
+             "captured_at": snapshot.captured_at.isoformat(),
+             "source_update_time": snapshot.source_update_time,
+             "raw_json": snapshot.raw_json,
+             "betting_deadline_at": race.betting_deadline_at.isoformat(),
+             "odds": snapshot.odds},
+            target_offset_seconds=T300_OFFSET_SECONDS,
+        )
+        if point is None:
+            return {"status": "inconsistent_t300_snapshot"}
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return {"status": "inconsistent_probability_combination_set"}
+        model_race = {
+            "race_id": race.race_id, "race_date": race.race_date,
+            "jcd": race.jcd, "rno": race.rno, "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base, "market_probabilities": market,
+            "odds": dict(snapshot.odds), "odds_checkpoints": {"300": point},
+            "odds_path": [{"minutes_before_decision": 0.0,
+                           "snapshot_id": snapshot.snapshot_id,
+                           "captured_at": snapshot.captured_at.isoformat(),
+                           "market_probabilities": market}],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_probability_v8(
+            [model_race], dict(probability_model)
+        )[0]
+        consistency = t300_snapshot_consistency(transformed)
+        if not consistency["consistent"]:
+            return {"status": "inconsistent_t300_snapshot",
+                    "reason": consistency["reason"]}
+        details = {
+            combination: probability_lower_bound_details_v14(
+                transformed, combination, probability_lcb
+            )
+            for combination in sorted(snapshot.odds)
+        }
+        registered = {
+            combination: detail for combination, detail in details.items()
+            if detail.get("in_registered_divergence_band")
+        }
+        return {
+            "status": "recorded",
+            "checkpoint": "t300",
+            "source_snapshot_id": snapshot.snapshot_id,
+            "registered_divergence_band": "[0.5,1.0)",
+            "registered_combination_count": len(registered),
+            "adjusted_probability_sum": sum(
+                float(detail.get("probability") or 0.0)
+                for detail in registered.values()
+            ),
+            "registered_combinations": registered,
+            "uses_result": False,
+            "uses_payout": False,
+        }
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        conformal = self._component("selection_conformal")
+        if not conformal.get("ready"):
+            diagnostic = self._registered_band_diagnostic(conn, race, snapshot)
+            return _no_bet(
+                "selection_conformal_not_ready",
+                diagnostics={"v14_registered_band": diagnostic},
+            )
+        decision = super().decide(
+            conn, race, snapshot, bankroll_yen=bankroll_yen
+        )
+        return decision
+
+
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
     "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
         model_key=key, bundle_path=bundle, base_model_path=base
-    )
+    ),
+    "v14_registered_band_t300": lambda key, bundle, base: (
+        V14RegisteredBandModelAdapter(
+            model_key=key, bundle_path=bundle, base_model_path=base
+        )
+    ),
 }
 
 
