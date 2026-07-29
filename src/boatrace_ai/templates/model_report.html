@@ -90,14 +90,14 @@
     <div id="standardProtocol" class="panel"></div>
     <div class="panel"><h2><span>統一365日 複合判定</span><span class="muted">行タップで日次詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
     <span id="selectedModelGroup" aria-hidden="true"></span>
-    <div class="panel"><h2><span>研究モデル 複合判定</span><span class="muted">異なる期間は横比較禁止</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>状態</th><th>母数</th><th>損失</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>研究モデル 複合判定</span><span class="muted">異なる期間は横比較禁止</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>教師・特徴量 / 学習</th><th>状態</th><th>母数</th><th>損失</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
     <div class="panel"><h2><span>完了候補・昇格ゲート</span><span class="muted">同一holdoutのみ</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>現ROI</th><th>現損益</th><th>候補ROI</th><th>候補損益</th><th>候補最大DD</th><th>P(ROI&gt;1)</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
     <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>母数/評価R</th><th>資金診断</th><th>前向EV帯</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
   </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let selectedModelKey="", currentReport=null, gaRefreshing=false, dailyLoading=new Set();
+let selectedModelKey="", currentReport=null, gaRefreshing=false, dailyRequestToken=0;
 const esc = v => String(v ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const fmt = v => v == null ? "-" : Number(v).toLocaleString("ja-JP");
 const pct = v => v == null ? "-" : `${(Number(v)*100).toFixed(2)}%`;
@@ -225,7 +225,7 @@ function promotionCandidatesText(decision){
 }
 function modelKey(value){
   const key=String(value||"").toLowerCase().replace(/\.(json|joblib)$/,"").replace(/^(?:(?:win_model_|bankroll_backtest_|backtest_|standardized_365d(?:_v2)?[_-]*))+/,"").replace(/(?:(?:_backtest|_10000|_2fold))+$/,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
-  const family=key.match(/^(no_odds_v\d+)(?:_|$)/)||key.match(/^(calibrated_(?:linear|mlp)_shadow)(?:_|$)/);
+  const family=key.match(/^(no_odds_v\d+)(?:_|$)/)||key.match(/^(calibrated_(?:linear|mlp)_shadow)(?:_|$)/)||key.match(/^(odds_path_(?:observed_closing_return_v4|prequential_shrinkage_return_v6))(?:_|$)/);
   return family?family[1]:key;
 }
 function modelValues(row){ return [row&&row.name,row&&row.file,row&&row.model,row&&row.model_file,row&&row.id,row&&row.label,row&&row.variant].filter(Boolean); }
@@ -306,23 +306,6 @@ function activateModel(key){
   renderSelectedModel(currentReport);
   $("selectedModelDetail").scrollIntoView({block:"nearest"});
 }
-async function loadModelDaily(data,key){
-  const daily=(data.model_daily||{})[key]||{};
-  if(daily.loaded||dailyLoading.has(key)) return;
-  dailyLoading.add(key);
-  daily.unavailable_reason="日次データ取得中";
-  renderDaily(data,key);
-  try{
-    const res=await fetch("/api/reports/model-performance/daily?model_key="+encodeURIComponent(key),{cache:"no-store"});
-    if(!res.ok) throw new Error("HTTP "+res.status);
-    data.model_daily[key]=await res.json();
-  }catch(error){
-    data.model_daily[key]={...daily,loaded:true,rows:[],unavailable_reason:"日次データ取得失敗: "+String(error)};
-  }finally{
-    dailyLoading.delete(key);
-    if(currentReport===data&&selectedModelKey===key) renderSelectedModel(data);
-  }
-}
 function renderSelectedModel(data){
   const key=selectedModelKey, catalog=selectedCatalogEntry(data,key);
   const label=catalog?catalog.label:"対象なし";
@@ -336,7 +319,6 @@ function renderSelectedModel(data){
   renderFeatureDiagnostics((data.feature_diagnostics||[]).filter(x=>modelMatches(x,key)));
   renderRoiAttribution(bank);
   updateSelectedRows();
-  loadModelDaily(data,key);
 }
 function marketCi(x){
   if(x.market_log_loss_delta==null) return "-";
@@ -423,13 +405,14 @@ function operationTrackRows(rows){
   return rows.map(x=>{ const state=trackState(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td>${esc(trackCoverage(x))}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)}</td></tr>`; }).join("") || '<tr><td colspan="8" class="muted">運用モデル情報なし</td></tr>';
 }
 function compositeTrackRows(rows){
-  return rows.map(x=>{ const state=trackState(x), loss=trackLoss(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg"; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td>${esc(loss.label)} ${ratio(loss.value)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)}</td></tr>`; }).join("") || '<tr><td colspan="10" class="muted">複合モデル情報なし</td></tr>';
+  return rows.map(x=>{ const state=trackState(x), loss=trackLoss(x), profitCls=x.profit_yen==null?"":Number(x.profit_yen)>=0?"pos":"neg", training=`${x.teacher||"-"} / ${x.training||"-"}`; return `<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td class="name-cell" title="${esc(x.model_file||x.label)}">${esc(x.label)}</td><td class="axis-cell">${esc(trackAxis(x))}</td><td class="detail-cell" title="${esc(training)}">${esc(training)}</td><td><span class="tag ${state.cls}">${esc(state.status)}</span></td><td class="mono">${esc(trackVolume(x))}</td><td>${esc(loss.label)} ${ratio(loss.value)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${ratio(x.roi)}</td><td class="${profitCls}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)}</td></tr>`; }).join("") || '<tr><td colspan="11" class="muted">複合モデル情報なし</td></tr>';
 }
 function renderModelTracks(tracks){
   const prediction=tracks.filter(x=>trackHasPrediction(x)&&!trackHasOperation(x));
   const operation=tracks.filter(x=>!trackHasPrediction(x)&&trackHasOperation(x));
   const composite=tracks.filter(x=>trackHasPrediction(x)&&trackHasOperation(x));
-  $("predictionTrackRows").innerHTML=predictionTrackRows(prediction);
+  const pendingOddsPath=tracks.filter(x=>!trackHasPrediction(x)&&!trackHasOperation(x)&&x.evaluation_group==="t5_walk_forward");
+  $("predictionTrackRows").innerHTML=predictionTrackRows([...prediction,...pendingOddsPath]);
   $("operationTrackRows").innerHTML=operationTrackRows(operation);
   $("compositeTrackRows").innerHTML=compositeTrackRows(composite);
 }
@@ -453,8 +436,28 @@ function renderRoiAttribution(bank){
   const rows=(bank||[]).flatMap(model=>{ const attribution=model.ticket_roi_attribution||{}, stable=(attribution.fold_stability||{}).signals||[]; return (attribution.top_signals||[]).map(signal=>({model:model.name||model.file,...signal,stability:stable.find(x=>x.dimension===signal.dimension)})); }).sort((a,b)=>(Number(b.roi_spread)||0)-(Number(a.roi_spread)||0));
   $("roiAttributionRows").innerHTML=rows.map(r=>'<tr><td title="'+esc(r.model)+'">'+esc(shortName(r.model))+'</td><td title="'+esc(r.dimension)+'">'+esc(r.dimension||"-")+'</td><td>'+esc(r.family||"-")+'</td><td>'+ratio(r.roi_spread)+'</td><td>'+esc(r.stability ? r.stability.status+" "+pct(r.stability.signal_fold_rate) : "-")+'</td><td title="'+esc(roiBucketText(r.best_bucket))+'">'+esc(roiBucketText(r.best_bucket))+'</td><td title="'+esc(roiBucketText(r.worst_bucket))+'">'+esc(roiBucketText(r.worst_bucket))+'</td></tr>').join("") || '<tr><td colspan="7" class="muted">ROI帰属つき資金運用バックテストを実行中</td></tr>';
 }
-function renderDaily(data,key){
-  const daily=(data.model_daily||{})[key]||{};
+async function renderDaily(data,key){
+  let daily=(data.model_daily||{})[key]||{};
+  if(daily.loaded===false&&Number(daily.row_count||0)>0){
+    const token=++dailyRequestToken;
+    renderDailyRows({...daily,rows:[],unavailable_reason:"日次データ読込中"});
+    try{
+      const res=await fetch("/api/reports/model-performance/daily?model_key="+encodeURIComponent(key),{cache:"no-store"});
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const loaded=await res.json();
+      if(token!==dailyRequestToken||selectedModelKey!==key) return;
+      if(!data.model_daily) data.model_daily={};
+      data.model_daily[key]=loaded;
+      daily=loaded;
+    }catch(error){
+      if(token!==dailyRequestToken||selectedModelKey!==key) return;
+      daily={...daily,loaded:true,rows:[],unavailable_reason:"日次データ取得失敗: "+String(error)};
+      data.model_daily[key]=daily;
+    }
+  }
+  renderDailyRows(daily);
+}
+function renderDailyRows(daily){
   const rows=daily.rows||[], reason=daily.unavailable_reason||"";
   $("profitTitle").textContent=daily.source?shortName(daily.source):(reason||"日次データなし");
   drawLines($("profitChart"), [{label:"累積損益", rows:rows.map(r=>({x:r.date, y:r.cumulative_profit_yen}))}], {yen:true, baseline:0});
