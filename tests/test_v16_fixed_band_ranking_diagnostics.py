@@ -11,6 +11,7 @@ from boatrace_ai.listwise.strict_prior_t300_divergence_passthrough_v16 import (
 )
 from boatrace_ai.listwise.v16_fixed_band_ranking_diagnostics import (
     RULES,
+    aggregate_v16_fixed_band_ranking_diagnostics,
     build_fixed_band_diagnostic_inputs,
     compare_v16_fixed_band_ranking_rules,
     select_diagnostic_portfolio,
@@ -205,3 +206,50 @@ def test_callback_forecasts_and_probability_artifact_are_primary_inputs() -> Non
         == forecasts[race["race_id"]][row["combination"]]
         for row in inputs.decision_candidates
     )
+
+
+def test_aggregate_preserves_each_fold_and_sums_each_rule() -> None:
+    first = compare_v16_fixed_band_ranking_rules(_diagnostic_races()[:2])
+    second = compare_v16_fixed_band_ranking_rules(_diagnostic_races()[2:])
+    result = aggregate_v16_fixed_band_ranking_diagnostics([
+        {
+            "fold": 4,
+            "evaluation_date": "2026-07-27",
+            "probability_lcb_metrics": first,
+        },
+        {
+            "fold": 5,
+            "evaluation_date": "2026-07-28",
+            "probability_lcb_metrics": second,
+        },
+    ])
+
+    assert [row["fold"] for row in result["folds"]] == [4, 5]
+    assert result["real_betting_enabled"] is False
+    assert result["post_hoc_best_rule_is_promotion_evidence"] is False
+    for rule in RULES:
+        left = first["rules"][rule]["aggregate"]
+        right = second["rules"][rule]["aggregate"]
+        aggregate = result["rules"][rule]
+        assert aggregate["days"] == 2
+        assert aggregate["races"] == (
+            left["evaluated_races"] + right["evaluated_races"]
+        )
+        assert aggregate["tickets"] == left["tickets"] + right["tickets"]
+        assert aggregate["hits"] == left["hits"] + right["hits"]
+        assert aggregate["stake_yen"] == (
+            left["stake_yen"] + right["stake_yen"]
+        )
+        assert aggregate["return_yen"] == (
+            left["return_yen"] + right["return_yen"]
+        )
+        assert aggregate["profit_yen"] == (
+            aggregate["return_yen"] - aggregate["stake_yen"]
+        )
+        largest = max(
+            left["largest_hit_return_yen"],
+            right["largest_hit_return_yen"],
+        )
+        assert aggregate["roi_excluding_largest_hit"] == pytest.approx(
+            (aggregate["return_yen"] - largest) / aggregate["stake_yen"]
+        )

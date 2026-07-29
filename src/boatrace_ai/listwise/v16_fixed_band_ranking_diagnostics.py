@@ -374,3 +374,111 @@ def compare_v16_fixed_band_ranking_rules(
         ),
         "post_hoc_best_rule_is_promotion_evidence": False,
     }
+
+
+def _summary_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "days": int(metrics.get("evaluation_days") or 0),
+        "races": int(metrics.get("evaluated_races") or 0),
+        "tickets": int(metrics.get("tickets") or 0),
+        "hits": int(metrics.get("hits") or 0),
+        "stake_yen": int(metrics.get("stake_yen") or 0),
+        "return_yen": int(metrics.get("return_yen") or 0),
+        "profit_yen": int(metrics.get("profit_yen") or 0),
+        "roi": metrics.get("roi"),
+        "largest_hit_return_yen": int(
+            metrics.get("largest_hit_return_yen") or 0
+        ),
+        "return_excluding_largest_hit_yen": int(
+            metrics.get("return_excluding_largest_hit_yen") or 0
+        ),
+        "roi_excluding_largest_hit": metrics.get(
+            "roi_excluding_largest_hit"
+        ),
+    }
+
+
+def aggregate_v16_fixed_band_ranking_diagnostics(
+    folds: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate strict fold diagnostics without selecting a winning rule."""
+    fold_outputs: list[dict[str, Any]] = []
+    rule_totals = {
+        rule: {
+            "days": 0,
+            "races": 0,
+            "tickets": 0,
+            "hits": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "largest_hit_return_yen": 0,
+        }
+        for rule in RULES
+    }
+    for index, fold in enumerate(folds, start=1):
+        diagnostic = fold.get("probability_lcb_metrics")
+        if not isinstance(diagnostic, Mapping):
+            continue
+        fold_rules = diagnostic.get("rules")
+        if not isinstance(fold_rules, Mapping):
+            continue
+        summarized_rules: dict[str, dict[str, Any]] = {}
+        for rule in RULES:
+            output = fold_rules.get(rule)
+            aggregate = (
+                output.get("aggregate") if isinstance(output, Mapping) else None
+            )
+            if not isinstance(aggregate, Mapping):
+                continue
+            metrics = _summary_metrics(aggregate)
+            summarized_rules[rule] = metrics
+            totals = rule_totals[rule]
+            for key in (
+                "days",
+                "races",
+                "tickets",
+                "hits",
+                "stake_yen",
+                "return_yen",
+            ):
+                totals[key] += metrics[key]
+            totals["largest_hit_return_yen"] = max(
+                totals["largest_hit_return_yen"],
+                metrics["largest_hit_return_yen"],
+            )
+        fold_outputs.append({
+            "fold": int(fold.get("fold") or index),
+            "evaluation_date": fold.get("evaluation_date"),
+            "candidate_population_fingerprint": diagnostic.get(
+                "candidate_population_fingerprint"
+            ),
+            "decision_information_fingerprint": diagnostic.get(
+                "decision_information_fingerprint"
+            ),
+            "rules": summarized_rules,
+        })
+
+    aggregated_rules: dict[str, dict[str, Any]] = {}
+    for rule, totals in rule_totals.items():
+        stake = totals["stake_yen"]
+        returned = totals["return_yen"]
+        largest = totals["largest_hit_return_yen"]
+        without_largest = returned - largest
+        aggregated_rules[rule] = {
+            **totals,
+            "profit_yen": returned - stake,
+            "roi": returned / stake if stake else None,
+            "return_excluding_largest_hit_yen": without_largest,
+            "roi_excluding_largest_hit": (
+                without_largest / stake if stake else None
+            ),
+        }
+
+    return {
+        "model_name": MODEL_NAME,
+        "status": "research_diagnostic_real_betting_disabled",
+        "real_betting_enabled": False,
+        "post_hoc_best_rule_is_promotion_evidence": False,
+        "folds": fold_outputs,
+        "rules": aggregated_rules,
+    }

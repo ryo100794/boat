@@ -4,6 +4,7 @@ import pytest
 
 from boatrace_ai.listwise import odds_path_role_integrated_v12 as v12
 from boatrace_ai.listwise import odds_path_role_integrated_v16 as v16
+from boatrace_ai.listwise.v16_fixed_band_ranking_diagnostics import RULES
 
 
 def _base_v12_result() -> dict:
@@ -20,12 +21,34 @@ def _base_v12_result() -> dict:
             "rejected_races": 0,
         },
     }
+    ranking_diagnostics = {
+        "candidate_population_fingerprint": "population",
+        "decision_information_fingerprint": "decision",
+        "rules": {
+            rule: {
+                "aggregate": {
+                    "evaluation_days": 1,
+                    "evaluated_races": 12,
+                    "tickets": 10,
+                    "hits": 1,
+                    "stake_yen": 1_000,
+                    "return_yen": 1_200,
+                    "profit_yen": 200,
+                    "roi": 1.2,
+                    "largest_hit_return_yen": 1_200,
+                    "return_excluding_largest_hit_yen": 0,
+                    "roi_excluding_largest_hit": 0.0,
+                }
+            } for rule in RULES
+        },
+    }
     return {
         "fixed_policy": {"name": "v12-policy"},
         "selection_conformal": {},
         "selection_conformal_artifacts_by_date": {"2026-07-30": envelope},
         "folds": [{
             "evaluation_date": "2026-07-30",
+            "probability_lcb_metrics": ranking_diagnostics,
             "selected_policy": {"name": "v12-policy"},
             "selection_conformal": envelope,
             "selection_observations_appended_after_decision": 12,
@@ -62,6 +85,13 @@ def test_v16_injects_passthrough_and_reuses_v15_envelope(monkeypatch) -> None:
     )
     assert captured["selection_conformal_fit"] is v16._fit_closing_envelope
     assert (
+        captured["probability_lcb_metrics"]
+        is v16.compare_v16_fixed_band_ranking_rules
+    )
+    assert (
+        "probability_lcb_metrics_use_preallocation_population" not in captured
+    )
+    assert (
         captured["selection_observation_append"]
         is v16.append_closing_envelope_observations_v15
     )
@@ -72,7 +102,17 @@ def test_v16_injects_passthrough_and_reuses_v15_envelope(monkeypatch) -> None:
     assert result["fixed_policy"]["conditional_lcb"] is False
     assert result["fixed_policy"]["raw_model_probability_inside_fixed_band"] is True
     assert result["closing_envelope_conformal"]["ready_folds"] == 1
+    diagnostics = result["fixed_band_ranking_diagnostics"]
+    assert diagnostics["real_betting_enabled"] is False
+    assert (
+        diagnostics["post_hoc_best_rule_is_promotion_evidence"]
+        is False
+    )
     guard = result["folds"][0]["leakage_guard"]
+    assert set(diagnostics["rules"]) == set(RULES)
+    assert diagnostics["rules"]["safe_ev_desc"]["days"] == 1
+    assert diagnostics["rules"]["safe_ev_desc"]["races"] == 12
+    assert len(result["folds"][0]["probability_lcb_metrics"]["rules"]) == 5
     assert guard["probability_artifact_uses_result"] is False
     assert guard["probability_artifact_uses_payout"] is False
     assert guard["result_payout_in_purchase_features"] is False
