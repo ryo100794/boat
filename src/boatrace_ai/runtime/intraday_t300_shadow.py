@@ -1,0 +1,774 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from statistics import median
+from typing import Any, Callable, Mapping, Protocol, Sequence
+
+import joblib
+
+from ..db import connection
+from ..discrete_log_allocation import allocate_discrete_log_day
+from ..feature_tuning import build_race_features
+from ..listwise.closing_odds_t300_nonlinear_v12 import (
+    MODEL_NAME as V12_CLOSING_MODEL_NAME,
+    forecast_closing_odds_t300_nonlinear_v12,
+)
+from ..listwise.live_shadow import historical_state, load_date_races
+from ..listwise.market_calibration import (
+    artifact_model_probabilities,
+    normalized_market_probabilities,
+    normalize_odds_checkpoint,
+)
+from ..listwise.odds_path_conservative_v7 import (
+    MAX_DAILY_EXPOSURE_FRACTION,
+    MAX_TICKETS_PER_RACE,
+    RACE_CAP_FRACTION,
+    SAFE_EV_THRESHOLD,
+    STAKE_GRANULARITY_YEN,
+    TICKET_CAP_FRACTION,
+    _policy_candidate,
+)
+from ..listwise.odds_path_probability_v8 import attach_odds_path_probability_v8
+from ..listwise.odds_path_selection_conformal_v10 import _zero_reason
+from ..listwise.selection_conformal import selected_safe_ev_candidates
+from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
+
+
+JST = timezone(timedelta(hours=9))
+STARTING_BANKROLL_YEN = 10_000
+T300_OFFSET_SECONDS = 300
+DECISION_BEFORE_START_SECONDS = 600
+DEFAULT_MAX_CHECKPOINT_AGE_SECONDS = 90.0
+DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS = 120.0
+DEFAULT_INTERVAL_SECONDS = 5.0
+SCHEMA_VERSION = 1
+
+POSTGRESQL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
+  decision_id BIGSERIAL PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  race_date DATE NOT NULL,
+  race_id TEXT NOT NULL REFERENCES races(race_id) ON DELETE RESTRICT,
+  model_key TEXT NOT NULL,
+  model_hash CHAR(64) NOT NULL,
+  strategy_name TEXT NOT NULL,
+  decision_at TIMESTAMPTZ NOT NULL,
+  target_t300_at TIMESTAMPTZ NOT NULL,
+  source_snapshot_id BIGINT REFERENCES odds_snapshots(snapshot_id) ON DELETE RESTRICT,
+  source_captured_at TIMESTAMPTZ,
+  checkpoint_age_before_target_seconds DOUBLE PRECISION,
+  source_update_staleness_seconds DOUBLE PRECISION,
+  bankroll_before_yen INTEGER NOT NULL,
+  decision_status TEXT NOT NULL CHECK (decision_status IN ('selected', 'no_bet')),
+  no_bet_reason TEXT,
+  probabilities JSONB NOT NULL,
+  probability_summary JSONB NOT NULL,
+  closing_lower_odds JSONB NOT NULL,
+  closing_lower_summary JSONB NOT NULL,
+  selected_candidates JSONB NOT NULL,
+  total_stake_yen INTEGER NOT NULL,
+  decision_hash CHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (race_id, model_key),
+  CHECK (
+    (decision_status = 'selected' AND no_bet_reason IS NULL AND total_stake_yen > 0)
+    OR
+    (decision_status = 'no_bet' AND no_bet_reason IS NOT NULL AND total_stake_yen = 0)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_intraday_t300_shadow_decisions_day_model
+  ON intraday_t300_shadow_decisions(race_date, model_key, target_t300_at);
+
+CREATE TABLE IF NOT EXISTS intraday_t300_shadow_settlements (
+  settlement_id BIGSERIAL PRIMARY KEY,
+  decision_id BIGINT NOT NULL UNIQUE
+    REFERENCES intraday_t300_shadow_decisions(decision_id) ON DELETE RESTRICT,
+  settled_at TIMESTAMPTZ NOT NULL,
+  result_status TEXT NOT NULL,
+  actual_combination TEXT NOT NULL,
+  payout_yen_per_100 INTEGER NOT NULL,
+  stake_yen INTEGER NOT NULL,
+  return_yen INTEGER NOT NULL,
+  profit_yen INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE FUNCTION reject_intraday_t300_shadow_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+DROP TRIGGER IF EXISTS intraday_t300_shadow_decisions_immutable
+  ON intraday_t300_shadow_decisions;
+CREATE TRIGGER intraday_t300_shadow_decisions_immutable
+BEFORE UPDATE OR DELETE ON intraday_t300_shadow_decisions
+FOR EACH ROW EXECUTE FUNCTION reject_intraday_t300_shadow_mutation();
+DROP TRIGGER IF EXISTS intraday_t300_shadow_settlements_immutable
+  ON intraday_t300_shadow_settlements;
+CREATE TRIGGER intraday_t300_shadow_settlements_immutable
+BEFORE UPDATE OR DELETE ON intraday_t300_shadow_settlements
+FOR EACH ROW EXECUTE FUNCTION reject_intraday_t300_shadow_mutation();
+"""
+
+
+@dataclass(frozen=True)
+class ModelIdentity:
+    model_key: str
+    model_hash: str
+    strategy_name: str
+
+
+@dataclass(frozen=True)
+class RaceWindow:
+    race_id: str
+    race_date: str
+    jcd: str
+    rno: int
+    start_at: datetime
+
+    @property
+    def target_t300_at(self) -> datetime:
+        return self.start_at - timedelta(seconds=DECISION_BEFORE_START_SECONDS)
+
+    @property
+    def betting_deadline_at(self) -> datetime:
+        return self.start_at - timedelta(seconds=T300_OFFSET_SECONDS)
+
+
+@dataclass(frozen=True)
+class T300Snapshot:
+    snapshot_id: int
+    captured_at: datetime
+    source_update_time: str | None
+    raw_json: Any
+    odds: dict[str, float]
+
+
+@dataclass(frozen=True)
+class SnapshotCheck:
+    checkpoint_age_before_target_seconds: float | None
+    source_update_staleness_seconds: float | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class ShadowDecision:
+    probabilities: dict[str, float]
+    closing_lower_odds: dict[str, float]
+    selected_candidates: tuple[dict[str, Any], ...]
+    no_bet_reason: str | None
+
+    @property
+    def total_stake_yen(self) -> int:
+        return sum(int(row["stake_yen"]) for row in self.selected_candidates)
+
+    @property
+    def status(self) -> str:
+        return "selected" if self.total_stake_yen > 0 else "no_bet"
+
+
+class ShadowModelAdapter(Protocol):
+    @property
+    def identity(self) -> ModelIdentity: ...
+
+    def decide(
+        self,
+        conn: Any,
+        race: RaceWindow,
+        snapshot: T300Snapshot,
+        *,
+        bankroll_yen: int,
+    ) -> ShadowDecision: ...
+
+
+class ShadowStore(Protocol):
+    conn: Any
+
+    def ensure_schema(self) -> None: ...
+    def due_races(self, *, race_date: str, now: datetime) -> Sequence[RaceWindow]: ...
+    def decision_identity(self, *, race_id: str, model_key: str) -> ModelIdentity | None: ...
+    def latest_complete_snapshot(self, race: RaceWindow) -> T300Snapshot | None: ...
+    def bankroll_yen(self, *, race_date: str, model_key: str, starting_yen: int) -> int: ...
+    def insert_decision(self, **values: Any) -> bool: ...
+    def append_available_settlements(self, *, race_date: str, now: datetime) -> int: ...
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+
+
+def _payload_hash(value: Any) -> str:
+    return hashlib.sha256(_json_bytes(value)).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _as_datetime(value: Any, *, default_tz=JST) -> datetime:
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return parsed.replace(tzinfo=default_tz) if parsed.tzinfo is None else parsed
+
+
+def _canonical_combination(value: Any) -> str:
+    digits = "".join(character for character in str(value) if character.isdigit())
+    if len(digits) != 3 or len(set(digits)) != 3:
+        raise ValueError(f"invalid trifecta combination: {value}")
+    return "-".join(digits)
+
+
+def _value_summary(values: Mapping[str, float], *, descending: bool) -> dict[str, Any]:
+    numeric = {str(key): float(value) for key, value in values.items()}
+    ordered = sorted(
+        numeric.items(), key=lambda row: ((-row[1]) if descending else row[1], row[0])
+    )
+    array = list(numeric.values())
+    summary: dict[str, Any] = {
+        "count": len(array),
+        "minimum": min(array) if array else None,
+        "maximum": max(array) if array else None,
+        "median": median(array) if array else None,
+        "top5": [
+            {"combination": combination, "value": value}
+            for combination, value in ordered[:5]
+        ],
+    }
+    if descending and array:
+        summary["sum"] = sum(array)
+        summary["entropy"] = -sum(
+            value * math.log(value) for value in array if value > 0.0
+        )
+    return summary
+
+
+def _no_bet(reason: str) -> ShadowDecision:
+    return ShadowDecision({}, {}, (), reason)
+
+
+def validate_snapshot(
+    race: RaceWindow,
+    snapshot: T300Snapshot,
+    *,
+    max_checkpoint_age_seconds: float,
+    max_source_update_staleness_seconds: float,
+) -> SnapshotCheck:
+    age = (
+        race.target_t300_at
+        - snapshot.captured_at.astimezone(race.target_t300_at.tzinfo or JST)
+    ).total_seconds()
+    point = normalize_odds_checkpoint(
+        {
+            "snapshot_id": snapshot.snapshot_id,
+            "captured_at": snapshot.captured_at.isoformat(),
+            "source_update_time": snapshot.source_update_time,
+            "raw_json": snapshot.raw_json,
+            "betting_deadline_at": race.betting_deadline_at.isoformat(),
+            "odds": snapshot.odds,
+        },
+        target_offset_seconds=T300_OFFSET_SECONDS,
+    )
+    source_staleness = (
+        float(point["source_update_staleness_seconds"])
+        if point is not None and point.get("source_update_staleness_seconds") is not None
+        else None
+    )
+    if len(snapshot.odds) != 120:
+        reason = "incomplete_t300_snapshot"
+    elif not plausible_trifecta_odds(snapshot.odds) or point is None or age < 0.0:
+        reason = "inconsistent_t300_snapshot"
+    elif age > max_checkpoint_age_seconds:
+        reason = "stale_t300_checkpoint"
+    elif source_staleness is None:
+        reason = "missing_source_update_staleness"
+    elif source_staleness > max_source_update_staleness_seconds:
+        reason = "stale_t300_source_update"
+    else:
+        reason = None
+    return SnapshotCheck(age, source_staleness, reason)
+
+
+class PostgresShadowStore:
+    def __init__(self, conn: Any) -> None:
+        if getattr(conn, "dialect", None) != "postgresql":
+            raise ValueError("intraday T300 shadow recorder requires PostgreSQL")
+        self.conn = conn
+
+    def ensure_schema(self) -> None:
+        self.conn.executescript(POSTGRESQL_SCHEMA)
+
+    def due_races(self, *, race_date: str, now: datetime) -> Sequence[RaceWindow]:
+        rows = self.conn.execute(
+            """
+            SELECT r.race_id, r.race_date, r.jcd, r.rno, r.deadline_at
+            FROM races r
+            WHERE r.race_date = ? AND r.deadline_at IS NOT NULL
+              AND (SELECT COUNT(DISTINCT e.lane) FROM entries e
+                   WHERE e.race_id = r.race_id) = 6
+            ORDER BY r.deadline_at, r.jcd, r.rno, r.race_id
+            """,
+            (race_date,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            race = RaceWindow(
+                str(row["race_id"]), str(row["race_date"]), str(row["jcd"]),
+                int(row["rno"]), _as_datetime(row["deadline_at"]),
+            )
+            if race.target_t300_at <= now.astimezone(race.start_at.tzinfo or JST):
+                result.append(race)
+        return result
+
+    def decision_identity(self, *, race_id: str, model_key: str) -> ModelIdentity | None:
+        row = self.conn.execute(
+            """SELECT model_key, model_hash, strategy_name
+               FROM intraday_t300_shadow_decisions
+               WHERE race_id = ? AND model_key = ?""",
+            (race_id, model_key),
+        ).fetchone()
+        return (
+            ModelIdentity(str(row["model_key"]), str(row["model_hash"]), str(row["strategy_name"]))
+            if row is not None else None
+        )
+
+    def latest_complete_snapshot(self, race: RaceWindow) -> T300Snapshot | None:
+        rows = self.conn.execute(
+            """
+            SELECT os.snapshot_id, os.captured_at, os.source_update_time,
+                   os.raw_json, ot.combination, ot.odds
+            FROM odds_snapshots os
+            JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
+            WHERE os.snapshot_id = (
+              SELECT candidate.snapshot_id
+              FROM odds_snapshots candidate
+              JOIN odds_trifecta value ON value.snapshot_id = candidate.snapshot_id
+              WHERE candidate.race_id = ? AND candidate.bet_type = 'trifecta'
+                AND candidate.parser_version = ? AND candidate.captured_at <= ?
+                AND value.odds IS NOT NULL AND value.odds > 0
+              GROUP BY candidate.snapshot_id, candidate.captured_at
+              HAVING COUNT(*) = 120 AND COUNT(DISTINCT value.combination) = 120
+              ORDER BY candidate.captured_at DESC, candidate.snapshot_id DESC LIMIT 1
+            )
+            ORDER BY ot.combination
+            """,
+            (race.race_id, TRIFECTA_PARSER_VERSION, race.target_t300_at.isoformat()),
+        ).fetchall()
+        if len(rows) != 120:
+            return None
+        first = rows[0]
+        return T300Snapshot(
+            int(first["snapshot_id"]), _as_datetime(first["captured_at"]),
+            str(first["source_update_time"]) if first["source_update_time"] not in (None, "") else None,
+            first["raw_json"],
+            {str(row["combination"]): float(row["odds"]) for row in rows},
+        )
+
+    def bankroll_yen(self, *, race_date: str, model_key: str, starting_yen: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(d.total_stake_yen), 0) AS stake_yen,
+                   COALESCE(SUM(s.return_yen), 0) AS return_yen
+            FROM intraday_t300_shadow_decisions d
+            LEFT JOIN intraday_t300_shadow_settlements s ON s.decision_id = d.decision_id
+            WHERE d.race_date = ? AND d.model_key = ?
+            """,
+            (race_date, model_key),
+        ).fetchone()
+        return max(0, int(starting_yen) - int(row["stake_yen"] or 0) + int(row["return_yen"] or 0))
+
+    def insert_decision(
+        self, *, race: RaceWindow, identity: ModelIdentity, decision_at: datetime,
+        snapshot: T300Snapshot | None, snapshot_check: SnapshotCheck,
+        bankroll_before_yen: int, decision: ShadowDecision,
+    ) -> bool:
+        probabilities = dict(sorted(decision.probabilities.items()))
+        closing = dict(sorted(decision.closing_lower_odds.items()))
+        selected = [dict(row) for row in decision.selected_candidates]
+        payload = {
+            "schema_version": SCHEMA_VERSION, "race_id": race.race_id,
+            "model_key": identity.model_key, "model_hash": identity.model_hash,
+            "target_t300_at": race.target_t300_at.isoformat(),
+            "source_snapshot_id": snapshot.snapshot_id if snapshot else None,
+            "checkpoint_age_before_target_seconds": snapshot_check.checkpoint_age_before_target_seconds,
+            "source_update_staleness_seconds": snapshot_check.source_update_staleness_seconds,
+            "bankroll_before_yen": bankroll_before_yen, "status": decision.status,
+            "no_bet_reason": decision.no_bet_reason, "probabilities": probabilities,
+            "closing_lower_odds": closing, "selected_candidates": selected,
+            "total_stake_yen": decision.total_stake_yen,
+        }
+        cursor = self.conn.execute(
+            """
+            INSERT INTO intraday_t300_shadow_decisions(
+              schema_version, race_date, race_id, model_key, model_hash, strategy_name,
+              decision_at, target_t300_at, source_snapshot_id, source_captured_at,
+              checkpoint_age_before_target_seconds, source_update_staleness_seconds,
+              bankroll_before_yen, decision_status, no_bet_reason, probabilities,
+              probability_summary, closing_lower_odds, closing_lower_summary,
+              selected_candidates, total_stake_yen, decision_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb,
+                      ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?)
+            ON CONFLICT (race_id, model_key) DO NOTHING
+            """,
+            (
+                SCHEMA_VERSION, race.race_date, race.race_id, identity.model_key,
+                identity.model_hash, identity.strategy_name, decision_at.isoformat(),
+                race.target_t300_at.isoformat(), snapshot.snapshot_id if snapshot else None,
+                snapshot.captured_at.isoformat() if snapshot else None,
+                snapshot_check.checkpoint_age_before_target_seconds,
+                snapshot_check.source_update_staleness_seconds, bankroll_before_yen,
+                decision.status, decision.no_bet_reason,
+                json.dumps(probabilities, sort_keys=True),
+                json.dumps(_value_summary(probabilities, descending=True), sort_keys=True),
+                json.dumps(closing, sort_keys=True),
+                json.dumps(_value_summary(closing, descending=False), sort_keys=True),
+                json.dumps(selected, sort_keys=True), decision.total_stake_yen,
+                _payload_hash(payload),
+            ),
+        )
+        if cursor.rowcount == 1:
+            return True
+        if self.decision_identity(race_id=race.race_id, model_key=identity.model_key) != identity:
+            raise ValueError(f"model identity conflict for {race.race_id} {identity.model_key}")
+        return False
+
+    def append_available_settlements(self, *, race_date: str, now: datetime) -> int:
+        rows = self.conn.execute(
+            """
+            SELECT d.decision_id, d.selected_candidates, d.total_stake_yen,
+                   p.combination AS actual_combination, p.payout_yen,
+                   COALESCE(rs.status, 'final') AS result_status
+            FROM intraday_t300_shadow_decisions d
+            JOIN payouts p ON p.race_id = d.race_id AND p.bet_type = '3連単'
+                          AND p.payout_yen IS NOT NULL
+            LEFT JOIN race_result_status rs ON rs.race_id = d.race_id
+            LEFT JOIN intraday_t300_shadow_settlements s ON s.decision_id = d.decision_id
+            WHERE d.race_date = ? AND s.decision_id IS NULL ORDER BY d.decision_id
+            """,
+            (race_date,),
+        ).fetchall()
+        inserted = 0
+        for row in rows:
+            candidates = row["selected_candidates"]
+            if isinstance(candidates, str):
+                candidates = json.loads(candidates)
+            actual = _canonical_combination(row["actual_combination"])
+            payout = int(row["payout_yen"])
+            returned = sum(
+                int(item["stake_yen"]) * payout // 100 for item in (candidates or [])
+                if _canonical_combination(item["combination"]) == actual
+            )
+            stake = int(row["total_stake_yen"] or 0)
+            cursor = self.conn.execute(
+                """
+                INSERT INTO intraday_t300_shadow_settlements(
+                  decision_id, settled_at, result_status, actual_combination,
+                  payout_yen_per_100, stake_yen, return_yen, profit_yen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (decision_id) DO NOTHING
+                """,
+                (int(row["decision_id"]), now.isoformat(), str(row["result_status"]),
+                 actual, payout, stake, returned, returned - stake),
+            )
+            inserted += int(cursor.rowcount == 1)
+        return inserted
+
+
+class V12RoleModelAdapter:
+    strategy_name = "v12_role_t300"
+
+    def __init__(self, *, model_key: str, bundle_path: Path, base_model_path: Path) -> None:
+        loaded = joblib.load(bundle_path)
+        if not isinstance(loaded, Mapping):
+            raise ValueError("V12 shadow bundle must be a mapping")
+        deployment = loaded.get("deployment")
+        self._bundle = dict(deployment if isinstance(deployment, Mapping) else loaded)
+        self._base_artifact = joblib.load(base_model_path)
+        digest = hashlib.sha256(
+            (_file_sha256(bundle_path) + _file_sha256(base_model_path)).encode("ascii")
+        ).hexdigest()
+        self._identity = ModelIdentity(model_key, digest, self.strategy_name)
+        self._state_by_date: dict[str, Any] = {}
+        self._rows_by_date: dict[str, dict[str, list[Any]]] = {}
+
+    @property
+    def identity(self) -> ModelIdentity:
+        return self._identity
+
+    def _component(self, *names: str) -> Mapping[str, Any]:
+        for name in names:
+            value = self._bundle.get(name)
+            if isinstance(value, Mapping):
+                return value
+        raise ValueError(f"V12 shadow bundle lacks component: {names[0]}")
+
+    def _base_probabilities(self, conn: Any, race: RaceWindow) -> dict[str, float]:
+        if race.race_date not in self._state_by_date:
+            self._state_by_date[race.race_date] = historical_state(conn, race_date=race.race_date)
+            self._rows_by_date[race.race_date] = load_date_races(
+                conn, race_date=race.race_date,
+                feature_schema_version=self._base_artifact.get("feature_schema_version"),
+            )
+        rows = self._rows_by_date[race.race_date].get(race.race_id)
+        if rows is None:
+            self._rows_by_date[race.race_date] = load_date_races(
+                conn, race_date=race.race_date,
+                feature_schema_version=self._base_artifact.get("feature_schema_version"),
+            )
+            rows = self._rows_by_date[race.race_date].get(race.race_id)
+        if rows is None or len(rows) != 6:
+            raise ValueError("six complete entry rows are required")
+        feature_rows = build_race_features(
+            rows, self._state_by_date[race.race_date],
+            drop_feature_groups=self._base_artifact.get("drop_feature_groups") or (),
+            feature_schema_version=self._base_artifact.get("feature_schema_version"),
+        )
+        return artifact_model_probabilities(self._base_artifact, feature_rows)
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        if bankroll_yen < STAKE_GRANULARITY_YEN:
+            return _no_bet("simulated_bankroll_below_minimum_stake")
+        probability_model = self._component("probability_model", "operational_model")
+        probability_lcb = self._component("probability_lcb")
+        closing_model = self._component(
+            "closing_t300_v12_model", "closing_v12_model", "closing_model"
+        )
+        conformal = self._component("selection_conformal")
+        for name, artifact in (("probability_lcb", probability_lcb),
+                               ("closing_v12", closing_model),
+                               ("selection_conformal", conformal)):
+            trained = artifact.get("trained_through_date")
+            if trained is not None and str(trained) >= race.race_date:
+                raise ValueError(f"{name} is not strictly prior to race date")
+        if not probability_lcb.get("ready"):
+            return _no_bet("probability_lcb_not_ready")
+        if not closing_model.get("ready"):
+            return _no_bet("closing_v12_not_ready")
+        if str(closing_model.get("model_name")) != V12_CLOSING_MODEL_NAME:
+            raise ValueError("closing component is not V12 T300")
+        if not conformal.get("ready"):
+            return _no_bet("selection_conformal_not_ready")
+
+        point = normalize_odds_checkpoint(
+            {"snapshot_id": snapshot.snapshot_id, "captured_at": snapshot.captured_at.isoformat(),
+             "source_update_time": snapshot.source_update_time, "raw_json": snapshot.raw_json,
+             "betting_deadline_at": race.betting_deadline_at.isoformat(), "odds": snapshot.odds},
+            target_offset_seconds=T300_OFFSET_SECONDS,
+        )
+        if point is None:
+            return _no_bet("inconsistent_t300_snapshot")
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return _no_bet("inconsistent_probability_combination_set")
+        model_race = {
+            "race_id": race.race_id, "race_date": race.race_date,
+            "jcd": race.jcd, "rno": race.rno,
+            "model_probabilities": base, "market_probabilities": market,
+            "odds": dict(snapshot.odds), "odds_checkpoints": {"300": point},
+            "odds_path": [{"minutes_before_decision": 0.0,
+                           "snapshot_id": snapshot.snapshot_id,
+                           "captured_at": snapshot.captured_at.isoformat(),
+                           "market_probabilities": market}],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_probability_v8([model_race], dict(probability_model))[0]
+        probabilities = {str(key): float(value) for key, value in transformed["model_probabilities"].items()}
+        if (len(probabilities) != 120 or set(probabilities) != set(snapshot.odds)
+                or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)):
+            return _no_bet("invalid_v12_probability_output")
+        forecast = forecast_closing_odds_t300_nonlinear_v12(
+            transformed, closing_model, prediction_date=race.race_date
+        )
+        if forecast.get("future_checkpoint_offsets_used"):
+            raise ValueError("V12 forecast used a post-T300 checkpoint")
+        if not forecast.get("ready"):
+            return _no_bet(str(forecast.get("reason") or "closing_forecast_not_ready"))
+        closing = {str(key): float(value) for key, value in (forecast.get("lower_final_odds") or {}).items()}
+        if len(closing) != 120 or set(closing) != set(probabilities):
+            return _no_bet("invalid_v12_closing_lower_output")
+
+        raw_selected = selected_safe_ev_candidates(
+            [transformed], closing_forecasts={race.race_id: closing},
+            probability_lcb=dict(probability_lcb),
+        )
+        haircut = float(conformal["haircut"])
+        candidates = []
+        for item in raw_selected:
+            guarded_odds = float(item["predicted_closing"]) * haircut
+            probability = float(item["probability"])
+            safe_ev = probability * guarded_odds
+            if safe_ev < SAFE_EV_THRESHOLD:
+                continue
+            candidate = _policy_candidate(
+                transformed, combination=str(item["combination"]), probability=probability,
+                estimated_odds=guarded_odds, safe_ev=safe_ev,
+            )
+            candidate.update({"predicted_closing": float(item["predicted_closing"]),
+                              "selection_conformal_haircut": haircut,
+                              "raw_safe_ev": float(item["raw_safe_ev"]),
+                              "probability_lcb_detail": item["probability_lcb_detail"],
+                              "odds_source": "v12_t300_lower_times_selection_conformal"})
+            candidates.append(candidate)
+        allocated = allocate_discrete_log_day(
+            race.race_date, candidates, {race.race_id}, daily_budget_yen=bankroll_yen,
+            max_daily_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
+            race_cap_fraction=RACE_CAP_FRACTION, ticket_cap_fraction=TICKET_CAP_FRACTION,
+            max_daily_tickets=None, stake_granularity_yen=STAKE_GRANULARITY_YEN,
+            min_stake_yen=STAKE_GRANULARITY_YEN, max_tickets_per_race=MAX_TICKETS_PER_RACE,
+        )
+        selected = tuple(
+            {key: value for key, value in row.items() if key not in {"hit", "return_yen"}}
+            for row in allocated["selected_sample"]
+        )
+        reason = None if selected else _zero_reason(
+            conformal_ready=True, total_races=1, raw_candidates=len(raw_selected),
+            guarded_candidates=len(candidates),
+            allocation_candidates=int(allocated["allocation_candidate_tickets"]),
+        )
+        return ShadowDecision(probabilities, closing, selected, reason)
+
+
+ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
+    "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
+        model_key=key, bundle_path=bundle, base_model_path=base
+    )
+}
+
+
+def register_adapter(strategy_name: str, factory: Callable[[str, Path, Path], ShadowModelAdapter]) -> None:
+    if not strategy_name or strategy_name in ADAPTER_FACTORIES:
+        raise ValueError(f"invalid or duplicate strategy adapter: {strategy_name}")
+    ADAPTER_FACTORIES[strategy_name] = factory
+
+
+def build_adapter(specification: str) -> ShadowModelAdapter:
+    parts = specification.split(":", 3)
+    if len(parts) != 4 or any(not part for part in parts):
+        raise ValueError("model spec must be MODEL_KEY:STRATEGY:BUNDLE_JOBLIB:BASE_MODEL_JOBLIB")
+    model_key, strategy, bundle, base = parts
+    if strategy not in ADAPTER_FACTORIES:
+        raise ValueError(f"unknown T300 shadow strategy: {strategy}")
+    return ADAPTER_FACTORIES[strategy](model_key, Path(bundle), Path(base))
+
+
+def resolve_race_date(now: datetime, configured_date: str | None) -> str:
+    return (date.fromisoformat(configured_date).isoformat() if configured_date
+            else now.astimezone(JST).date().isoformat())
+
+
+def run_cycle(
+    store: ShadowStore, adapters: Sequence[ShadowModelAdapter], *, now: datetime,
+    configured_date: str | None = None,
+    max_checkpoint_age_seconds: float = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
+    max_source_update_staleness_seconds: float = DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
+    starting_bankroll_yen: int = STARTING_BANKROLL_YEN,
+) -> dict[str, Any]:
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if max_checkpoint_age_seconds <= 0 or max_source_update_staleness_seconds <= 0:
+        raise ValueError("snapshot staleness limits must be positive")
+    race_date = resolve_race_date(now, configured_date)
+    store.ensure_schema()
+    settlements = store.append_available_settlements(race_date=race_date, now=now)
+    inserted = duplicate = model_errors = no_bets = selected = 0
+    for race in store.due_races(race_date=race_date, now=now):
+        snapshot_loaded = False
+        snapshot: T300Snapshot | None = None
+        check = SnapshotCheck(None, None, "missing_complete_t300_snapshot")
+        for adapter in adapters:
+            identity = adapter.identity
+            existing = store.decision_identity(race_id=race.race_id, model_key=identity.model_key)
+            if existing is not None:
+                if existing != identity:
+                    raise ValueError(f"model identity conflict for {race.race_id} {identity.model_key}")
+                duplicate += 1
+                continue
+            if not snapshot_loaded:
+                snapshot = store.latest_complete_snapshot(race)
+                snapshot_loaded = True
+                if snapshot is not None:
+                    check = validate_snapshot(
+                        race, snapshot,
+                        max_checkpoint_age_seconds=max_checkpoint_age_seconds,
+                        max_source_update_staleness_seconds=max_source_update_staleness_seconds,
+                    )
+            bankroll = store.bankroll_yen(
+                race_date=race_date, model_key=identity.model_key, starting_yen=starting_bankroll_yen
+            )
+            if snapshot is None or check.reason is not None:
+                decision = _no_bet(check.reason or "missing_complete_t300_snapshot")
+            else:
+                try:
+                    decision = adapter.decide(store.conn, race, snapshot, bankroll_yen=bankroll)
+                except Exception as exc:
+                    model_errors += 1
+                    decision = _no_bet(f"model_error:{type(exc).__name__}")
+            created = store.insert_decision(
+                race=race, identity=identity, decision_at=now, snapshot=snapshot,
+                snapshot_check=check, bankroll_before_yen=bankroll, decision=decision,
+            )
+            inserted += int(created)
+            duplicate += int(not created)
+            no_bets += int(created and decision.status == "no_bet")
+            selected += int(created and decision.status == "selected")
+    settlements += store.append_available_settlements(race_date=race_date, now=now)
+    return {"race_date": race_date, "observed_at": now.isoformat(),
+            "models": [adapter.identity.model_key for adapter in adapters],
+            "decisions_inserted": inserted, "selected_decisions": selected,
+            "no_bet_decisions": no_bets, "existing_decisions": duplicate,
+            "model_errors": model_errors, "settlements_inserted": settlements,
+            "real_betting": False}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Append-only all-venue intraday T300 role-model shadow recorder."
+    )
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--model-spec", action="append", required=True,
+                        help="MODEL_KEY:STRATEGY:BUNDLE_JOBLIB:BASE_MODEL_JOBLIB")
+    parser.add_argument("--date", help="Fixed JST date; omit for automatic rollover")
+    parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS)
+    parser.add_argument("--max-checkpoint-age-seconds", type=float,
+                        default=DEFAULT_MAX_CHECKPOINT_AGE_SECONDS)
+    parser.add_argument("--max-source-update-staleness-seconds", type=float,
+                        default=DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS)
+    parser.add_argument("--starting-bankroll-yen", type=int, default=STARTING_BANKROLL_YEN)
+    parser.add_argument("--once", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    adapters = [build_adapter(value) for value in args.model_spec]
+    while True:
+        now = datetime.now(timezone.utc)
+        with connection(args.db) as conn:
+            result = run_cycle(
+                PostgresShadowStore(conn), adapters, now=now, configured_date=args.date,
+                max_checkpoint_age_seconds=args.max_checkpoint_age_seconds,
+                max_source_update_staleness_seconds=args.max_source_update_staleness_seconds,
+                starting_bankroll_yen=args.starting_bankroll_yen,
+            )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+        if args.once:
+            return 0
+        time.sleep(max(1.0, float(args.interval)))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
