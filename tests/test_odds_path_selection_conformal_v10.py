@@ -322,3 +322,70 @@ def test_purchase_selection_does_not_depend_on_result_or_payout() -> None:
     assert first_diagnostic["guarded_threshold_candidates"] == 1
     assert second_diagnostic["guarded_threshold_candidates"] == 1
     assert first["return_yen"] != second["return_yen"]
+
+
+def test_allocator_receives_plain_decisions_and_separate_settlements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race, forecast = _race(
+        "2026-07-31",
+        1,
+        primary_probability=0.07,
+        predicted_closing=20.0,
+    )
+    selected_combination = max(
+        race["model_probabilities"], key=race["model_probabilities"].get
+    )
+    first_race = {
+        **race,
+        "actual_combination": selected_combination,
+        "actual_payout_yen": 10_000,
+    }
+    second_race = {
+        **race,
+        "actual_combination": COMBINATIONS[-1],
+        "actual_payout_yen": 1_000_000,
+    }
+    calls = []
+    original_allocator = v10.allocate_discrete_log_day
+
+    def capture_allocator(*args, **kwargs):
+        candidates = args[1]
+        calls.append({
+            "candidates": [dict(candidate) for candidate in candidates],
+            "candidate_types": [type(candidate) for candidate in candidates],
+            "has_hidden_settlements": [
+                hasattr(candidate, "settlement_rows") for candidate in candidates
+            ],
+            "settlements": dict(kwargs["settlements"]),
+        })
+        return original_allocator(*args, **kwargs)
+
+    monkeypatch.setattr(v10, "allocate_discrete_log_day", capture_allocator)
+    first, _first_diagnostic = v10._simulate_selection_conformal_policy(
+        [first_race],
+        closing_forecasts={race["race_id"]: forecast},
+        probability_lcb=_lcb(),
+        daily_budget_yen=10_000,
+        selection_conformal=_artifact(0.8),
+    )
+    second, _second_diagnostic = v10._simulate_selection_conformal_policy(
+        [second_race],
+        closing_forecasts={race["race_id"]: forecast},
+        probability_lcb=_lcb(),
+        daily_budget_yen=10_000,
+        selection_conformal=_artifact(0.8),
+    )
+
+    assert calls[0]["candidates"] == calls[1]["candidates"]
+    assert calls[0]["candidate_types"] == [dict]
+    assert calls[1]["candidate_types"] == [dict]
+    assert calls[0]["has_hidden_settlements"] == [False]
+    assert calls[1]["has_hidden_settlements"] == [False]
+    assert calls[0]["settlements"] != calls[1]["settlements"]
+    assert first["tickets"] == second["tickets"] == 1
+    assert first["stake_yen"] == second["stake_yen"]
+    assert first["daily"][0]["expected_log_growth"] == pytest.approx(
+        second["daily"][0]["expected_log_growth"]
+    )
+    assert first["return_yen"] != second["return_yen"]

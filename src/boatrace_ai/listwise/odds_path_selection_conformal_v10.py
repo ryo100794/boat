@@ -18,6 +18,7 @@ from .odds_path_conservative_v7 import (
     TICKET_CAP_FRACTION,
     _new_purchase_diagnostic_accumulator,
     _policy_candidate,
+    _race_settlement_rows,
     _summarize_bankroll,
     _walk_forward_evaluate_conservative_ev,
 )
@@ -85,6 +86,54 @@ def _zero_reason(
     return "day_portfolio_constraints"
 
 
+def _decision_candidate(
+    race: dict[str, Any],
+    *,
+    combination: str,
+    probability: float,
+    estimated_odds: float,
+    safe_ev: float,
+) -> dict[str, Any]:
+    """Build an allocator input without attaching any settlement state."""
+    return {
+        "race_id": str(race["race_id"]),
+        "race_date": str(race["race_date"]),
+        "jcd": race["jcd"],
+        "rno": int(race["rno"]),
+        "combination": str(combination),
+        "probability": float(probability),
+        "estimated_odds": float(estimated_odds),
+        "estimated_ev": float(safe_ev),
+        "safe_ev": float(safe_ev),
+        "odds_source": "strictly_prior_crossfit_closing_q20",
+        "real_odds_snapshot_id": race.get("snapshot_id"),
+        "real_odds_captured_at": race.get("captured_at"),
+        "real_odds_deadline_at": race.get("odds_deadline_at"),
+        "real_odds_combinations": len(race.get("odds") or {}),
+    }
+
+
+def _settlements_from_races(
+    races: Iterable[dict[str, Any]],
+) -> dict[tuple[str, str], int]:
+    """Keep official results outside the candidate/allocator feature space."""
+    settlements: dict[tuple[str, str], int] = {}
+    for race in races:
+        for row in _race_settlement_rows(race):
+            key = str(row["race_id"]), str(row["combination"])
+            payout_yen = int(row["payout_yen"])
+            if payout_yen < 0:
+                raise ValueError("payout_yen must be non-negative")
+            existing = settlements.get(key)
+            if existing is not None and existing != payout_yen:
+                raise ValueError(
+                    "conflicting settlement for "
+                    f"{key[0]} {key[1]}: {existing} != {payout_yen}"
+                )
+            settlements[key] = payout_yen
+    return settlements
+
+
 def _simulate_selection_conformal_policy(
     races: list[dict[str, Any]],
     *,
@@ -129,6 +178,7 @@ def _simulate_selection_conformal_policy(
     diagnostic["raw_selected_candidates"] = len(raw_selected)
     diagnostic["threshold_pass_candidates"] = len(raw_selected)
     diagnostic["candidates_after_race_cap"] = len(raw_selected)
+    settlements = _settlements_from_races(races)
 
     for race in races:
         date = str(race["race_date"])
@@ -159,7 +209,7 @@ def _simulate_selection_conformal_policy(
             guarded_safe_ev = safe_probability * guarded_odds
             if guarded_safe_ev < SAFE_EV_THRESHOLD:
                 continue
-            candidate = _policy_candidate(
+            candidate = _decision_candidate(
                 race,
                 combination=str(combination),
                 probability=safe_probability,
@@ -218,6 +268,7 @@ def _simulate_selection_conformal_policy(
             stake_granularity_yen=STAKE_GRANULARITY_YEN,
             min_stake_yen=STAKE_GRANULARITY_YEN,
             max_tickets_per_race=MAX_TICKETS_PER_RACE,
+            settlements=settlements,
         )
         allocation_candidates = int(row["allocation_candidate_tickets"])
         diagnostic["allocation_candidate_tickets"] += allocation_candidates

@@ -11,7 +11,6 @@ from sklearn.metrics import brier_score_loss
 from .bankroll_policy import race_confidence
 from .db import connection, init_db
 from .discrete_log_allocation import (
-    candidate_with_settlements,
     settle_decision_ticket,
     split_decision_candidates_and_settlements,
 )
@@ -157,7 +156,6 @@ def bankroll_backtest(
             fold_evaluated += 1
             race_candidates = _candidate_tickets(
                 rows,
-                actual=payout,
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
                 min_ticket_probability=min_ticket_probability,
@@ -332,7 +330,7 @@ def _build_payout_model(
 def _candidate_tickets(
     rows: list[dict[str, Any]],
     *,
-    actual: dict[str, Any],
+    actual: dict[str, Any] | None = None,
     payout_model: dict[str, dict[str, float]],
     ev_threshold: float,
     real_odds_snapshot: dict[str, Any] | None = None,
@@ -406,12 +404,14 @@ def _candidate_tickets(
                 }
             )
         if decision_only:
-            candidates.append(
-                candidate_with_settlements(item, _payout_rows(actual))
-            )
+            candidates.append(item)
         else:
             # Additive migration path for legacy allocators outside this
             # backtest. New purchase paths must request decision_only.
+            if actual is None:
+                raise ValueError(
+                    "actual settlement is required unless decision_only is true"
+                )
             candidates.append({
                 **item,
                 "actual_combination": actual["combination"],

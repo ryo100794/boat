@@ -5,10 +5,15 @@ import sqlite3
 import pytest
 
 import boatrace_ai.discrete_log_allocation as allocation
+import boatrace_ai.bankroll_backtest as backtest
 import boatrace_ai.listwise.odds_path_conservative_v7 as v7
 import boatrace_ai.listwise.odds_path_discrete_v9 as v9
 import boatrace_ai.listwise.odds_path_selection_conformal_v10 as v10
-from boatrace_ai.bankroll_backtest import _load_trifecta_payouts
+from boatrace_ai.bankroll_backtest import (
+    _allocate_daily_budget,
+    _candidate_tickets,
+    _load_trifecta_payouts,
+)
 from boatrace_ai.discrete_log_allocation import (
     allocate_discrete_log_day,
     candidate_with_settlements,
@@ -43,6 +48,34 @@ def _allocate(candidates: list[dict]) -> dict:
         min_stake_yen=100,
         max_tickets_per_race=2,
     )
+
+
+def _lane_rows(race_id: str = "2026-07-29-01-01") -> list[dict]:
+    return [
+        {
+            "race_id": race_id,
+            "race_date": "2026-07-29",
+            "jcd": "01",
+            "rno": 1,
+            "lane": lane,
+            "probability": 0.70 if lane == 1 else 0.06,
+        }
+        for lane in range(1, 7)
+    ]
+
+
+def _payout_model() -> dict[str, dict[str, float]]:
+    return {
+        f"{first}-{second}-{third}": {
+            "estimated_odds": 10.0,
+            "estimated_payout_yen": 1_000.0,
+            "history_count": 100.0,
+        }
+        for first in range(1, 7)
+        for second in range(1, 7)
+        for third in range(1, 7)
+        if len({first, second, third}) == 3
+    }
 
 
 def test_loader_retains_every_dead_heat_payout_deterministically() -> None:
@@ -181,6 +214,147 @@ def test_single_payout_legacy_and_additive_roi_are_identical() -> None:
         "expected_log_growth",
     ):
         assert additive_result[key] == pytest.approx(legacy_result[key])
+
+
+def test_bankroll_candidates_are_decision_only_before_allocation() -> None:
+    candidates = _candidate_tickets(
+        _lane_rows(),
+        payout_model=_payout_model(),
+        ev_threshold=0.0,
+        decision_only=True,
+    )
+
+    assert candidates
+    assert all(type(candidate) is dict for candidate in candidates)
+    assert all(FORBIDDEN.isdisjoint(candidate) for candidate in candidates)
+    assert all(not hasattr(candidate, "settlement_rows") for candidate in candidates)
+
+
+def test_separate_settlement_preserves_legacy_result_and_cannot_change_decision() -> None:
+    race_id = "2026-07-29-01-01"
+    decision_candidates = _candidate_tickets(
+        _lane_rows(race_id),
+        payout_model=_payout_model(),
+        ev_threshold=0.0,
+        decision_only=True,
+    )[:5]
+    legacy_candidates = _candidate_tickets(
+        _lane_rows(race_id),
+        actual={"combination": "1-2-3", "payout_yen": 1_200},
+        payout_model=_payout_model(),
+        ev_threshold=0.0,
+    )[:5]
+    common = {
+        "evaluated_races": {race_id},
+        "daily_budget_yen": 1_000,
+        "unit_yen": 100,
+    }
+
+    legacy = _allocate_daily_budget(legacy_candidates, **common)
+    separate = _allocate_daily_budget(
+        decision_candidates,
+        settlements={(race_id, "1-2-3"): 1_200},
+        **common,
+    )
+    changed_result = _allocate_daily_budget(
+        decision_candidates,
+        settlements={(race_id, "6-5-4"): 99_900},
+        **common,
+    )
+
+    for key in ("tickets", "stake_yen", "return_yen", "profit_yen", "roi"):
+        assert separate[key] == pytest.approx(legacy[key])
+    assert changed_result["tickets"] == separate["tickets"]
+    assert changed_result["stake_yen"] == separate["stake_yen"]
+    assert changed_result["avg_selected_odds"] == separate["avg_selected_odds"]
+    assert changed_result["avg_selected_probability"] == separate["avg_selected_probability"]
+    assert changed_result["return_yen"] != separate["return_yen"]
+
+
+def test_backtest_fold_passes_results_only_to_post_decision_settlement(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    features = []
+    labels = []
+    meta = []
+    payouts = {}
+    for day in range(1, 21):
+        race_id = f"2026-07-{day:02d}-01-01"
+        payouts[race_id] = {
+            "race_id": race_id,
+            "race_date": f"2026-07-{day:02d}",
+            "jcd": "01",
+            "rno": 1,
+            "combination": "1-2-3",
+            "payout_yen": 1_200,
+        }
+        for lane in range(1, 7):
+            features.append({"lane": lane})
+            labels.append(lane == 1)
+            meta.append(
+                {
+                    "race_id": race_id,
+                    "race_date": f"2026-07-{day:02d}",
+                    "jcd": "01",
+                    "rno": 1,
+                    "lane": lane,
+                    "rank": lane,
+                }
+            )
+
+    class Pipeline:
+        def fit(self, X, y):
+            return self
+
+    original_candidate_tickets = backtest._candidate_tickets
+    original_allocate = backtest._allocate_daily_budget
+    candidate_calls = []
+    allocation_calls = []
+
+    def inspect_candidate_tickets(rows, **kwargs):
+        assert "actual" not in kwargs
+        result = original_candidate_tickets(rows, **kwargs)
+        assert all(FORBIDDEN.isdisjoint(candidate) for candidate in result)
+        candidate_calls.append(result)
+        return result
+
+    def inspect_allocate(candidates, **kwargs):
+        assert all(FORBIDDEN.isdisjoint(candidate) for candidate in candidates)
+        assert all(not hasattr(candidate, "settlement_rows") for candidate in candidates)
+        assert kwargs["settlements"] == backtest._payout_settlement_map(payouts)
+        allocation_calls.append(list(candidates))
+        return original_allocate(candidates, **kwargs)
+
+    monkeypatch.setattr(
+        backtest,
+        "load_training_examples",
+        lambda *args, **kwargs: (features, labels, meta),
+    )
+    monkeypatch.setattr(backtest, "_load_trifecta_payouts", lambda conn: payouts)
+    monkeypatch.setattr(backtest, "_make_pipeline", Pipeline)
+    monkeypatch.setattr(
+        backtest,
+        "_positive_probs",
+        lambda pipeline, rows: [0.70, 0.12, 0.08, 0.05, 0.03, 0.02],
+    )
+    monkeypatch.setattr(backtest, "_candidate_tickets", inspect_candidate_tickets)
+    monkeypatch.setattr(backtest, "_allocate_daily_budget", inspect_allocate)
+
+    result = backtest.bankroll_backtest(
+        object(),
+        output_path=tmp_path / "bankroll.json",
+        folds=1,
+        min_train_races=19,
+        ev_threshold=0.0,
+        max_tickets_per_race=5,
+    )
+
+    assert len(candidate_calls) == 1
+    assert len(allocation_calls) == 1
+    assert result["tickets"] == 5
+    assert result["hit_tickets"] == 1
+    assert result["return_yen"] > 0
 
 
 def test_v9_and_v10_use_the_shared_decision_only_candidate_factory() -> None:
