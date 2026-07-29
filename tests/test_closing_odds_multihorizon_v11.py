@@ -11,6 +11,9 @@ from boatrace_ai.listwise.closing_odds_multihorizon_v11 import (
     CHECKPOINT_LABELS,
     CHECKPOINT_OFFSETS_SECONDS,
     FEATURE_NAMES,
+    _examples_from_race,
+    _finite_sample_lower_rank,
+    _fit_point_model,
     build_checkpoint_feature_vector,
     closing_odds_multihorizon_v11_metrics,
     fit_closing_odds_multihorizon_v11,
@@ -440,3 +443,109 @@ def test_strict_prior_worse_horizon_falls_back_to_current_odds() -> None:
     current = race["closing_odds_checkpoints"]["t300"]["odds"]
     assert row["point_source"] == "current_odds_baseline"
     assert row["point_final_odds"] == current
+
+
+def test_batched_examples_match_single_feature_contract_and_order() -> None:
+    race = _official_120_race("2026-01-07", 3)
+
+    rows, audit = _examples_from_race(race, "2026-01-07")
+
+    assert all(audit[f"incomplete_{label}"] == 0 for label in CHECKPOINT_LABELS)
+    expected_order = [
+        (horizon, combination)
+        for horizon in CHECKPOINT_OFFSETS_SECONDS
+        for combination in sorted(ALL_COMBINATIONS)
+    ]
+    assert [
+        (int(row["horizon"]), str(row["combination"])) for row in rows
+    ] == expected_order
+
+    for row in rows:
+        expected_vector, expected_trace = build_checkpoint_feature_vector(
+            race,
+            checkpoint=row["label"],
+            combination=row["combination"],
+        )
+        np.testing.assert_allclose(
+            row["features"],
+            expected_vector,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        assert row["trace"] == expected_trace
+        current = race["closing_odds_checkpoints"][row["label"]]["odds"][
+            row["combination"]
+        ]
+        final = race["official_closing_odds"][row["combination"]]
+        assert row["raw_target_log_ratio"] == pytest.approx(
+            np.log(final / current),
+            rel=0.0,
+            abs=1e-12,
+        )
+
+    missing_trend_race = copy.deepcopy(race)
+    missing_trend_combination = ALL_COMBINATIONS[17]
+    del missing_trend_race["closing_odds_checkpoints"]["t300"]["odds"][
+        missing_trend_combination
+    ]
+    missing_rows, missing_audit = _examples_from_race(
+        missing_trend_race,
+        "2026-01-07",
+    )
+    assert missing_audit["incomplete_t300"] == 1
+    assert missing_audit["missing_t300"] == 0
+    missing_trend = next(
+        row
+        for row in missing_rows
+        if row["label"] == "t120"
+        and row["combination"] == missing_trend_combination
+    )
+    assert missing_trend["trace"]["used_checkpoint_offsets"] == [120]
+    assert missing_trend["trace"]["future_checkpoint_offsets_used"] == []
+
+
+def test_log_difference_stays_finite_when_odds_ratio_would_overflow() -> None:
+    race = _synthetic_race("2026-01-07", 1)
+    combination = COMBINATIONS[0]
+    race["closing_odds"][combination] = 1e308
+    race["closing_odds_checkpoints"]["t300"]["odds"][combination] = 1e-308
+
+    rows, _audit = _examples_from_race(race, "2026-01-07")
+    target = next(
+        row["raw_target_log_ratio"]
+        for row in rows
+        if row["label"] == "t300" and row["combination"] == combination
+    )
+
+    assert np.isfinite(target)
+    assert target == pytest.approx(np.log(1e308) - np.log(1e-308))
+
+
+def test_point_fit_rejects_nonfinite_inputs_and_records_condition() -> None:
+    rows, _audit = _examples_from_race(
+        _official_120_race("2026-01-07", 3),
+        "2026-01-07",
+    )
+    model = _fit_point_model(rows, 0.05, architecture="base")
+    assert model is not None
+    diagnostics = model["numerical_diagnostics"]
+    assert diagnostics["gram_symmetrized"] is True
+    assert diagnostics["gram_pre_symmetry_max_abs_error"] >= 0.0
+    assert diagnostics["regularized_system_condition_number_finite"] is True
+    assert diagnostics["regularized_system_condition_number"] > 0.0
+
+    invalid_target = [dict(rows[0], target_log_ratio=float("inf"))]
+    with pytest.raises(ValueError, match="targets must be finite"):
+        _fit_point_model(invalid_target, 0.05, architecture="base")
+
+    invalid_features = [
+        dict(rows[0], features=np.full(len(FEATURE_NAMES), np.nan))
+    ]
+    with pytest.raises(ValueError, match="features must be finite"):
+        _fit_point_model(invalid_features, 0.05, architecture="base")
+
+    with pytest.raises(ValueError, match="finite observations"):
+        _finite_sample_lower_rank(
+            [0.0, float("nan")],
+            target_coverage=0.8,
+        )
