@@ -215,10 +215,14 @@ def test_catalog_adds_model_key_to_every_source_row() -> None:
 def test_odds_path_generation_and_daily_jobs_share_canonical_model_key() -> None:
     v4 = "odds_path_observed_closing_return_v4"
     v6 = "odds_path_prequential_shrinkage_return_v6"
+    v7 = "odds_path_crossfit_conservative_ev_v7"
+    v8 = "odds_path_market_offset_crossfit_conservative_ev_v8"
     assert _report_model_key(f"{v4}_daily:market_residual:20260718-28") == v4
     assert _report_model_key(
         f"{v6}_daily:market_residual:20260718-28_market_offset_registered_policy_walk_forward"
     ) == v6
+    assert _report_model_key(f"{v7}_daily:market_residual:20260718-28") == v7
+    assert _report_model_key(f"{v8}_daily:market_residual:20260718-28") == v8
 
     track = {"id": v6, "label": "事前逐次収縮リターン v6"}
     bankroll = {

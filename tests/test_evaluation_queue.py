@@ -1521,7 +1521,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1531,6 +1531,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_observed_closing_return_v4_daily:market_residual:20260718-25",
         "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
         "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
+        "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1576,6 +1577,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert crossfit_v7["priority"] == 94
     assert crossfit_v7["parameters"]["timeout_seconds"] == 7200
+    crossfit_v8 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_crossfit_conservative_ev"
+    )
+    assert crossfit_v8["priority"] == 93
+    assert crossfit_v8["parameters"]["timeout_seconds"] == 7200
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
@@ -2814,6 +2822,27 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert v7_command[
         v7_command.index("--calibrator-strategy") + 1
     ] == "odds_path_crossfit_conservative_ev"
+    v8_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": (
+                    "odds_path_market_offset_crossfit_conservative_ev"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v8_command[
+        v8_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_market_offset_crossfit_conservative_ev"
     orthogonal_command, _ = build_command(
         _job(
             "market_residual_walk_forward",
@@ -2891,6 +2920,37 @@ def test_result_summary_preserves_v7_prospective_gate_metrics() -> None:
     )
     assert summary["prospective_v7_closing_q20_lower_coverage"] == 0.81
     assert summary["prospective_v7_promotion_eligible"] is True
+
+
+def test_load_result_preserves_purchase_decision_diagnostics(tmp_path) -> None:
+    path = tmp_path / "v8-result.json"
+    diagnostics = {
+        "threshold_pass_candidates": 0,
+        "candidates_after_race_cap": 0,
+        "purchases_after_allocation": 0,
+        "safe_ev_max": 1.041,
+        "safe_ev_p95": 0.982,
+        "safe_ev_p99": 1.012,
+        "safe_ev_at_least": {"1.00": 8, "1.05": 0},
+    }
+    path.write_text(
+        json.dumps({
+            "model": "odds_path_market_offset_crossfit_conservative_ev_v8",
+            "purchase_decision_diagnostics": diagnostics,
+        }),
+        encoding="utf-8",
+    )
+
+    payload, summary = evaluation_queue._load_result(path)
+
+    assert payload["purchase_decision_diagnostics"] == diagnostics
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["threshold_pass_candidates"] == 0
+    assert summary["candidates_after_race_cap"] == 0
+    assert summary["purchases_after_allocation"] == 0
+    assert summary["safe_ev_max"] == 1.041
+    assert summary["safe_ev_p95"] == 0.982
+    assert summary["safe_ev_p99"] == 1.012
 
 
 def test_result_summary_exposes_high_ev_holdout_calibration() -> None:

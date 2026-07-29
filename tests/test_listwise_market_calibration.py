@@ -652,6 +652,54 @@ def test_cli_accepts_v7_calibrator_strategy() -> None:
     assert args.calibrator_strategy == "odds_path_crossfit_conservative_ev"
 
 
+def test_cli_accepts_v8_market_offset_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_market_offset_crossfit_conservative_ev",
+        ]
+    )
+
+    assert args.calibrator_strategy == (
+        "odds_path_market_offset_crossfit_conservative_ev"
+    )
+
+
+def test_walk_forward_dispatches_v8_market_offset_strategy(monkeypatch) -> None:
+    import boatrace_ai.listwise.odds_path_conservative_v8 as v8
+
+    expected = {"model": v8.MODEL_NAME, "dispatch": "v8"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v8, "walk_forward_evaluate_v8", fake_walk_forward)
+    races = [_race("2026-07-30", 1)]
+
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=3,
+        calibrator_strategy=(
+            "odds_path_market_offset_crossfit_conservative_ev"
+        ),
+        evaluation_dates=("2026-07-30",),
+    )
+
+    assert result is expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 3,
+        "evaluation_dates": ("2026-07-30",),
+    }
+
+
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     races = [
         _race(race_date, rno)
