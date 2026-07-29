@@ -478,6 +478,132 @@ def build_checkpoint_feature_vector(
     }
 
 
+def _checkpoint_feature_matrix(
+    race: Mapping[str, object],
+    *,
+    checkpoints: Mapping[str, Mapping[str, object]],
+    horizon: int,
+    combinations: Sequence[str],
+) -> tuple[np.ndarray, list[dict[str, object]]]:
+    """Build one horizon's feature matrix from race-level cached inputs.
+
+    This is the training hot path. It intentionally mirrors
+    ``build_checkpoint_feature_vector`` while normalizing snapshots, ranking the
+    market, and decoding historical odds only once per race and horizon.
+    """
+    label = checkpoint_label(horizon)
+    snapshot = checkpoints.get(label)
+    if snapshot is None:
+        raise ValueError(f"missing checkpoint: {label}")
+    odds = _snapshot_odds(snapshot)
+    keys = sorted(odds)
+    requested = list(combinations)
+    if any(combination not in odds for combination in requested):
+        raise ValueError(f"checkpoint {label} is missing requested odds")
+
+    values = np.asarray([odds[key] for key in keys], dtype=np.float64)
+    normalized_ranks = _average_ranks(values) / max(1, len(values) - 1)
+    rank_by_combination = {
+        combination: float(normalized_ranks[index])
+        for index, combination in enumerate(keys)
+    }
+    odds_by_offset: dict[int, dict[str, float]] = {}
+    for offset in CHECKPOINT_OFFSETS_SECONDS:
+        if offset < horizon:
+            continue
+        historical = checkpoints.get(checkpoint_label(offset))
+        if historical is not None:
+            odds_by_offset[offset] = _snapshot_odds(historical)
+
+    stale = _snapshot_staleness(snapshot)
+    checkpoint_age = snapshot.get("checkpoint_age_before_target_seconds")
+    checkpoint_age_value = (
+        float(checkpoint_age) if checkpoint_age is not None else None
+    )
+    if checkpoint_age_value is not None and checkpoint_age_value < 0.0:
+        raise ValueError("future checkpoint observation is not allowed")
+    context = _context_features(race, snapshot)
+    venue_indicators = context[2:27]
+    horizon_indicators = [
+        1.0 if horizon == value else 0.0
+        for value in CHECKPOINT_OFFSETS_SECONDS
+    ]
+    staleness_features = (
+        math.log1p(stale / 60.0) if stale is not None else 0.0,
+        1.0 if stale is None else 0.0,
+    )
+    age_features = (
+        math.log1p(checkpoint_age_value)
+        if checkpoint_age_value is not None
+        else 0.0,
+        1.0 if checkpoint_age_value is None else 0.0,
+    )
+
+    rows: list[list[float]] = []
+    traces: list[dict[str, object]] = []
+    for combination in requested:
+        points = [
+            (offset, math.log(historical[combination]))
+            for offset, historical in odds_by_offset.items()
+            if combination in historical
+        ]
+        slopes: list[tuple[float, float]] = []
+        for (older_offset, older), (newer_offset, newer) in zip(
+            points, points[1:]
+        ):
+            elapsed_minutes = (older_offset - newer_offset) / 60.0
+            if elapsed_minutes > 0.0:
+                slopes.append(((newer - older) / elapsed_minutes, elapsed_minutes))
+        slope = slopes[-1][0] if slopes else 0.0
+        curvature = 0.0
+        if len(slopes) >= 2:
+            distance = max(EPSILON, (slopes[-2][1] + slopes[-1][1]) / 2.0)
+            curvature = (slopes[-1][0] - slopes[-2][0]) / distance
+        current_log = math.log(odds[combination])
+        rank = rank_by_combination[combination]
+        rows.append(
+            [
+                1.0,
+                math.log(float(horizon)),
+                *horizon_indicators,
+                current_log,
+                rank,
+                float(np.clip(slope, -5.0, 5.0)),
+                float(np.clip(curvature, -5.0, 5.0)),
+                math.log1p(len(points)),
+                1.0 if slopes else 0.0,
+                1.0 if len(slopes) >= 2 else 0.0,
+                *staleness_features,
+                *age_features,
+                *context,
+                *(current_log * value for value in venue_indicators),
+                *(rank * value for value in venue_indicators),
+            ]
+        )
+        used = [offset for offset, _value in points]
+        traces.append(
+            {
+                "checkpoint_label": label,
+                "target_offset_seconds": horizon,
+                "as_of_offset_seconds": horizon,
+                "used_checkpoint_offsets": used,
+                "future_checkpoint_offsets_used": [
+                    value for value in used if value < horizon
+                ],
+                "source_update_staleness_missing": stale is None,
+                "checkpoint_age_before_target_seconds": checkpoint_age_value,
+                "checkpoint_age_before_target_missing": checkpoint_age_value is None,
+            }
+        )
+
+    result = np.asarray(rows, dtype=np.float64)
+    if result.shape != (len(requested), len(FEATURE_NAMES)) or not np.all(
+        np.isfinite(result)
+    ):
+        raise ValueError("v11 checkpoint feature matrix contract mismatch")
+    return result, traces
+
+
 def _race_identity(race: Mapping[str, object], race_date: str) -> str:
     return str(
         race.get("race_id")
@@ -565,9 +691,18 @@ def _examples_from_race(
         if set(current) != set(final):
             incomplete[label] = 1
             continue
-        for combination in sorted(final):
-            vector, trace = build_checkpoint_feature_vector(
-                race, checkpoint=label, combination=combination
+        combinations = sorted(final)
+        feature_matrix, traces = _checkpoint_feature_matrix(
+            race,
+            checkpoints=checkpoints,
+            horizon=horizon,
+            combinations=combinations,
+        )
+        for combination, vector, trace in zip(
+            combinations, feature_matrix, traces
+        ):
+            target_log_ratio = (
+                math.log(final[combination]) - math.log(current[combination])
             )
             examples.append(
                 {
@@ -577,10 +712,8 @@ def _examples_from_race(
                     "label": label,
                     "combination": combination,
                     "features": vector,
-                    "target_log_ratio": math.log(final[combination] / current[combination]),
-                    "raw_target_log_ratio": math.log(
-                        final[combination] / current[combination]
-                    ),
+                    "target_log_ratio": target_log_ratio,
+                    "raw_target_log_ratio": target_log_ratio,
                     "trace": trace,
                     "teacher_source": teacher_source,
                     "venue_group": _venue_group(race),
@@ -669,6 +802,10 @@ def _fit_point_model(
         [np.asarray(row["features"], dtype=np.float64)[feature_indices] for row in examples]
     )
     target = np.asarray([float(row["target_log_ratio"]) for row in examples])
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("v11 point model features must be finite")
+    if not np.all(np.isfinite(target)):
+        raise ValueError("v11 point model targets must be finite")
     mean = matrix.mean(axis=0)
     scale = matrix.std(axis=0)
     mean[0] = 0.0
@@ -683,13 +820,19 @@ def _fit_point_model(
     penalty = np.diag(penalty_weights) * regularization
     penalty[0, 0] = 0.0
     gram = standardized.T @ standardized / len(target)
+    gram_asymmetry = float(np.max(np.abs(gram - gram.T)))
+    gram = (gram + gram.T) / 2.0
     rhs = standardized.T @ target / len(target)
     system = gram + penalty + 1e-10 * np.eye(matrix.shape[1], dtype=np.float64)
+    condition_number = float(np.linalg.cond(system))
     try:
         coefficients = np.linalg.solve(system, rhs)
     except np.linalg.LinAlgError:
         coefficients = np.linalg.lstsq(system, rhs, rcond=None)[0]
     predicted = standardized @ coefficients
+    residuals = target - predicted
+    if not np.all(np.isfinite(predicted)) or not np.all(np.isfinite(residuals)):
+        raise ValueError("v11 point model predictions and residuals must be finite")
     return {
         "model_type": "robust_ridge_log_selected_closing_to_current_ratio",
         "architecture": architecture,
@@ -706,7 +849,17 @@ def _fit_point_model(
             else None
         ),
         "training_examples": len(examples),
-        "training_log_ratio_mae": float(np.mean(np.abs(target - predicted))),
+        "training_log_ratio_mae": float(np.mean(np.abs(residuals))),
+        "numerical_diagnostics": {
+            "gram_symmetrized": True,
+            "gram_pre_symmetry_max_abs_error": gram_asymmetry,
+            "regularized_system_condition_number": (
+                condition_number if math.isfinite(condition_number) else None
+            ),
+            "regularized_system_condition_number_finite": math.isfinite(
+                condition_number
+            ),
+        },
     }
 
 
@@ -724,7 +877,10 @@ def _point_log_ratio(vector: np.ndarray, point_model: Mapping[str, object]) -> f
 def _finite_sample_lower_rank(
     values: Sequence[float], *, target_coverage: float
 ) -> tuple[float, int, float]:
-    ordered = np.sort(np.asarray(values, dtype=np.float64))
+    observations = np.asarray(values, dtype=np.float64)
+    if observations.ndim != 1 or not np.all(np.isfinite(observations)):
+        raise ValueError("finite-sample lower rank requires finite observations")
+    ordered = np.sort(observations)
     if len(ordered) == 0:
         raise ValueError("finite-sample lower rank requires observations")
     alpha = 1.0 - target_coverage
