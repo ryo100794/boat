@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import boatrace_ai.evaluation_queue as evaluation_queue
 import boatrace_ai.listwise.market_calibration as market_calibration
-import boatrace_ai.listwise.odds_path_role_integrated_v15 as integrated_v15
+import boatrace_ai.listwise.odds_path_role_integrated_v16 as integrated_v16
 from boatrace_ai.evaluation_queue import (
     build_command,
     seed_daily_market_jobs,
@@ -12,28 +14,28 @@ from boatrace_ai.evaluation_queue import (
 )
 
 
-STRATEGY = "odds_path_role_integrated_selection_free_envelope_v15"
+STRATEGY = "odds_path_role_integrated_fixed_band_passthrough_v16"
 
 
 def _job() -> dict[str, object]:
     return {
-        "job_id": 15,
+        "job_id": 16,
         "status": "running",
         "task_type": "market_residual_walk_forward",
-        "model_key": "v15-candidate",
+        "model_key": "v16-candidate",
         "parameters": {
             "model_input": "data/models/source.joblib",
             "from_date": "2026-07-18",
             "through_date": "2026-08-01",
             "daily_budget_yen": 10_000,
-            "min_calibration_days": 2,
+            "min_calibration_days": 5,
             "calibrator_strategy": STRATEGY,
             "v12_closing_fallback_policy": "no_bet",
         },
     }
 
 
-def test_v15_parser_and_queue_command_are_reproducible(tmp_path: Path) -> None:
+def test_v16_parser_and_queue_command_are_reproducible(tmp_path: Path) -> None:
     model = tmp_path / "data/models/source.joblib"
     model.parent.mkdir(parents=True)
     model.write_bytes(b"artifact")
@@ -56,8 +58,20 @@ def test_v15_parser_and_queue_command_are_reproducible(tmp_path: Path) -> None:
     ])
     assert parsed.calibrator_strategy == STRATEGY
 
+    invalid = _job()
+    invalid["parameters"] = {
+        **invalid["parameters"],
+        "v12_closing_fallback_policy": "v11",
+    }
+    with pytest.raises(
+        ValueError, match="V16 requires v12_closing_fallback_policy=no_bet"
+    ):
+        build_command(
+            invalid, app_root=tmp_path, python=python, db="postgresql://test"
+        )
 
-def test_v15_dispatcher_preserves_the_exact_evaluation_population(
+
+def test_v16_dispatcher_preserves_the_exact_evaluation_population(
     monkeypatch,
 ) -> None:
     fallback_policies: list[str] = []
@@ -66,12 +80,12 @@ def test_v15_dispatcher_preserves_the_exact_evaluation_population(
         fallback_policies.append(str(kwargs["closing_fallback_policy"]))
         return {}
 
-    monkeypatch.setattr(integrated_v15, "walk_forward_evaluate_v12", fake_v12)
+    monkeypatch.setattr(integrated_v16, "walk_forward_evaluate_v12", fake_v12)
     races = [
         {"race_date": "2026-07-30", "race_id": "2026-07-30-02-01"},
         {"race_date": "2026-07-30", "race_id": "2026-07-30-01-01"},
     ]
-    direct = integrated_v15.walk_forward_evaluate_v15(
+    direct = integrated_v16.walk_forward_evaluate_v16(
         races,
         daily_budget_yen=10_000,
         min_calibration_days=2,
@@ -86,8 +100,8 @@ def test_v15_dispatcher_preserves_the_exact_evaluation_population(
         v12_closing_fallback_policy="no_bet",
     )
 
-    assert integrated_v15.MODEL_NAME == STRATEGY
-    assert integrated_v15.STRATEGY_NAME == STRATEGY
+    assert integrated_v16.MODEL_NAME == STRATEGY
+    assert integrated_v16.STRATEGY_NAME == STRATEGY
     assert direct["evaluation_population_races"] == 2
     assert dispatched["evaluation_population_races"] == 2
     assert direct["evaluation_population_hash"] == dispatched[
@@ -99,7 +113,7 @@ def test_v15_dispatcher_preserves_the_exact_evaluation_population(
     assert fallback_policies == ["no_bet", "no_bet"]
 
 
-def test_daily_v15_is_queued_ahead_of_v14(tmp_path: Path, monkeypatch) -> None:
+def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
     model_dir = tmp_path / "data/models/evaluation_queue"
     model_dir.mkdir(parents=True)
     source_path = model_dir / "source.json"
@@ -127,21 +141,33 @@ def test_daily_v15_is_queued_ahead_of_v14(tmp_path: Path, monkeypatch) -> None:
     by_strategy = {
         row["parameters"]["calibrator_strategy"]: row for row in calls
     }
-    v15 = by_strategy[STRATEGY]
-    v14 = by_strategy[
-        "odds_path_role_integrated_registered_band_lcb_v14"
+    v16 = by_strategy[STRATEGY]
+    v15 = by_strategy[
+        "odds_path_role_integrated_selection_free_envelope_v15"
     ]
-    assert v15["priority"] > v14["priority"]
-    assert v15["parameters"]["timeout_seconds"] == 14_400
-    assert v15["parameters"]["min_calibration_days"] == 5
-    assert v15["parameters"]["v12_closing_fallback_policy"] == "no_bet"
-    assert v15["parameters"]["model_input"] == v14["parameters"]["model_input"]
-    assert v15["parameters"]["from_date"] == v14["parameters"]["from_date"]
-    assert v15["parameters"]["through_date"] == v14["parameters"]["through_date"]
-    assert calls.index(v15) < calls.index(v14)
+    assert v16["priority"] > v15["priority"]
+    assert v16["priority"] == 100
+    assert v16["parameters"]["timeout_seconds"] == 14_400
+    assert v16["parameters"]["min_calibration_days"] == 5
+    assert v16["parameters"]["v12_closing_fallback_policy"] == "no_bet"
+    assert v16["parameters"]["model_input"] == v15["parameters"]["model_input"]
+    assert v16["parameters"]["from_date"] == v15["parameters"]["from_date"]
+    assert v16["parameters"]["through_date"] == v15["parameters"]["through_date"]
+    assert calls.index(v16) < calls.index(v15)
+    assert evaluation_queue.TASK_PROFILES[
+        "market_residual_walk_forward"
+    ]["max_parallel"] == 2
+    assert STRATEGY in market_calibration.CLEAN_DAY_CALIBRATOR_STRATEGIES
+    all_races = [{"race_id": "complete"}, {"race_id": "incomplete"}]
+    clean_races = [all_races[0]]
+    assert market_calibration.select_calibrator_evaluation_races(
+        STRATEGY,
+        races=all_races,
+        clean_races=clean_races,
+    ) is clean_races
 
 
-def test_v15_summary_preserves_web_report_metrics_and_diagnostics() -> None:
+def test_v16_summary_preserves_web_report_metrics_and_diagnostics() -> None:
     closing_envelope = {
         "selection_free": True,
         "evaluation_folds": 6,
@@ -189,15 +215,15 @@ def test_v15_summary_preserves_web_report_metrics_and_diagnostics() -> None:
     summary = summarize_result({
         "model": STRATEGY,
         "closing_envelope_conformal": closing_envelope,
-        "prospective_role_integrated_v15_walk_forward": prospective,
+        "prospective_role_integrated_v16_walk_forward": prospective,
     })
 
     assert summary["closing_envelope_conformal"] == closing_envelope
     for key, value in prospective.items():
         if key in {"closing_envelope_conformal", "promotion_gate"}:
             continue
-        assert summary[f"prospective_v15_{key}"] == value
-    assert summary["prospective_v15_closing_envelope_conformal"] == (
+        assert summary[f"prospective_v16_{key}"] == value
+    assert summary["prospective_v16_closing_envelope_conformal"] == (
         prospective_envelope
     )
-    assert summary["prospective_v15_promotion_gate"] == promotion_gate
+    assert summary["prospective_v16_promotion_gate"] == promotion_gate
