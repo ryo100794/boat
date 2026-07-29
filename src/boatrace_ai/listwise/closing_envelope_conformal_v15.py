@@ -321,6 +321,121 @@ def fit_closing_envelope_conformal_v15(
     }
 
 
+def evaluate_closing_envelope_holdout_v15(
+    races: Iterable[Mapping[str, Any]],
+    *,
+    artifact: Mapping[str, Any],
+    evaluation_date: str | date,
+) -> dict[str, Any]:
+    """Audit strict holdout coverage after purchase decisions are frozen.
+
+    Only point forecasts, the strict-prior haircut, and evaluation-only final
+    odds are read. Results, payouts, probabilities, and purchase choices are
+    deliberately outside this metric.
+    """
+    evaluation = _iso_date(evaluation_date, field="evaluation_date")
+    raw_target = artifact.get("target_coverage")
+    target = (
+        float(raw_target)
+        if raw_target is not None
+        else 1.0 - TARGET_QUANTILE
+    )
+    artifact_ready = (
+        artifact.get("method") == METHOD and bool(artifact.get("ready"))
+    )
+    try:
+        haircut = float(artifact.get("haircut"))
+    except (TypeError, ValueError, OverflowError):
+        haircut = math.nan
+    artifact_ready = (
+        artifact_ready and math.isfinite(haircut) and 0.0 < haircut <= 1.0
+    )
+
+    materialized = list(races)
+    race_id_counts = Counter(
+        str(race.get("race_id") or "") for race in materialized
+    )
+    race_audit: list[dict[str, Any]] = []
+    rejection_reasons: Counter[str] = Counter()
+    covered = 0
+    evaluated = 0
+    for index, race in enumerate(materialized):
+        raw_race_id = str(race.get("race_id") or "")
+        race_date = _iso_date(race.get("race_date"), field="race_date")
+        predicted_raw, predicted_field = _mapping_from(race, _PREDICTION_FIELDS)
+        actual_raw, actual_field = _mapping_from(race, _ACTUAL_FIELDS)
+        predicted, predicted_audit = _normalize_odds(predicted_raw)
+        actual, actual_audit = _normalize_odds(actual_raw)
+        audit_race_id = raw_race_id or f"<missing:{index}>"
+        if race_date != evaluation:
+            reason = "not_evaluation_date"
+        elif not artifact_ready:
+            reason = "closing_envelope_artifact_not_ready"
+        elif not raw_race_id:
+            reason = "missing_race_id"
+        elif race_id_counts[audit_race_id] != 1:
+            reason = "duplicate_race_id"
+        else:
+            reason = _race_reason(predicted, actual, predicted_audit, actual_audit)
+
+        race_covered = 0
+        if reason is None:
+            race_covered = sum(
+                actual[combination] >= predicted[combination] * haircut
+                for combination in _CANONICAL_COMBINATIONS
+            )
+            covered += race_covered
+            evaluated += COMBINATIONS_PER_RACE
+        else:
+            rejection_reasons[reason] += 1
+        race_audit.append({
+            "race_date": race_date,
+            "race_id": raw_race_id or None,
+            "accepted": reason is None,
+            "reason": reason,
+            "predicted_field": predicted_field,
+            "actual_field": actual_field,
+            "predicted": predicted_audit,
+            "actual": actual_audit,
+            "evaluated_observations": (
+                COMBINATIONS_PER_RACE if reason is None else 0
+            ),
+            "covered_observations": race_covered,
+        })
+
+    input_races = len(race_audit)
+    accepted_races = sum(row["accepted"] for row in race_audit)
+    rejected_races = input_races - accepted_races
+    coverage = covered / evaluated if evaluated else None
+    return {
+        "method": METHOD,
+        "evaluation_date": evaluation,
+        "selection_free": True,
+        "strict_holdout": True,
+        "coverage_definition": (
+            "actual_closing_odds >= point_forecast_closing_odds * haircut"
+        ),
+        "target_coverage": target,
+        "haircut": haircut if artifact_ready else None,
+        "artifact_ready": artifact_ready,
+        "input_races": input_races,
+        "accepted_races": accepted_races,
+        "rejected_races": rejected_races,
+        "expected_observations": input_races * COMBINATIONS_PER_RACE,
+        "evaluated_observations": evaluated,
+        "missing_observations": rejected_races * COMBINATIONS_PER_RACE,
+        "covered_observations": covered,
+        "coverage": coverage,
+        "complete": input_races > 0 and rejected_races == 0,
+        "coverage_pass": coverage is not None and coverage >= target,
+        "result_used_for_decision": False,
+        "payout_used_for_decision": False,
+        "actual_closing_odds_role": "evaluation_only_after_purchase_decision",
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
+        "races": race_audit,
+    }
+
+
 def apply_closing_envelope_haircut_v15(
     predicted_closing_odds: float | Mapping[str, object],
     artifact: Mapping[str, Any],

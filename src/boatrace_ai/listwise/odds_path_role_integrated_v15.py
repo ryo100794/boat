@@ -9,6 +9,7 @@ from typing import Any
 from .closing_envelope_conformal_v15 import (
     METHOD as CLOSING_ENVELOPE_METHOD,
     MODEL_NAME as CLOSING_ENVELOPE_MODEL_NAME,
+    evaluate_closing_envelope_holdout_v15,
     fit_closing_envelope_conformal_v15,
 )
 from .closing_odds_multihorizon_v11 import (
@@ -88,6 +89,41 @@ def append_closing_envelope_observations_v15(
         })
         appended += 1
     return appended
+
+
+def _holdout_auditing_observation_append_v15(
+    holdout_by_date: dict[str, dict[str, Any]],
+):
+    """Wrap post-decision teacher append with strict holdout coverage audit."""
+    def append(
+        observations: list[dict[str, Any]],
+        races: list[dict[str, Any]],
+        *,
+        closing_forecasts: dict[str, dict[str, float]],
+        probability_lcb: dict[str, Any],
+        evaluation_date: str,
+    ) -> int:
+        artifact = _fit_closing_envelope(
+            observations, evaluation_date=evaluation_date
+        )
+        start = len(observations)
+        appended = append_closing_envelope_observations_v15(
+            observations,
+            races,
+            closing_forecasts=closing_forecasts,
+            probability_lcb=probability_lcb,
+            evaluation_date=evaluation_date,
+        )
+        holdout_by_date[evaluation_date] = (
+            evaluate_closing_envelope_holdout_v15(
+                observations[start:],
+                artifact=artifact,
+                evaluation_date=evaluation_date,
+            )
+        )
+        return appended
+
+    return append
 
 
 def build_strict_prior_prewarm_observations_v15(
@@ -179,9 +215,63 @@ def _rename_envelope_keys(value: Any) -> Any:
     return normalized
 
 
+def _aggregate_holdout_coverage_v15(
+    folds: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    holdouts = [
+        dict(fold.get("closing_envelope_holdout_coverage") or {})
+        for fold in folds
+    ]
+    targets = {
+        float(item["target_coverage"])
+        for item in holdouts
+        if item.get("target_coverage") is not None
+    }
+    evaluated = sum(
+        int(item.get("evaluated_observations") or 0) for item in holdouts
+    )
+    covered = sum(
+        int(item.get("covered_observations") or 0) for item in holdouts
+    )
+    return {
+        "holdout_evaluation_folds": len(holdouts),
+        "holdout_complete_folds": sum(
+            bool(item.get("complete")) for item in holdouts
+        ),
+        "holdout_input_races": sum(
+            int(item.get("input_races") or 0) for item in holdouts
+        ),
+        "holdout_accepted_races": sum(
+            int(item.get("accepted_races") or 0) for item in holdouts
+        ),
+        "holdout_rejected_races": sum(
+            int(item.get("rejected_races") or 0) for item in holdouts
+        ),
+        "holdout_expected_observations": sum(
+            int(item.get("expected_observations") or 0) for item in holdouts
+        ),
+        "holdout_evaluated_observations": evaluated,
+        "holdout_missing_observations": sum(
+            int(item.get("missing_observations") or 0) for item in holdouts
+        ),
+        "holdout_covered_observations": covered,
+        "holdout_coverage": covered / evaluated if evaluated else None,
+        "holdout_target_coverage": (
+            next(iter(targets)) if len(targets) == 1 else None
+        ),
+        "holdout_target_consistent": len(targets) == 1,
+        "holdout_actual_closing_odds_role": (
+            "evaluation_only_after_purchase_decision"
+        ),
+        "holdout_result_used_for_decision": False,
+        "holdout_payout_used_for_decision": False,
+    }
+
+
 def _aggregate_closing_envelopes(
     folds: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    folds = list(folds)
     artifacts = [
         dict(fold.get("closing_envelope_conformal") or {})
         for fold in folds
@@ -218,6 +308,7 @@ def _aggregate_closing_envelopes(
         "haircut_latest": latest.get("haircut"),
         "haircut_min": min(haircuts) if haircuts else None,
         "haircut_max": max(haircuts) if haircuts else None,
+        **_aggregate_holdout_coverage_v15(folds),
     }
 
 
@@ -228,18 +319,64 @@ def _closing_envelope_promotion_gate(
     ready_folds = int(summary.get("ready_folds") or 0)
     input_races = int(summary.get("missing_audit_input_races") or 0)
     rejected_races = int(summary.get("missing_audit_rejected_races") or 0)
+    holdout_folds = int(summary.get("holdout_evaluation_folds") or 0)
+    holdout_complete_folds = int(summary.get("holdout_complete_folds") or 0)
+    holdout_races = int(summary.get("holdout_input_races") or 0)
+    holdout_rejected = int(summary.get("holdout_rejected_races") or 0)
+    holdout_coverage = summary.get("holdout_coverage")
+    holdout_target = summary.get("holdout_target_coverage")
     return {
         "closing_envelope_evaluation_folds": evaluation_folds,
         "closing_envelope_ready_folds": ready_folds,
         "closing_envelope_input_races": input_races,
         "closing_envelope_rejected_races": rejected_races,
+        "closing_envelope_holdout_folds": holdout_folds,
+        "closing_envelope_holdout_races": holdout_races,
+        "closing_envelope_holdout_rejected_races": holdout_rejected,
+        "closing_envelope_holdout_coverage": holdout_coverage,
+        "closing_envelope_holdout_target_coverage": holdout_target,
         "closing_envelope_ready_pass": (
             evaluation_folds > 0 and ready_folds == evaluation_folds
         ),
         "closing_envelope_no_missing_races_pass": (
             input_races > 0 and rejected_races == 0
         ),
+        "closing_envelope_holdout_complete_pass": (
+            holdout_folds > 0
+            and holdout_complete_folds == holdout_folds
+            and holdout_races > 0
+            and holdout_rejected == 0
+        ),
+        "closing_envelope_holdout_coverage_pass": (
+            bool(summary.get("holdout_target_consistent"))
+            and holdout_coverage is not None
+            and holdout_target is not None
+            and float(holdout_coverage) >= float(holdout_target)
+        ),
     }
+
+
+
+_LEGACY_V12_COVERAGE_GATE_KEYS = frozenset({
+    "selection_conditional_coverage_pass",
+    "selection_conditional_complete_pass",
+    "quantile_coverage_pass",
+})
+
+
+def _replace_legacy_coverage_gate_v15(
+    gate: Mapping[str, Any], envelope_summary: Mapping[str, Any]
+) -> dict[str, Any]:
+    normalized = {
+        key: value
+        for key, value in gate.items()
+        if key not in _LEGACY_V12_COVERAGE_GATE_KEYS
+    }
+    normalized["closing_envelope_replaced_legacy_gate_keys"] = sorted(
+        _LEGACY_V12_COVERAGE_GATE_KEYS.intersection(gate)
+    )
+    normalized.update(_closing_envelope_promotion_gate(envelope_summary))
+    return normalized
 
 
 def walk_forward_evaluate_v15(
@@ -262,6 +399,7 @@ def walk_forward_evaluate_v15(
     prewarm_observations = build_strict_prior_prewarm_observations_v15(
         races, min_calibration_days=min_calibration_days
     )
+    holdout_by_date: dict[str, dict[str, Any]] = {}
     result = walk_forward_evaluate_v12(
         races,
         daily_budget_yen=daily_budget_yen,
@@ -270,7 +408,9 @@ def walk_forward_evaluate_v15(
         closing_fallback_policy=closing_fallback_policy,
         closing_forecast_field="point_final_odds",
         selection_conformal_fit=_fit_closing_envelope,
-        selection_observation_append=append_closing_envelope_observations_v15,
+        selection_observation_append=(
+            _holdout_auditing_observation_append_v15(holdout_by_date)
+        ),
         initial_selection_observations=prewarm_observations,
     )
 
@@ -278,12 +418,22 @@ def walk_forward_evaluate_v15(
         _rename_envelope_keys(fold) for fold in list(result.get("folds") or [])
     ]
     for fold in folds:
+        evaluation_date = str(fold.get("evaluation_date") or "")
+        if evaluation_date in holdout_by_date:
+            fold["closing_envelope_holdout_coverage"] = dict(
+                holdout_by_date[evaluation_date]
+            )
+        else:
+            fold.setdefault("closing_envelope_holdout_coverage", {})
         fold["selected_policy"] = _v15_policy(fold.get("selected_policy"))
         guard = dict(fold.get("leakage_guard") or {})
         guard.update({
             "closing_envelope_population": "all_120_complete_combinations",
             "closing_envelope_selection_free": True,
             "closing_teacher_appended_after_purchase_decision": True,
+            "actual_closing_odds_used_for_holdout_evaluation_only": True,
+            "result_used_for_closing_envelope_decision": False,
+            "payout_used_for_closing_envelope_decision": False,
             "missing_real_t300_action": "no_bet",
             "real_betting_enabled": False,
         })
@@ -299,9 +449,8 @@ def walk_forward_evaluate_v15(
     ]
     prospective_envelope = _aggregate_closing_envelopes(prospective_folds)
     prospective["closing_envelope_conformal"] = prospective_envelope
-    prospective_gate = dict(prospective.get("promotion_gate") or {})
-    prospective_gate.update(
-        _closing_envelope_promotion_gate(prospective_envelope)
+    prospective_gate = _replace_legacy_coverage_gate_v15(
+        dict(prospective.get("promotion_gate") or {}), prospective_envelope
     )
     prospective_checks = [
         bool(value)

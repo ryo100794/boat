@@ -50,6 +50,18 @@ def _base_v12_result() -> dict:
             "evaluation_date": "2026-07-30",
             "probability_lcb_metrics": ranking_diagnostics,
             "selected_policy": {"name": "v12-policy"},
+            "closing_envelope_holdout_coverage": {
+                "target_coverage": 0.8,
+                "complete": True,
+                "input_races": 1,
+                "accepted_races": 1,
+                "rejected_races": 0,
+                "expected_observations": 120,
+                "evaluated_observations": 120,
+                "missing_observations": 0,
+                "covered_observations": 100,
+                "coverage": 100 / 120,
+            },
             "selection_conformal": envelope,
             "selection_observations_appended_after_decision": 12,
             "leakage_guard": {
@@ -58,7 +70,12 @@ def _base_v12_result() -> dict:
             "bankroll": {"selection_conformal": envelope},
         }],
         v16.V12_PROSPECTIVE_OUTPUT_KEY: {
-            "promotion_gate": {"base_roi_pass": True},
+            "promotion_gate": {
+                "base_roi_pass": True,
+                "selection_conditional_coverage_pass": True,
+                "selection_conditional_complete_pass": True,
+                "quantile_coverage_pass": True,
+            },
             "promotion_eligible": True,
         },
         "deployment_configuration": {},
@@ -92,8 +109,7 @@ def test_v16_injects_passthrough_and_reuses_v15_envelope(monkeypatch) -> None:
         "probability_lcb_metrics_use_preallocation_population" not in captured
     )
     assert (
-        captured["selection_observation_append"]
-        is v16.append_closing_envelope_observations_v15
+        callable(captured["selection_observation_append"])
     )
     assert result["model"] == v16.MODEL_NAME
     assert result["registered_after"] == "2026-07-29"
@@ -102,6 +118,14 @@ def test_v16_injects_passthrough_and_reuses_v15_envelope(monkeypatch) -> None:
     assert result["fixed_policy"]["conditional_lcb"] is False
     assert result["fixed_policy"]["raw_model_probability_inside_fixed_band"] is True
     assert result["closing_envelope_conformal"]["ready_folds"] == 1
+    assert result["closing_envelope_conformal"]["holdout_coverage"] == pytest.approx(
+        100 / 120
+    )
+    gate = result["promotion_gate"]
+    assert gate["closing_envelope_holdout_complete_pass"] is True
+    assert gate["closing_envelope_holdout_coverage_pass"] is True
+    for legacy_key in v16._LEGACY_V12_COVERAGE_GATE_KEYS:
+        assert legacy_key not in gate
     diagnostics = result["fixed_band_ranking_diagnostics"]
     assert diagnostics["real_betting_enabled"] is False
     assert (

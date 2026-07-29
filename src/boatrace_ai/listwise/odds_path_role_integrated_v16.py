@@ -10,13 +10,14 @@ from .odds_path_role_integrated_v12 import (
 )
 from .odds_path_role_integrated_v15 import (
     DISCRETE_POLICY_V15,
+    _LEGACY_V12_COVERAGE_GATE_KEYS,
     _aggregate_closing_envelopes,
-    _closing_envelope_promotion_gate,
     _evaluation_population_hash,
     _fit_closing_envelope,
+    _holdout_auditing_observation_append_v15,
     _rename_envelope_keys,
+    _replace_legacy_coverage_gate_v15,
     _v15_policy,
-    append_closing_envelope_observations_v15,
     build_strict_prior_prewarm_observations_v15,
 )
 from .strict_prior_t300_divergence_passthrough_v16 import (
@@ -77,6 +78,7 @@ def walk_forward_evaluate_v16(
     prewarm_observations = build_strict_prior_prewarm_observations_v15(
         races, min_calibration_days=min_calibration_days
     )
+    holdout_by_date: dict[str, dict[str, Any]] = {}
     result = walk_forward_evaluate_v12(
         races,
         daily_budget_yen=daily_budget_yen,
@@ -89,7 +91,9 @@ def walk_forward_evaluate_v16(
         ),
         probability_lcb_metrics=compare_v16_fixed_band_ranking_rules,
         selection_conformal_fit=_fit_closing_envelope,
-        selection_observation_append=append_closing_envelope_observations_v15,
+        selection_observation_append=(
+            _holdout_auditing_observation_append_v15(holdout_by_date)
+        ),
         initial_selection_observations=prewarm_observations,
     )
 
@@ -97,6 +101,13 @@ def walk_forward_evaluate_v16(
         _rename_envelope_keys(fold) for fold in list(result.get("folds") or [])
     ]
     for fold in folds:
+        evaluation_date = str(fold.get("evaluation_date") or "")
+        if evaluation_date in holdout_by_date:
+            fold["closing_envelope_holdout_coverage"] = dict(
+                holdout_by_date[evaluation_date]
+            )
+        else:
+            fold.setdefault("closing_envelope_holdout_coverage", {})
         fold["selected_policy"] = _v16_policy(fold.get("selected_policy"))
         guard = dict(fold.get("leakage_guard") or {})
         guard.update({
@@ -109,6 +120,9 @@ def walk_forward_evaluate_v16(
             "closing_envelope_selection_free": True,
             "closing_teacher_appended_after_purchase_decision": True,
             "result_payout_in_purchase_features": False,
+            "actual_closing_odds_used_for_holdout_evaluation_only": True,
+            "result_used_for_closing_envelope_decision": False,
+            "payout_used_for_closing_envelope_decision": False,
             "missing_real_t300_action": "no_bet",
             "real_betting_enabled": False,
         })
@@ -124,9 +138,8 @@ def walk_forward_evaluate_v16(
     ]
     prospective_envelope = _aggregate_closing_envelopes(prospective_folds)
     prospective["closing_envelope_conformal"] = prospective_envelope
-    prospective_gate = dict(prospective.get("promotion_gate") or {})
-    prospective_gate.update(
-        _closing_envelope_promotion_gate(prospective_envelope)
+    prospective_gate = _replace_legacy_coverage_gate_v15(
+        dict(prospective.get("promotion_gate") or {}), prospective_envelope
     )
     prospective_gate["fixed_divergence_filter_pass"] = True
     prospective_gate["raw_probability_passthrough_pass"] = True
