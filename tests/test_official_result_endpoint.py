@@ -1,5 +1,6 @@
 from datetime import date
 
+from boatrace_ai.ingestion.parsers import parse_result_html
 from boatrace_ai.ingestion.result import parse_result_html_v2
 from boatrace_ai.official import race_page_url
 
@@ -48,3 +49,27 @@ def test_trifecta_not_established_remains_a_final_non_evaluable_result() -> None
     assert parsed["rows"] == []
     assert parsed["trifecta_evaluable"] is False
     assert parsed["result_reason"] == "trifecta_not_established"
+
+
+def test_official_cancelled_race_is_a_final_non_evaluable_result() -> None:
+    html = """
+    <html><body>
+      <main><p>該当レースは 中止となりました。</p></main>
+    </body></html>
+    """
+
+    for parser in (parse_result_html_v2, parse_result_html):
+        parsed = parser(html)
+        assert parsed["status"] == "final"
+        assert parsed["rows"] == []
+        assert parsed["payouts"] == []
+        assert parsed["trifecta_evaluable"] is False
+        assert parsed["result_reason"] == "race_cancelled"
+
+
+def test_unrelated_cancellation_text_does_not_cancel_race() -> None:
+    parsed = parse_result_html_v2(
+        "<html><body><p>悪天候時は開催を中止する場合があります。</p></body></html>"
+    )
+
+    assert parsed["status"] == "unknown"
