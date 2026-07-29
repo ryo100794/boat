@@ -1499,6 +1499,7 @@ def build_command(
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
+            "odds_path_crossfit_conservative_ev",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -2226,8 +2227,11 @@ METRIC_KEYS = (
     "comparison_role", "coefficient_optimizer", "ev_calibration_mode",
     "ev_calibration_usage", "evaluation_from", "evaluation_through",
     "selection_races", "holdout_races",
-    "entry_brier", "winner_log_loss", "trifecta_log_loss", "calibrated_trifecta_log_loss",
-    "winner_top1_accuracy", "trifecta_top1_hit_rate", "trifecta_top5_hit_rate",
+    "entry_brier", "winner_log_loss", "trifecta_log_loss",
+    "calibrated_trifecta_log_loss", "model_trifecta_log_loss",
+    "market_trifecta_log_loss", "calibrated_trifecta_top5_hit_rate",
+    "winner_top1_accuracy", "trifecta_top1_hit_rate",
+    "trifecta_top5_hit_rate",
     "roi", "profit_yen", "stake_yen", "return_yen", "max_drawdown_yen",
     "roi_ci95_lower", "roi_ci95_upper", "probability_roi_above_one",
     "profit_ci95_lower_yen", "profit_ci95_upper_yen",
@@ -2245,6 +2249,9 @@ METRIC_KEYS = (
     "closing_odds_log_mae", "baseline_closing_odds_log_mae",
     "closing_odds_rank_correlation", "closing_odds_interval_coverage",
     "closing_snapshot_age_seconds", "closing_snapshot_age_seconds_p90",
+    "closing_q20_pinball_loss", "closing_q20_lower_coverage",
+    "closing_q20_target_coverage", "closing_q20_evaluation_races",
+    "daily_cluster_bootstrap_roi_lower_95",
     "promotion_eligible", "prediction_deployment_eligible",
     "deployment_model_artifact_saved", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
@@ -2424,6 +2431,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"prospective_observed_closing_v4_{key}"] = (
                     prospective_v4[key]
                 )
+    prospective_v7 = payload.get(
+        "prospective_crossfit_conservative_ev_v7_walk_forward"
+    )
+    if isinstance(prospective_v7, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "effective_hit_count",
+            "largest_hit_return_share",
+            "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss",
+            "market_trifecta_log_loss",
+            "closing_q20_pinball_loss",
+            "closing_q20_lower_coverage",
+            "promotion_eligible",
+        ):
+            if key in prospective_v7:
+                summary[f"prospective_v7_{key}"] = prospective_v7[key]
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3777,6 +3812,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_prequential_shrinkage_return",
     ),
+    (
+        "odds_path_crossfit_conservative_ev_v7_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_crossfit_conservative_ev",
+    ),
 )
 
 
@@ -3832,6 +3873,7 @@ def seed_daily_market_jobs(
                     "odds_path_return",
                     "odds_path_probability",
                     "odds_path_prequential_shrinkage_return",
+                    "odds_path_crossfit_conservative_ev",
                 }
                 else 3600
             ),
@@ -3850,6 +3892,8 @@ def seed_daily_market_jobs(
                 }
                 else 95
                 if calibrator_strategy == "odds_path_prequential_shrinkage_return"
+                else 94
+                if calibrator_strategy == "odds_path_crossfit_conservative_ev"
                 else 96
             ),
             max_attempts=2,
