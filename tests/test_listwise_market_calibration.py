@@ -353,6 +353,27 @@ def test_observed_closing_v4_counts_only_dates_after_registration() -> None:
     ] is False
 
 
+def test_non_v4_strategy_does_not_publish_v4_prospective_metrics() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-28",
+            "2026-07-29",
+            "2026-07-30",
+            "2026-07-31",
+        )
+        for rno in range(1, 13)
+    ]
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_probability",
+    )
+
+    assert "prospective_observed_closing_return_v4_walk_forward" not in result
+
+
 def test_hit_shrunk_strategy_applies_conservative_prior_in_every_fold() -> None:
     races = [
         _race(race_date, rno)

@@ -2720,7 +2720,15 @@ def walk_forward_evaluate(
             policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
             registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
         ),
-        "prospective_observed_closing_return_v4_walk_forward": prospective_v4,
+        **(
+            {
+                "prospective_observed_closing_return_v4_walk_forward": (
+                    prospective_v4
+                )
+            }
+            if calibrator_strategy == "odds_path_observed_closing_return"
+            else {}
+        ),
         "market_offset_registered_policy_walk_forward": (
             market_offset_registered
         ),
