@@ -272,6 +272,70 @@ def test_pre_first_race_additive_v16_extension_is_audited_and_preserves_identity
     assert "REAL_BETTING_ENABLED=0" in env
 
 
+def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    output_root = tmp_path / "bundles"
+    output_root.mkdir()
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    bundles = _bundle_rows(tmp_path)
+    active_jobs = _jobs(tmp_path)
+    now = datetime(2026, 7, 30, 8, tzinfo=JST)
+    _legacy_active(
+        state_root,
+        bundles=bundles,
+        jobs=active_jobs,
+        base_model=base,
+        activated_at=now - timedelta(hours=1),
+    )
+    fixed_calls: list[tuple[str, int]] = []
+    latest_calls: list[str] = []
+
+    def fixed_job(conn, *, job_id, family, through_date, app_root):
+        fixed_calls.append((family, job_id))
+        return active_jobs[family]
+
+    def latest_job(conn, *, family, through_date, app_root):
+        latest_calls.append(family)
+        if family in ("v12", "v14"):
+            return _job(tmp_path / f"new-{family}.json", 1000, family)
+        return active_jobs["v16"]
+
+    monkeypatch.setattr(updater, "find_completed_job", fixed_job)
+    monkeypatch.setattr(updater, "find_latest_completed_job", latest_job)
+    monkeypatch.setattr(updater, "validate_shared_source", lambda *args: {})
+    monkeypatch.setattr(
+        updater, "build_v12", lambda *args, **kwargs: bundles["v12"]
+    )
+    monkeypatch.setattr(
+        updater, "build_v14_composite", lambda *args, **kwargs: bundles["v14"]
+    )
+    monkeypatch.setattr(
+        updater, "build_v16_composite", lambda *args, **kwargs: bundles["v16"]
+    )
+    monkeypatch.setattr(
+        updater, "first_race_start", lambda *args: now + timedelta(hours=1)
+    )
+
+    result = updater.run_once(
+        object(),
+        app_root=tmp_path,
+        output_root=output_root,
+        state_root=state_root,
+        base_model=base,
+        through_date="2026-07-29",
+        now=now,
+    )
+
+    assert result["status"] == "additive_v16_extended"
+    assert fixed_calls == [("v12", 12), ("v14", 14)]
+    assert latest_calls == ["v16"]
+    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16}
+
+
 def test_additive_extension_rejects_existing_identity_change_and_post_start(
     tmp_path: Path,
 ) -> None:

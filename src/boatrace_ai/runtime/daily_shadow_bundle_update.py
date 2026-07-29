@@ -102,6 +102,41 @@ def find_latest_completed_job(
     return CompletedJob(int(row["job_id"]), str(row["model_key"]), path)
 
 
+def find_completed_job(
+    conn: Any, *, job_id: int, family: str, through_date: str, app_root: Path
+) -> CompletedJob:
+    if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+        raise ValueError(f"active {family} source job ID is invalid")
+    expected_through = _iso(through_date, "through_date")
+    expected_strategy = _model(family)
+    row = conn.execute(
+        """
+        SELECT job_id, model_key, result_path, status,
+               parameters->>'through_date' AS through_date,
+               parameters->>'calibrator_strategy' AS calibrator_strategy
+        FROM model_evaluation_jobs
+        WHERE job_id = %s
+        """,
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"active {family} source job does not exist: {job_id}")
+    if (
+        row["status"] != "completed"
+        or not row["result_path"]
+        or row["through_date"] != expected_through
+        or row["calibrator_strategy"] != expected_strategy
+    ):
+        raise ValueError(f"active {family} source job failed revalidation: {job_id}")
+    path = Path(str(row["result_path"]))
+    if not path.is_absolute():
+        path = app_root / path
+    path = _inside(app_root, path, "result_path")
+    if not path.is_file():
+        raise ValueError(f"evaluation result does not exist: {path}")
+    return CompletedJob(int(row["job_id"]), str(row["model_key"]), path)
+
+
 def _source_identity(result: Mapping[str, Any], result_path: Path) -> dict[str, Any]:
     cache = Path(str(result.get("scored_cache") or "")).resolve()
     if not cache.is_file():
@@ -562,11 +597,34 @@ def run_once(
     base_model = _inside(app_root, base_model, "base_model")
     if not base_model.is_file():
         raise ValueError(f"base model does not exist: {base_model}")
-    jobs = {
-        family: find_latest_completed_job(
-            conn, family=family, through_date=through, app_root=app_root
-        ) for family in FAMILIES
-    }
+    active = _active_state(state_root)
+    active_families = set((active or {}).get("model_identities") or {})
+    preserve_active = (
+        active is not None
+        and active.get("prediction_date") == prediction
+        and active_families == {"v12", "v14"}
+    )
+    if preserve_active:
+        source_jobs = active.get("source_jobs")
+        if not isinstance(source_jobs, Mapping) or set(source_jobs) != {"v12", "v14"}:
+            raise ValueError("active V12/V14 source jobs are invalid")
+        jobs = {
+            family: find_completed_job(
+                conn, job_id=source_jobs[family], family=family,
+                through_date=through, app_root=app_root,
+            )
+            for family in ("v12", "v14")
+        }
+        jobs["v16"] = find_latest_completed_job(
+            conn, family="v16", through_date=through, app_root=app_root
+        )
+    else:
+        jobs = {
+            family: find_latest_completed_job(
+                conn, family=family, through_date=through, app_root=app_root
+            )
+            for family in FAMILIES
+        }
     shared = validate_shared_source(jobs["v12"], jobs["v14"], jobs["v16"])
     v12 = build_v12(
         jobs["v12"], through_date=through, prediction_date=prediction,
