@@ -92,6 +92,7 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "<th>前向EV帯</th>" in MODEL_REPORT_HTML
     assert "registered_ev_band_evaluation_days" in MODEL_REPORT_HTML
     assert "prospective_normalized_ev_evaluation_days" in MODEL_REPORT_HTML
+    assert "prospective_normalized_ev_evaluation_days" in MODEL_REPORT_HTML
     assert "registeredSummary" in MODEL_REPORT_HTML
     assert "winner_log_loss" in MODEL_REPORT_HTML
     assert "候補損益" in MODEL_REPORT_HTML
