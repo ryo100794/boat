@@ -1521,13 +1521,14 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5]
+    assert inserted == [1, 2, 3, 4, 5, 6]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
         "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
         "odds_path_operational_daily:market_residual:20260718-25",
         "odds_path_probability_only_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_v4_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1552,6 +1553,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert probability_only["priority"] == 98
     assert probability_only["parameters"]["timeout_seconds"] == 7200
+    observed_closing = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return"
+    )
+    assert observed_closing["priority"] == 96
+    assert observed_closing["parameters"]["timeout_seconds"] == 3600
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
@@ -2876,6 +2884,17 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
             "roi": 0.0,
             "profit_yen": 0,
         },
+        "prospective_observed_closing_return_v4_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 0,
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "roi": 0.0,
+            "profit_yen": 0,
+            "roi_without_largest_hit": None,
+        },
     })
 
     assert summary["roi"] == 0.33
@@ -2889,3 +2908,9 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
         "waiting_for_first_unseen_day"
     )
     assert summary["prospective_top5_narrow_ev_registered_after"] == "2026-07-28"
+    assert summary["prospective_observed_closing_v4_status"] == (
+        "waiting_for_first_unseen_day"
+    )
+    assert summary["prospective_observed_closing_v4_registered_after"] == (
+        "2026-07-29"
+    )

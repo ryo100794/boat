@@ -2404,6 +2404,25 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"prospective_top5_narrow_ev_{key}"] = (
                     prospective_top5[key]
                 )
+    prospective_v4 = payload.get(
+        "prospective_observed_closing_return_v4_walk_forward"
+    )
+    if isinstance(prospective_v4, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "roi",
+            "profit_yen",
+            "roi_without_largest_hit",
+        ):
+            if key in prospective_v4:
+                summary[f"prospective_observed_closing_v4_{key}"] = (
+                    prospective_v4[key]
+                )
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3707,6 +3726,12 @@ MARKET_EVALUATION_SOURCES = (
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_probability",
+    ),
+    (
+        "odds_path_observed_closing_return_v4_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_observed_closing_return",
     ),
 )
 
