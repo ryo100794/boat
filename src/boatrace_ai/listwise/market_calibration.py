@@ -4745,8 +4745,14 @@ def main(argv: list[str] | None = None) -> int:
             **benchmark,
         }
     )
+    evaluation_input_races = (
+        clean_races
+        if args.calibrator_strategy
+        == "odds_path_role_integrated_registered_band_lcb_v14"
+        else races
+    )
     result = walk_forward_evaluate(
-        races,
+        evaluation_input_races,
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
@@ -4780,6 +4786,11 @@ def main(argv: list[str] | None = None) -> int:
             "coverage_gate": coverage_gate,
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
+            "calibration_input_scope": (
+                "complete_market_days_only"
+                if evaluation_input_races is clean_races
+                else "all_eligible_races"
+            ),
             **benchmark,
         }
     )

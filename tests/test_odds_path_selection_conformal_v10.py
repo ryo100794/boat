@@ -102,7 +102,7 @@ def test_daily_cluster_finite_sample_guard_uses_prior_days_as_units() -> None:
     ]
 
     artifact = fit_selection_conformal_haircut(
-        observations, evaluation_date="2026-07-25"
+        list(reversed(observations)), evaluation_date="2026-07-25"
     )
 
     assert artifact["ready"] is True
@@ -115,6 +115,8 @@ def test_daily_cluster_finite_sample_guard_uses_prior_days_as_units() -> None:
         f"2026-07-{20 + index:02d}": 6 for index in range(5)
     }
     assert artifact["haircut"] == pytest.approx(0.20)
+    assert artifact["ratio_min"] == pytest.approx(0.20)
+    assert artifact["ratio_max"] == pytest.approx(1.10)
 
 
 def test_conditional_guard_uses_only_post_haircut_allocator_inputs() -> None:

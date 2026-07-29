@@ -163,8 +163,8 @@ def fit_selection_conformal_haircut(
         "ratio_p10": float(np.quantile(ratios, 0.10)),
         "ratio_p20": float(np.quantile(ratios, 0.20)),
         "ratio_median": float(np.median(ratios)),
-        "ratio_min": float(ratios[0]),
-        "ratio_max": float(ratios[-1]),
+        "ratio_min": float(np.min(ratios)),
+        "ratio_max": float(np.max(ratios)),
         "reason": None,
     }
 
