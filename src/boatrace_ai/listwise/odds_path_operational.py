@@ -165,6 +165,7 @@ def fit_odds_path_model(
     return_hit_prior: float = 0.0,
     min_return_multiplier: float = 0.25,
     max_return_multiplier: float = 2.0,
+    adaptive_return_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("odds-path model requires races")
@@ -176,6 +177,8 @@ def fit_odds_path_model(
         raise ValueError("unsupported return_price_basis")
     if return_price_basis != "decision_t5" and not use_return_multipliers:
         raise ValueError("closing-price basis requires return multipliers")
+    if adaptive_return_selection is not None and return_price_basis != "observed_closing":
+        raise ValueError("adaptive return selection requires observed closing prices")
     if return_price_basis != "decision_t5" and any(
         len(race.get("performance_return_odds") or {}) != 120 for race in races
     ):
@@ -255,9 +258,11 @@ def fit_odds_path_model(
         if change <= 1e-7:
             converged = True
             break
-    return {
+    model = {
         "model_type": (
-            "odds_path_hit_shrunk_closing_return_v5"
+            "odds_path_prequential_shrinkage_return_v6"
+            if adaptive_return_selection is not None
+            else "odds_path_hit_shrunk_closing_return_v5"
             if return_price_basis == "observed_closing" and return_hit_prior > 0.0
             else
             "odds_path_observed_closing_return_v4"
@@ -292,6 +297,9 @@ def fit_odds_path_model(
         "iterations": iteration, "converged": converged, "objective": float(objective),
         "training_races": len(prepared), "performance_priors": priors,
     }
+    if adaptive_return_selection is not None:
+        model["adaptive_return_selection"] = dict(adaptive_return_selection)
+    return model
 
 
 def attach_odds_path_model(races: list[dict[str, Any]], model: dict[str, Any]) -> list[dict[str, Any]]:
