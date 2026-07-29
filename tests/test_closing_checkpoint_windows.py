@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
+
+import pytest
 from datetime import date, datetime, timedelta, timezone
 
 from boatrace_ai.db import connection, init_db
@@ -93,23 +96,29 @@ def test_restart_expires_old_offsets_and_captures_only_current_checkpoint(tmp_pa
     assert worker.capture_due_once(now=now + timedelta(seconds=1)) == 0
 
 
-def test_checkpoint_capture_is_limited_to_explicit_ten_second_window(tmp_path) -> None:
+def test_checkpoint_capture_uses_only_the_ten_seconds_before_target(tmp_path) -> None:
     cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
     target = cutoff - timedelta(seconds=60)
 
     within = T5Spool(tmp_path / "within")
     within.save_schedule(RACE_DATE, [_row(cutoff)])
+    captured_at = target - timedelta(seconds=10)
     worker = T5DurabilityWorker(
         within,
         date_provider=lambda: RACE_DATE,
-        fetch=lambda **kwargs: _capture(target + timedelta(seconds=10)),
+        fetch=lambda **kwargs: _capture(captured_at),
         checkpoint_offsets=(60,),
         checkpoint_window_seconds=10,
         closing_window_seconds=0,
         request_interval_seconds=0,
     )
-    assert worker.capture_due_once(now=target + timedelta(seconds=10)) == 1
-    assert within.pending_events()[0]["captured_age_seconds"] == 50.0
+    assert worker.capture_due_once(now=captured_at) == 1
+    event = within.pending_events()[0]
+    assert event["target_offset_seconds"] == 60
+    assert event["captured_age_seconds"] == 70.0
+    assert within.checkpoint_record(
+        RACE_DATE, _row(cutoff)["race_id"], 60
+    )["success"] is True
 
     expired = T5Spool(tmp_path / "expired")
     expired.save_schedule(RACE_DATE, [_row(cutoff)])
@@ -122,11 +131,63 @@ def test_checkpoint_capture_is_limited_to_explicit_ten_second_window(tmp_path) -
         checkpoint_window_seconds=10,
         closing_window_seconds=0,
     )
-    late = target + timedelta(seconds=10, microseconds=1)
-    assert expired_worker.capture_due_once(now=late) == 0
+    after_target = target + timedelta(microseconds=1)
+    assert expired_worker.capture_due_once(now=after_target) == 0
     assert calls == []
     record = expired.checkpoint_record(RACE_DATE, _row(cutoff)["race_id"], 60)
     assert record["status"] == "expired"
+
+
+def test_fetch_finishing_after_target_is_late_and_never_checkpoint_training_data(
+    tmp_path,
+) -> None:
+    cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
+    target = cutoff - timedelta(seconds=60)
+    attempted_at = target - timedelta(seconds=1)
+    captured_at = target + timedelta(seconds=1)
+    spool = T5Spool(tmp_path / "spool")
+    spool.save_schedule(RACE_DATE, [_row(cutoff)])
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=lambda **kwargs: _capture(captured_at),
+        checkpoint_offsets=(60,),
+        checkpoint_window_seconds=10,
+        closing_window_seconds=75,
+        request_interval_seconds=0,
+    )
+
+    assert worker.capture_due_once(now=attempted_at) == 1
+
+    event = spool.pending_events()[0]
+    assert event["captured_age_seconds"] == 59.0
+    assert event["target_offset_seconds"] is None
+    assert event["observation_label"] == "closing_cadence"
+    assert event["requested_checkpoint_offset_seconds"] == 60
+    collection = event["parsed"]["_collection"]
+    assert collection["target_offset_seconds"] is None
+    assert collection["requested_checkpoint_offset_seconds"] == 60
+
+    record = spool.checkpoint_record(RACE_DATE, _row(cutoff)["race_id"], 60)
+    assert record["success"] is False
+    assert record["expired"] is True
+    assert record["status"] == "late"
+    assert record["captured_age_seconds"] == 59.0
+    monitor = worker.status(now=captured_at)["checkpoints"]["60"]
+    assert monitor["success"] == 0
+    assert monitor["late"] == 1
+    assert monitor["age_seconds_p50"] is None
+
+    database = tmp_path / "collector.sqlite"
+    init_db(database)
+    with connection(database) as conn:
+        assert replay_spool(spool, conn)["replayed"] == 1
+        raw_json = conn.execute(
+            "SELECT raw_json FROM odds_snapshots"
+        ).fetchone()[0]
+    persisted = json.loads(raw_json)["_collection"]
+    assert persisted["target_offset_seconds"] is None
+    assert persisted["requested_checkpoint_offset_seconds"] == 60
 
 
 def test_closing_window_keeps_one_observation_per_five_second_cadence(tmp_path) -> None:
@@ -147,9 +208,9 @@ def test_closing_window_keeps_one_observation_per_five_second_cadence(tmp_path) 
 
     expected = {
         75: "closing_cadence",
-        70: "closing_cadence",
+        70: "T1",
         65: "closing_cadence",
-        60: "T1",
+        60: "closing_cadence",
         55: "closing_cadence",
     }
     for age, label in expected.items():
@@ -186,8 +247,19 @@ def test_same_timestamp_same_signature_keeps_checkpoint_observations_idempotent(
     tmp_path,
 ) -> None:
     cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
-    captured_at = cutoff - timedelta(seconds=30)
+    captured_at = cutoff - timedelta(seconds=60)
     base, raw = _capture(captured_at)
+    future, _ = _capture(cutoff - timedelta(seconds=59))
+    with pytest.raises(
+        ValueError, match="after its decision target"
+    ):
+        decorate_checkpoint_capture(
+            future,
+            offset_seconds=60,
+            attempt=1,
+            deadline_at=cutoff,
+        )
+
     spool = T5Spool(tmp_path / "spool")
     events = [
         decorate_checkpoint_capture(
