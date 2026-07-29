@@ -2684,22 +2684,69 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
                 "prospective_normalized_ev_status": metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) or metrics.get(
                     "prospective_normalized_ev_status"
                 ),
                 "prospective_normalized_ev_registered_after": metrics.get(
+                    "prospective_observed_closing_v4_registered_after"
+                ) or metrics.get(
                     "prospective_normalized_ev_registered_after"
                 ),
                 "prospective_normalized_ev_evaluation_days": metrics.get(
+                    "prospective_observed_closing_v4_evaluation_days"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
                     "prospective_normalized_ev_evaluation_days"
                 ),
                 "prospective_normalized_ev_tickets": metrics.get(
+                    "prospective_observed_closing_v4_tickets"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
                     "prospective_normalized_ev_tickets"
                 ),
                 "prospective_normalized_ev_hit_tickets": metrics.get(
+                    "prospective_observed_closing_v4_hit_tickets"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
                     "prospective_normalized_ev_hit_tickets"
                 ),
                 "prospective_normalized_ev_roi": _float_or_none(
-                    metrics.get("prospective_normalized_ev_roi")
+                    metrics.get("prospective_observed_closing_v4_roi")
+                    if metrics.get("prospective_observed_closing_v4_status")
+                    is not None
+                    else metrics.get("prospective_normalized_ev_roi")
+                ),
+                "prospective_observed_closing_v4_status": metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ),
+                "prospective_observed_closing_v4_registered_after": metrics.get(
+                    "prospective_observed_closing_v4_registered_after"
+                ),
+                "prospective_observed_closing_v4_evaluation_days": metrics.get(
+                    "prospective_observed_closing_v4_evaluation_days"
+                ),
+                "prospective_observed_closing_v4_tickets": metrics.get(
+                    "prospective_observed_closing_v4_tickets"
+                ),
+                "prospective_observed_closing_v4_hit_tickets": metrics.get(
+                    "prospective_observed_closing_v4_hit_tickets"
+                ),
+                "prospective_observed_closing_v4_roi": _float_or_none(
+                    metrics.get("prospective_observed_closing_v4_roi")
+                ),
+                "prospective_observed_closing_v4_profit_yen": metrics.get(
+                    "prospective_observed_closing_v4_profit_yen"
+                ),
+                "prospective_observed_closing_v4_roi_without_largest_hit": (
+                    _float_or_none(
+                        metrics.get(
+                            "prospective_observed_closing_v4_roi_without_largest_hit"
+                        )
+                    )
                 ),
                 "empirical_lcb_walk_forward": (
                     _empirical_lcb_walk_forward_from_metrics(metrics)
