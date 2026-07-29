@@ -309,6 +309,40 @@ def test_observed_closing_return_strategy_uses_prior_closing_teachers() -> None:
         )
 
 
+def test_hit_shrunk_strategy_applies_conservative_prior_in_every_fold() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = {
+            combination: odds * 0.9 for combination, odds in race["odds"].items()
+        }
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_hit_shrunk_return",
+    )
+
+    assert result["model"] == "odds_path_hit_shrunk_closing_return_v5"
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        assert operational_model["return_hit_prior"] == 20.0
+        assert operational_model["return_multiplier_bounds"] == [0.5, 1.5]
+        assert max(
+            row["return_multiplier"]
+            for row in operational_model["performance_priors"]["buckets"].values()
+        ) <= 1.5
+
+
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     races = [
         _race(race_date, rno)

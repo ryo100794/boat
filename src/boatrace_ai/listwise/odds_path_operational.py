@@ -51,7 +51,14 @@ def _performance_key(odds: float, model_rank: float, market_rank: float, recent_
     return f"{odds_bucket}:{model_bucket}:{market_bucket}:{trend_bucket}"
 
 
-def fit_performance_priors(races: list[dict[str, Any]], *, strength: float = 20.0) -> dict[str, Any]:
+def fit_performance_priors(
+    races: list[dict[str, Any]],
+    *,
+    strength: float = 20.0,
+    return_hit_prior: float = 0.0,
+    min_return_multiplier: float = 0.25,
+    max_return_multiplier: float = 2.0,
+) -> dict[str, Any]:
     buckets: dict[str, dict[str, float]] = defaultdict(
         lambda: {"tickets": 0.0, "hits": 0.0, "observed_return": 0.0, "baseline_ev": 0.0}
     )
@@ -77,16 +84,35 @@ def fit_performance_priors(races: list[dict[str, Any]], *, strength: float = 20.
     for key, row in buckets.items():
         tickets = row["tickets"]
         baseline_mean = row["baseline_ev"] / max(1.0, tickets)
+        raw_return_multiplier = (
+            (row["observed_return"] + strength * baseline_mean)
+            / max(EPSILON, row["baseline_ev"] + strength * baseline_mean)
+        )
+        if return_hit_prior > 0.0:
+            hit_weight = row["hits"] / (row["hits"] + return_hit_prior)
+            return_multiplier = 1.0 + hit_weight * (raw_return_multiplier - 1.0)
+        else:
+            hit_weight = 1.0
+            return_multiplier = raw_return_multiplier
         result[key] = {
             **row,
             "hit_rate": (row["hits"] + strength / 120.0) / (tickets + strength),
+            "raw_return_multiplier": float(raw_return_multiplier),
+            "return_hit_shrinkage_weight": float(hit_weight),
             "return_multiplier": float(np.clip(
-                (row["observed_return"] + strength * baseline_mean)
-                / max(EPSILON, row["baseline_ev"] + strength * baseline_mean),
-                0.25, 2.0,
+                return_multiplier,
+                min_return_multiplier,
+                max_return_multiplier,
             )),
         }
-    return {"strength": float(strength), "buckets": result, "training_races": len(races)}
+    return {
+        "strength": float(strength),
+        "return_hit_prior": float(return_hit_prior),
+        "min_return_multiplier": float(min_return_multiplier),
+        "max_return_multiplier": float(max_return_multiplier),
+        "buckets": result,
+        "training_races": len(races),
+    }
 
 
 def _feature_matrix(race: dict[str, Any], priors: dict[str, Any]) -> tuple[list[str], np.ndarray, np.ndarray]:
@@ -136,6 +162,9 @@ def fit_odds_path_model(
     max_iterations: int = 40,
     use_return_multipliers: bool = True,
     return_price_basis: str = "decision_t5",
+    return_hit_prior: float = 0.0,
+    min_return_multiplier: float = 0.25,
+    max_return_multiplier: float = 2.0,
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("odds-path model requires races")
@@ -151,7 +180,12 @@ def fit_odds_path_model(
         len(race.get("performance_return_odds") or {}) != 120 for race in races
     ):
         raise ValueError("closing-price basis requires 120 return prices per race")
-    priors = fit_performance_priors(races)
+    priors = fit_performance_priors(
+        races,
+        return_hit_prior=return_hit_prior,
+        min_return_multiplier=min_return_multiplier,
+        max_return_multiplier=max_return_multiplier,
+    )
     prepared = []
     actual_indices = []
     for race in races:
@@ -223,6 +257,9 @@ def fit_odds_path_model(
             break
     return {
         "model_type": (
+            "odds_path_hit_shrunk_closing_return_v5"
+            if return_price_basis == "observed_closing" and return_hit_prior > 0.0
+            else
             "odds_path_observed_closing_return_v4"
             if return_price_basis == "observed_closing"
             else
@@ -245,6 +282,11 @@ def fit_odds_path_model(
             else "disabled_for_forecast_closing_price"
         ),
         "return_price_basis": return_price_basis,
+        "return_hit_prior": float(return_hit_prior),
+        "return_multiplier_bounds": [
+            float(min_return_multiplier),
+            float(max_return_multiplier),
+        ],
         "feature_names": FEATURE_NAMES,
         "weights": weights.tolist(), "regularization": float(regularization),
         "iterations": iteration, "converged": converged, "objective": float(objective),
