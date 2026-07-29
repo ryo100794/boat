@@ -53,6 +53,32 @@ def _v11_artifact(*, ready: bool) -> dict[str, Any]:
     }
 
 
+def test_initial_selection_observations_are_copied_and_strict_prior() -> None:
+    source = [{
+        "race_date": "2026-07-01",
+        "race_id": "r1",
+        "closing_ratio": 1.0,
+    }]
+
+    copied = v12._copy_initial_selection_observations(source)
+    copied[0]["closing_ratio"] = 0.8
+
+    assert copied is not source
+    assert copied[0] is not source[0]
+    assert source[0]["closing_ratio"] == 1.0
+    v12._assert_strict_prior_selection_observations(
+        copied, evaluation_date="2026-07-02"
+    )
+
+
+@pytest.mark.parametrize("race_date", ["2026-07-02", "2026-07-03"])
+def test_selection_observations_reject_same_or_future_day(race_date: str) -> None:
+    with pytest.raises(ValueError, match="strict-prior days"):
+        v12._assert_strict_prior_selection_observations(
+            [{"race_date": race_date}], evaluation_date="2026-07-02"
+        )
+
+
 def test_closing_contract_prefers_adopted_v12_then_explicit_v11_fallback() -> None:
     adopted = v12._closing_contract(
         _v12_artifact(ready=True, adopted=True),

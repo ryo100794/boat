@@ -19,6 +19,72 @@ def _odds(base: float) -> dict[str, float]:
     return {combination: base + index for index, combination in enumerate(COMBINATIONS)}
 
 
+def _prewarm_race(
+    race_date: str, race_no: int, *, checkpoint_odds=None, captured_age=305.0
+):
+    checkpoint = {}
+    if checkpoint_odds is not None:
+        checkpoint = {
+            "t300": {
+                "target_offset_seconds": 300,
+                "captured_age_seconds": captured_age,
+                "odds": checkpoint_odds,
+            }
+        }
+    return {
+        "race_date": race_date,
+        "race_id": f"{race_date}-{race_no:02d}",
+        "closing_odds_checkpoints": checkpoint,
+        "official_closing_odds": _odds(11.0),
+    }
+
+
+def test_prewarm_uses_only_first_calibration_days_and_t300_baseline():
+    races = [
+        _prewarm_race(f"2026-07-{day:02d}", race_no, checkpoint_odds=_odds(10.0))
+        for day in range(1, 7)
+        for race_no in range(1, 7)
+    ]
+
+    observations = v15.build_strict_prior_prewarm_observations_v15(
+        races, min_calibration_days=5
+    )
+
+    assert len(observations) == 30
+    assert {row["race_date"] for row in observations} == {
+        f"2026-07-{day:02d}" for day in range(1, 6)
+    }
+    assert all(len(row["predicted_closing_odds"]) == 120 for row in observations)
+    assert all(row["strict_prior_prewarm"] is True for row in observations)
+    artifact = v15._fit_closing_envelope(
+        observations, evaluation_date="2026-07-06"
+    )
+    assert artifact["ready"] is True
+    assert artifact["training_days"] == 5
+    assert artifact["training_races"] == 30
+    assert artifact["training_observations"] == 3600
+
+
+def test_prewarm_rejects_future_checkpoint_and_audits_missing_t300():
+    future = _prewarm_race(
+        "2026-07-01", 1, checkpoint_odds=_odds(10.0), captured_age=299.0
+    )
+    missing = _prewarm_race("2026-07-01", 2, checkpoint_odds=None)
+
+    observations = v15.build_strict_prior_prewarm_observations_v15(
+        [future, missing], min_calibration_days=1
+    )
+    artifact = v15._fit_closing_envelope(
+        observations, evaluation_date="2026-07-02"
+    )
+
+    assert [row["predicted_closing_odds"] for row in observations] == [{}, {}]
+    audit = artifact["missing_audit"]
+    assert audit["accepted_races"] == 0
+    assert audit["rejected_races"] == 2
+    assert audit["rejection_reasons"] == {"missing_predicted_closing_odds": 2}
+
+
 def test_observation_append_uses_all_120_after_decision(monkeypatch):
     races = [{"race_id": "202607300101", "race_date": "2026-07-30"}]
     predicted = _odds(10.0)
@@ -213,6 +279,7 @@ def test_walk_forward_delegates_to_v12_and_normalizes_v15_result(monkeypatch):
     assert captured["closing_forecast_field"] == "point_final_odds"
     assert captured["selection_conformal_fit"] is v15._fit_closing_envelope
     assert captured["selection_observation_append"] is v15.append_closing_envelope_observations_v15
+    assert captured["initial_selection_observations"] == []
     assert result["model"] == v15.MODEL_NAME
     assert result["selection_free"] is True
     assert result["zero_bet_allowed"] is True
@@ -333,3 +400,75 @@ def test_ready_fit_with_one_missing_race_is_not_promotion_eligible(monkeypatch):
     assert gate["closing_envelope_ready_pass"] is True
     assert gate["closing_envelope_no_missing_races_pass"] is False
     assert result["promotion_eligible"] is False
+
+
+def test_six_complete_days_prewarm_is_ready_even_when_purchase_count_is_zero(
+    monkeypatch,
+):
+    races = [
+        _prewarm_race(
+            f"2026-07-{day:02d}", race_no, checkpoint_odds=_odds(10.0)
+        )
+        for day in range(25, 31)
+        for race_no in range(1, 7)
+    ]
+
+    def fake_v12(rows, **kwargs):
+        initial = [dict(row) for row in kwargs["initial_selection_observations"]]
+        assert len(initial) == 30
+        artifact = kwargs["selection_conformal_fit"](
+            initial, evaluation_date="2026-07-30"
+        )
+        assert artifact["ready"] is True
+        holdout = [row for row in rows if row["race_date"] == "2026-07-30"]
+        point_forecasts = {
+            row["race_id"]: _odds(10.0) for row in holdout
+        }
+        appended = kwargs["selection_observation_append"](
+            initial,
+            holdout,
+            closing_forecasts=point_forecasts,
+            probability_lcb={"ready": False},
+            evaluation_date="2026-07-30",
+        )
+        assert appended == 6
+        assert len(initial) == 36
+        return {
+            "fixed_policy": {"name": "no_bet", "no_bet": True},
+            "selection_conformal": {},
+            "selection_conformal_artifacts_by_date": {
+                "2026-07-30": artifact
+            },
+            "folds": [{
+                "evaluation_date": "2026-07-30",
+                "selection_conformal": artifact,
+                "selection_observations_appended_after_decision": appended,
+                "selected_policy": {"name": "no_bet", "no_bet": True},
+                "leakage_guard": {
+                    "selection_conformal_trained_through": "2026-07-29"
+                },
+                "bankroll": {
+                    "tickets": 0,
+                    "stake_yen": 0,
+                    "selection_conformal": artifact,
+                },
+            }],
+            v15.V12_PROSPECTIVE_OUTPUT_KEY: {
+                "promotion_gate": {"base_roi_pass": True},
+                "promotion_eligible": True,
+            },
+            "deployment_configuration": {},
+        }
+
+    monkeypatch.setattr(v15, "walk_forward_evaluate_v12", fake_v12)
+    result = v15.walk_forward_evaluate_v15(
+        races, daily_budget_yen=10_000, min_calibration_days=5
+    )
+
+    fold = result["folds"][-1]
+    assert fold["closing_envelope_conformal"]["ready"] is True
+    assert fold["closing_envelope_conformal"]["training_observations"] == 3600
+    assert fold["bankroll"]["tickets"] == 0
+    assert fold["bankroll"]["stake_yen"] == 0
+    assert fold["closing_envelope_races_appended_after_decision"] == 6
+    assert fold["selected_policy"]["no_bet"] is True
