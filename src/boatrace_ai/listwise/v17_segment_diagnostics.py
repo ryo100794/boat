@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -83,9 +84,17 @@ def _normalise_candidate(
     row: Mapping[str, Any], inherited: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     race_id = str(_first(row, ("race_id", "race")) or "")
-    combination = str(_first(row, ("combination", "bet", "trifecta")) or "")
+    raw_combination = str(
+        _first(row, ("combination", "bet", "trifecta")) or ""
+    )
+    combination = re.sub(r"[^1-6]", "", raw_combination)
     race_date = _date(row, inherited)
-    if not race_date or not race_id or len(combination) != 3 or not combination.isdigit():
+    if (
+        not race_date
+        or not race_id
+        or len(combination) != 3
+        or len(set(combination)) != 3
+    ):
         return None
     probability = _finite(_first(row, (
         "probability", "raw_probability", "model_probability",

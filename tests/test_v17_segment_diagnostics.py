@@ -76,6 +76,21 @@ def test_extracts_both_supported_shapes_and_separates_settlement() -> None:
     }
 
 
+def test_normalizes_hyphenated_real_world_combination() -> None:
+    job = {
+        "evaluation_date": "2026-07-29",
+        "selected_sample": [
+            _ticket("202607290101", "1-2-3", hit=True, returned=500)
+        ],
+    }
+
+    decisions, settlements, metadata = extract_selected_candidates(job)
+
+    assert metadata["invalid_rows"] == 0
+    assert decisions[0]["combination"] == "123"
+    assert settlements[("2026-07-29", "202607290101", "123")]["return_yen"] == 500
+
+
 def test_attributes_are_segmented_with_fixed_decision_time_bins() -> None:
     decisions, _, _ = extract_selected_candidates(_job())
     labels = segment_labels(decisions[0])
