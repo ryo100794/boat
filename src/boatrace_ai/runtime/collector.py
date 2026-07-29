@@ -31,6 +31,32 @@ PRIORITY_ODDS_RETRIES = 0
 SCHEDULE_REFRESH_GUARD_SECONDS = 20 * 60.0
 
 
+def start_t5_worker_before_storage_init(
+    worker: T5DurabilityWorker,
+    db: str,
+    *,
+    retry_seconds: float = 5.0,
+) -> None:
+    """Keep durable T300 capture alive while storage initialization recovers."""
+    worker.start()
+    while True:
+        try:
+            init_db(db)
+            return
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {
+                        "event": "storage_init_retry",
+                        "error": type(exc).__name__,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            time.sleep(retry_seconds)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Adaptive odds/results loop using stored race-start times and no-odds v8.")
     parser.add_argument("--db", default="data/boatrace.sqlite")
@@ -53,7 +79,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--collect-results", action="store_true")
     args = parser.parse_args(argv)
 
-    init_db(args.db)
     fixed_date = date.fromisoformat(args.date) if args.date else None
     raw_dir = Path(args.raw_dir)
     model_path = Path(args.model)
@@ -66,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         t5_spool,
         date_provider=lambda: operational_race_date(fixed_date, at=now_jst()),
     )
-    t5_worker.start()
+    start_t5_worker_before_storage_init(t5_worker, args.db)
     loop = 0
     schedule_date: date | None = None
     next_schedule_refresh = 0.0
