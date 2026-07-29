@@ -178,6 +178,48 @@ def test_policy_falls_back_to_no_bet_when_every_candidate_loses() -> None:
     assert selected == {"name": "no_bet", "no_bet": True}
 
 
+def test_v4_market_policy_adds_chronological_adaptive_metrics_compatibly() -> None:
+    races = [_race("2026-07-18", index) for index in range(1, 4)]
+    result = simulate_policy(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={
+            "name": "v4-compatible-policy",
+            "ev_threshold": 1.0,
+            "max_estimated_ev": None,
+            "max_odds": None,
+            "max_tickets_per_race": 1,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+        daily_budget_yen=10_000,
+    )
+
+    legacy = result["daily"][0]
+    chronological = legacy["chronological_bankroll"]
+    aggregate = result["chronological_bankroll"]
+
+    assert result["tickets"] == legacy["tickets"]
+    assert result["stake_yen"] == legacy["stake_yen"]
+    assert result["return_yen"] == legacy["return_yen"]
+    assert chronological["allocation_method"].startswith(
+        "chronological_adaptive_"
+    )
+    assert chronological["profit_reinvestment"] is True
+    assert chronological["stake_granularity_yen"] == 100
+    assert chronological["real_betting_enabled"] is False
+    assert aggregate["daily"] == [chronological]
+    assert aggregate["stake_yen"] == chronological["stake_yen"]
+    assert aggregate["return_yen"] == chronological["return_yen"]
+    decisions = [
+        row for row in chronological["ledger"] if row["event"] == "decision"
+    ]
+    assert [row["race_id"] for row in decisions] == [
+        race["race_id"] for race in races
+    ]
+    assert decisions[1]["outstanding_stake_yen"] >= decisions[0]["stake_yen"]
+
+
 def test_vectorized_policy_candidates_match_reference_simulation() -> None:
     races = [_race("2026-07-18", index) for index in range(1, 7)]
     calibrator = {"model_weight": 0.75, "temperature": 1.0}
@@ -307,10 +349,15 @@ def test_observed_closing_return_strategy_uses_prior_closing_teachers() -> None:
     assert result["evaluation_days"] == 2
     for fold in result["folds"]:
         operational_model = fold["operational_model"]
+        chronological = fold["bankroll"]["chronological_bankroll"]
         assert operational_model["return_price_basis"] == "observed_closing"
         assert operational_model["return_multiplier_mode"] == (
             "historical_observed_closing_to_payout_bucket"
         )
+        assert chronological["race_days"] == 1
+        assert chronological["profit_reinvestment"] is True
+        assert chronological["stake_granularity_yen"] == 100
+        assert chronological["real_betting_enabled"] is False
     prospective = result[
         "prospective_observed_closing_return_v4_walk_forward"
     ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from boatrace_ai.adaptive_allocation import allocate_adaptive_day
 from boatrace_ai.chronological_bankroll import (
     decision_information_fingerprint,
     simulate_chronological_bankroll_day,
@@ -47,6 +48,30 @@ def _simulate(candidates: list[dict], events: list[dict]) -> dict:
 
 def _decisions(result: dict) -> list[dict]:
     return [row for row in result["ledger"] if row["event"] == "decision"]
+
+
+def _simulate_adaptive(candidates: list[dict], events: list[dict]) -> dict:
+    adaptive_candidates = [
+        {**row, "estimated_ev": row["probability"] * row["estimated_odds"]}
+        for row in candidates
+    ]
+    return simulate_chronological_bankroll_day(
+        DATE,
+        adaptive_candidates,
+        {str(row["race_id"]) for row in adaptive_candidates},
+        settlement_events=events,
+        initial_bankroll_yen=10_000,
+        max_decision_exposure_fraction=1.0,
+        race_cap_fraction=1.0,
+        ticket_cap_fraction=1.0,
+        allocate_day=allocate_adaptive_day,
+        allocator_kwargs={
+            "fractional_kelly": 1.0,
+            "min_daily_exposure_fraction": 0.0,
+            "allocation_mode": "raw_kelly",
+        },
+        allocation_method="chronological_adaptive_raw_kelly",
+    )
 
 
 def test_unsettled_stake_is_not_reused_and_settled_profit_is_reinvested() -> None:
@@ -135,4 +160,57 @@ def test_result_payload_cannot_change_decision_information_or_unsettled_bets() -
     assert [row["decision_information_sha256"] for row in first_decisions] == [
         row["decision_information_sha256"] for row in second_decisions
     ]
+    assert first["return_yen"] != second["return_yen"]
+
+
+def test_adaptive_allocator_locks_unsettled_cash_and_reinvests_settled_profit() -> None:
+    candidates = [
+        _candidate("race-1", "12:00"),
+        _candidate("race-2", "12:05"),
+        _candidate("race-3", "12:20"),
+    ]
+    result = _simulate_adaptive(candidates, [
+        _event("race-1", "12:10", 1_000),
+        _event("race-2", "12:25", 1_000),
+        _event("race-3", "12:30", 1_000),
+    ])
+    decisions = _decisions(result)
+
+    assert decisions[1]["cash_before_yen"] < decisions[0]["cash_before_yen"]
+    assert decisions[1]["outstanding_stake_yen"] > decisions[0]["stake_yen"]
+    assert decisions[2]["cash_before_yen"] > decisions[0]["cash_before_yen"]
+    assert decisions[2]["stake_yen"] > decisions[0]["stake_yen"]
+    assert result["closing_bankroll_yen"] > 10_000
+    assert result["allocation_method"] == "chronological_adaptive_raw_kelly"
+    assert all(row["stake_yen"] % 100 == 0 for row in decisions)
+
+
+def test_adaptive_selection_is_invariant_to_result_and_payout_before_settlement() -> None:
+    candidates = [
+        _candidate("race-1", "12:00"),
+        _candidate("race-2", "12:05"),
+    ]
+    contaminated = deepcopy(candidates)
+    for candidate in contaminated:
+        candidate.update({
+            "actual_combination": "6-5-4",
+            "actual_payout_yen": 9_999_900,
+            "hit": False,
+            "return_yen": 9_999_900,
+        })
+    low = [_event("race-1", "12:10", 500), _event("race-2", "12:15", 500)]
+    high = [
+        _event("race-1", "12:10", 50_000),
+        _event("race-2", "12:15", 50_000),
+    ]
+
+    first = _simulate_adaptive(candidates, low)
+    second = _simulate_adaptive(contaminated, high)
+
+    assert [row["selections"] for row in _decisions(first)] == [
+        row["selections"] for row in _decisions(second)
+    ]
+    assert first["decision_information_sha256"] == (
+        second["decision_information_sha256"]
+    )
     assert first["return_yen"] != second["return_yen"]

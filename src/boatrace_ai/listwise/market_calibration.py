@@ -20,6 +20,11 @@ from ..adaptive_allocation import allocate_adaptive_day
 from ..archive_closing_odds import SOURCE_KEY as OFFICIAL_CLOSING_SOURCE_KEY
 from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..bankroll_backtest import _load_trifecta_payouts
+from ..chronological_bankroll import (
+    settlement_events_from_races,
+    simulate_chronological_bankroll_day,
+    summarize_chronological_bankroll_days,
+)
 from ..db import connection, init_db
 from ..feature_tuning import (
     _ensure_sparse_index32,
@@ -795,6 +800,9 @@ def simulate_policy(
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     evaluated_by_day: dict[str, set[str]] = defaultdict(set)
+    races_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in races:
+        races_by_day[str(race["race_date"])].append(race)
     if not policy.get("no_bet") and prepared_policy_matrix is not None:
         for race in races:
             evaluated_by_day[str(race["race_date"])].add(str(race["race_id"]))
@@ -908,6 +916,7 @@ def simulate_policy(
             evaluated_by_day[str(race["race_date"])].add(str(race["race_id"]))
 
     daily = []
+    chronological_daily = []
     stake_yen = return_yen = tickets = hit_tickets = 0
     cumulative_profit = peak_profit = max_drawdown_yen = 0
     for race_date in sorted(evaluated_by_day):
@@ -930,6 +939,33 @@ def simulate_policy(
             stake_granularity_yen=STAKE_YEN,
             min_stake_yen=STAKE_YEN,
         )
+        chronological = simulate_chronological_bankroll_day(
+            race_date,
+            by_day.get(race_date, []),
+            evaluated_by_day[race_date],
+            settlement_events=settlement_events_from_races(
+                races_by_day[race_date]
+            ),
+            initial_bankroll_yen=daily_budget_yen,
+            max_decision_exposure_fraction=0.30,
+            race_cap_fraction=0.05,
+            ticket_cap_fraction=0.02,
+            stake_granularity_yen=STAKE_YEN,
+            allocate_day=allocate_adaptive_day,
+            allocator_kwargs={
+                "fractional_kelly": float(staking["fractional_kelly"]),
+                "min_daily_exposure_fraction": float(
+                    staking["min_daily_exposure_fraction"]
+                ),
+                "allocation_mode": str(staking["allocation_mode"]),
+            },
+            allocation_method=(
+                "chronological_adaptive_"
+                f"{str(staking['allocation_mode'])}"
+            ),
+        )
+        result["chronological_bankroll"] = chronological
+        chronological_daily.append(chronological)
         cumulative_profit += int(result["profit_yen"])
         peak_profit = max(peak_profit, cumulative_profit)
         max_drawdown_yen = max(max_drawdown_yen, peak_profit - cumulative_profit)
@@ -952,6 +988,9 @@ def simulate_policy(
         "max_drawdown_yen": max_drawdown_yen,
         "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
         **reliability,
+        "chronological_bankroll": summarize_chronological_bankroll_days(
+            chronological_daily
+        ),
         "daily": daily,
     }
 
