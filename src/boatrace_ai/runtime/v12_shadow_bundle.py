@@ -366,7 +366,7 @@ def build_v12_shadow_bundle(
         raise ValueError("scored cache path is missing from evaluation JSON")
     cache_path = cache_value.resolve()
     contract, races = _load_scored_cache(cache_path)
-    through_date, training_dates = _validate_source_identity(
+    through_date, cache_dates = _validate_source_identity(
         evaluation,
         contract,
         races,
@@ -374,11 +374,6 @@ def build_v12_shadow_bundle(
     )
 
     report_closing = deployment_source["closing_t300_v12_model"]
-    summary = report_closing.get("training_summary") or {}
-    if int(summary.get("training_races") or 0) != len(races):
-        raise ValueError("V12 report training race count does not match scored cache")
-    if list(summary.get("training_dates") or []) != training_dates:
-        raise ValueError("V12 report training dates do not match scored cache")
     if _iso_date(report_closing.get("trained_through_date"), "V12 trained_through_date") != through_date:
         raise ValueError("V12 report trained-through date does not match scored cache")
 
@@ -399,8 +394,26 @@ def build_v12_shadow_bundle(
     if refitted.get("point_model", {}).get("estimator") is None:
         raise ValueError("refitted V12 closing model has no estimator")
     refitted_report = _without_estimator(refitted)
+    report_summary = report_closing.get("training_summary")
+    refitted_summary = refitted_report.get("training_summary")
+    if not isinstance(report_summary, Mapping) or not isinstance(
+        refitted_summary, Mapping
+    ):
+        raise ValueError("V12 training summary is missing")
+    if _canonical_sha256(report_summary) != _canonical_sha256(refitted_summary):
+        raise ValueError(
+            "refitted V12 training summary does not match evaluation report"
+        )
     if _canonical_sha256(refitted_report) != _canonical_sha256(report_closing):
         raise ValueError("refitted V12 model identity does not match evaluation report")
+
+    training_dates = list(refitted_summary.get("training_dates") or [])
+    training_races = int(refitted_summary.get("training_races") or 0)
+    training_examples = int(refitted_summary.get("training_examples") or 0)
+    if not training_dates or training_races <= 0 or training_examples <= 0:
+        raise ValueError("refitted V12 training summary is incomplete")
+    if any(value not in cache_dates for value in training_dates):
+        raise ValueError("refitted V12 training dates are outside the scored cache")
 
     deployment = copy.deepcopy(deployment_source)
     deployment["closing_t300_v12_model"] = refitted
@@ -467,10 +480,9 @@ def build_v12_shadow_bundle(
         "training": {
             "dates": training_dates,
             "days": len(training_dates),
-            "races": len(races),
-            "examples": refitted.get("training_summary", {}).get(
-                "training_examples"
-            ),
+            "races": training_races,
+            "examples": training_examples,
+            "cache_races": len(races),
         },
         "model_identities": {
             "integrated_model": INTEGRATED_MODEL_NAME,
