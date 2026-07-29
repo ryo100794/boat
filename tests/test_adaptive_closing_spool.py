@@ -133,7 +133,7 @@ def test_failed_checkpoint_retries_every_five_seconds_before_next_checkpoint(
     tmp_path,
 ) -> None:
     cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
-    first = cutoff - timedelta(seconds=310)
+    first = cutoff - timedelta(seconds=300)
     current = [first]
     outcomes = [None, None, "success"]
     calls = []
@@ -164,7 +164,7 @@ def test_failed_checkpoint_retries_every_five_seconds_before_next_checkpoint(
     record = spool.checkpoint_record(RACE_DATE, _schedule(cutoff)[0]["race_id"], 300)
     assert record["attempts"] == 3
     assert record["success"] is True
-    assert record["captured_age_seconds"] == 300.0
+    assert record["captured_age_seconds"] == 290.0
     assert calls == [first, first + timedelta(seconds=5), first + timedelta(seconds=10)]
 
 
@@ -303,7 +303,7 @@ def test_collection_stops_after_deadline_and_monitor_reports_missing(tmp_path) -
 
 def test_official_requests_are_serialized_and_respect_page_interval(tmp_path) -> None:
     cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
-    now = cutoff - timedelta(seconds=310)
+    now = cutoff - timedelta(seconds=300)
     spool = T5Spool(tmp_path / "spool")
     spool.save_schedule(RACE_DATE, _schedule(cutoff, races=2))
     active = 0
@@ -350,18 +350,16 @@ def test_legacy_t5_is_the_300_second_checkpoint(tmp_path) -> None:
     worker = T5DurabilityWorker(
         spool,
         date_provider=lambda: RACE_DATE,
-        fetch=lambda **kwargs: _capture(
-            kwargs["rno"], t5_at - timedelta(seconds=10)
-        ),
+        fetch=lambda **kwargs: _capture(kwargs["rno"], t5_at),
         checkpoint_offsets=(300,),
         request_interval_seconds=0,
     )
 
-    assert worker.capture_due_once(now=t5_at - timedelta(seconds=11)) == 0
-    assert worker.capture_due_once(now=t5_at - timedelta(seconds=10)) == 1
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=1)) == 0
+    assert worker.capture_due_once(now=t5_at) == 1
     event = spool.pending_events()[0]
     assert event["target_offset_seconds"] == 300
-    assert event["captured_age_seconds"] == 310.0
+    assert event["captured_age_seconds"] == 300.0
 
 
 def test_checkpoint_monitor_has_age_percentiles_and_pending_counts(tmp_path) -> None:
@@ -384,7 +382,6 @@ def test_checkpoint_monitor_has_age_percentiles_and_pending_counts(tmp_path) -> 
         "attempt": 2,
         "success": 2,
         "expired": 0,
-        "late": 0,
         "missing": 0,
         "age_seconds_p50": 300.0,
         "age_seconds_p90": 300.0,

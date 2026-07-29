@@ -230,11 +230,6 @@ class T5Spool:
         race_id_value: str,
         offset_seconds: int,
         expired_at: datetime,
-        status: str = "expired",
-        error: str = "missed_checkpoint_window",
-        event_id: str | None = None,
-        captured_at: str | None = None,
-        captured_age_seconds: float | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             state = self.load_checkpoint_state(race_date)
@@ -249,13 +244,10 @@ class T5Spool:
                         "success": False,
                         "attempts": int(record.get("attempts") or 0),
                         "expired": True,
-                        "status": status,
+                        "status": "expired",
                         "expired_at": expired_at.isoformat(),
                         "next_retry_at": None,
-                        "last_error": error,
-                        "event_id": event_id,
-                        "captured_at": captured_at,
-                        "captured_age_seconds": captured_age_seconds,
+                        "last_error": "missed_checkpoint_window",
                     }
                 )
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -560,10 +552,6 @@ def decorate_checkpoint_capture(
     if captured_at.tzinfo is None:
         captured_at = captured_at.replace(tzinfo=timezone.utc)
     captured_age = (deadline_at - captured_at).total_seconds()
-    if offset_seconds is not None and captured_age < int(offset_seconds):
-        raise ValueError(
-            "checkpoint capture occurred after its decision target"
-        )
     source_staleness = source_update_staleness_seconds(
         event.get("source_update_time"), captured_at=captured_at
     )
@@ -777,7 +765,6 @@ class T5DurabilityWorker:
             "failed": 0,
             "capacity_rejected": 0,
             "attempts": 0,
-            "late_checkpoint": 0,
         }
 
     def start(self) -> None:
@@ -806,9 +793,7 @@ class T5DurabilityWorker:
         )
         if cutoff_at is None:
             return False
-        first_checkpoint = cutoff_at - timedelta(
-            seconds=max(self.checkpoint_offsets) + self.checkpoint_window_seconds
-        )
+        first_checkpoint = cutoff_at - timedelta(seconds=max(self.checkpoint_offsets))
         return first_checkpoint <= now <= cutoff_at
 
     def _capture_due_once(self, *, now: datetime) -> int:
@@ -851,10 +836,10 @@ class T5DurabilityWorker:
                 record = dict(records.get(str(offset), {}))
                 if record.get("success") or record.get("expired"):
                     continue
-                opens_at = target_at - timedelta(
+                expires_at = target_at + timedelta(
                     seconds=self.checkpoint_window_seconds
                 )
-                if now > target_at:
+                if now > expires_at:
                     self.spool.mark_checkpoint_expired(
                         race_date=race_date,
                         race_id_value=race_id_value,
@@ -862,7 +847,7 @@ class T5DurabilityWorker:
                         expired_at=now,
                     )
                     continue
-                if now < opens_at:
+                if now < target_at:
                     continue
                 next_retry = _parse_datetime(record.get("next_retry_at"))
                 if next_retry is not None and now < next_retry:
@@ -914,7 +899,6 @@ class T5DurabilityWorker:
             event: dict[str, Any] | None = None
             raw_payload: bytes | None = None
             error: str | None = None
-            late_checkpoint = False
             try:
                 result = self.fetch(
                     race_date=race_date,
@@ -925,30 +909,17 @@ class T5DurabilityWorker:
                     error = "no_valid_snapshot"
                 else:
                     event, raw_payload = result
-                    captured_at = _parse_datetime(event.get("captured_at"))
-                    if offset is not None:
-                        target_at = cutoff_at - timedelta(seconds=offset)
-                        late_checkpoint = (
-                            captured_at is None or captured_at > target_at
-                        )
-                    effective_offset = None if late_checkpoint else offset
                     event = decorate_checkpoint_capture(
                         event,
-                        offset_seconds=effective_offset,
+                        offset_seconds=offset,
                         attempt=attempt,
                         deadline_at=cutoff_at,
                         observation_label=(
                             checkpoint_label(offset)
-                            if offset is not None and not late_checkpoint
+                            if offset is not None
                             else "closing_cadence"
                         ),
                     )
-                    if late_checkpoint:
-                        event["requested_checkpoint_offset_seconds"] = offset
-                        event["parsed"]["_collection"][
-                            "requested_checkpoint_offset_seconds"
-                        ] = offset
-                        error = "late_checkpoint_capture"
                     self.spool.enqueue(event, raw_payload=raw_payload)
             except SpoolCapacityError:
                 self.counters["capacity_rejected"] += 1
@@ -958,8 +929,7 @@ class T5DurabilityWorker:
                 error = type(exc).__name__
                 event = None
 
-            capture_success = event is not None and raw_payload is not None
-            checkpoint_success = capture_success and not late_checkpoint
+            success = event is not None and raw_payload is not None
             race_id_value = str(row["race_id"])
             if offset is not None:
                 self.spool.record_checkpoint_attempt(
@@ -968,7 +938,7 @@ class T5DurabilityWorker:
                     offset_seconds=offset,
                     attempted_at=attempted_at,
                     retry_seconds=self.retry_seconds,
-                    success=checkpoint_success,
+                    success=success,
                     captured_at=str(event["captured_at"]) if event else None,
                     captured_age_seconds=(
                         float(event["captured_age_seconds"]) if event else None
@@ -987,30 +957,17 @@ class T5DurabilityWorker:
                     event_id=str(event["event_id"]) if event else None,
                     error=error,
                 )
-                if late_checkpoint and event is not None:
-                    self.spool.mark_checkpoint_expired(
-                        race_date=race_date,
-                        race_id_value=race_id_value,
-                        offset_seconds=offset,
-                        expired_at=_parse_datetime(event["captured_at"]) or attempted_at,
-                        status="late",
-                        error="late_checkpoint_capture",
-                        event_id=str(event["event_id"]),
-                        captured_at=str(event["captured_at"]),
-                        captured_age_seconds=float(event["captured_age_seconds"]),
-                    )
-                    self.counters["late_checkpoint"] += 1
             if (cutoff_at - attempted_at).total_seconds() <= self.closing_window_seconds:
                 self.spool.record_closing_attempt(
                     race_date=race_date,
                     race_id_value=race_id_value,
                     attempted_at=attempted_at,
-                    success=capture_success,
+                    success=success,
                     retry_seconds=self.closing_cadence_seconds,
                     event_id=str(event["event_id"]) if event else None,
                     error=error,
                 )
-            if capture_success:
+            if success:
                 self.counters["captures"] += 1
                 captured += 1
             else:
@@ -1034,15 +991,14 @@ class T5DurabilityWorker:
                 if record.get("success") or record.get("expired"):
                     continue
                 target_at = cutoff_at - timedelta(seconds=offset)
-                opens_at = target_at - timedelta(
+                expires_at = target_at + timedelta(
                     seconds=self.checkpoint_window_seconds
                 )
-                if now > target_at:
+                if now > expires_at:
                     delays.append(0.1)
                     continue
                 next_retry = _parse_datetime(record.get("next_retry_at"))
-                due_at = max(opens_at, next_retry) if next_retry else opens_at
-                due_at = min(target_at, due_at)
+                due_at = max(target_at, next_retry) if next_retry else target_at
                 delays.append(max(0.1, (due_at - now).total_seconds()))
 
             seconds_to_cutoff = (cutoff_at - now).total_seconds()
@@ -1074,7 +1030,6 @@ class T5DurabilityWorker:
             attempts = 0
             successes = 0
             expired = 0
-            late = 0
             ages: list[float] = []
             source_staleness: list[float] = []
             source_staleness_missing = 0
@@ -1082,17 +1037,13 @@ class T5DurabilityWorker:
                 cutoff_at = estimated_deadline_from_start(
                     stored_start_time(row.get("deadline_at"))
                 )
-                if cutoff_at is None or now < cutoff_at - timedelta(
-                    seconds=offset + self.checkpoint_window_seconds
-                ):
+                if cutoff_at is None or now < cutoff_at - timedelta(seconds=offset):
                     continue
                 eligible += 1
                 record = state.get(str(row["race_id"]), {}).get(str(offset), {})
                 attempts += int(record.get("attempts") or 0)
                 if record.get("expired"):
                     expired += 1
-                if record.get("status") == "late":
-                    late += 1
                 if record.get("success"):
                     successes += 1
                     age = record.get("captured_age_seconds")
@@ -1108,7 +1059,6 @@ class T5DurabilityWorker:
                 "attempt": attempts,
                 "success": successes,
                 "expired": expired,
-                "late": late,
                 "missing": max(0, eligible - successes),
                 "age_seconds_p50": _percentile(ages, 0.50),
                 "age_seconds_p90": _percentile(ages, 0.90),
