@@ -1584,6 +1584,7 @@ def build_command(
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             "odds_path_observed_closing_return_robust_policy_v17",
+            "odds_path_observed_closing_return_schedule_quota_v18",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
@@ -4335,6 +4336,12 @@ MARKET_EVALUATION_SOURCES = (
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_observed_closing_return_robust_policy_v17",
+    ),
+    (
+        "odds_path_observed_closing_return_schedule_quota_v18_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_observed_closing_return_schedule_quota_v18",
     ),
     (
         "odds_path_prequential_shrinkage_return_v6_daily",
