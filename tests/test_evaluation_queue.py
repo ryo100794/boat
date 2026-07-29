@@ -1576,7 +1576,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1590,6 +1590,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260718-25",
         "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily:market_residual:20260718-25",
         "odds_path_role_integrated_multihorizon_v11_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_t300_nonlinear_v12_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1671,6 +1672,23 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "min_calibration_days": 2,
         "calibrator_strategy": "odds_path_role_integrated_multihorizon_v11",
         "minimum_day_coverage": 1.0,
+        "timeout_seconds": 14_400,
+    }
+    role_integrated_v12 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_role_integrated_t300_nonlinear_v12"
+    )
+    assert role_integrated_v12["priority"] == 89
+    assert role_integrated_v12["parameters"] == {
+        "model_input": discrete_v9["parameters"]["model_input"],
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-25",
+        "daily_budget_yen": 10000,
+        "min_calibration_days": 2,
+        "calibrator_strategy": "odds_path_role_integrated_t300_nonlinear_v12",
+        "minimum_day_coverage": 1.0,
+        "v12_closing_fallback_policy": "v11",
         "timeout_seconds": 14_400,
     }
     assert seed_daily_market_jobs(
@@ -3330,3 +3348,85 @@ def test_result_summary_preserves_v10_selection_conformal_diagnostics() -> None:
     assert summary["prospective_v10_roi"] == 1.06
     assert summary["prospective_v10_promotion_eligible"] is True
     assert summary["prospective_v10_selection_conformal"] == conformal
+
+
+def test_v12_role_stack_build_command_carries_explicit_fallback_contract(
+    tmp_path: Path,
+) -> None:
+    model_input = tmp_path / "data/models/source.joblib"
+    model_input.parent.mkdir(parents=True)
+    model_input.write_bytes(b"artifact")
+    command, _output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/source.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10_000,
+                "calibrator_strategy": (
+                    "odds_path_role_integrated_t300_nonlinear_v12"
+                ),
+                "v12_closing_fallback_policy": "no_bet",
+            },
+        ),
+        app_root=tmp_path,
+        python=Path("/venv/bin/python"),
+        db="postgresql://test",
+    )
+
+    assert command[
+        command.index("--calibrator-strategy") + 1
+    ] == "odds_path_role_integrated_t300_nonlinear_v12"
+    assert command[
+        command.index("--v12-closing-fallback-policy") + 1
+    ] == "no_bet"
+
+
+def test_v12_result_summary_preserves_closing_model_identity() -> None:
+    identity = {
+        "requested_model": "closing_odds_t300_nonlinear_v12",
+        "fallback_policy": "v11",
+        "selected_model_latest": "closing_odds_multihorizon_v11",
+        "selected_model_fold_counts": {
+            "closing_odds_multihorizon_v11": 2,
+            "closing_odds_t300_nonlinear_v12": 1,
+        },
+        "evaluation_folds": 3,
+        "v12_ready_folds": 3,
+        "v12_adopted_folds": 1,
+        "v11_fallback_folds": 2,
+        "no_bet_folds": 0,
+    }
+    summary = summarize_result({
+        "model": "odds_path_role_integrated_t300_nonlinear_v12",
+        "roi": 1.05,
+        "profit_yen": 500,
+        "calibrated_trifecta_log_loss": 3.7,
+        "closing_q20_lower_coverage": 0.82,
+        "closing_model_identity": identity,
+        "prospective_role_integrated_v12_walk_forward": {
+            "evaluation_days": 3,
+            "evaluated_races": 360,
+            "tickets": 12,
+            "profit_yen": 500,
+            "roi": 1.05,
+            "promotion_eligible": False,
+            "closing_model_identity": identity,
+        },
+    })
+
+    assert summary["roi"] == 1.05
+    assert summary["calibrated_trifecta_log_loss"] == 3.7
+    assert summary["closing_q20_lower_coverage"] == 0.82
+    assert summary["closing_model_identity"] == identity
+    assert summary["closing_model_requested"] == (
+        "closing_odds_t300_nonlinear_v12"
+    )
+    assert summary["closing_model_selected"] == (
+        "closing_odds_multihorizon_v11"
+    )
+    assert summary["closing_fallback_policy"] == "v11"
+    assert summary["closing_v12_adopted_folds"] == 1
+    assert summary["prospective_v12_roi"] == 1.05
+    assert summary["prospective_v12_closing_model_identity"] == identity

@@ -201,6 +201,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_market_offset_selection_conformal_discrete_ev_v10"
     if calibrator_strategy == "odds_path_role_integrated_multihorizon_v11":
         return "odds_path_role_integrated_multihorizon_v11"
+    if calibrator_strategy == "odds_path_role_integrated_t300_nonlinear_v12":
+        return "odds_path_role_integrated_t300_nonlinear_v12"
     return MODEL_NAME
 
 
@@ -2165,6 +2167,7 @@ def walk_forward_evaluate(
     min_calibration_days: int = 2,
     calibrator_strategy: str = "grid",
     evaluation_dates: Iterable[str] | None = None,
+    v12_closing_fallback_policy: str = "v11",
 ) -> dict[str, Any]:
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
@@ -2213,6 +2216,16 @@ def walk_forward_evaluate(
             daily_budget_yen=daily_budget_yen,
             min_calibration_days=min_calibration_days,
             evaluation_dates=evaluation_dates,
+        )
+    if calibrator_strategy == "odds_path_role_integrated_t300_nonlinear_v12":
+        from .odds_path_role_integrated_v12 import walk_forward_evaluate_v12
+
+        return walk_forward_evaluate_v12(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+            closing_fallback_policy=v12_closing_fallback_policy,
         )
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -4600,8 +4613,14 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_market_offset_discrete_log_ev_v9",
             "odds_path_market_offset_selection_conformal_discrete_ev_v10",
             "odds_path_role_integrated_multihorizon_v11",
+            "odds_path_role_integrated_t300_nonlinear_v12",
         ),
         default="grid",
+    )
+    parser.add_argument(
+        "--v12-closing-fallback-policy",
+        choices=("v11", "no_bet"),
+        default="v11",
     )
     parser.add_argument("--scored-cache")
     parser.add_argument(
@@ -4706,6 +4725,7 @@ def main(argv: list[str] | None = None) -> int:
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
         evaluation_dates=formal_dates,
+        v12_closing_fallback_policy=args.v12_closing_fallback_policy,
     )
     benchmark_evaluated = sum(
         str(race["race_date"]) in set(benchmark["benchmark_dates"])
