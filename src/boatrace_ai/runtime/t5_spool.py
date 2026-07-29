@@ -3,27 +3,48 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from ..constants import VENUE_BY_CODE
 from ..db import race_id, trifecta_odds_signature, upsert_race
-from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..http import fetch_text, sha256_bytes
 from ..official import race_page_url
 from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 from ..storage import record_raw_page
 from ..ingestion.parsers import parse_odds3t_html, result_page_is_cancelled
-from .time_semantics import estimated_deadline_from_start, stored_start_time
+from .time_semantics import JST, estimated_deadline_from_start, stored_start_time
 
 
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
-SCHEMA_VERSION = 1
+DEFAULT_CHECKPOINT_OFFSETS = (300, 120, 60, 30, 10)
+DEFAULT_RETRY_SECONDS = 5.0
+DEFAULT_CHECKPOINT_WINDOW_SECONDS = 10.0
+DEFAULT_CLOSING_CADENCE_SECONDS = 5.0
+DEFAULT_CLOSING_WINDOW_SECONDS = 75.0
+SCHEMA_VERSION = 2
 
 
 class SpoolCapacityError(RuntimeError):
     pass
+
+
+def parse_checkpoint_offsets(value: str | Iterable[int]) -> tuple[int, ...]:
+    parts = value.split(",") if isinstance(value, str) else value
+    offsets = tuple(int(part) for part in parts)
+    if not offsets or any(offset <= 0 for offset in offsets):
+        raise ValueError("closing checkpoint offsets must be positive seconds")
+    if len(set(offsets)) != len(offsets):
+        raise ValueError("closing checkpoint offsets must be unique")
+    return tuple(sorted(offsets, reverse=True))
+
+
+def checkpoint_label(offset_seconds: int) -> str:
+    if offset_seconds >= 60 and offset_seconds % 60 == 0:
+        return f"T{offset_seconds // 60}"
+    return f"T{offset_seconds}"
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -79,11 +100,13 @@ class T5Spool:
         self.corrupt_dir = self.root / "corrupt"
         self.journal_path = self.root / "pending.jsonl"
         self.schedule_path = self.root / "schedule.json"
+        self.state_dir = self.root / "checkpoint_state"
         self.archive_raw_dir = Path(archive_raw_dir) if archive_raw_dir else None
         self._lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.corrupt_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
 
     def save_schedule(self, race_date: date, rows: Iterable[Any]) -> None:
         keep = (
@@ -93,11 +116,28 @@ class T5Spool:
             "deadline_at",
             "latest_odds_at",
         )
-        serialized = []
+        incoming = []
         for row in rows:
             values = _row_dict(row)
-            serialized.append({key: values.get(key) for key in keep})
+            incoming.append({key: values.get(key) for key in keep})
         with self._lock:
+            merged = {
+                str(row["race_id"]): row
+                for row in self.load_schedule(race_date)
+                if row.get("race_id")
+            }
+            for row in incoming:
+                race_id_value = str(row.get("race_id") or "")
+                if not race_id_value:
+                    continue
+                merged[race_id_value] = {
+                    **merged.get(race_id_value, {}),
+                    **row,
+                }
+            serialized = sorted(
+                merged.values(),
+                key=lambda row: (str(row.get("deadline_at") or ""), str(row["race_id"])),
+            )
             _atomic_json(
                 self.schedule_path,
                 {
@@ -118,6 +158,154 @@ class T5Spool:
             return []
         rows = payload.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    def load_checkpoint_state(self, race_date: date) -> dict[str, Any]:
+        path = self._checkpoint_state_path(race_date)
+        with self._lock:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return {
+                    "schema_version": SCHEMA_VERSION,
+                    "race_date": race_date.isoformat(),
+                    "races": {},
+                }
+        if payload.get("race_date") != race_date.isoformat():
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "race_date": race_date.isoformat(),
+                "races": {},
+            }
+        if not isinstance(payload.get("races"), dict):
+            payload["races"] = {}
+        return payload
+
+    def record_checkpoint_attempt(
+        self,
+        *,
+        race_date: date,
+        race_id_value: str,
+        offset_seconds: int,
+        attempted_at: datetime,
+        retry_seconds: float,
+        success: bool,
+        captured_at: str | None = None,
+        captured_age_seconds: float | None = None,
+        source_update_time: str | None = None,
+        source_update_staleness_seconds: float | None = None,
+        event_id: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            state = self.load_checkpoint_state(race_date)
+            races = state.setdefault("races", {})
+            checkpoints = races.setdefault(race_id_value, {})
+            key = str(int(offset_seconds))
+            record = checkpoints.setdefault(key, {})
+            record["attempts"] = int(record.get("attempts") or 0) + 1
+            record["last_attempt_at"] = attempted_at.isoformat()
+            record["next_retry_at"] = (
+                attempted_at + timedelta(seconds=retry_seconds)
+            ).isoformat()
+            record["success"] = bool(success)
+            record["expired"] = False
+            record["status"] = "success" if success else "retrying"
+            record["last_error"] = error
+            if success:
+                record["completed_at"] = attempted_at.isoformat()
+                record["captured_at"] = captured_at
+                record["captured_age_seconds"] = captured_age_seconds
+                record["source_update_time"] = source_update_time
+                record["source_update_staleness_seconds"] = source_update_staleness_seconds
+                record["event_id"] = event_id
+                record["next_retry_at"] = None
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_json(self._checkpoint_state_path(race_date), state)
+            return dict(record)
+
+    def mark_checkpoint_expired(
+        self,
+        *,
+        race_date: date,
+        race_id_value: str,
+        offset_seconds: int,
+        expired_at: datetime,
+    ) -> dict[str, Any]:
+        with self._lock:
+            state = self.load_checkpoint_state(race_date)
+            record = (
+                state.setdefault("races", {})
+                .setdefault(race_id_value, {})
+                .setdefault(str(int(offset_seconds)), {})
+            )
+            if not record.get("success"):
+                record.update(
+                    {
+                        "success": False,
+                        "attempts": int(record.get("attempts") or 0),
+                        "expired": True,
+                        "status": "expired",
+                        "expired_at": expired_at.isoformat(),
+                        "next_retry_at": None,
+                        "last_error": "missed_checkpoint_window",
+                    }
+                )
+                state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                _atomic_json(self._checkpoint_state_path(race_date), state)
+            return dict(record)
+
+    def record_closing_attempt(
+        self,
+        *,
+        race_date: date,
+        race_id_value: str,
+        attempted_at: datetime,
+        success: bool,
+        retry_seconds: float,
+        event_id: str | None,
+        error: str | None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            state = self.load_checkpoint_state(race_date)
+            record = (
+                state.setdefault("races", {})
+                .setdefault(race_id_value, {})
+                .setdefault("_closing_cadence", {})
+            )
+            record["attempts"] = int(record.get("attempts") or 0) + 1
+            record["last_attempt_at"] = attempted_at.isoformat()
+            record["next_retry_at"] = (
+                attempted_at + timedelta(seconds=retry_seconds)
+            ).isoformat()
+            record["last_success"] = bool(success)
+            record["last_error"] = error
+            if success:
+                record["successes"] = int(record.get("successes") or 0) + 1
+                record["last_event_id"] = event_id
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_json(self._checkpoint_state_path(race_date), state)
+            return dict(record)
+
+    def checkpoint_record(
+        self,
+        race_date: date,
+        race_id_value: str,
+        offset_seconds: int,
+    ) -> dict[str, Any]:
+        state = self.load_checkpoint_state(race_date)
+        return dict(
+            state.get("races", {})
+            .get(race_id_value, {})
+            .get(str(int(offset_seconds)), {})
+        )
+
+    def pending_events(self) -> list[dict[str, Any]]:
+        with self._lock:
+            pending, _ = self._read_pending_locked(repair_tail=True)
+        return pending
+
+    def _checkpoint_state_path(self, race_date: date) -> Path:
+        return self.state_dir / f"{race_date.isoformat()}.json"
 
     def enqueue(
         self,
@@ -190,13 +378,17 @@ class T5Spool:
         if self.archive_raw_dir is None:
             return event
         captured = str(event["captured_at"]).replace(":", "").replace("+", "_")
+        checkpoint = event.get("target_offset_seconds")
+        if checkpoint is None:
+            checkpoint = event.get("observation_label", "closing")
+        attempt = event.get("checkpoint_attempt", 1)
         target = (
             self.archive_raw_dir
             / "pages"
             / str(event["race_date"]).replace("-", "")
             / str(event["jcd"]).zfill(2)
             / f"{int(event['rno']):02d}"
-            / f"odds3t-t5-{captured}.html"
+            / f"odds3t-cp{checkpoint}-a{attempt}-{captured}.html"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         source = Path(str(event["raw_local_path"]))
@@ -321,6 +513,94 @@ def build_capture(
     }
 
 
+def source_update_staleness_seconds(
+    value: Any,
+    *,
+    captured_at: datetime,
+) -> float | None:
+    if not value:
+        return None
+    try:
+        parts = [int(part) for part in str(value).split(":")]
+    except ValueError:
+        return None
+    if len(parts) not in (2, 3):
+        return None
+    hour, minute = parts[:2]
+    second = parts[2] if len(parts) == 3 else 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    captured_jst = captured_at.astimezone(JST)
+    source_at = captured_jst.replace(
+        hour=hour, minute=minute, second=second, microsecond=0
+    )
+    if source_at - captured_jst > timedelta(minutes=1):
+        source_at -= timedelta(days=1)
+    return max(0.0, (captured_jst - source_at).total_seconds())
+
+
+def decorate_checkpoint_capture(
+    event: dict[str, Any],
+    *,
+    offset_seconds: int | None,
+    attempt: int,
+    deadline_at: datetime,
+    observation_label: str | None = None,
+) -> dict[str, Any]:
+    decorated = dict(event)
+    captured_at = datetime.fromisoformat(str(event["captured_at"]))
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(tzinfo=timezone.utc)
+    captured_age = (deadline_at - captured_at).total_seconds()
+    source_staleness = source_update_staleness_seconds(
+        event.get("source_update_time"), captured_at=captured_at
+    )
+    label = observation_label or (
+        checkpoint_label(int(offset_seconds))
+        if offset_seconds is not None
+        else "closing_cadence"
+    )
+    offset_token = int(offset_seconds) if offset_seconds is not None else label
+    event_id = (
+        f"{event['race_id']}-closing-{offset_token}-"
+        f"a{int(attempt)}-{str(event['captured_at']).replace(':', '').replace('+', '_')}"
+    )
+    collection = {
+        "event_id": event_id,
+        "target_offset_seconds": (
+            int(offset_seconds) if offset_seconds is not None else None
+        ),
+        "observation_label": label,
+        "attempt": int(attempt),
+        "deadline_at": deadline_at.isoformat(),
+        "captured_age_seconds": captured_age,
+        "source_update_time": event.get("source_update_time"),
+        "source_update_staleness_seconds": source_staleness,
+    }
+    parsed = dict(event["parsed"])
+    parsed["_collection"] = collection
+    decorated.update(
+        {
+            "event_id": event_id,
+            "kind": (
+                "closing_checkpoint_trifecta_snapshot"
+                if offset_seconds is not None
+                else "closing_cadence_trifecta_snapshot"
+            ),
+            "target_offset_seconds": (
+                int(offset_seconds) if offset_seconds is not None else None
+            ),
+            "observation_label": label,
+            "checkpoint_attempt": int(attempt),
+            "deadline_at": deadline_at.isoformat(),
+            "captured_age_seconds": captured_age,
+            "source_update_staleness_seconds": source_staleness,
+            "parsed": parsed,
+        }
+    )
+    return decorated
+
+
 def fetch_t5_capture(
     *,
     race_date: date,
@@ -345,7 +625,7 @@ def fetch_t5_capture(
         or not plausible_trifecta_odds(parsed.get("odds") or {})
     ):
         return None
-    captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    captured_at = datetime.now(timezone.utc).isoformat()
     return (
         build_capture(
             race_date=race_date,
@@ -377,8 +657,8 @@ def persist_capture(conn: Any, event: dict[str, Any]) -> int:
     raw_path = str(event["raw_local_path"])
     exists = conn.execute(
         "SELECT 1 FROM raw_pages WHERE page_type = ? AND race_id = ? "
-        "AND sha256 = ? LIMIT 1",
-        ("odds3t", event["race_id"], event["raw_sha256"]),
+        "AND local_path = ? LIMIT 1",
+        ("odds3t", event["race_id"], raw_path),
     ).fetchone()
     if exists is None:
         record_raw_page(
@@ -391,12 +671,25 @@ def persist_capture(conn: Any, event: dict[str, Any]) -> int:
             bytes_count=int(event["raw_bytes"]),
         )
 
-    row = conn.execute(
-        "SELECT snapshot_id FROM odds_snapshots WHERE race_id = ? "
+    matching_rows = conn.execute(
+        "SELECT snapshot_id, raw_json FROM odds_snapshots WHERE race_id = ? "
         "AND bet_type = 'trifecta' AND captured_at = ? AND odds_signature = ? "
-        "ORDER BY snapshot_id LIMIT 1",
+        "ORDER BY snapshot_id",
         (event["race_id"], event["captured_at"], event["odds_signature"]),
-    ).fetchone()
+    ).fetchall()
+    row = None
+    if event.get("target_offset_seconds") is None:
+        row = matching_rows[0] if matching_rows else None
+    else:
+        for candidate in matching_rows:
+            try:
+                stored = json.loads(candidate[1] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            collection = stored.get("_collection") or {}
+            if collection.get("event_id") == event.get("event_id"):
+                row = candidate
+                break
     if row is None:
         conn.execute(
             "INSERT INTO odds_snapshots (race_id, bet_type, captured_at, "
@@ -433,22 +726,55 @@ class T5DurabilityWorker:
         *,
         date_provider: Callable[[], date],
         fetch: Callable[..., tuple[dict[str, Any], bytes] | None] = fetch_t5_capture,
+        checkpoint_offsets: Iterable[int] = DEFAULT_CHECKPOINT_OFFSETS,
+        retry_seconds: float = DEFAULT_RETRY_SECONDS,
+        checkpoint_window_seconds: float = DEFAULT_CHECKPOINT_WINDOW_SECONDS,
+        closing_window_seconds: float = DEFAULT_CLOSING_WINDOW_SECONDS,
+        closing_cadence_seconds: float = DEFAULT_CLOSING_CADENCE_SECONDS,
+        request_interval_seconds: float = 0.4,
         poll_seconds: float = 2.0,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.spool = spool
         self.date_provider = date_provider
         self.fetch = fetch
+        self.checkpoint_offsets = parse_checkpoint_offsets(checkpoint_offsets)
+        self.retry_seconds = float(retry_seconds)
+        if self.retry_seconds <= 0:
+            raise ValueError("checkpoint retry seconds must be positive")
+        self.checkpoint_window_seconds = float(checkpoint_window_seconds)
+        self.closing_window_seconds = float(closing_window_seconds)
+        self.closing_cadence_seconds = float(closing_cadence_seconds)
+        if self.checkpoint_window_seconds < 0:
+            raise ValueError("checkpoint window seconds must be non-negative")
+        if self.closing_window_seconds < 0 or self.closing_cadence_seconds <= 0:
+            raise ValueError(
+                "closing window must be non-negative and cadence seconds positive"
+            )
+        self.request_interval_seconds = max(0.0, float(request_interval_seconds))
         self.poll_seconds = poll_seconds
-        self._captured: set[str] = set()
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._last_request_at: float | None = None
         self._capture_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.counters = {"captures": 0, "failed": 0, "capacity_rejected": 0}
+        self.counters = {
+            "captures": 0,
+            "failed": 0,
+            "capacity_rejected": 0,
+            "attempts": 0,
+        }
 
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._run, name="t5-durability", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="closing-checkpoint-durability",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -460,24 +786,119 @@ class T5DurabilityWorker:
         with self._capture_lock:
             return self._capture_due_once(now=now)
 
+    def manages_row(self, row: Any, *, now: datetime) -> bool:
+        """Return whether checkpoint collection owns odds HTTP for this race."""
+        cutoff_at = estimated_deadline_from_start(
+            stored_start_time(row.get("deadline_at"))
+        )
+        if cutoff_at is None:
+            return False
+        first_checkpoint = cutoff_at - timedelta(seconds=max(self.checkpoint_offsets))
+        return first_checkpoint <= now <= cutoff_at
+
     def _capture_due_once(self, *, now: datetime) -> int:
         race_date = self.date_provider()
         rows = self.spool.load_schedule(race_date)
-        pending = self.spool.pending_event_ids()
-        captured = 0
+        state = self.spool.load_checkpoint_state(race_date)
+        race_state = state.get("races", {})
+        candidates: list[
+            tuple[
+                tuple[int, float, str],
+                dict[str, Any],
+                datetime,
+                int | None,
+                dict[str, Any],
+            ]
+        ] = []
+
         for row in rows:
-            start_at = stored_start_time(row.get("deadline_at"))
-            cutoff_at = estimated_deadline_from_start(start_at)
+            cutoff_at = estimated_deadline_from_start(
+                stored_start_time(row.get("deadline_at"))
+            )
             if cutoff_at is None:
                 continue
-            t5_at = cutoff_at - timedelta(minutes=MODEL_DECISION_LEAD_MINUTES)
-            seconds = (t5_at - now).total_seconds()
-            capture_key = f"{row['race_id']}:{t5_at.isoformat()}"
-            if capture_key in self._captured or not -1.0 <= seconds <= 60.0:
+            race_id_value = str(row["race_id"])
+            records = race_state.get(race_id_value, {})
+            if now > cutoff_at:
+                for offset in self.checkpoint_offsets:
+                    record = records.get(str(offset), {})
+                    if not record.get("success") and not record.get("expired"):
+                        self.spool.mark_checkpoint_expired(
+                            race_date=race_date,
+                            race_id_value=race_id_value,
+                            offset_seconds=offset,
+                            expired_at=now,
+                        )
                 continue
-            if any(event_id.startswith(f"{row['race_id']}-t5-") for event_id in pending):
-                self._captured.add(capture_key)
+            due: list[tuple[int, dict[str, Any], datetime]] = []
+            for offset in self.checkpoint_offsets:
+                target_at = cutoff_at - timedelta(seconds=offset)
+                record = dict(records.get(str(offset), {}))
+                if record.get("success") or record.get("expired"):
+                    continue
+                expires_at = target_at + timedelta(
+                    seconds=self.checkpoint_window_seconds
+                )
+                if now > expires_at:
+                    self.spool.mark_checkpoint_expired(
+                        race_date=race_date,
+                        race_id_value=race_id_value,
+                        offset_seconds=offset,
+                        expired_at=now,
+                    )
+                    continue
+                if now < target_at:
+                    continue
+                next_retry = _parse_datetime(record.get("next_retry_at"))
+                if next_retry is not None and now < next_retry:
+                    continue
+                due.append((offset, record, target_at))
+
+            if due:
+                offset, record, target_at = min(
+                    due,
+                    key=lambda item: abs((now - item[2]).total_seconds()),
+                )
+                candidates.append(
+                    (
+                        (0 if offset == 10 else 1, (cutoff_at - now).total_seconds(), race_id_value),
+                        row,
+                        cutoff_at,
+                        offset,
+                        record,
+                    )
+                )
                 continue
+
+            seconds_to_cutoff = (cutoff_at - now).total_seconds()
+            if not (
+                self.closing_window_seconds > 0
+                and 0.0 <= seconds_to_cutoff <= self.closing_window_seconds
+            ):
+                continue
+            closing_record = dict(records.get("_closing_cadence", {}))
+            next_closing = _parse_datetime(closing_record.get("next_retry_at"))
+            if next_closing is not None and now < next_closing:
+                continue
+            candidates.append(
+                (
+                    (2, seconds_to_cutoff, race_id_value),
+                    row,
+                    cutoff_at,
+                    None,
+                    closing_record,
+                )
+            )
+
+        captured = 0
+        for _priority, row, cutoff_at, offset, record in sorted(candidates):
+            self._rate_limit()
+            attempted_at = now
+            attempt = int(record.get("attempts") or 0) + 1
+            self.counters["attempts"] += 1
+            event: dict[str, Any] | None = None
+            raw_payload: bytes | None = None
+            error: str | None = None
             try:
                 result = self.fetch(
                     race_date=race_date,
@@ -485,30 +906,235 @@ class T5DurabilityWorker:
                     rno=int(row["rno"]),
                 )
                 if result is None:
-                    self.counters["failed"] += 1
-                    continue
-                event, raw_payload = result
-                self.spool.enqueue(event, raw_payload=raw_payload)
+                    error = "no_valid_snapshot"
+                else:
+                    event, raw_payload = result
+                    event = decorate_checkpoint_capture(
+                        event,
+                        offset_seconds=offset,
+                        attempt=attempt,
+                        deadline_at=cutoff_at,
+                        observation_label=(
+                            checkpoint_label(offset)
+                            if offset is not None
+                            else "closing_cadence"
+                        ),
+                    )
+                    self.spool.enqueue(event, raw_payload=raw_payload)
             except SpoolCapacityError:
                 self.counters["capacity_rejected"] += 1
-                continue
-            except Exception:
+                error = "spool_capacity"
+                event = None
+            except Exception as exc:
+                error = type(exc).__name__
+                event = None
+
+            success = event is not None and raw_payload is not None
+            race_id_value = str(row["race_id"])
+            if offset is not None:
+                self.spool.record_checkpoint_attempt(
+                    race_date=race_date,
+                    race_id_value=race_id_value,
+                    offset_seconds=offset,
+                    attempted_at=attempted_at,
+                    retry_seconds=self.retry_seconds,
+                    success=success,
+                    captured_at=str(event["captured_at"]) if event else None,
+                    captured_age_seconds=(
+                        float(event["captured_age_seconds"]) if event else None
+                    ),
+                    source_update_time=(
+                        str(event["source_update_time"])
+                        if event and event.get("source_update_time")
+                        else None
+                    ),
+                    source_update_staleness_seconds=(
+                        float(event["source_update_staleness_seconds"])
+                        if event
+                        and event.get("source_update_staleness_seconds") is not None
+                        else None
+                    ),
+                    event_id=str(event["event_id"]) if event else None,
+                    error=error,
+                )
+            if (cutoff_at - attempted_at).total_seconds() <= self.closing_window_seconds:
+                self.spool.record_closing_attempt(
+                    race_date=race_date,
+                    race_id_value=race_id_value,
+                    attempted_at=attempted_at,
+                    success=success,
+                    retry_seconds=self.closing_cadence_seconds,
+                    event_id=str(event["event_id"]) if event else None,
+                    error=error,
+                )
+            if success:
+                self.counters["captures"] += 1
+                captured += 1
+            else:
                 self.counters["failed"] += 1
-                continue
-            self._captured.add(capture_key)
-            pending.add(str(event["event_id"]))
-            self.counters["captures"] += 1
-            captured += 1
         return captured
 
-    def status(self) -> dict[str, Any]:
-        return {**self.spool.status(), **self.counters}
+    def next_poll_seconds(self, *, now: datetime, default: float) -> float:
+        race_date = self.date_provider()
+        rows = self.spool.load_schedule(race_date)
+        state = self.spool.load_checkpoint_state(race_date).get("races", {})
+        delays: list[float] = []
+        for row in rows:
+            cutoff_at = estimated_deadline_from_start(
+                stored_start_time(row.get("deadline_at"))
+            )
+            if cutoff_at is None or now > cutoff_at:
+                continue
+            records = state.get(str(row["race_id"]), {})
+            for offset in self.checkpoint_offsets:
+                record = records.get(str(offset), {})
+                if record.get("success") or record.get("expired"):
+                    continue
+                target_at = cutoff_at - timedelta(seconds=offset)
+                expires_at = target_at + timedelta(
+                    seconds=self.checkpoint_window_seconds
+                )
+                if now > expires_at:
+                    delays.append(0.1)
+                    continue
+                next_retry = _parse_datetime(record.get("next_retry_at"))
+                due_at = max(target_at, next_retry) if next_retry else target_at
+                delays.append(max(0.1, (due_at - now).total_seconds()))
+
+            seconds_to_cutoff = (cutoff_at - now).total_seconds()
+            if (
+                self.closing_window_seconds > 0
+                and 0.0 <= seconds_to_cutoff <= self.closing_window_seconds
+            ):
+                closing_record = records.get("_closing_cadence", {})
+                next_closing = _parse_datetime(closing_record.get("next_retry_at"))
+                if next_closing is None:
+                    delays.append(0.1)
+                else:
+                    delays.append(max(0.1, (next_closing - now).total_seconds()))
+            elif seconds_to_cutoff > self.closing_window_seconds:
+                delays.append(
+                    max(0.1, seconds_to_cutoff - self.closing_window_seconds)
+                )
+        return min(float(default), min(delays)) if delays else float(default)
+
+    def status(self, *, now: datetime | None = None) -> dict[str, Any]:
+        now = now or datetime.now(timezone.utc)
+        race_date = self.date_provider()
+        rows = self.spool.load_schedule(race_date)
+        state = self.spool.load_checkpoint_state(race_date).get("races", {})
+        pending = self.spool.pending_events()
+        checkpoints: dict[str, dict[str, Any]] = {}
+        for offset in self.checkpoint_offsets:
+            eligible = 0
+            attempts = 0
+            successes = 0
+            expired = 0
+            ages: list[float] = []
+            source_staleness: list[float] = []
+            source_staleness_missing = 0
+            for row in rows:
+                cutoff_at = estimated_deadline_from_start(
+                    stored_start_time(row.get("deadline_at"))
+                )
+                if cutoff_at is None or now < cutoff_at - timedelta(seconds=offset):
+                    continue
+                eligible += 1
+                record = state.get(str(row["race_id"]), {}).get(str(offset), {})
+                attempts += int(record.get("attempts") or 0)
+                if record.get("expired"):
+                    expired += 1
+                if record.get("success"):
+                    successes += 1
+                    age = record.get("captured_age_seconds")
+                    if age is not None:
+                        ages.append(float(age))
+                    stale = record.get("source_update_staleness_seconds")
+                    if stale is None:
+                        source_staleness_missing += 1
+                    else:
+                        source_staleness.append(float(stale))
+            checkpoints[str(offset)] = {
+                "eligible": eligible,
+                "attempt": attempts,
+                "success": successes,
+                "expired": expired,
+                "missing": max(0, eligible - successes),
+                "age_seconds_p50": _percentile(ages, 0.50),
+                "age_seconds_p90": _percentile(ages, 0.90),
+                "source_update_staleness_seconds_p50": _percentile(
+                    source_staleness, 0.50
+                ),
+                "source_update_staleness_seconds_p90": _percentile(
+                    source_staleness, 0.90
+                ),
+                "source_update_staleness_missing": source_staleness_missing,
+                "pending": sum(
+                    1
+                    for event in pending
+                    if event.get("target_offset_seconds") == offset
+                ),
+            }
+        return {
+            **self.spool.status(),
+            **self.counters,
+            "checkpoint_offsets": list(self.checkpoint_offsets),
+            "checkpoint_window_seconds": self.checkpoint_window_seconds,
+            "closing_window_seconds": self.closing_window_seconds,
+            "closing_cadence_seconds": self.closing_cadence_seconds,
+            "closing_cadence": {
+                "attempt": sum(
+                    int(records.get("_closing_cadence", {}).get("attempts") or 0)
+                    for records in state.values()
+                ),
+                "success": sum(
+                    int(records.get("_closing_cadence", {}).get("successes") or 0)
+                    for records in state.values()
+                ),
+                "pending": sum(
+                    1
+                    for event in pending
+                    if event.get("observation_label") == "closing_cadence"
+                ),
+            },
+            "checkpoints": checkpoints,
+        }
+
+    def _rate_limit(self) -> None:
+        current = self._monotonic()
+        if self._last_request_at is not None:
+            delay = self.request_interval_seconds - (current - self._last_request_at)
+            if delay > 0:
+                self._sleep(delay)
+                current = self._monotonic()
+        self._last_request_at = current
 
     def _run(self) -> None:
         while not self._stop.is_set():
             now = datetime.now(timezone.utc)
             self.capture_due_once(now=now)
-            self._stop.wait(self.poll_seconds)
+            delay = self.next_poll_seconds(now=now, default=self.poll_seconds)
+            self._stop.wait(delay)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _percentile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 3)
 
 
 def replay_spool(spool: T5Spool, conn: Any) -> dict[str, int]:

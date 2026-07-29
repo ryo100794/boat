@@ -12,7 +12,12 @@ from ..postgresql import connection
 
 
 @contextmanager
-def retrying_connection(dsn: str, *, retry_seconds: float = 5.0):
+def retrying_connection(
+    dsn: str,
+    *,
+    retry_seconds: float = 5.0,
+    on_retry=None,
+):
     """Keep the collector process and T-5 worker alive during DB outages."""
     manager = None
     conn = None
@@ -21,6 +26,11 @@ def retrying_connection(dsn: str, *, retry_seconds: float = 5.0):
             manager = connection(dsn)
             conn = manager.__enter__()
         except (psycopg.OperationalError, ConnectionError, OSError):
+            if on_retry is not None:
+                try:
+                    on_retry()
+                except Exception:
+                    pass
             time.sleep(retry_seconds)
     try:
         yield conn
@@ -38,7 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--postgres-dsn", required=True)
     args, collector_args = parser.parse_known_args(argv)
 
-    collector.connection = lambda _path: retrying_connection(args.postgres_dsn)
+    collector.connection = lambda _path: retrying_connection(
+        args.postgres_dsn,
+        on_retry=collector.run_database_wait_hook,
+    )
     collector.init_db = lambda _path: None
     return collector.main(["--db", "postgresql-direct", *collector_args])
 
