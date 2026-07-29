@@ -271,6 +271,98 @@ def test_v12_adapter_loads_and_identifies_generated_bundle(
     assert hasattr(closing["point_model"]["estimator"], "predict")
 
 
+def test_cache_may_include_race_excluded_by_the_closing_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluation_path, cache_path, _ = _write_inputs(tmp_path)
+    cache = joblib.load(cache_path)
+    cache["races"].append({
+        "race_date": "2026-07-03",
+        "race_id": "202607290912",
+        "jcd": "09",
+        "rno": 12,
+        "result_status": "cancelled",
+        "official_closing_odds": [],
+        "checkpoints": {},
+    })
+    joblib.dump(cache, cache_path)
+    calls = _install_refit(monkeypatch)
+
+    manifest = builder.build_v12_shadow_bundle(
+        evaluation_path,
+        scored_cache=cache_path,
+        output=tmp_path / "job-7401.joblib",
+        prediction_date="2026-07-04",
+    )
+
+    assert len(calls[0]["races"]) == 4
+    assert manifest["training"]["cache_races"] == 4
+    assert manifest["training"]["races"] == 3
+    assert manifest["training"]["examples"] == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("training_races", 2),
+        ("training_dates", ["2026-07-01", "2026-07-03"]),
+        ("training_examples", 2),
+        ("missing_t300_races", 1),
+    ],
+)
+def test_refit_training_summary_mismatch_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    evaluation_path, cache_path, _ = _write_inputs(tmp_path)
+
+    def mismatched_fit(
+        races: list[dict[str, Any]], **options: Any
+    ) -> dict[str, Any]:
+        model = _closing_report()
+        model["training_summary"][field] = value
+        model["point_model"]["estimator"] = DummyEstimator()
+        return model
+
+    monkeypatch.setattr(
+        builder, "fit_closing_odds_t300_nonlinear_v12", mismatched_fit
+    )
+    with pytest.raises(ValueError, match="training summary does not match"):
+        builder.build_v12_shadow_bundle(
+            evaluation_path,
+            scored_cache=cache_path,
+            output=tmp_path / "mismatch.joblib",
+            prediction_date="2026-07-04",
+        )
+
+
+def test_refit_estimator_excluded_canonical_identity_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluation_path, cache_path, _ = _write_inputs(tmp_path)
+
+    def mismatched_fit(
+        races: list[dict[str, Any]], **options: Any
+    ) -> dict[str, Any]:
+        model = _closing_report()
+        model["selection_reason"] = "different_refit_identity"
+        model["point_model"]["estimator"] = DummyEstimator()
+        return model
+
+    monkeypatch.setattr(
+        builder, "fit_closing_odds_t300_nonlinear_v12", mismatched_fit
+    )
+    with pytest.raises(ValueError, match="model identity does not match"):
+        builder.build_v12_shadow_bundle(
+            evaluation_path,
+            scored_cache=cache_path,
+            output=tmp_path / "identity-mismatch.joblib",
+            prediction_date="2026-07-04",
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

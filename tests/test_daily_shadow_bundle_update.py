@@ -29,6 +29,10 @@ def result_payload(cache: Path, *, model: str) -> dict:
         "probability_lcb": {"method": model + "-lcb", "ready": True},
         "selection_conformal": {"method": model + "-selection", "ready": True},
         "candidate_policy": {"name": model + "-candidate"},
+        "closing_model_artifact_audit": {
+            "live_estimator_in_report": False,
+            "report_only": True,
+        },
     }
     return {
         "model": model,
@@ -43,10 +47,6 @@ def result_payload(cache: Path, *, model: str) -> dict:
             "model_name": "closing_odds_t300_nonlinear_v12",
             "selected_model": "closing_odds_t300_nonlinear_v12",
             "source_model_sha256": "a" * 64,
-        },
-        "closing_model_audit": {
-            "prediction_cutoff": "T-300",
-            "live_estimator_in_report": False,
         },
         "deployment_configuration": deployment,
     }
@@ -148,7 +148,7 @@ def test_v14_job_7396_shape_uses_v12_live_closing_estimator(tmp_path: Path) -> N
         "trained_through_date": "2026-07-29",
         "source_model_sha256": "a" * 64,
     }
-    payload["closing_model_audit"] = {
+    deployment["closing_model_artifact_audit"] = {
         "live_estimator_in_report": False,
         "report_only": True,
         "snapshot_target": "T-300",
@@ -246,21 +246,23 @@ class FirstRaceConnection:
         return {"first_start": self.value}
 
 
-def test_first_race_start_parses_postgresql_text_jst_iso() -> None:
+def test_first_race_start_treats_postgresql_naive_text_as_jst() -> None:
     parsed = updater.first_race_start(
-        FirstRaceConnection("2026-07-30T09:15:00+09:00"), "2026-07-30"
+        FirstRaceConnection("2026-07-29T10:38:00"), "2026-07-29"
     )
     assert parsed == datetime(
-        2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=9))
+        2026, 7, 29, 10, 38, tzinfo=timezone(timedelta(hours=9))
     )
     assert parsed is not None and parsed.utcoffset() == timedelta(hours=9)
 
 
-def test_first_race_start_rejects_naive_text() -> None:
-    with pytest.raises(ValueError, match="timezone offset"):
-        updater.first_race_start(
-            FirstRaceConnection("2026-07-30T09:15:00"), "2026-07-30"
-        )
+def test_first_race_start_converts_offset_text_to_jst() -> None:
+    parsed = updater.first_race_start(
+        FirstRaceConnection("2026-07-29T01:38:00+00:00"), "2026-07-29"
+    )
+    assert parsed == datetime(
+        2026, 7, 29, 10, 38, tzinfo=timezone(timedelta(hours=9))
+    )
 
 
 def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:

@@ -139,8 +139,8 @@ def _validate_v14(result: Mapping[str, Any]) -> Mapping[str, Any]:
         raise ValueError("V14 evaluation must not supply a closing model")
     if not isinstance(result.get("closing_model_identity"), Mapping):
         raise ValueError("V14 closing model identity is missing")
-    if not isinstance(result.get("closing_model_audit"), Mapping):
-        raise ValueError("V14 closing model audit is missing")
+    if not isinstance(deployment.get("closing_model_artifact_audit"), Mapping):
+        raise ValueError("V14 closing model artifact audit is missing")
     return deployment
 
 
@@ -269,7 +269,7 @@ def first_race_start(conn: Any, prediction_date: str) -> datetime | None:
         except ValueError as exc:
             raise ValueError("races.deadline_at must be an ISO datetime") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("races.deadline_at must include a timezone offset")
+        parsed = parsed.replace(tzinfo=JST)
     return parsed.astimezone(JST)
 
 
