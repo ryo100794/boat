@@ -75,13 +75,25 @@ def test_signature_uses_only_completed_races_and_latest_pre_t5_snapshot(tmp_path
         )
 
     assert older_id != selected_id
-    assert baseline == {
+    assert {
+        key: baseline[key]
+        for key in (
+            "complete_race_count",
+            "payout_race_count",
+            "snapshot_count",
+            "snapshot_id_sum",
+            "max_snapshot_id",
+        )
+    } == {
         "complete_race_count": 1,
         "payout_race_count": 0,
         "snapshot_count": 1,
         "snapshot_id_sum": selected_id,
         "max_snapshot_id": selected_id,
     }
+    assert baseline["checkpoint_300_snapshot_id_sum"] == selected_id
+    assert baseline["closing_snapshot_count"] == 0
+    assert baseline["archive_closing_count"] == 0
     assert unchanged == baseline
     assert completed["complete_race_count"] == 2
     assert completed["snapshot_count"] == 2
