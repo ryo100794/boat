@@ -824,6 +824,14 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                             model_performance_report(db_path, query)
                         ),
                     )
+                elif parsed.path == "/api/reports/model-performance/daily":
+                    send_json(
+                        self,
+                        model_performance_daily_report(
+                            model_performance_report(db_path, query),
+                            query,
+                        ),
+                    )
                 elif parsed.path == "/api/reports/genetic-evolution":
                     send_json(self, genetic_evolution_report(db_path))
                 elif parsed.path == "/reports/roadmap":
@@ -1252,7 +1260,12 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     empirical_lcb_walk_forward = _latest_named_rows(empirical_lcb_walk_forward)
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
     feature_diagnostics.sort(key=lambda item: (item.get("generated_at") or "", item["file"]))
-    model_tracks = _model_track_summaries(model_dir, backtests, remote_evaluations)
+    model_tracks = _model_track_summaries(
+        model_dir,
+        backtests,
+        remote_evaluations,
+        evaluation_jobs=evaluation_jobs,
+    )
     model_catalog, model_daily = _model_report_catalog(
         model_tracks=model_tracks,
         backtests=backtests,
@@ -1294,7 +1307,42 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:
     public = dict(report)
     public.pop("bankroll_daily", None)
+    daily_index: dict[str, dict[str, Any]] = {}
+    for key, value in (report.get("model_daily") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        metadata = dict(value)
+        rows = metadata.pop("rows", [])
+        metadata["row_count"] = len(rows) if isinstance(rows, list) else 0
+        metadata["loaded"] = metadata["row_count"] == 0
+        if metadata["loaded"]:
+            metadata["rows"] = []
+        daily_index[str(key)] = metadata
+    public["model_daily"] = daily_index
     return public
+
+
+def model_performance_daily_report(
+    report: dict[str, Any],
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    key = str((query.get("model_key") or [""])[0]).strip()
+    if not key:
+        return {
+            "model_key": "",
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "model_keyを指定してください",
+        }
+    value = (report.get("model_daily") or {}).get(key)
+    if not isinstance(value, dict):
+        return {
+            "model_key": key,
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "指定モデルの日次評価はありません",
+        }
+    return {**value, "loaded": True}
 
 
 def genetic_evolution_report(db_path: Path) -> dict[str, Any]:
@@ -1784,6 +1832,8 @@ def _model_track_summaries(
     model_dir: Path,
     backtests: list[dict[str, Any]],
     remote_evaluations: dict[str, Any],
+    *,
+    evaluation_jobs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     main = next(
         (row for row in backtests if row.get("file") == "backtest_no_odds_v8.json"),
@@ -1899,7 +1949,89 @@ def _model_track_summaries(
         *_calibrated_model_tracks(remote_evaluations),
         *_listwise_model_tracks(remote_evaluations, model_dir),
         *_market_calibrated_model_tracks(remote_evaluations, model_dir),
+        *_odds_path_model_tracks(evaluation_jobs or []),
     ]
+
+
+_ODDS_PATH_TRACK_SPECS = (
+    (
+        "odds_path_observed_closing_return_v4",
+        "締切オッズ実績リターン v4",
+        "確定3連単着順、および各評価日より前の公式確定オッズ対払戻倍率",
+        "上流の過去ログ三連単確率、T-5市場確率、モデル/市場乖離と順位、"
+        "オッズ系列の短期/長期傾き・加速度・変動、過去的中lift / "
+        "Newton較正・完全日walk-forward・1日1万円",
+    ),
+    (
+        "odds_path_prequential_shrinkage_return_v6",
+        "事前逐次収縮リターン v6",
+        "確定3連単着順と払戻。各評価日より前のinner日だけで収縮priorと倍率境界を選択",
+        "v4と同じ11特徴（上流確率、T-5市場、乖離/順位、オッズ傾き・加速度・変動、"
+        "過去的中lift） / inner prequentialでhit prior×倍率境界18候補を選択 / "
+        "外側完全日walk-forward・1日1万円",
+    ),
+)
+
+
+def _odds_path_model_tracks(
+    evaluation_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for model_key, label, teacher, training in _ODDS_PATH_TRACK_SPECS:
+        matches = [
+            job
+            for job in evaluation_jobs
+            if str(job.get("name") or "").lower().startswith(model_key)
+        ]
+        job = max(
+            matches,
+            key=lambda item: int(
+                item.get("db_job_id") or item.get("job_id") or 0
+            ),
+            default={},
+        )
+        rows.append(
+            {
+                "id": model_key,
+                "model_key": model_key,
+                "label": label,
+                "role": "比較評価・shadowのみ",
+                "status": job.get("status") or "未登録",
+                "evaluation_group": "t5_walk_forward",
+                "include_odds": True,
+                "model_file": f"{model_key}.json",
+                "teacher": teacher,
+                "training": training,
+                "eligible_races": job.get("evaluated_races"),
+                "evaluation_days": job.get("evaluation_days"),
+                "backtest_available": job.get("status") == "完了",
+                "winner_log_loss": job.get("winner_log_loss"),
+                "trifecta_log_loss": job.get("trifecta_log_loss"),
+                "winner_top1_accuracy": job.get("winner_top1_accuracy"),
+                "trifecta_top5_hit_rate": job.get("trifecta_top5_hit_rate"),
+                "closing_odds_log_mae": job.get("closing_odds_log_mae"),
+                "closing_odds_rank_correlation": job.get(
+                    "closing_odds_rank_correlation"
+                ),
+                "closing_odds_interval_coverage": job.get(
+                    "closing_odds_interval_coverage"
+                ),
+                "closing_snapshot_age_seconds": job.get(
+                    "closing_snapshot_age_seconds"
+                ),
+                "stake_yen": job.get("stake_yen"),
+                "return_yen": job.get("return_yen"),
+                "roi": job.get("roi"),
+                "profit_yen": job.get("profit_yen"),
+                "max_drawdown_yen": job.get("max_drawdown_yen"),
+                "tickets": job.get("tickets"),
+                "hit_tickets": job.get("hit_tickets"),
+                "roi_without_largest_hit": job.get(
+                    "roi_without_largest_hit"
+                ),
+            }
+        )
+    return rows
 
 
 def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2664,6 +2796,14 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "expected_folds": nested_expected_folds,
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
+                "stake_yen": metrics.get("stake_yen"),
+                "return_yen": metrics.get("return_yen"),
+                "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+                "tickets": metrics.get("tickets"),
+                "hit_tickets": metrics.get("hit_tickets"),
+                "roi_without_largest_hit": _float_or_none(
+                    metrics.get("roi_without_largest_hit")
+                ),
                 "evaluated_races": metrics.get("evaluated_races")
                 or metrics.get("evaluation_races"),
                 "benchmark_status": metrics.get("benchmark_status"),
@@ -2766,6 +2906,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "winner_top1_accuracy": _float_or_none(
                     metrics.get("winner_top1_accuracy")
+                ),
+                "trifecta_log_loss": _float_or_none(
+                    metrics.get("trifecta_log_loss")
                 ),
                 "trifecta_top5_hit_rate": _float_or_none(
                     metrics.get("trifecta_top5_hit_rate")
@@ -3462,6 +3605,10 @@ _REPORT_MODEL_SUFFIXES = re.compile(r"(?:(?:_backtest|_10000|_2fold))+$")
 _REPORT_MODEL_FAMILY_ALIASES = (
     re.compile(r"^(no_odds_v\d+)(?:_|$)"),
     re.compile(r"^(calibrated_(?:linear|mlp)_shadow)(?:_|$)"),
+    re.compile(
+        r"^(odds_path_(?:observed_closing_return_v4|"
+        r"prequential_shrinkage_return_v6))(?:_|$)"
+    ),
 )
 
 

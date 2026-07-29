@@ -3,6 +3,7 @@ from io import BytesIO
 import json
 
 from boatrace_ai.web.dashboard import (
+    model_performance_daily_report,
     model_performance_public_report,
     send_json,
 )
@@ -58,5 +59,31 @@ def test_public_model_report_omits_duplicated_legacy_daily_rows() -> None:
     public = model_performance_public_report(report)
 
     assert "bankroll_daily" not in public
-    assert public["model_daily"] == report["model_daily"]
+    assert public["model_daily"]["current"] == {
+        "row_count": 1,
+        "loaded": False,
+    }
     assert "bankroll_daily" in report
+    assert report["model_daily"]["current"]["rows"] == [
+        {"date": "2026-07-24"}
+    ]
+
+
+def test_model_daily_endpoint_returns_selected_rows_only() -> None:
+    report = {
+        "model_daily": {
+            "odds_path_prequential_shrinkage_return_v6": {
+                "source": "job-00006700.json",
+                "rows": [{"date": "2026-07-28", "profit_yen": 300}],
+            }
+        }
+    }
+
+    daily = model_performance_daily_report(
+        report,
+        {"model_key": ["odds_path_prequential_shrinkage_return_v6"]},
+    )
+
+    assert daily["loaded"] is True
+    assert daily["source"] == "job-00006700.json"
+    assert daily["rows"] == [{"date": "2026-07-28", "profit_yen": 300}]

@@ -137,6 +137,12 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     metrics = {
         "roi": 0.94,
         "profit_yen": -600,
+        "stake_yen": 10_000,
+        "return_yen": 9_400,
+        "max_drawdown_yen": 1_500,
+        "tickets": 100,
+        "hit_tickets": 8,
+        "roi_without_largest_hit": 0.82,
         "trifecta_log_loss": 3.79,
         "winner_log_loss": 1.24,
         "winner_top1_accuracy": 0.53,
@@ -186,7 +192,14 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["status"] == "完了"
     assert status["jobs"][0]["decision"] == "confirm_on_new_holdout"
     assert status["jobs"][0]["winner_log_loss"] == 1.24
+    assert status["jobs"][0]["trifecta_log_loss"] == 3.79
     assert status["jobs"][0]["winner_top1_accuracy"] == 0.53
+    assert status["jobs"][0]["stake_yen"] == 10_000
+    assert status["jobs"][0]["return_yen"] == 9_400
+    assert status["jobs"][0]["max_drawdown_yen"] == 1_500
+    assert status["jobs"][0]["tickets"] == 100
+    assert status["jobs"][0]["hit_tickets"] == 8
+    assert status["jobs"][0]["roi_without_largest_hit"] == 0.82
     assert status["jobs"][0]["promotion_gate_passed"] == 7
     assert status["jobs"][0]["promotion_gate_total"] == 10
     assert status["jobs"][0]["promotion_gate_failed"] == ["minimum_betting_days"]

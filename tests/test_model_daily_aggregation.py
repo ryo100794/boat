@@ -210,3 +210,36 @@ def test_catalog_adds_model_key_to_every_source_row() -> None:
 
     assert len(catalog) == len(groups)
     assert all(row.get("model_key") for rows in groups.values() for row in rows)
+
+
+def test_odds_path_generation_and_daily_jobs_share_canonical_model_key() -> None:
+    v4 = "odds_path_observed_closing_return_v4"
+    v6 = "odds_path_prequential_shrinkage_return_v6"
+    assert _report_model_key(f"{v4}_daily:market_residual:20260718-28") == v4
+    assert _report_model_key(
+        f"{v6}_daily:market_residual:20260718-28_market_offset_registered_policy_walk_forward"
+    ) == v6
+
+    track = {"id": v6, "label": "事前逐次収縮リターン v6"}
+    bankroll = {
+        "name": f"{v6}_daily:market_residual:20260718-28",
+        "file": "job-00006700.json",
+        "evaluation_scope": "legacy:2026-07-22:2026-07-28:7",
+    }
+    catalog, daily = _model_report_catalog(
+        model_tracks=[track],
+        backtests=[],
+        bankroll=[bankroll],
+        fold_metrics=[],
+        evaluation_jobs=[{"model_key": bankroll["name"]}],
+        feature_diagnostics=[],
+        sweeps=[],
+        bankroll_daily={
+            bankroll["name"]: [
+                {"race_date": "2026-07-28", "stake_yen": 100, "return_yen": 130}
+            ]
+        },
+    )
+
+    assert [row["model_key"] for row in catalog] == [v6]
+    assert daily[v6]["rows"][0]["date"] == "2026-07-28"
