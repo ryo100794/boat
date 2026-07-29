@@ -6,7 +6,16 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 
-from boatrace_ai.adaptive_allocation import allocate_adaptive_day
+from boatrace_ai.adaptive_allocation import (
+    apply_fraction_caps,
+    plan_stakes,
+    selection_sample,
+)
+from boatrace_ai.discrete_log_allocation import (
+    candidate_with_settlements,
+    settle_decision_ticket,
+    split_decision_candidates_and_settlements,
+)
 
 from .closing_odds import MAX_ODDS, MIN_ODDS
 from .closing_odds_quantile import _paired_race, _trend_design_matrix
@@ -540,6 +549,31 @@ def _probability_lcb(
     return float(probabilities[combination]) * factor
 
 
+def _race_settlement_rows(
+    race: dict[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    additive = race.get("settlements") or race.get("trifecta_settlements")
+    if additive:
+        rows = []
+        for row in additive:
+            combination = row.get("combination", row.get("actual_combination"))
+            payout_yen = row.get("payout_yen", row.get("actual_payout_yen"))
+            if combination is None or payout_yen is None:
+                continue
+            rows.append({
+                "race_id": str(race["race_id"]),
+                "combination": str(combination),
+                "payout_yen": int(payout_yen),
+            })
+        if rows:
+            return tuple(rows)
+    return ({
+        "race_id": str(race["race_id"]),
+        "combination": str(race["actual_combination"]),
+        "payout_yen": int(race["actual_payout_yen"]),
+    },)
+
+
 def _policy_candidate(
     race: dict[str, Any],
     *,
@@ -548,7 +582,7 @@ def _policy_candidate(
     estimated_odds: float,
     safe_ev: float,
 ) -> dict[str, Any]:
-    return {
+    decision = {
         "race_id": str(race["race_id"]),
         "race_date": str(race["race_date"]),
         "jcd": race["jcd"],
@@ -558,14 +592,131 @@ def _policy_candidate(
         "estimated_odds": estimated_odds,
         "estimated_ev": safe_ev,
         "safe_ev": safe_ev,
-        "actual_combination": str(race["actual_combination"]),
-        "actual_payout_yen": int(race["actual_payout_yen"]),
-        "hit": combination == str(race["actual_combination"]),
         "odds_source": "strictly_prior_crossfit_closing_q20",
         "real_odds_snapshot_id": race.get("snapshot_id"),
         "real_odds_captured_at": race.get("captured_at"),
         "real_odds_deadline_at": race.get("odds_deadline_at"),
         "real_odds_combinations": len(race.get("odds") or {}),
+    }
+    return candidate_with_settlements(decision, _race_settlement_rows(race))
+
+
+def _allocate_adaptive_day_with_settlement_boundary(
+    race_date: str,
+    candidates: list[dict[str, Any]],
+    evaluated_races: set[str],
+    *,
+    daily_budget_yen: int,
+) -> dict[str, Any]:
+    decision_candidates, settlements = (
+        split_decision_candidates_and_settlements(candidates)
+    )
+    prepared = []
+    for item in decision_candidates:
+        estimated_odds = float(item["estimated_odds"])
+        edge = float(item["estimated_ev"]) - 1.0
+        if estimated_odds <= 1.0 or edge <= 0.0:
+            continue
+        kelly_fraction = edge / (estimated_odds - 1.0)
+        if kelly_fraction <= 0.0 or not math.isfinite(kelly_fraction):
+            continue
+        stake_fraction = min(
+            TICKET_CAP_FRACTION,
+            FRACTIONAL_KELLY * kelly_fraction,
+        )
+        if stake_fraction <= 0.0:
+            continue
+        prepared.append({
+            **item,
+            "edge": edge,
+            "kelly_fraction": kelly_fraction,
+            "stake_fraction": stake_fraction,
+        })
+
+    raw_positive_edge_tickets = len(prepared)
+    apply_fraction_caps(
+        prepared,
+        max_daily_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
+        race_cap_fraction=RACE_CAP_FRACTION,
+    )
+    planned_stakes = plan_stakes(
+        prepared,
+        daily_budget_yen=daily_budget_yen,
+        min_daily_exposure_fraction=0.0,
+        max_daily_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
+        race_cap_fraction=RACE_CAP_FRACTION,
+        ticket_cap_fraction=TICKET_CAP_FRACTION,
+        allocation_mode="kelly",
+        stake_granularity_yen=STAKE_GRANULARITY_YEN,
+    )
+
+    selected = []
+    ranked_indices = sorted(
+        range(len(prepared)),
+        key=lambda index: (
+            prepared[index]["stake_fraction"],
+            prepared[index]["estimated_ev"],
+        ),
+        reverse=True,
+    )
+    for index in ranked_indices:
+        stake_yen = planned_stakes[index]
+        if stake_yen < STAKE_GRANULARITY_YEN:
+            continue
+        selected.append(
+            settle_decision_ticket(
+                prepared[index],
+                stake_yen=stake_yen,
+                settlements=settlements,
+            )
+        )
+
+    stake_yen = sum(int(item["stake_yen"]) for item in selected)
+    return_yen = sum(int(item["return_yen"]) for item in selected)
+    selected_races = {str(item["race_id"]) for item in selected}
+    hit_races = {
+        str(item["race_id"]) for item in selected if item["hit"]
+    }
+    hit_returns = [
+        int(item["return_yen"]) for item in selected if item["hit"]
+    ]
+    return {
+        "race_date": race_date,
+        "evaluated_races": len(evaluated_races),
+        "candidate_tickets": len(decision_candidates),
+        "positive_edge_tickets": raw_positive_edge_tickets,
+        "allocation_candidate_tickets": len(prepared),
+        "tickets": len(selected),
+        "races_bet": len(selected_races),
+        "hit_tickets": sum(bool(item["hit"]) for item in selected),
+        "hit_races": len(hit_races),
+        "largest_hit_return_yen": max(hit_returns, default=0),
+        "hit_return_square_sum_yen2": sum(
+            value * value for value in hit_returns
+        ),
+        "stake_yen": stake_yen,
+        "return_yen": return_yen,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else None,
+        "budget_used_fraction": (
+            stake_yen / daily_budget_yen if daily_budget_yen else 0.0
+        ),
+        "avg_stake_yen": stake_yen / len(selected) if selected else 0.0,
+        "max_stake_yen": max(
+            (int(item["stake_yen"]) for item in selected),
+            default=0,
+        ),
+        "_tail_portfolio_rows": [
+            {
+                "date": race_date,
+                "race_id": str(item["race_id"]),
+                "odds": float(item["estimated_odds"]),
+                "stake": int(item["stake_yen"]),
+                "return": int(item["return_yen"]),
+            }
+            for item in selected
+        ],
+        "selected_sample": selection_sample(selected),
     }
 
 
@@ -720,20 +871,11 @@ def _simulate_fixed_safe_ev_policy(
     daily = []
     cumulative_profit = peak_profit = max_drawdown = 0
     for date in sorted(by_day_races):
-        row = allocate_adaptive_day(
+        row = _allocate_adaptive_day_with_settlement_boundary(
             date,
             by_day_candidates.get(date, []),
             by_day_races[date],
             daily_budget_yen=daily_budget_yen,
-            fractional_kelly=FRACTIONAL_KELLY,
-            max_daily_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
-            min_daily_exposure_fraction=0.0,
-            race_cap_fraction=RACE_CAP_FRACTION,
-            ticket_cap_fraction=TICKET_CAP_FRACTION,
-            max_daily_tickets=None,
-            allocation_mode="kelly",
-            stake_granularity_yen=STAKE_GRANULARITY_YEN,
-            min_stake_yen=STAKE_GRANULARITY_YEN,
         )
         cumulative_profit += int(row["profit_yen"])
         peak_profit = max(peak_profit, cumulative_profit)

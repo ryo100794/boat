@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,6 +10,142 @@ from typing import Any
 PAYOUT_UNIT_YEN = 100
 MIN_STAKE_UNIT_YEN = 100
 _SCORE_TOLERANCE = 1e-15
+SETTLEMENT_FIELDS = frozenset(
+    {
+        "actual_combination",
+        "actual_payout_yen",
+        "hit",
+    }
+)
+SettlementKey = tuple[str, str]
+SettlementMap = dict[SettlementKey, int]
+
+
+class SettlementCandidate(dict[str, Any]):
+    """Decision-only mapping with settlement outside its key space."""
+
+    __slots__ = ("settlement_rows",)
+
+    def __init__(
+        self,
+        decision: Mapping[str, Any],
+        settlement_rows: Iterable[Mapping[str, Any]],
+    ) -> None:
+        super().__init__(
+            (key, value)
+            for key, value in decision.items()
+            if key not in SETTLEMENT_FIELDS
+        )
+        self.settlement_rows = tuple(dict(row) for row in settlement_rows)
+
+
+def candidate_with_settlements(
+    decision: Mapping[str, Any],
+    settlement_rows: Iterable[Mapping[str, Any]],
+) -> SettlementCandidate:
+    """Attach settlement data without exposing it as decision features."""
+
+    return SettlementCandidate(decision, settlement_rows)
+
+
+def split_decision_candidates_and_settlements(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    settlements: Mapping[SettlementKey, int] | None = None,
+) -> tuple[list[dict[str, Any]], SettlementMap]:
+    """Normalize legacy/new candidates into disjoint decision and result data."""
+
+    decision_candidates: list[dict[str, Any]] = []
+    settlement_map: SettlementMap = {}
+    if settlements:
+        for (race_id, combination), payout_yen in settlements.items():
+            _add_settlement(
+                settlement_map,
+                race_id=str(race_id),
+                combination=str(combination),
+                payout_yen=payout_yen,
+            )
+
+    for source in candidates:
+        decision_candidates.append({
+            key: value
+            for key, value in source.items()
+            if key not in SETTLEMENT_FIELDS
+        })
+        for row in getattr(source, "settlement_rows", ()):
+            _add_settlement_row(settlement_map, row)
+
+        # Migrate legacy candidates at the API boundary without exposing their
+        # result fields to portfolio enumeration or ranking.
+        actual_combination = source.get("actual_combination")
+        actual_payout_yen = source.get("actual_payout_yen")
+        if actual_combination is not None and actual_payout_yen is not None:
+            _add_settlement(
+                settlement_map,
+                race_id=str(source["race_id"]),
+                combination=str(actual_combination),
+                payout_yen=actual_payout_yen,
+            )
+    return decision_candidates, settlement_map
+
+
+def settle_decision_ticket(
+    decision: Mapping[str, Any],
+    *,
+    stake_yen: int,
+    settlements: Mapping[SettlementKey, int],
+) -> dict[str, Any]:
+    """Join an already-selected ticket to official settlement data."""
+
+    race_id = str(decision["race_id"])
+    combination = str(decision["combination"])
+    payout_yen = settlements.get((race_id, combination))
+    hit = payout_yen is not None
+    return_yen = (
+        int(round(stake_yen * int(payout_yen) / PAYOUT_UNIT_YEN))
+        if hit
+        else 0
+    )
+    return {
+        **decision,
+        "actual_payout_yen": int(payout_yen) if hit else 0,
+        "hit": hit,
+        "stake_yen": int(stake_yen),
+        "return_yen": return_yen,
+        "profit_yen": return_yen - int(stake_yen),
+    }
+
+
+def _add_settlement_row(
+    settlement_map: SettlementMap,
+    row: Mapping[str, Any],
+) -> None:
+    _add_settlement(
+        settlement_map,
+        race_id=str(row["race_id"]),
+        combination=str(row["combination"]),
+        payout_yen=row["payout_yen"],
+    )
+
+
+def _add_settlement(
+    settlement_map: SettlementMap,
+    *,
+    race_id: str,
+    combination: str,
+    payout_yen: Any,
+) -> None:
+    payout = int(payout_yen)
+    if payout < 0:
+        raise ValueError("payout_yen must be non-negative")
+    key = race_id, combination
+    existing = settlement_map.get(key)
+    if existing is not None and existing != payout:
+        raise ValueError(
+            "conflicting settlement for "
+            f"{race_id} {combination}: {existing} != {payout}"
+        )
+    settlement_map[key] = payout
 
 
 @dataclass(frozen=True)
@@ -66,13 +203,13 @@ def allocate_discrete_log_day(
     stake_granularity_yen: int = MIN_STAKE_UNIT_YEN,
     min_stake_yen: int = MIN_STAKE_UNIT_YEN,
     max_tickets_per_race: int = 2,
+    settlements: Mapping[SettlementKey, int] | None = None,
 ) -> dict[str, Any]:
     """Allocate a day by maximizing conservative discrete log growth.
 
-    ``probability`` is treated as the already-conservative probability (for
-    example, an LCB).  Settlement fields such as ``hit``,
-    ``actual_combination``, and ``actual_payout_yen`` are not read until after
-    every portfolio has been selected.
+    Probability is already conservative. Legacy result fields are stripped at
+    the API boundary. Enumeration and ranking receive decision data only;
+    settlement is joined afterward.
     """
 
     _validate_policy(
@@ -85,7 +222,13 @@ def allocate_discrete_log_day(
         min_stake_yen=min_stake_yen,
         max_tickets_per_race=max_tickets_per_race,
     )
-    prepared = _prepare_candidates(candidates)
+    decision_candidates, settlement_map = (
+        split_decision_candidates_and_settlements(
+            candidates,
+            settlements=settlements,
+        )
+    )
+    prepared = _prepare_candidates(decision_candidates)
 
     daily_cap_yen = _floor_to_granularity(
         daily_budget_yen * max_daily_exposure_fraction,
@@ -131,6 +274,7 @@ def allocate_discrete_log_day(
         selected_state,
         race_date=race_date,
         daily_budget_yen=daily_budget_yen,
+        settlements=settlement_map,
     )
 
     stake_yen = sum(int(item["stake_yen"]) for item in selected)
@@ -144,7 +288,7 @@ def allocate_discrete_log_day(
     return {
         "race_date": race_date,
         "evaluated_races": len(evaluated_races),
-        "candidate_tickets": len(candidates),
+        "candidate_tickets": len(decision_candidates),
         "positive_edge_tickets": sum(
             candidate.probability * candidate.estimated_odds > 1.0
             for candidate in prepared
@@ -446,19 +590,11 @@ def _settle_selected_portfolio(
     *,
     race_date: str,
     daily_budget_yen: int,
+    settlements: Mapping[SettlementKey, int],
 ) -> list[dict[str, Any]]:
     selected = []
     for option in state.options:
         for candidate, stake_yen in option.selections:
-            hit = _settlement_hit(candidate)
-            payout_yen = int(candidate.source.get("actual_payout_yen", 0) or 0)
-            if payout_yen < 0:
-                raise ValueError("actual_payout_yen must be non-negative")
-            return_yen = (
-                int(round(stake_yen * payout_yen / PAYOUT_UNIT_YEN))
-                if hit
-                else 0
-            )
             estimated_ev = candidate.probability * candidate.estimated_odds
             kelly_fraction = max(
                 0.0,
@@ -469,37 +605,29 @@ def _settle_selected_portfolio(
                 ((candidate, stake_yen),),
             )
             selected.append(
-                {
-                    **candidate.source,
-                    "race_id": candidate.race_id,
-                    "race_date": candidate.source.get("race_date", race_date),
-                    "combination": candidate.combination,
-                    "probability": candidate.probability,
-                    "estimated_odds": candidate.estimated_odds,
-                    "estimated_ev": estimated_ev,
-                    "kelly_fraction": kelly_fraction,
-                    "stake_fraction": stake_yen / daily_budget_yen,
-                    "stake_yen": stake_yen,
-                    "expected_log_growth": standalone_log_growth,
-                    "race_portfolio_expected_log_growth": (
-                        option.expected_log_growth
-                    ),
-                    "hit": hit,
-                    "return_yen": return_yen,
-                    "profit_yen": return_yen - stake_yen,
-                }
+                settle_decision_ticket(
+                    {
+                        **candidate.source,
+                        "race_id": candidate.race_id,
+                        "race_date": candidate.source.get(
+                            "race_date", race_date
+                        ),
+                        "combination": candidate.combination,
+                        "probability": candidate.probability,
+                        "estimated_odds": candidate.estimated_odds,
+                        "estimated_ev": estimated_ev,
+                        "kelly_fraction": kelly_fraction,
+                        "stake_fraction": stake_yen / daily_budget_yen,
+                        "expected_log_growth": standalone_log_growth,
+                        "race_portfolio_expected_log_growth": (
+                            option.expected_log_growth
+                        ),
+                    },
+                    stake_yen=stake_yen,
+                    settlements=settlements,
+                )
             )
     return selected
-
-
-def _settlement_hit(candidate: _Candidate) -> bool:
-    if "hit" in candidate.source:
-        return bool(candidate.source["hit"])
-    actual_combination = candidate.source.get("actual_combination")
-    return (
-        actual_combination is not None
-        and str(actual_combination) == candidate.combination
-    )
 
 
 def _selection_sample(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
