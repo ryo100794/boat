@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -441,6 +441,13 @@ def _rank_groups(probabilities: dict[str, float]) -> dict[str, str]:
 
 def _crossfit_probability_rows(
     races: list[dict[str, Any]],
+    *,
+    probability_fit: Callable[
+        [list[dict[str, Any]]], dict[str, Any]
+    ] = fit_t5_residual_probability_model,
+    probability_attach: Callable[
+        [list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]
+    ] = attach_t5_residual_probabilities,
 ) -> list[dict[str, Any]]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -456,9 +463,9 @@ def _crossfit_probability_rows(
             for date in dates[:index]
             for race in by_day[date]
         ]
-        model = fit_t5_residual_probability_model(training)
+        model = probability_fit(training)
         result.extend(
-            attach_t5_residual_probabilities(by_day[held_out_date], model)
+            probability_attach(by_day[held_out_date], model)
         )
     return result
 
@@ -1034,6 +1041,8 @@ def _prospective_summary(
     daily: list[dict[str, Any]],
     *,
     purchase_diagnostic_accumulators: Iterable[dict[str, Any]],
+    registered_after: str = REGISTERED_AFTER,
+    comparison_role: str = "pre_registered_strict_outer_day_v7_shadow",
 ) -> dict[str, Any]:
     daily = _cumulative_daily(daily)
     probability = _weighted_probability_metrics(folds)
@@ -1109,10 +1118,8 @@ def _prospective_summary(
         "status": (
             "evaluating" if folds else "waiting_for_first_unseen_day"
         ),
-        "registered_after": REGISTERED_AFTER,
-        "comparison_role": (
-            "pre_registered_strict_outer_day_v7_shadow"
-        ),
+        "registered_after": registered_after,
+        "comparison_role": comparison_role,
         **probability,
         "trifecta_log_loss": probability[
             "calibrated_trifecta_log_loss"
@@ -1150,9 +1157,17 @@ def _deployment_configuration(
     races: list[dict[str, Any]],
     *,
     daily_budget_yen: int,
+    probability_fit: Callable[
+        [list[dict[str, Any]]], dict[str, Any]
+    ] = fit_t5_residual_probability_model,
+    probability_attach: Callable[
+        [list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]
+    ] = attach_t5_residual_probabilities,
+    calibrator_strategy: str = STRATEGY_NAME,
+    operational_status: str = "shadow_only_until_v7_promotion_gate",
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in races})
-    probability_model = fit_t5_residual_probability_model(races)
+    probability_model = probability_fit(races)
     teachers = _closing_teachers(races)
     teacher_days = sorted(
         {str(race["race_date"]) for race in teachers}
@@ -1166,11 +1181,15 @@ def _deployment_configuration(
         if closing_ready
         else None
     )
-    lcb_rows = _crossfit_probability_rows(races)
+    lcb_rows = _crossfit_probability_rows(
+        races,
+        probability_fit=probability_fit,
+        probability_attach=probability_attach,
+    )
     probability_lcb = fit_probability_lcb(lcb_rows)
     return {
         "role": "next_day_refit_not_evaluation",
-        "calibrator_strategy": STRATEGY_NAME,
+        "calibrator_strategy": calibrator_strategy,
         "trained_dates": dates,
         "trained_through_date": dates[-1],
         "training_races": len(races),
@@ -1183,18 +1202,29 @@ def _deployment_configuration(
         "daily_budget_yen": daily_budget_yen,
         "candidate_policy": dict(FIXED_POLICY),
         "selected_policy": {"name": "no_bet", "no_bet": True},
-        "operational_status": (
-            "shadow_only_until_v7_promotion_gate"
-        ),
+        "operational_status": operational_status,
     }
 
 
-def walk_forward_evaluate_v7(
+def _walk_forward_evaluate_conservative_ev(
     races: list[dict[str, Any]],
     *,
     daily_budget_yen: int,
     min_calibration_days: int,
     evaluation_dates: Iterable[str] | None = None,
+    model_name: str,
+    strategy_name: str,
+    registered_after: str,
+    prospective_output_key: str,
+    comparison_role: str,
+    prospective_comparison_role: str,
+    probability_fit: Callable[
+        [list[dict[str, Any]]], dict[str, Any]
+    ],
+    probability_attach: Callable[
+        [list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]
+    ],
+    deployment_waiting_status: str,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -1219,16 +1249,18 @@ def walk_forward_evaluate_v7(
     ]
     if not fold_dates:
         empty = _prospective_summary(
-            [], [], purchase_diagnostic_accumulators=[]
+            [],
+            [],
+            purchase_diagnostic_accumulators=[],
+            registered_after=registered_after,
+            comparison_role=prospective_comparison_role,
         )
         return {
-            "model": MODEL_NAME,
-            "calibrator_strategy": STRATEGY_NAME,
+            "model": model_name,
+            "calibrator_strategy": strategy_name,
             "status": "waiting_for_clean_evaluation_day",
-            "comparison_role": (
-                "real_t5_crossfit_q20_fixed_safe_ev_shadow"
-            ),
-            "registered_after": REGISTERED_AFTER,
+            "comparison_role": comparison_role,
+            "registered_after": registered_after,
             "available_races": len(races),
             "available_days": len(dates),
             "evaluation_days": 0,
@@ -1238,12 +1270,14 @@ def walk_forward_evaluate_v7(
             "daily": [],
             "promotion_gate": empty["promotion_gate"],
             "promotion_eligible": False,
-            "prospective_crossfit_conservative_ev_v7_walk_forward": (
-                empty
-            ),
+            prospective_output_key: empty,
         }
 
-    all_crossfit_rows = _crossfit_probability_rows(races)
+    all_crossfit_rows = _crossfit_probability_rows(
+        races,
+        probability_fit=probability_fit,
+        probability_attach=probability_attach,
+    )
     folds = []
     daily = []
     purchase_diagnostics_by_date: dict[str, dict[str, Any]] = {}
@@ -1257,8 +1291,8 @@ def walk_forward_evaluate_v7(
             for race in by_day[date]
         ]
         holdout = by_day[evaluation_date]
-        probability_model = fit_t5_residual_probability_model(training)
-        transformed_holdout = attach_t5_residual_probabilities(
+        probability_model = probability_fit(training)
+        transformed_holdout = probability_attach(
             holdout, probability_model
         )
         crossfit_rows = [
@@ -1362,7 +1396,7 @@ def walk_forward_evaluate_v7(
     prospective_folds = [
         fold
         for fold in folds
-        if str(fold["evaluation_date"]) > REGISTERED_AFTER
+        if str(fold["evaluation_date"]) > registered_after
     ]
     prospective_dates = {
         str(fold["evaluation_date"]) for fold in prospective_folds
@@ -1379,9 +1413,16 @@ def walk_forward_evaluate_v7(
             purchase_diagnostics_by_date[date]
             for date in prospective_dates
         ),
+        registered_after=registered_after,
+        comparison_role=prospective_comparison_role,
     )
     deployment = _deployment_configuration(
-        races, daily_budget_yen=daily_budget_yen
+        races,
+        daily_budget_yen=daily_budget_yen,
+        probability_fit=probability_fit,
+        probability_attach=probability_attach,
+        calibrator_strategy=strategy_name,
+        operational_status=deployment_waiting_status,
     )
     deployment["walk_forward_gate"] = dict(
         prospective["promotion_gate"]
@@ -1398,17 +1439,15 @@ def walk_forward_evaluate_v7(
             "eligible_for_shadow_promotion"
         )
     return {
-        "model": MODEL_NAME,
-        "calibrator_strategy": STRATEGY_NAME,
-        "comparison_role": (
-            "real_t5_crossfit_q20_fixed_safe_ev_shadow"
-        ),
+        "model": model_name,
+        "calibrator_strategy": strategy_name,
+        "comparison_role": comparison_role,
         "validation_design": (
             "Each outer day fits probability, q20 closing, and probability "
             "LCB strictly before the outer date; the purchase policy is "
             "preregistered and fixed"
         ),
-        "registered_after": REGISTERED_AFTER,
+        "registered_after": registered_after,
         "daily_budget_yen": daily_budget_yen,
         "fixed_policy": dict(FIXED_POLICY),
         "available_races": len(races),
@@ -1432,10 +1471,36 @@ def walk_forward_evaluate_v7(
         },
         "folds": folds,
         "daily": daily,
-        "prospective_crossfit_conservative_ev_v7_walk_forward": (
-            prospective
-        ),
+        prospective_output_key: prospective,
         "promotion_gate": prospective["promotion_gate"],
         "promotion_eligible": prospective["promotion_eligible"],
         "deployment_configuration": deployment,
     }
+
+
+def walk_forward_evaluate_v7(
+    races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+    min_calibration_days: int,
+    evaluation_dates: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    return _walk_forward_evaluate_conservative_ev(
+        races,
+        daily_budget_yen=daily_budget_yen,
+        min_calibration_days=min_calibration_days,
+        evaluation_dates=evaluation_dates,
+        model_name=MODEL_NAME,
+        strategy_name=STRATEGY_NAME,
+        registered_after=REGISTERED_AFTER,
+        prospective_output_key=(
+            "prospective_crossfit_conservative_ev_v7_walk_forward"
+        ),
+        comparison_role="real_t5_crossfit_q20_fixed_safe_ev_shadow",
+        prospective_comparison_role=(
+            "pre_registered_strict_outer_day_v7_shadow"
+        ),
+        probability_fit=fit_t5_residual_probability_model,
+        probability_attach=attach_t5_residual_probabilities,
+        deployment_waiting_status="shadow_only_until_v7_promotion_gate",
+    )

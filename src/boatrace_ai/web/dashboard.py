@@ -1978,6 +1978,14 @@ _ODDS_PATH_TRACK_SPECS = (
         "log(closing/T-5) q20 / 日次cluster probability LCB / "
         "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
     ),
+    (
+        "odds_path_market_offset_crossfit_conservative_ev_v8",
+        "市場offset Crossfit保守EV v8",
+        "10年履歴base三連単確率、各outer日以前のT-5市場・結果、公式closingオッズ",
+        "log(T-5市場)固定offset＋標準化base/market残差・rank差・odds trend / "
+        "日付順nested L2 / log(closing/T-5) q20 / 日cluster probability LCB / "
+        "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
+    ),
 )
 
 
@@ -2046,6 +2054,21 @@ def _odds_path_model_tracks(
                 "daily_cluster_bootstrap_roi_lower_95": job.get(
                     "daily_cluster_bootstrap_roi_lower_95"
                 ),
+                "purchase_decision_diagnostics": job.get(
+                    "purchase_decision_diagnostics"
+                ),
+                "threshold_pass_candidates": job.get(
+                    "threshold_pass_candidates"
+                ),
+                "candidates_after_race_cap": job.get(
+                    "candidates_after_race_cap"
+                ),
+                "purchases_after_allocation": job.get(
+                    "purchases_after_allocation"
+                ),
+                "safe_ev_max": job.get("safe_ev_max"),
+                "safe_ev_p95": job.get("safe_ev_p95"),
+                "safe_ev_p99": job.get("safe_ev_p99"),
                 "effective_hit_count": job.get("effective_hit_count"),
                 "largest_hit_return_share": job.get(
                     "largest_hit_return_share"
@@ -2828,6 +2851,25 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "daily_cluster_bootstrap_roi_lower_95": _float_or_none(
                     metrics.get("daily_cluster_bootstrap_roi_lower_95")
                 ),
+                "purchase_decision_diagnostics": (
+                    metrics.get("purchase_decision_diagnostics")
+                    if isinstance(
+                        metrics.get("purchase_decision_diagnostics"), dict
+                    )
+                    else None
+                ),
+                "threshold_pass_candidates": metrics.get(
+                    "threshold_pass_candidates"
+                ),
+                "candidates_after_race_cap": metrics.get(
+                    "candidates_after_race_cap"
+                ),
+                "purchases_after_allocation": metrics.get(
+                    "purchases_after_allocation"
+                ),
+                "safe_ev_max": _float_or_none(metrics.get("safe_ev_max")),
+                "safe_ev_p95": _float_or_none(metrics.get("safe_ev_p95")),
+                "safe_ev_p99": _float_or_none(metrics.get("safe_ev_p99")),
                 "closing_q20_pinball_loss": _float_or_none(
                     metrics.get("closing_q20_pinball_loss")
                 ),
@@ -3673,7 +3715,9 @@ _REPORT_MODEL_FAMILY_ALIASES = (
     re.compile(r"^(calibrated_(?:linear|mlp)_shadow)(?:_|$)"),
     re.compile(
         r"^(odds_path_(?:observed_closing_return_v4|"
-        r"prequential_shrinkage_return_v6))(?:_|$)"
+        r"prequential_shrinkage_return_v6|"
+        r"crossfit_conservative_ev_v7|"
+        r"market_offset_crossfit_conservative_ev_v8))(?:_|$)"
     ),
 )
 

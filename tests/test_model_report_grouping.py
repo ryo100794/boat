@@ -154,7 +154,7 @@ def test_model_tracks_keep_missing_safe_and_legacy_ablation_separate(tmp_path) -
     assert "旧スキーマ" in legacy["teacher"]
 
 
-def test_odds_path_v4_v6_v7_tracks_share_complete_web_metrics(tmp_path) -> None:
+def test_odds_path_v4_v6_v7_v8_tracks_share_complete_web_metrics(tmp_path) -> None:
     jobs = [
         {
             "db_job_id": 101,
@@ -186,6 +186,30 @@ def test_odds_path_v4_v6_v7_tracks_share_complete_web_metrics(tmp_path) -> None:
             "status": "待機中",
             "closing_q20_pinball_loss": 0.04,
             "closing_q20_lower_coverage": 0.81,
+            "purchase_decision_diagnostics": {
+                "threshold_pass_candidates": 0,
+                "candidates_after_race_cap": 0,
+                "purchases_after_allocation": 0,
+                "safe_ev_max": 1.04,
+                "safe_ev_p95": 0.98,
+                "safe_ev_p99": 1.01,
+            },
+        },
+        {
+            "db_job_id": 104,
+            "name": "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-28",
+            "status": "実行中",
+            "trifecta_log_loss": 3.69,
+            "closing_q20_pinball_loss": 0.039,
+            "closing_q20_lower_coverage": 0.80,
+            "purchase_decision_diagnostics": {
+                "threshold_pass_candidates": 5,
+                "candidates_after_race_cap": 2,
+                "purchases_after_allocation": 0,
+                "safe_ev_max": 1.08,
+                "safe_ev_p95": 1.03,
+                "safe_ev_p99": 1.06,
+            },
         },
     ]
 
@@ -199,6 +223,7 @@ def test_odds_path_v4_v6_v7_tracks_share_complete_web_metrics(tmp_path) -> None:
     v4 = by_id["odds_path_observed_closing_return_v4"]
     v6 = by_id["odds_path_prequential_shrinkage_return_v6"]
     v7 = by_id["odds_path_crossfit_conservative_ev_v7"]
+    v8 = by_id["odds_path_market_offset_crossfit_conservative_ev_v8"]
 
     assert v4["trifecta_log_loss"] == 3.71
     assert v4["winner_top1_accuracy"] == 0.561
@@ -224,3 +249,14 @@ def test_odds_path_v4_v6_v7_tracks_share_complete_web_metrics(tmp_path) -> None:
     assert v7["closing_q20_lower_coverage"] == 0.81
     assert "10年履歴base" in v7["teacher"]
     assert "固定safe EV" in v7["training"]
+    assert v7["purchase_decision_diagnostics"]["threshold_pass_candidates"] == 0
+    assert v8["status"] == "実行中"
+    assert v8["trifecta_log_loss"] == 3.69
+    assert v8["closing_q20_lower_coverage"] == 0.80
+    assert "市場)固定offset" in v8["training"]
+    assert "日付順nested L2" in v8["training"]
+    assert v8["purchase_decision_diagnostics"]["candidates_after_race_cap"] == 2
+    assert "function purchaseDiagnostic(x)" in MODEL_REPORT_HTML
+    assert "閾値通過0" in MODEL_REPORT_HTML
+    assert "配分後0" in MODEL_REPORT_HTML
+    assert "safe_ev_p95" in MODEL_REPORT_HTML

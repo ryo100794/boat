@@ -1500,6 +1500,7 @@ def build_command(
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
+            "odds_path_market_offset_crossfit_conservative_ev",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -2288,6 +2289,20 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    purchase_diagnostics = payload.get("purchase_decision_diagnostics")
+    if isinstance(purchase_diagnostics, dict):
+        preserved = dict(purchase_diagnostics)
+        summary["purchase_decision_diagnostics"] = preserved
+        for key in (
+            "threshold_pass_candidates",
+            "candidates_after_race_cap",
+            "purchases_after_allocation",
+            "safe_ev_max",
+            "safe_ev_p95",
+            "safe_ev_p99",
+        ):
+            if key in preserved:
+                summary[key] = preserved[key]
     if payload.get("source_role") in {
         "secondary_archive_candidate_unverified",
         "secondary_archive_research_only",
@@ -2459,6 +2474,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in prospective_v7:
                 summary[f"prospective_v7_{key}"] = prospective_v7[key]
+    prospective_v8 = payload.get(
+        "prospective_market_offset_crossfit_conservative_ev_v8_walk_forward"
+    )
+    if isinstance(prospective_v8, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "effective_hit_count",
+            "largest_hit_return_share",
+            "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss",
+            "market_trifecta_log_loss",
+            "closing_q20_pinball_loss",
+            "closing_q20_lower_coverage",
+            "promotion_eligible",
+        ):
+            if key in prospective_v8:
+                summary[f"prospective_v8_{key}"] = prospective_v8[key]
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3781,6 +3824,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_crossfit_conservative_ev",
     ),
+    (
+        "odds_path_market_offset_crossfit_conservative_ev_v8_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_market_offset_crossfit_conservative_ev",
+    ),
 )
 
 
@@ -3837,6 +3886,7 @@ def seed_daily_market_jobs(
                     "odds_path_probability",
                     "odds_path_prequential_shrinkage_return",
                     "odds_path_crossfit_conservative_ev",
+                    "odds_path_market_offset_crossfit_conservative_ev",
                 }
                 else 3600
             ),
@@ -3857,6 +3907,9 @@ def seed_daily_market_jobs(
                 if calibrator_strategy == "odds_path_prequential_shrinkage_return"
                 else 94
                 if calibrator_strategy == "odds_path_crossfit_conservative_ev"
+                else 93
+                if calibrator_strategy
+                == "odds_path_market_offset_crossfit_conservative_ev"
                 else 96
             ),
             max_attempts=2,
