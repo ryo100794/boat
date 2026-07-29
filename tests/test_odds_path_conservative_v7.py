@@ -226,6 +226,7 @@ def test_v7_outer_models_and_lcb_never_cross_holdout_date(
         "largest_hit_excluded_roi_pass",
         "cluster_bootstrap_roi_pass",
         "effective_hits_pass",
+        "profitable_day_fraction_pass",
         "largest_hit_share_pass",
         "probability_log_loss_pass",
         "quantile_coverage_pass",
