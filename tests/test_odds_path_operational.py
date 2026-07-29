@@ -123,6 +123,7 @@ def test_observed_closing_return_model_records_teacher_basis() -> None:
     assert model["return_multiplier_mode"] == (
         "historical_observed_closing_to_payout_bucket"
     )
+    assert "adaptive_return_selection" not in model
 
 
 def test_hit_shrinkage_prevents_sparse_return_multiplier_extremes() -> None:
@@ -139,6 +140,7 @@ def test_hit_shrinkage_prevents_sparse_return_multiplier_extremes() -> None:
     )
 
     assert model["model_type"] == "odds_path_hit_shrunk_closing_return_v5"
+    assert "adaptive_return_selection" not in model
     assert model["return_hit_prior"] == 20.0
     assert model["return_multiplier_bounds"] == [0.5, 1.5]
     multipliers = [
@@ -151,6 +153,34 @@ def test_hit_shrinkage_prevents_sparse_return_multiplier_extremes() -> None:
         0.0 <= row["return_hit_shrinkage_weight"] < 1.0
         for row in model["performance_priors"]["buckets"].values()
     )
+
+
+def test_adaptive_selection_marks_v6_without_changing_v4_or_v5_names() -> None:
+    races = [_race(0), _race(1)]
+    for race in races:
+        race["performance_return_odds"] = dict(race["odds"])
+    selection = {
+        "status": "selected",
+        "selected": {
+            "return_hit_prior": 2.0,
+            "min_return_multiplier": 0.75,
+            "max_return_multiplier": 1.25,
+        },
+    }
+
+    model = fit_odds_path_model(
+        races,
+        max_iterations=10,
+        return_price_basis="observed_closing",
+        return_hit_prior=2.0,
+        min_return_multiplier=0.75,
+        max_return_multiplier=1.25,
+        adaptive_return_selection=selection,
+    )
+
+    assert model["model_type"] == "odds_path_prequential_shrinkage_return_v6"
+    assert model["adaptive_return_selection"] == selection
+    assert model["return_multiplier_bounds"] == [0.75, 1.25]
 
 
 def test_performance_priors_shrink_sparse_hit_and_payout_rates() -> None:

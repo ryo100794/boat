@@ -42,7 +42,11 @@ from .flat_policy import (
     summarize_flat_candidates,
 )
 from .market_edge_diagnostics import edge_records, summarize_edge_records
-from .odds_path_operational import attach_odds_path_model, fit_odds_path_model
+from .odds_path_operational import (
+    attach_odds_path_model,
+    fit_odds_path_model,
+    fit_performance_priors,
+)
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .closing_odds import decision_odds
 from .closing_odds_momentum import (
@@ -140,6 +144,20 @@ PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER = "2026-07-28"
 OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER = "2026-07-29"
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
+V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
+V6_RETURN_MULTIPLIER_BOUNDS = (
+    (0.50, 1.50),
+    (0.75, 1.25),
+    (0.90, 1.10),
+)
+V6_FALLBACK_RETURN_PARAMETERS = {
+    "return_hit_prior": 20.0,
+    "min_return_multiplier": 0.75,
+    "max_return_multiplier": 1.25,
+}
+V6_MIN_HISTORY_DAYS = 4
+V6_MIN_INNER_EVALUATION_DAYS = 2
+V6_MAX_INNER_EVALUATION_DAYS = 7
 PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
     "name": "registered_top5_ev1.00_to1.05_flat100_v1",
     "max_model_rank": 5,
@@ -163,6 +181,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_observed_closing_return_v4"
     if calibrator_strategy == "odds_path_hit_shrunk_return":
         return "odds_path_hit_shrunk_closing_return_v5"
+    if calibrator_strategy == "odds_path_prequential_shrinkage_return":
+        return "odds_path_prequential_shrinkage_return_v6"
     return MODEL_NAME
 
 
@@ -199,6 +219,231 @@ def attach_observed_closing_return_prices(
         }
         result.append(item)
     return result
+
+
+def _v6_fallback_selection(
+    *,
+    training_dates: list[str],
+    reason: str,
+    candidates: list[dict[str, Any]] | None = None,
+    inner_evaluation_dates: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "method": "inner_prequential_robust_return_selection",
+        "status": "conservative_fallback",
+        "fallback_reason": reason,
+        "leakage_guard": "every inner validation date uses strictly earlier dates",
+        "training_dates": list(training_dates),
+        "inner_evaluation_dates": list(inner_evaluation_dates or []),
+        "selected": dict(V6_FALLBACK_RETURN_PARAMETERS),
+        "minimum_history_days": V6_MIN_HISTORY_DAYS,
+        "minimum_inner_evaluation_days": V6_MIN_INNER_EVALUATION_DAYS,
+        "candidates": list(candidates or []),
+    }
+
+
+def _v6_selection_key(row: dict[str, Any]) -> tuple[float, ...]:
+    return (
+        float(row["roi_without_largest_hit"]),
+        float(row["profitable_day_fraction"]),
+        float(row["median_profit_per_day_yen"]),
+        float(row["tickets"]),
+        float(row["return_hit_prior"]),
+        -(
+            float(row["max_return_multiplier"])
+            - float(row["min_return_multiplier"])
+        ),
+        float(row["min_return_multiplier"]),
+    )
+
+
+def select_return_shrinkage_prequential(
+    races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+) -> dict[str, Any]:
+    """Select v6 return shrinkage without observing the outer holdout date."""
+    prepared_races = attach_observed_closing_return_prices(races)
+    by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in prepared_races:
+        by_day[str(race["race_date"])].append(race)
+    dates = sorted(by_day)
+    if len(dates) < V6_MIN_HISTORY_DAYS:
+        return _v6_fallback_selection(
+            training_dates=dates,
+            reason="insufficient_history_days",
+        )
+
+    inner_dates = dates[2:][-V6_MAX_INNER_EVALUATION_DAYS:]
+    if len(inner_dates) < V6_MIN_INNER_EVALUATION_DAYS:
+        return _v6_fallback_selection(
+            training_dates=dates,
+            inner_evaluation_dates=inner_dates,
+            reason="insufficient_inner_evaluation_days",
+        )
+
+    closing_policy_inputs = prequential_closing_odds_policy_inputs(prepared_races)
+    from .market_residual import select_regularization_prequential
+
+    inner_contexts = []
+    for evaluation_date in inner_dates:
+        training = [
+            race
+            for date in dates
+            if date < evaluation_date
+            for race in by_day[date]
+        ]
+        base_model = fit_odds_path_model(
+            training,
+            return_price_basis="observed_closing",
+        )
+        transformed_training = attach_odds_path_model(training, base_model)
+        calibrator = dict(
+            select_regularization_prequential(transformed_training)[
+                "final_calibrator"
+            ]
+        )
+        inner_contexts.append(
+            {
+                "training": training,
+                "holdout": by_day[evaluation_date],
+                "base_model": base_model,
+                "calibrator": calibrator,
+            }
+        )
+
+    candidates: list[dict[str, Any]] = []
+    for return_hit_prior in V6_RETURN_HIT_PRIORS:
+        for min_multiplier, max_multiplier in V6_RETURN_MULTIPLIER_BOUNDS:
+            daily_rows: list[dict[str, Any]] = []
+            evaluated_races = 0
+            for context in inner_contexts:
+                candidate_model = dict(context["base_model"])
+                candidate_model["performance_priors"] = fit_performance_priors(
+                    context["training"],
+                    return_hit_prior=return_hit_prior,
+                    min_return_multiplier=min_multiplier,
+                    max_return_multiplier=max_multiplier,
+                )
+                transformed_holdout = attach_odds_path_model(
+                    context["holdout"],
+                    candidate_model,
+                )
+                policy_holdout = apply_prequential_closing_odds_policy_inputs(
+                    transformed_holdout,
+                    closing_policy_inputs,
+                )
+                result = simulate_policy(
+                    policy_holdout,
+                    calibrator=context["calibrator"],
+                    policy=REGISTERED_EV_BAND_POLICY,
+                    daily_budget_yen=daily_budget_yen,
+                )
+                daily_rows.extend(result["daily"])
+                evaluated_races += len(policy_holdout)
+
+            reliability = bankroll_reliability_metrics(
+                daily_rows,
+                evaluated_races=evaluated_races,
+            )
+            tickets = sum(int(row.get("tickets") or 0) for row in daily_rows)
+            stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily_rows)
+            return_yen = sum(int(row.get("return_yen") or 0) for row in daily_rows)
+            winning_days = sum(int(row.get("profit_yen") or 0) > 0 for row in daily_rows)
+            minimum_tickets = max(10, 2 * len(inner_dates))
+            candidates.append(
+                {
+                    "return_hit_prior": float(return_hit_prior),
+                    "min_return_multiplier": float(min_multiplier),
+                    "max_return_multiplier": float(max_multiplier),
+                    "inner_evaluation_days": len(daily_rows),
+                    "inner_evaluated_races": evaluated_races,
+                    "tickets": tickets,
+                    "minimum_tickets": minimum_tickets,
+                    "ticket_sufficiency_pass": tickets >= minimum_tickets,
+                    "stake_yen": stake_yen,
+                    "return_yen": return_yen,
+                    "profit_yen": return_yen - stake_yen,
+                    "roi": return_yen / stake_yen if stake_yen else 0.0,
+                    "roi_without_largest_hit": float(
+                        reliability.get("roi_without_largest_hit") or 0.0
+                    ),
+                    "winning_days": winning_days,
+                    "profitable_day_fraction": (
+                        winning_days / len(daily_rows) if daily_rows else 0.0
+                    ),
+                    "median_profit_per_day_yen": float(
+                        np.median(
+                            [int(row.get("profit_yen") or 0) for row in daily_rows]
+                        )
+                        if daily_rows
+                        else 0.0
+                    ),
+                }
+            )
+
+    eligible = [row for row in candidates if row["ticket_sufficiency_pass"]]
+    if not eligible:
+        return _v6_fallback_selection(
+            training_dates=dates,
+            inner_evaluation_dates=inner_dates,
+            candidates=candidates,
+            reason="insufficient_inner_tickets",
+        )
+    selected = max(
+        eligible,
+        key=_v6_selection_key,
+    )
+    return {
+        "version": 1,
+        "method": "inner_prequential_robust_return_selection",
+        "status": "selected",
+        "fallback_reason": None,
+        "leakage_guard": "every inner validation date uses strictly earlier dates",
+        "training_dates": dates,
+        "inner_evaluation_dates": inner_dates,
+        "selected": {
+            key: selected[key]
+            for key in (
+                "return_hit_prior",
+                "min_return_multiplier",
+                "max_return_multiplier",
+            )
+        },
+        "selection_order": [
+            "roi_without_largest_hit",
+            "profitable_day_fraction",
+            "median_profit_per_day_yen",
+            "tickets",
+            "conservative_shrinkage_tiebreak",
+        ],
+        "minimum_history_days": V6_MIN_HISTORY_DAYS,
+        "minimum_inner_evaluation_days": V6_MIN_INNER_EVALUATION_DAYS,
+        "candidates": candidates,
+    }
+
+
+def fit_v6_odds_path_model(
+    races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    prepared = attach_observed_closing_return_prices(races)
+    selection = select_return_shrinkage_prequential(
+        prepared,
+        daily_budget_yen=daily_budget_yen,
+    )
+    parameters = selection["selected"]
+    model = fit_odds_path_model(
+        prepared,
+        return_price_basis="observed_closing",
+        return_hit_prior=float(parameters["return_hit_prior"]),
+        min_return_multiplier=float(parameters["min_return_multiplier"]),
+        max_return_multiplier=float(parameters["max_return_multiplier"]),
+        adaptive_return_selection=selection,
+    )
+    return model, prepared
 
 
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
@@ -1762,30 +2007,43 @@ def fit_deployment_configuration(
         "odds_path_closing_return",
         "odds_path_observed_closing_return",
         "odds_path_hit_shrunk_return",
+        "odds_path_prequential_shrinkage_return",
     }:
-        operational_model = fit_odds_path_model(
-            races,
-            use_return_multipliers=calibrator_strategy != "odds_path_probability",
-            return_price_basis=(
-                "forecast_closing"
-                if calibrator_strategy == "odds_path_closing_return"
-                else "observed_closing"
-                if calibrator_strategy in {
-                    "odds_path_observed_closing_return",
-                    "odds_path_hit_shrunk_return",
-                }
-                else "decision_t5"
-            ),
-            return_hit_prior=(
-                20.0 if calibrator_strategy == "odds_path_hit_shrunk_return" else 0.0
-            ),
-            min_return_multiplier=(
-                0.5 if calibrator_strategy == "odds_path_hit_shrunk_return" else 0.25
-            ),
-            max_return_multiplier=(
-                1.5 if calibrator_strategy == "odds_path_hit_shrunk_return" else 2.0
-            ),
-        )
+        if calibrator_strategy == "odds_path_prequential_shrinkage_return":
+            operational_model, races = fit_v6_odds_path_model(
+                races,
+                daily_budget_yen=daily_budget_yen,
+            )
+        else:
+            operational_model = fit_odds_path_model(
+                races,
+                use_return_multipliers=calibrator_strategy != "odds_path_probability",
+                return_price_basis=(
+                    "forecast_closing"
+                    if calibrator_strategy == "odds_path_closing_return"
+                    else "observed_closing"
+                    if calibrator_strategy in {
+                        "odds_path_observed_closing_return",
+                        "odds_path_hit_shrunk_return",
+                    }
+                    else "decision_t5"
+                ),
+                return_hit_prior=(
+                    20.0
+                    if calibrator_strategy == "odds_path_hit_shrunk_return"
+                    else 0.0
+                ),
+                min_return_multiplier=(
+                    0.5
+                    if calibrator_strategy == "odds_path_hit_shrunk_return"
+                    else 0.25
+                ),
+                max_return_multiplier=(
+                    1.5
+                    if calibrator_strategy == "odds_path_hit_shrunk_return"
+                    else 2.0
+                ),
+            )
         races = attach_odds_path_model(races, operational_model)
         from .market_residual import (
             fit_fixed_regularization,
@@ -2042,8 +2300,14 @@ def walk_forward_evaluate(
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
+            "odds_path_prequential_shrinkage_return",
         }:
-            if calibrator_strategy == "odds_path_closing_return":
+            if calibrator_strategy == "odds_path_prequential_shrinkage_return":
+                operational_model, calibration_races = fit_v6_odds_path_model(
+                    calibration_races,
+                    daily_budget_yen=daily_budget_yen,
+                )
+            elif calibrator_strategy == "odds_path_closing_return":
                 calibration_races = attach_forecast_closing_return_prices(
                     calibration_races,
                     closing_policy_inputs,
@@ -2055,35 +2319,38 @@ def walk_forward_evaluate(
                 calibration_races = attach_observed_closing_return_prices(
                     calibration_races
                 )
-            operational_model = fit_odds_path_model(
-                calibration_races,
-                use_return_multipliers=calibrator_strategy != "odds_path_probability",
-                return_price_basis=(
-                    "forecast_closing"
-                    if calibrator_strategy == "odds_path_closing_return"
-                    else "observed_closing"
-                    if calibrator_strategy in {
-                        "odds_path_observed_closing_return",
-                        "odds_path_hit_shrunk_return",
-                    }
-                    else "decision_t5"
-                ),
-                return_hit_prior=(
-                    20.0
-                    if calibrator_strategy == "odds_path_hit_shrunk_return"
-                    else 0.0
-                ),
-                min_return_multiplier=(
-                    0.5
-                    if calibrator_strategy == "odds_path_hit_shrunk_return"
-                    else 0.25
-                ),
-                max_return_multiplier=(
-                    1.5
-                    if calibrator_strategy == "odds_path_hit_shrunk_return"
-                    else 2.0
-                ),
-            )
+            if calibrator_strategy != "odds_path_prequential_shrinkage_return":
+                operational_model = fit_odds_path_model(
+                    calibration_races,
+                    use_return_multipliers=(
+                        calibrator_strategy != "odds_path_probability"
+                    ),
+                    return_price_basis=(
+                        "forecast_closing"
+                        if calibrator_strategy == "odds_path_closing_return"
+                        else "observed_closing"
+                        if calibrator_strategy in {
+                            "odds_path_observed_closing_return",
+                            "odds_path_hit_shrunk_return",
+                        }
+                        else "decision_t5"
+                    ),
+                    return_hit_prior=(
+                        20.0
+                        if calibrator_strategy == "odds_path_hit_shrunk_return"
+                        else 0.0
+                    ),
+                    min_return_multiplier=(
+                        0.5
+                        if calibrator_strategy == "odds_path_hit_shrunk_return"
+                        else 0.25
+                    ),
+                    max_return_multiplier=(
+                        1.5
+                        if calibrator_strategy == "odds_path_hit_shrunk_return"
+                        else 2.0
+                    ),
+                )
             calibration_races = attach_odds_path_model(
                 calibration_races, operational_model
             )
@@ -2599,6 +2866,7 @@ def walk_forward_evaluate(
         if calibrator_strategy in {
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
+            "odds_path_prequential_shrinkage_return",
         }
         else races
     )
@@ -3637,6 +3905,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
+            "odds_path_prequential_shrinkage_return",
         ),
         default="grid",
     )

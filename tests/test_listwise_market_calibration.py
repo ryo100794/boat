@@ -7,10 +7,12 @@ import pytest
 from scipy import sparse
 
 from boatrace_ai.listwise.market_calibration import (
+    _v6_selection_key,
     artifact_drop_feature_groups,
     artifact_classifier_probabilities_batch,
     artifact_model_probabilities,
     blend_probabilities,
+    build_parser,
     filter_clean_market_days,
     fixed_benchmark_population,
     fit_deployment_configuration,
@@ -26,6 +28,7 @@ from boatrace_ai.listwise.market_calibration import (
     score_real_odds_races,
     select_calibrator,
     select_policy,
+    select_return_shrinkage_prequential,
     simulate_policy,
     snapshot_age_seconds,
     write_scored_cache,
@@ -406,6 +409,224 @@ def test_hit_shrunk_strategy_applies_conservative_prior_in_every_fold() -> None:
             row["return_multiplier"]
             for row in operational_model["performance_priors"]["buckets"].values()
         ) <= 1.5
+
+
+def test_v6_uses_conservative_fallback_when_inner_history_is_short() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in ("2026-07-18", "2026-07-19", "2026-07-20")
+        for rno in range(1, 5)
+    ]
+
+    selection = select_return_shrinkage_prequential(
+        races,
+        daily_budget_yen=10_000,
+    )
+
+    assert selection["status"] == "conservative_fallback"
+    assert selection["fallback_reason"] == "insufficient_history_days"
+    assert selection["selected"] == {
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.75,
+        "max_return_multiplier": 1.25,
+    }
+
+
+def test_v6_selection_rule_prioritizes_largest_hit_excluded_roi() -> None:
+    robust = {
+        "roi_without_largest_hit": 1.01,
+        "profitable_day_fraction": 0.4,
+        "median_profit_per_day_yen": -100.0,
+        "tickets": 20,
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.9,
+        "max_return_multiplier": 1.1,
+    }
+    unstable_high_profit = {
+        **robust,
+        "roi_without_largest_hit": 0.99,
+        "profitable_day_fraction": 1.0,
+        "median_profit_per_day_yen": 10_000.0,
+        "tickets": 200,
+    }
+
+    assert _v6_selection_key(robust) > _v6_selection_key(unstable_high_profit)
+
+
+def test_v6_inner_prequential_grid_selects_robust_candidate(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.market_calibration as module
+    import boatrace_ai.listwise.market_residual as residual
+
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 3)
+    ]
+    fit_calls = []
+
+    def fake_fit(training, **_kwargs):
+        fit_calls.append(sorted({race["race_date"] for race in training}))
+        return {"performance_priors": {"candidate_prior": 0.0}}
+
+    def fake_priors(_training, *, return_hit_prior, **_kwargs):
+        return {"candidate_prior": float(return_hit_prior)}
+
+    def fake_attach(rows, model):
+        prior = float(model["performance_priors"]["candidate_prior"])
+        return [{**race, "candidate_prior": prior} for race in rows]
+
+    def fake_simulate(rows, **_kwargs):
+        prior = rows[0]["candidate_prior"]
+        returned = 700 if prior == 20.0 else 1_000
+        largest = 100 if prior == 20.0 else 900
+        return {
+            "daily": [
+                {
+                    "tickets": 5,
+                    "stake_yen": 500,
+                    "return_yen": returned,
+                    "profit_yen": returned - 500,
+                    "largest_hit_return_yen": largest,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(module, "V6_RETURN_HIT_PRIORS", (0.0, 20.0))
+    monkeypatch.setattr(
+        module,
+        "V6_RETURN_MULTIPLIER_BOUNDS",
+        ((0.75, 1.25),),
+    )
+    monkeypatch.setattr(module, "fit_odds_path_model", fake_fit)
+    monkeypatch.setattr(module, "fit_performance_priors", fake_priors)
+    monkeypatch.setattr(module, "attach_odds_path_model", fake_attach)
+    monkeypatch.setattr(
+        module,
+        "prequential_closing_odds_policy_inputs",
+        lambda _rows: {},
+    )
+    monkeypatch.setattr(
+        module,
+        "apply_prequential_closing_odds_policy_inputs",
+        lambda rows, _inputs: rows,
+    )
+    monkeypatch.setattr(module, "simulate_policy", fake_simulate)
+    monkeypatch.setattr(
+        residual,
+        "select_regularization_prequential",
+        lambda _rows: {
+            "final_calibrator": {"model_weight": 1.0, "temperature": 1.0}
+        },
+    )
+
+    selection = select_return_shrinkage_prequential(
+        races,
+        daily_budget_yen=10_000,
+    )
+
+    assert selection["status"] == "selected"
+    assert selection["selected"] == {
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.75,
+        "max_return_multiplier": 1.25,
+    }
+    assert selection["inner_evaluation_dates"] == [
+        "2026-07-20",
+        "2026-07-21",
+    ]
+    assert fit_calls == [
+        ["2026-07-18", "2026-07-19"],
+        ["2026-07-18", "2026-07-19", "2026-07-20"],
+    ]
+    assert len(selection["candidates"]) == 2
+
+
+def test_v6_outer_folds_never_pass_holdout_to_inner_selection(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.market_calibration as module
+
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 5)
+    ]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+    seen_dates = []
+
+    def fake_selection(training_races, *, daily_budget_yen):
+        assert daily_budget_yen == 10_000
+        seen_dates.append(sorted({race["race_date"] for race in training_races}))
+        return {
+            "version": 1,
+            "status": "conservative_fallback",
+            "selected": {
+                "return_hit_prior": 20.0,
+                "min_return_multiplier": 0.75,
+                "max_return_multiplier": 1.25,
+            },
+        }
+
+    monkeypatch.setattr(
+        module,
+        "select_return_shrinkage_prequential",
+        fake_selection,
+    )
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_prequential_shrinkage_return",
+    )
+
+    assert result["model"] == "odds_path_prequential_shrinkage_return_v6"
+    assert seen_dates[0] == ["2026-07-18", "2026-07-19"]
+    assert seen_dates[1] == ["2026-07-18", "2026-07-19", "2026-07-20"]
+    assert seen_dates[2] == [
+        "2026-07-18",
+        "2026-07-19",
+        "2026-07-20",
+        "2026-07-21",
+    ]
+    assert all(
+        fold["operational_model"]["model_type"]
+        == "odds_path_prequential_shrinkage_return_v6"
+        for fold in result["folds"]
+    )
+    deployment = result["deployment_configuration"]
+    assert deployment["calibrator_strategy"] == (
+        "odds_path_prequential_shrinkage_return"
+    )
+    assert deployment["operational_model"]["adaptive_return_selection"][
+        "status"
+    ] == "conservative_fallback"
+
+
+def test_cli_accepts_v6_calibrator_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_prequential_shrinkage_return",
+        ]
+    )
+
+    assert args.calibrator_strategy == "odds_path_prequential_shrinkage_return"
 
 
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:

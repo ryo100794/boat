@@ -1521,7 +1521,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1529,6 +1529,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_operational_daily:market_residual:20260718-25",
         "odds_path_probability_only_daily:market_residual:20260718-25",
         "odds_path_observed_closing_return_v4_daily:market_residual:20260718-25",
+        "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1560,6 +1561,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert observed_closing["priority"] == 96
     assert observed_closing["parameters"]["timeout_seconds"] == 3600
+    prequential_v6 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_prequential_shrinkage_return"
+    )
+    assert prequential_v6["priority"] == 95
+    assert prequential_v6["parameters"]["timeout_seconds"] == 7200
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []

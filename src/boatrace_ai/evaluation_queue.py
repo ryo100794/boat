@@ -1498,6 +1498,7 @@ def build_command(
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             "odds_path_hit_shrunk_return",
+            "odds_path_prequential_shrinkage_return",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -3733,6 +3734,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_observed_closing_return",
     ),
+    (
+        "odds_path_prequential_shrinkage_return_v6_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_prequential_shrinkage_return",
+    ),
 )
 
 
@@ -3787,6 +3794,7 @@ def seed_daily_market_jobs(
                 if calibrator_strategy in {
                     "odds_path_return",
                     "odds_path_probability",
+                    "odds_path_prequential_shrinkage_return",
                 }
                 else 3600
             ),
@@ -3803,6 +3811,8 @@ def seed_daily_market_jobs(
                     "odds_path_return",
                     "odds_path_probability",
                 }
+                else 95
+                if calibrator_strategy == "odds_path_prequential_shrinkage_return"
                 else 96
             ),
             max_attempts=2,
