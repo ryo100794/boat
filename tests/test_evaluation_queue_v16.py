@@ -75,13 +75,18 @@ def test_v16_dispatcher_preserves_the_exact_evaluation_population(
     monkeypatch,
 ) -> None:
     fallback_policies: list[str] = []
+    received_inputs: list[tuple[list[dict[str, str]], list[str]]] = []
 
-    def fake_v12(_races, **kwargs):
+    def fake_v12(input_races, **kwargs):
         fallback_policies.append(str(kwargs["closing_fallback_policy"]))
+        received_inputs.append(
+            (list(input_races), list(kwargs["evaluation_dates"]))
+        )
         return {}
 
     monkeypatch.setattr(integrated_v16, "walk_forward_evaluate_v12", fake_v12)
     races = [
+        {"race_date": "2026-07-29", "race_id": "partial-t300-complete"},
         {"race_date": "2026-07-30", "race_id": "2026-07-30-02-01"},
         {"race_date": "2026-07-30", "race_id": "2026-07-30-01-01"},
     ]
@@ -102,8 +107,8 @@ def test_v16_dispatcher_preserves_the_exact_evaluation_population(
 
     assert integrated_v16.MODEL_NAME == STRATEGY
     assert integrated_v16.STRATEGY_NAME == STRATEGY
-    assert direct["evaluation_population_races"] == 2
-    assert dispatched["evaluation_population_races"] == 2
+    assert direct["evaluation_population_races"] == 3
+    assert dispatched["evaluation_population_races"] == 3
     assert direct["evaluation_population_hash"] == dispatched[
         "evaluation_population_hash"
     ]
@@ -111,6 +116,27 @@ def test_v16_dispatcher_preserves_the_exact_evaluation_population(
     assert direct["calibrator_strategy"] == STRATEGY
     assert dispatched["calibrator_strategy"] == STRATEGY
     assert fallback_policies == ["no_bet", "no_bet"]
+    expected_training_ids = {race["race_id"] for race in races}
+    assert all(
+        {race["race_id"] for race in input_races} == expected_training_ids
+        for input_races, _ in received_inputs
+    )
+    assert all(
+        any(race["race_id"] == "partial-t300-complete" for race in input_races)
+        for input_races, _ in received_inputs
+    )
+    assert all(
+        evaluation_dates == ["2026-07-30"]
+        for _, evaluation_dates in received_inputs
+    )
+    assert direct["calibration_input_scope"] == (
+        "all_eligible_races_including_partial_market_days"
+    )
+    assert direct["evaluation_date_scope"] == (
+        "formal_complete_market_days_only"
+    )
+    assert "partial market days" in direct["validation_design"]
+    assert "holdout evaluation restricted" in direct["validation_design"]
 
 
 def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
@@ -157,14 +183,23 @@ def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
     assert evaluation_queue.TASK_PROFILES[
         "market_residual_walk_forward"
     ]["max_parallel"] == 2
-    assert STRATEGY in market_calibration.CLEAN_DAY_CALIBRATOR_STRATEGIES
+    assert STRATEGY not in market_calibration.CLEAN_DAY_CALIBRATOR_STRATEGIES
     all_races = [{"race_id": "complete"}, {"race_id": "incomplete"}]
     clean_races = [all_races[0]]
     assert market_calibration.select_calibrator_evaluation_races(
         STRATEGY,
         races=all_races,
         clean_races=clean_races,
-    ) is clean_races
+    ) is all_races
+    for clean_day_strategy in (
+        "odds_path_role_integrated_registered_band_lcb_v14",
+        "odds_path_role_integrated_selection_free_envelope_v15",
+    ):
+        assert market_calibration.select_calibrator_evaluation_races(
+            clean_day_strategy,
+            races=all_races,
+            clean_races=clean_races,
+        ) is clean_races
 
 
 def test_v16_summary_preserves_web_report_metrics_and_diagnostics() -> None:

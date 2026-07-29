@@ -158,8 +158,15 @@ def walk_forward_evaluate_v16(
         "model": MODEL_NAME,
         "calibrator_strategy": STRATEGY_NAME,
         "comparison_role": COMPARISON_ROLE,
+        "calibration_input_scope": (
+            "all_eligible_races_including_partial_market_days"
+        ),
+        "evaluation_date_scope": "formal_complete_market_days_only",
         "validation_design": (
-            "Strict-prior outer-day V8 probability calibration; fixed T300 "
+            "Strict-prior outer-day V8 probability calibration trained on all "
+            "eligible prior races, including T300-complete races from partial "
+            "market days; holdout evaluation restricted to supplied formal "
+            "complete-market dates; fixed T300 "
             "log-divergence [0.5,1.0) candidate filter with raw probability "
             "passthrough; V15 selection-free 120-way closing envelope; "
             "zero-bet-capable discrete-log allocation"
