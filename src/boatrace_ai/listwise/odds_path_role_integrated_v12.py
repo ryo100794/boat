@@ -240,6 +240,32 @@ def _append_selection_observations(
     return appended
 
 
+def _copy_initial_selection_observations(
+    observations: Iterable[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Own the mutable observation list without mutating caller state."""
+    return [dict(row) for row in (observations or ())]
+
+
+def _assert_strict_prior_selection_observations(
+    observations: Iterable[Mapping[str, Any]], *, evaluation_date: str
+) -> None:
+    boundary = date.fromisoformat(evaluation_date)
+    for row in observations:
+        raw_date = str(row.get("race_date") or "")
+        try:
+            observation_date = date.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise ValueError(
+                "selection conformal observation race_date must be an ISO date"
+            ) from exc
+        if observation_date >= boundary:
+            raise ValueError(
+                "selection conformal observations must be strict-prior days: "
+                f"race_date={raw_date}, evaluation_date={evaluation_date}"
+            )
+
+
 def _closing_metric_adapter(metrics: Mapping[str, object]) -> dict[str, Any]:
     return {
         "closing_q20_evaluation_races": int(metrics["evaluation_races"]),
@@ -374,6 +400,7 @@ def walk_forward_evaluate_v12(
     probability_lcb_metrics_use_preallocation_population: bool = False,
     selection_conformal_fit: Callable[..., dict[str, Any]] | None = None,
     selection_observation_append: Callable[..., int] | None = None,
+    initial_selection_observations: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate V12 closing decisions in the strict-prior role-separated stack."""
     lcb_fit = probability_lcb_fit or fit_probability_lcb
@@ -409,7 +436,9 @@ def walk_forward_evaluate_v12(
         "closing_forecast_field": closing_forecast_field,
     }
 
-    observations: list[dict[str, Any]] = []
+    observations = _copy_initial_selection_observations(
+        initial_selection_observations
+    )
     folds: list[dict[str, Any]] = []
     daily: list[dict[str, Any]] = []
     diagnostics_by_date: dict[str, dict[str, Any]] = {}
@@ -446,6 +475,9 @@ def walk_forward_evaluate_v12(
             )
             if closing_fallback_policy == CLOSING_FALLBACK_V11
             else None
+        )
+        _assert_strict_prior_selection_observations(
+            observations, evaluation_date=evaluation_date
         )
         conformal = conformal_fit(
             observations,
@@ -720,6 +752,9 @@ def walk_forward_evaluate_v12(
             probability_fit=fit_odds_path_probability_v8,
             probability_attach=attach_odds_path_probability_v8,
         )
+    )
+    _assert_strict_prior_selection_observations(
+        observations, evaluation_date=deployment_date
     )
     deployment_conformal = conformal_fit(
         observations,

@@ -11,9 +11,14 @@ from .closing_envelope_conformal_v15 import (
     MODEL_NAME as CLOSING_ENVELOPE_MODEL_NAME,
     fit_closing_envelope_conformal_v15,
 )
-from .closing_odds_multihorizon_v11 import select_teacher_final_odds
+from .closing_odds_multihorizon_v11 import (
+    normalize_labeled_checkpoints,
+    select_teacher_final_odds,
+)
 from .odds_path_role_integrated_v12 import (
     CLOSING_FALLBACK_NO_BET,
+    DECISION_CHECKPOINT,
+    DECISION_OFFSET_SECONDS,
     DISCRETE_POLICY_V12,
     PROSPECTIVE_OUTPUT_KEY as V12_PROSPECTIVE_OUTPUT_KEY,
     walk_forward_evaluate_v12,
@@ -83,6 +88,47 @@ def append_closing_envelope_observations_v15(
         })
         appended += 1
     return appended
+
+
+def build_strict_prior_prewarm_observations_v15(
+    races: Iterable[Mapping[str, Any]], *, min_calibration_days: int
+) -> list[dict[str, Any]]:
+    """Build selection-free T300 baseline teachers for calibration-only days."""
+    if min_calibration_days < 0:
+        raise ValueError("min_calibration_days must not be negative")
+    materialized = [dict(race) for race in races]
+    prewarm_dates = set(sorted({
+        str(race.get("race_date") or "") for race in materialized
+    })[:min_calibration_days])
+    observations: list[dict[str, Any]] = []
+    for race in sorted(
+        (
+            row
+            for row in materialized
+            if str(row.get("race_date") or "") in prewarm_dates
+        ),
+        key=lambda row: (
+            str(row.get("race_date") or ""),
+            str(row.get("race_id") or ""),
+        ),
+    ):
+        checkpoints = normalize_labeled_checkpoints(
+            race, as_of_offset_seconds=DECISION_OFFSET_SECONDS
+        )
+        snapshot = checkpoints.get(DECISION_CHECKPOINT) or {}
+        predicted = _odds_mapping(snapshot.get("odds"))
+        actual_raw, _source = select_teacher_final_odds(race)
+        observations.append({
+            "race_date": str(race.get("race_date") or ""),
+            "race_id": str(race.get("race_id") or ""),
+            "predicted_closing_odds": predicted,
+            "actual_closing_odds": _odds_mapping(actual_raw),
+            "teacher_population": "all_120_complete_combinations",
+            "teacher_source": "strict_prior_t300_current_odds_baseline",
+            "teacher_appended_after_purchase_decision": False,
+            "strict_prior_prewarm": True,
+        })
+    return observations
 
 
 def _fit_closing_envelope(
@@ -213,6 +259,9 @@ def walk_forward_evaluate_v15(
     if closing_fallback_policy != CLOSING_FALLBACK_NO_BET:
         raise ValueError("V15 requires closing_fallback_policy='no_bet'")
     evaluation_population_hash = _evaluation_population_hash(races)
+    prewarm_observations = build_strict_prior_prewarm_observations_v15(
+        races, min_calibration_days=min_calibration_days
+    )
     result = walk_forward_evaluate_v12(
         races,
         daily_budget_yen=daily_budget_yen,
@@ -222,6 +271,7 @@ def walk_forward_evaluate_v15(
         closing_forecast_field="point_final_odds",
         selection_conformal_fit=_fit_closing_envelope,
         selection_observation_append=append_closing_envelope_observations_v15,
+        initial_selection_observations=prewarm_observations,
     )
 
     folds = [
