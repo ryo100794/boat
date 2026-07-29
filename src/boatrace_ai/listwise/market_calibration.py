@@ -154,7 +154,28 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_operational_v1"
     if calibrator_strategy == "odds_path_probability":
         return "odds_path_probability_only_v2"
+    if calibrator_strategy == "odds_path_closing_return":
+        return "odds_path_closing_return_v3"
     return MODEL_NAME
+
+
+def attach_forecast_closing_return_prices(
+    races: list[dict[str, Any]],
+    closing_policy_inputs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    adjusted = apply_prequential_closing_odds_policy_inputs(
+        races,
+        closing_policy_inputs,
+    )
+    prices_by_race_id = {
+        str(race["race_id"]): decision_odds(race) for race in adjusted
+    }
+    result = []
+    for race in races:
+        item = dict(race)
+        item["performance_return_odds"] = prices_by_race_id[str(race["race_id"])]
+        result.append(item)
+    return result
 
 
 def artifact_drop_feature_groups(artifact: dict[str, Any]) -> tuple[str, ...]:
@@ -1712,10 +1733,19 @@ def fit_deployment_configuration(
     calibrator_selection: dict[str, Any] | None = None
     calibrator_candidates = 0
     operational_model = None
-    if calibrator_strategy in {"odds_path_return", "odds_path_probability"}:
+    if calibrator_strategy in {
+        "odds_path_return",
+        "odds_path_probability",
+        "odds_path_closing_return",
+    }:
         operational_model = fit_odds_path_model(
             races,
-            use_return_multipliers=calibrator_strategy == "odds_path_return",
+            use_return_multipliers=calibrator_strategy != "odds_path_probability",
+            return_price_basis=(
+                "forecast_closing"
+                if calibrator_strategy == "odds_path_closing_return"
+                else "decision_t5"
+            ),
         )
         races = attach_odds_path_model(races, operational_model)
         from .market_residual import (
@@ -1965,10 +1995,24 @@ def walk_forward_evaluate(
         holdout = by_day[evaluation_date]
         calibrator_selection = None
         operational_model = None
-        if calibrator_strategy in {"odds_path_return", "odds_path_probability"}:
+        if calibrator_strategy in {
+            "odds_path_return",
+            "odds_path_probability",
+            "odds_path_closing_return",
+        }:
+            if calibrator_strategy == "odds_path_closing_return":
+                calibration_races = attach_forecast_closing_return_prices(
+                    calibration_races,
+                    closing_policy_inputs,
+                )
             operational_model = fit_odds_path_model(
                 calibration_races,
-                use_return_multipliers=calibrator_strategy == "odds_path_return",
+                use_return_multipliers=calibrator_strategy != "odds_path_probability",
+                return_price_basis=(
+                    "forecast_closing"
+                    if calibrator_strategy == "odds_path_closing_return"
+                    else "decision_t5"
+                ),
             )
             calibration_races = attach_odds_path_model(
                 calibration_races, operational_model
@@ -2449,8 +2493,13 @@ def walk_forward_evaluate(
         ),
         "no_lookahead_pass": True,
     }
+    deployment_races = (
+        attach_forecast_closing_return_prices(races, closing_policy_inputs)
+        if calibrator_strategy == "odds_path_closing_return"
+        else races
+    )
     deployment_configuration = fit_deployment_configuration(
-        races,
+        deployment_races,
         daily_budget_yen=daily_budget_yen,
         calibrator_strategy=calibrator_strategy,
     )
@@ -3462,6 +3511,7 @@ def build_parser() -> argparse.ArgumentParser:
             "orthogonal_residual",
             "odds_path_return",
             "odds_path_probability",
+            "odds_path_closing_return",
         ),
         default="grid",
     )

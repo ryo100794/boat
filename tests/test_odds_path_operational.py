@@ -83,6 +83,29 @@ def test_probability_only_model_does_not_double_count_closing_price_drift() -> N
     assert set(attached["historical_return_multipliers"].values()) == {1.0}
 
 
+def test_closing_return_model_uses_separate_return_price_basis() -> None:
+    races = [_race(0), _race(1)]
+    for race in races:
+        race["performance_return_odds"] = {
+            combination: odds * 0.9 for combination, odds in race["odds"].items()
+        }
+    model = fit_odds_path_model(
+        races,
+        max_iterations=10,
+        return_price_basis="forecast_closing",
+    )
+    attached = attach_odds_path_model([_race(9)], model)[0]
+
+    assert model["model_type"] == "odds_path_closing_return_v3"
+    assert model["return_price_basis"] == "forecast_closing"
+    assert model["return_multiplier_mode"] == (
+        "historical_forecast_closing_to_payout_bucket"
+    )
+    assert any(
+        value != 1.0 for value in attached["historical_return_multipliers"].values()
+    )
+
+
 def test_performance_priors_shrink_sparse_hit_and_payout_rates() -> None:
     priors = fit_performance_priors([_race(0)])
 

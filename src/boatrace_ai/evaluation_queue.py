@@ -1495,6 +1495,7 @@ def build_command(
             "orthogonal_residual",
             "odds_path_return",
             "odds_path_probability",
+            "odds_path_closing_return",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
