@@ -64,18 +64,18 @@ def test_v13_result_summary_preserves_roi_and_conditional_calibration() -> None:
         "adjusted_overprediction_hits": 0.0,
         "overprediction_reduction_hits": 1.5,
         "relative_overprediction_reduction": 1.0,
-        "adjusted_expected_vs_hit_ratio": 3 / 2.8,
+        "observed_hits_to_adjusted_predicted_hits_ratio": 3 / 2.8,
         "missing_t300_races": 0,
     }
     divergence = {
         "definition": "log(model_probability / normalized_T300_market_probability)",
         "bands": [{
             "divergence_band": "d_ge_100",
-            "races": 20,
+            "unique_races_in_band": 20,
             "tickets": 90,
             "sum_predicted_probability": 6.0,
             "hits": 4,
-            "hit_to_expected_ratio": 2 / 3,
+            "observed_hits_to_predicted_hits_ratio": 2 / 3,
             "actual_payout_roi": 1.2,
         }],
     }

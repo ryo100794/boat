@@ -78,11 +78,14 @@ def strict_prior_divergence_band_metrics(
         returned = int(source["return_yen"])
         bands.append({
             "divergence_band": label,
-            "races": len(source["race_ids"]),
+            "unique_races_in_band": len(source["race_ids"]),
+            "race_count_semantics": "unique_races_with_at_least_one_ticket_in_this_band",
             "tickets": int(source["tickets"]),
             "sum_predicted_probability": expected,
             "hits": hits,
-            "hit_to_expected_ratio": hits / expected if expected > 0.0 else None,
+            "observed_hits_to_predicted_hits_ratio": (
+                hits / expected if expected > 0.0 else None
+            ),
             "stake_yen": stake,
             "return_yen": returned,
             "actual_payout_roi": returned / stake if stake > 0 else None,
@@ -107,7 +110,7 @@ def aggregate_strict_prior_divergence_band_metrics(
     rows = [dict(item) for item in metrics if isinstance(item, Mapping)]
     totals: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
-            "races": 0,
+            "race_band_memberships": 0,
             "tickets": 0,
             "sum_predicted_probability": 0.0,
             "hits": 0,
@@ -119,7 +122,13 @@ def aggregate_strict_prior_divergence_band_metrics(
         for band in metric.get("bands") or []:
             label = str(band["divergence_band"])
             target = totals[label]
-            for key in target:
+            target["race_band_memberships"] += int(
+                band.get("unique_races_in_band") or 0
+            )
+            for key in (
+                "tickets", "sum_predicted_probability", "hits", "stake_yen",
+                "return_yen",
+            ):
                 target[key] += band.get(key) or 0
     bands = []
     for _upper, label in LOG_DIVERGENCE_BANDS:
@@ -130,11 +139,16 @@ def aggregate_strict_prior_divergence_band_metrics(
         returned = int(source["return_yen"])
         bands.append({
             "divergence_band": label,
-            "races": int(source["races"]),
+            "race_band_memberships": int(source["race_band_memberships"]),
+            "race_count_semantics": (
+                "sum_of_per_day_unique_races_in_band_not_additive_across_bands"
+            ),
             "tickets": int(source["tickets"]),
             "sum_predicted_probability": expected,
             "hits": hits,
-            "hit_to_expected_ratio": hits / expected if expected > 0.0 else None,
+            "observed_hits_to_predicted_hits_ratio": (
+                hits / expected if expected > 0.0 else None
+            ),
             "stake_yen": stake,
             "return_yen": returned,
             "actual_payout_roi": returned / stake if stake > 0 else None,

@@ -17,6 +17,7 @@ from .odds_path_conservative_v7 import (
 
 MODEL_NAME = "edge_conditional_probability_lcb_v13"
 METHOD = "strict_prior_daily_cluster_hierarchical_probability_lcb_v13"
+STATUS = "research_invalid_deprecated"
 T300_LABEL = "t300"
 TARGET_LOWER_QUANTILE = 0.05
 DEFAULT_BOOTSTRAP_SAMPLES = 2_000
@@ -206,6 +207,14 @@ def fit_edge_conditional_probability_lcb(
     base = {
         "model_name": MODEL_NAME,
         "method": METHOD,
+        "status": STATUS,
+        "research_invalid": True,
+        "deprecated": True,
+        "promotion_eligible": False,
+        "invalid_reason": (
+            "optimistic_pseudo_counts_and_double_parent_shrinkage_do_not_form_"
+            "a_valid_probability_lower_confidence_bound"
+        ),
         "target_lower_quantile": TARGET_LOWER_QUANTILE,
         "bootstrap_unit": "whole_race_day",
         "bootstrap_samples": bootstrap_samples,
@@ -337,6 +346,14 @@ def probability_lower_bound_details(
             "factor": 0.0,
             "resolution": "not_ready",
         }
+    if artifact.get("method") == "strict_prior_daily_cluster_probability_ratio_lcb_v14":
+        from .edge_conditional_probability_lcb_v14 import (
+            probability_lower_bound_details_v14,
+        )
+
+        return probability_lower_bound_details_v14(
+            race, combination, artifact
+        )
     if artifact.get("method") != METHOD:
         rank = _rank_groups(dict(probabilities)).get(combination)
         factor = float((artifact.get("factors") or {}).get(rank, 0.0))
@@ -444,13 +461,17 @@ def conditional_calibration_metrics(
     for cell_key, values in sorted(by_cell.items()):
         row = {"cell_key": cell_key, **values}
         row["candidate_count"] = int(row["candidate_count"])
-        row["adjusted_expected_vs_hit_ratio"] = (
+        row["observed_hits_to_adjusted_predicted_hits_ratio"] = (
             float(row["observed_hits"]) / float(row["adjusted_expected_hits"])
             if float(row["adjusted_expected_hits"]) > 0.0
             else None
         )
         condition_rows.append(row)
     return {
+        "status": STATUS,
+        "research_invalid": True,
+        "deprecated": True,
+        "promotion_metric_valid": False,
         "evaluation_days": len({str(race["race_date"]) for race in races}),
         "candidate_count": len(candidates),
         "raw_expected_hits": raw_expected,
@@ -459,7 +480,7 @@ def conditional_calibration_metrics(
         "raw_overprediction_hits": raw_over,
         "adjusted_overprediction_hits": adjusted_over,
         "overprediction_reduction_hits": raw_over - adjusted_over,
-        "adjusted_expected_vs_hit_ratio": (
+        "observed_hits_to_adjusted_predicted_hits_ratio": (
             observed / adjusted_expected if adjusted_expected > 0.0 else None
         ),
         "daily_lower_bound_covered": (
@@ -488,6 +509,10 @@ def aggregate_conditional_calibration_metrics(
     raw_over = max(0.0, raw_expected - observed)
     adjusted_over = max(0.0, adjusted_expected - observed)
     return {
+        "status": STATUS,
+        "research_invalid": True,
+        "deprecated": True,
+        "promotion_metric_valid": False,
         "evaluation_days": len(values),
         "coverage_days": len(eligible_coverage),
         "daily_lower_bound_coverage": (
@@ -505,7 +530,7 @@ def aggregate_conditional_calibration_metrics(
         "relative_overprediction_reduction": (
             (raw_over - adjusted_over) / raw_over if raw_over > 0.0 else None
         ),
-        "adjusted_expected_vs_hit_ratio": (
+        "observed_hits_to_adjusted_predicted_hits_ratio": (
             observed / adjusted_expected if adjusted_expected > 0.0 else None
         ),
         "missing_t300_races": sum(

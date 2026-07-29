@@ -1576,7 +1576,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1592,6 +1592,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_role_integrated_multihorizon_v11_daily:market_residual:20260718-25",
         "odds_path_role_integrated_t300_nonlinear_v12_daily:market_residual:20260718-25",
         "odds_path_role_integrated_edge_conditional_lcb_v13_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_registered_band_lcb_v14_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")

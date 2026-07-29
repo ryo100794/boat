@@ -129,11 +129,14 @@ def test_divergence_band_metrics_are_settlement_only_and_aggregate_roi() -> None
 
     assert metric["closing_odds_used_as_feature"] is False
     assert metric["result_and_payout_usage"] == "settlement_diagnostic_only"
-    assert high["races"] == 1
+    assert high["unique_races_in_band"] == 1
+    assert high["race_count_semantics"] == (
+        "unique_races_with_at_least_one_ticket_in_this_band"
+    )
     assert high["tickets"] >= 1
     assert high["sum_predicted_probability"] >= 0.2
     assert high["hits"] == 1
-    assert high["hit_to_expected_ratio"] == pytest.approx(
+    assert high["observed_hits_to_predicted_hits_ratio"] == pytest.approx(
         high["hits"] / high["sum_predicted_probability"]
     )
     assert high["actual_payout_roi"] == pytest.approx(
@@ -145,6 +148,9 @@ def test_divergence_band_metrics_are_settlement_only_and_aggregate_roi() -> None
         row for row in aggregate["bands"]
         if row["divergence_band"] == "d_ge_100"
     )
-    assert aggregate_high["races"] == 2
+    assert aggregate_high["race_band_memberships"] == 2
+    assert aggregate_high["race_count_semantics"] == (
+        "sum_of_per_day_unique_races_in_band_not_additive_across_bands"
+    )
     assert aggregate_high["tickets"] == high["tickets"] * 2
     assert aggregate_high["return_yen"] == high["return_yen"] * 2
