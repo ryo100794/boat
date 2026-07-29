@@ -57,6 +57,7 @@ def fit_performance_priors(races: list[dict[str, Any]], *, strength: float = 20.
     )
     for race in races:
         model, market = race["model_probabilities"], race["market_probabilities"]
+        return_odds = race.get("performance_return_odds") or race["odds"]
         model_ranks, market_ranks = _ranks(model), _ranks(market)
         actual = str(race["actual_combination"])
         payout_odds = float(race["actual_payout_yen"]) / 100.0
@@ -69,7 +70,9 @@ def fit_performance_priors(races: list[dict[str, Any]], *, strength: float = 20.
             row["tickets"] += 1.0
             row["hits"] += hit
             row["observed_return"] += hit * payout_odds
-            row["baseline_ev"] += float(model[combination]) * odds
+            row["baseline_ev"] += float(model[combination]) * float(
+                return_odds[combination]
+            )
     result = {}
     for key, row in buckets.items():
         tickets = row["tickets"]
@@ -132,9 +135,18 @@ def fit_odds_path_model(
     regularization: float = 0.1,
     max_iterations: int = 40,
     use_return_multipliers: bool = True,
+    return_price_basis: str = "decision_t5",
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("odds-path model requires races")
+    if return_price_basis not in {"decision_t5", "forecast_closing"}:
+        raise ValueError("unsupported return_price_basis")
+    if return_price_basis == "forecast_closing" and not use_return_multipliers:
+        raise ValueError("forecast_closing basis requires return multipliers")
+    if return_price_basis == "forecast_closing" and any(
+        len(race.get("performance_return_odds") or {}) != 120 for race in races
+    ):
+        raise ValueError("forecast_closing basis requires 120 return prices per race")
     priors = fit_performance_priors(races)
     prepared = []
     actual_indices = []
@@ -207,15 +219,22 @@ def fit_odds_path_model(
             break
     return {
         "model_type": (
+            "odds_path_closing_return_v3"
+            if return_price_basis == "forecast_closing"
+            else
             "odds_path_probability_and_return_v1"
             if use_return_multipliers
             else "odds_path_probability_only_v2"
         ),
         "return_multiplier_mode": (
+            "historical_forecast_closing_to_payout_bucket"
+            if return_price_basis == "forecast_closing"
+            else
             "historical_t5_to_payout_bucket"
             if use_return_multipliers
             else "disabled_for_forecast_closing_price"
         ),
+        "return_price_basis": return_price_basis,
         "feature_names": FEATURE_NAMES,
         "weights": weights.tolist(), "regularization": float(regularization),
         "iterations": iteration, "converged": converged, "objective": float(objective),

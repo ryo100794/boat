@@ -242,6 +242,40 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     assert result["promotion_eligible"] is False
 
 
+def test_closing_return_strategy_uses_prequential_price_teacher() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_closing_return",
+    )
+
+    assert result["model"] == "odds_path_closing_return_v3"
+    assert result["evaluation_days"] == 2
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        assert operational_model["return_price_basis"] == "forecast_closing"
+        assert operational_model["return_multiplier_mode"] == (
+            "historical_forecast_closing_to_payout_bucket"
+        )
+    deployment = result["deployment_configuration"]
+    assert deployment["role"] == "next_day_refit_not_evaluation"
+    assert deployment["trained_through_date"] == "2026-07-21"
+    assert deployment["training_races"] == 48
+    assert deployment["calibrator_strategy"] == "odds_path_closing_return"
+    assert deployment["operational_model"]["return_price_basis"] == "forecast_closing"
+
+
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     races = [
         _race(race_date, rno)
