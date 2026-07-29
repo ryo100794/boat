@@ -94,7 +94,6 @@ MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
 CLEAN_DAY_CALIBRATOR_STRATEGIES = frozenset({
     "odds_path_role_integrated_registered_band_lcb_v14",
     "odds_path_role_integrated_selection_free_envelope_v15",
-    "odds_path_role_integrated_fixed_band_passthrough_v16",
 })
 ODDS_CHECKPOINT_SCHEMA_VERSION = 1
 ODDS_CHECKPOINT_OFFSETS_SECONDS = (300, 120, 60, 30, 10)
@@ -4840,9 +4839,14 @@ def main(argv: list[str] | None = None) -> int:
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
             "calibration_input_scope": (
-                "complete_market_days_only"
-                if evaluation_input_races is clean_races
-                else "all_eligible_races"
+                "all_eligible_races_including_partial_market_days"
+                if args.calibrator_strategy
+                == "odds_path_role_integrated_fixed_band_passthrough_v16"
+                else (
+                    "complete_market_days_only"
+                    if evaluation_input_races is clean_races
+                    else "all_eligible_races"
+                )
             ),
             **benchmark,
         }
