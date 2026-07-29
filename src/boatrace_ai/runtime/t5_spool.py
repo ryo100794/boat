@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -434,16 +435,30 @@ class T5DurabilityWorker:
         date_provider: Callable[[], date],
         fetch: Callable[..., tuple[dict[str, Any], bytes] | None] = fetch_t5_capture,
         poll_seconds: float = 2.0,
+        max_workers: int = 24,
+        attempts_per_target: int = 2,
     ) -> None:
+        if max_workers <= 0:
+            raise ValueError("T-5 max_workers must be positive")
+        if attempts_per_target <= 0:
+            raise ValueError("T-5 attempts_per_target must be positive")
         self.spool = spool
         self.date_provider = date_provider
         self.fetch = fetch
         self.poll_seconds = poll_seconds
+        self.max_workers = max_workers
+        self.attempts_per_target = attempts_per_target
         self._captured: set[str] = set()
         self._capture_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.counters = {"captures": 0, "failed": 0, "capacity_rejected": 0}
+        self.counters = {
+            "captures": 0,
+            "failed": 0,
+            "retry_attempts": 0,
+            "late_rejected": 0,
+            "capacity_rejected": 0,
+        }
 
     def start(self) -> None:
         if self._thread is not None:
@@ -464,7 +479,7 @@ class T5DurabilityWorker:
         race_date = self.date_provider()
         rows = self.spool.load_schedule(race_date)
         pending = self.spool.pending_event_ids()
-        captured = 0
+        due: list[tuple[dict[str, Any], datetime, str]] = []
         for row in rows:
             start_at = stored_start_time(row.get("deadline_at"))
             cutoff_at = estimated_deadline_from_start(start_at)
@@ -472,34 +487,89 @@ class T5DurabilityWorker:
                 continue
             t5_at = cutoff_at - timedelta(minutes=MODEL_DECISION_LEAD_MINUTES)
             seconds = (t5_at - now).total_seconds()
-            capture_key = f"{row['race_id']}:{t5_at.isoformat()}"
-            if capture_key in self._captured or not -1.0 <= seconds <= 60.0:
+            race_key = str(row["race_id"])
+            capture_key = f"{race_key}:{t5_at.isoformat()}"
+            if capture_key in self._captured or not 0.0 <= seconds <= 60.0:
                 continue
-            if any(event_id.startswith(f"{row['race_id']}-t5-") for event_id in pending):
+            if any(event_id.startswith(f"{race_key}-t5-") for event_id in pending):
                 self._captured.add(capture_key)
                 continue
+            due.append((row, t5_at, capture_key))
+
+        if not due:
+            return 0
+
+        captured = 0
+        with ThreadPoolExecutor(
+            max_workers=min(self.max_workers, len(due)),
+            thread_name_prefix="t5-fetch",
+        ) as executor:
+            futures = {
+                executor.submit(self._fetch_with_retry, race_date, row): (
+                    t5_at,
+                    capture_key,
+                )
+                for row, t5_at, capture_key in due
+            }
+            for future in as_completed(futures):
+                t5_at, capture_key = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = None
+                if result is None:
+                    self.counters["failed"] += 1
+                    continue
+                event, raw_payload = result
+                if not self._is_strict_t5_capture(event, t5_at=t5_at):
+                    self.counters["late_rejected"] += 1
+                    continue
+                try:
+                    self.spool.enqueue(event, raw_payload=raw_payload)
+                except SpoolCapacityError:
+                    self.counters["capacity_rejected"] += 1
+                    continue
+                except Exception:
+                    self.counters["failed"] += 1
+                    continue
+                self._captured.add(capture_key)
+                pending.add(str(event["event_id"]))
+                self.counters["captures"] += 1
+                captured += 1
+        return captured
+
+    def _fetch_with_retry(
+        self, race_date: date, row: dict[str, Any]
+    ) -> tuple[dict[str, Any], bytes] | None:
+        for attempt in range(self.attempts_per_target):
+            if attempt:
+                self.counters["retry_attempts"] += 1
             try:
                 result = self.fetch(
                     race_date=race_date,
                     jcd=str(row["jcd"]),
                     rno=int(row["rno"]),
                 )
-                if result is None:
-                    self.counters["failed"] += 1
-                    continue
-                event, raw_payload = result
-                self.spool.enqueue(event, raw_payload=raw_payload)
-            except SpoolCapacityError:
-                self.counters["capacity_rejected"] += 1
-                continue
             except Exception:
-                self.counters["failed"] += 1
-                continue
-            self._captured.add(capture_key)
-            pending.add(str(event["event_id"]))
-            self.counters["captures"] += 1
-            captured += 1
-        return captured
+                result = None
+            if result is not None:
+                return result
+        return None
+
+    @staticmethod
+    def _is_strict_t5_capture(
+        event: dict[str, Any], *, t5_at: datetime
+    ) -> bool:
+        try:
+            captured_at = datetime.fromisoformat(str(event["captured_at"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        age_seconds = (
+            t5_at.astimezone(timezone.utc) - captured_at.astimezone(timezone.utc)
+        ).total_seconds()
+        return 0.0 <= age_seconds <= 60.0
 
     def status(self) -> dict[str, Any]:
         return {**self.spool.status(), **self.counters}

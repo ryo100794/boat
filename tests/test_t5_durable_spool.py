@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from boatrace_ai.db import connection, init_db
 from boatrace_ai.odds_quality import TRIFECTA_COMBINATION_KEYS, TRIFECTA_PARSER_VERSION
-from boatrace_ai.runtime import postgresql_collector
+from boatrace_ai.runtime import collector, postgresql_collector
 from boatrace_ai.runtime.t5_spool import (
     SpoolCapacityError,
     T5DurabilityWorker,
@@ -107,6 +109,122 @@ def test_fifteen_minute_db_outage_spools_all_due_t5_and_replays_after_restart(
 
     assert restarted_spool.status()["pending"] == 0
     assert len(list(archive_dir.rglob("odds3t-t5-*.html"))) == 4
+
+
+def test_simultaneous_t5_targets_start_in_parallel_before_any_fetch_finishes(
+    tmp_path,
+) -> None:
+    spool = T5Spool(tmp_path / "spool")
+    t5_at = datetime(2026, 7, 29, 5, 31, tzinfo=timezone.utc)
+    simultaneous = _schedule(t5_at.astimezone(JST) + timedelta(minutes=10))
+    for row in simultaneous:
+        row["deadline_at"] = simultaneous[0]["deadline_at"]
+    spool.save_schedule(RACE_DATE, simultaneous)
+    barrier = threading.Barrier(len(simultaneous))
+    started = []
+
+    def fetch(*, race_date, jcd, rno):
+        started.append(rno)
+        barrier.wait(timeout=2)
+        return _capture(rno, t5_at - timedelta(seconds=5))
+
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=fetch,
+        max_workers=len(simultaneous),
+    )
+
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=30)) == 4
+    assert sorted(started) == [1, 2, 3, 4]
+    assert spool.status()["pending"] == 4
+
+
+def test_t5_retry_is_per_target_and_does_not_block_other_simultaneous_races(
+    tmp_path,
+) -> None:
+    spool = T5Spool(tmp_path / "spool")
+    t5_at = datetime(2026, 7, 29, 5, 31, tzinfo=timezone.utc)
+    simultaneous = _schedule(t5_at.astimezone(JST) + timedelta(minutes=10), count=2)
+    for row in simultaneous:
+        row["deadline_at"] = simultaneous[0]["deadline_at"]
+    spool.save_schedule(RACE_DATE, simultaneous)
+    attempts = {1: 0, 2: 0}
+
+    def fetch(*, race_date, jcd, rno):
+        attempts[rno] += 1
+        if rno == 1 and attempts[rno] == 1:
+            return None
+        return _capture(rno, t5_at - timedelta(seconds=4))
+
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=fetch,
+        max_workers=2,
+        attempts_per_target=2,
+    )
+
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=20)) == 2
+    assert attempts == {1: 2, 2: 1}
+    assert worker.status()["retry_attempts"] == 1
+
+
+def test_post_t300_response_is_rejected_and_never_spooled_as_t300(tmp_path) -> None:
+    spool = T5Spool(tmp_path / "spool")
+    t5_at = datetime(2026, 7, 29, 5, 31, tzinfo=timezone.utc)
+    rows = _schedule(t5_at.astimezone(JST) + timedelta(minutes=10), count=1)
+    spool.save_schedule(RACE_DATE, rows)
+
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=lambda **_kwargs: _capture(1, t5_at + timedelta(seconds=6)),
+    )
+
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=1)) == 0
+    assert spool.status()["pending"] == 0
+    assert worker.status()["late_rejected"] == 1
+
+
+def test_t5_worker_starts_before_storage_init_and_survives_retry(monkeypatch) -> None:
+    events = []
+
+    class Worker:
+        def start(self):
+            events.append("worker_started")
+
+    attempts = 0
+
+    def initialize(_db):
+        nonlocal attempts
+        attempts += 1
+        events.append(f"init_{attempts}")
+        if attempts == 1:
+            raise ConnectionError("database recovering")
+
+    def retry_sleep(seconds):
+        assert seconds == 0.25
+        assert events[0] == "worker_started"
+        events.append("retry_wait")
+
+    monkeypatch.setattr(collector, "init_db", initialize)
+    monkeypatch.setattr(collector.time, "sleep", retry_sleep)
+
+    collector.start_t5_worker_before_storage_init(
+        Worker(), "postgresql-direct", retry_seconds=0.25
+    )
+
+    assert events == ["worker_started", "init_1", "retry_wait", "init_2"]
+
+
+def test_collector_process_starts_before_postgresql_is_ready() -> None:
+    script = Path("scripts/deployment/run-boatrace-collector-foreground.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pg_isready" not in script
+    assert "boatrace_ai.runtime.postgresql_collector" in script
 
 
 def test_replay_is_idempotent_when_commit_succeeds_before_spool_ack(tmp_path) -> None:
