@@ -1511,6 +1511,7 @@ def build_command(
             "odds_path_role_integrated_multihorizon_v11",
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
+            "odds_path_role_integrated_registered_band_lcb_v14",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -1534,6 +1535,7 @@ def build_command(
         if strategy in {
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
+            "odds_path_role_integrated_registered_band_lcb_v14",
         }:
             fallback_policy = str(
                 params.get("v12_closing_fallback_policy", "v11")
@@ -2687,7 +2689,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "observed_hits", "raw_overprediction_hits",
             "adjusted_overprediction_hits", "overprediction_reduction_hits",
             "relative_overprediction_reduction",
-            "adjusted_expected_vs_hit_ratio", "missing_t300_races",
+            "observed_hits_to_adjusted_predicted_hits_ratio", "missing_t300_races",
         ):
             if key in edge_calibration:
                 summary[f"edge_conditional_{key}"] = edge_calibration[key]
@@ -2713,6 +2715,37 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if isinstance(prospective_v13.get(key), dict):
                 summary[f"prospective_v13_{key}"] = dict(prospective_v13[key])
+    selected_v14 = payload.get("selected_candidate_calibration")
+    if isinstance(selected_v14, dict):
+        summary["selected_candidate_calibration"] = dict(selected_v14)
+        for key in (
+            "evaluation_days", "candidate_count", "raw_predicted_hits",
+            "adjusted_predicted_hits", "observed_hits",
+            "observed_hits_to_raw_predicted_hits_ratio",
+            "observed_hits_to_adjusted_predicted_hits_ratio",
+            "adjusted_predicted_hits_to_observed_hits_ratio",
+            "day_bootstrap_observed_to_adjusted_predicted_ratio_lower_95",
+            "candidate_binary_brier_score", "candidate_binary_log_loss",
+            "inconsistent_t300_snapshot_races",
+        ):
+            if key in selected_v14:
+                summary[f"v14_calibration_{key}"] = selected_v14[key]
+    prospective_v14 = payload.get("prospective_role_integrated_v14_walk_forward")
+    if isinstance(prospective_v14, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days", "evaluated_races",
+            "tickets", "hit_tickets", "stake_yen", "return_yen", "profit_yen",
+            "roi", "roi_without_largest_hit", "profit_without_largest_hit_yen",
+            "daily_cluster_bootstrap_roi_lower_95", "promotion_eligible",
+        ):
+            if key in prospective_v14:
+                summary[f"prospective_v14_{key}"] = prospective_v14[key]
+        for key in (
+            "selected_candidate_calibration", "strict_prior_divergence_bands",
+            "closing_model_identity", "promotion_gate",
+        ):
+            if isinstance(prospective_v14.get(key), dict):
+                summary[f"prospective_v14_{key}"] = dict(prospective_v14[key])
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -2906,6 +2939,13 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["promotion_eligible"] = payload.get("promotion_eligible")
     summary.setdefault("model", payload.get("model"))
     summary.setdefault("status", payload.get("status"))
+    if payload.get("model") == "odds_path_role_integrated_edge_conditional_lcb_v13":
+        summary.update({
+            "status": "research_invalid_deprecated",
+            "research_invalid": True,
+            "deprecated": True,
+            "promotion_eligible": False,
+        })
     return {key: value for key, value in summary.items() if value is not None}
 
 
@@ -3753,6 +3793,26 @@ DEFAULT_WORK_TICKETS = (
         55,
     ),
     (
+        "MODEL-REGISTERED-BAND-LCB-V14-001",
+        "固定T300乖離帯の保守的確率補正V14",
+        "モデル",
+        "2026-07-29に固定したlog(model/T300市場確率)=[0.5,1.0)だけを対象に、疑似カウントなしの日単位bootstrap下限とV12確定オッズ下限を組み合わせる",
+        "履歴結果は探索扱いとし昇格証拠にしない。2026-07-30以降のstrict-prior評価で5日・300候補・20的中以上、最大払戻除外ROI>1、日次ROI bootstrap片側95%下限>1、確率観測/予測比の片側95%下限>1、T300 snapshot不一致0を満たす",
+        99,
+        "in_progress",
+        35,
+    ),
+    (
+        "MODEL-WEEKEND-PILOT-20260801",
+        "週末V14上限制御パイロット",
+        "モデル運用",
+        "2026-07-30 shadow、2026-07-31 go/no-go、2026-08-01 capped pilot、2026-08-02 continuation auditを日付固定で実施する",
+        "2026-07-30は実投票無効のshadow、2026-07-31は最大払戻除外ROI>1かつ日次bootstrap下限>1かつデータ欠損0の場合だけgo。未達なら実投票を無効のままにする。2026-08-01の初期実投票上限は元資金10,000円に対し2,000円/日、2026-08-02に継続可否を監査する",
+        100,
+        "queued",
+        0,
+    ),
+    (
         "UI-MODEL-DAILY-001",
         "モデル個別の日次集計と表タップ選択",
         "WebUI",
@@ -4155,6 +4215,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_role_integrated_edge_conditional_lcb_v13",
     ),
+    (
+        "odds_path_role_integrated_registered_band_lcb_v14_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_registered_band_lcb_v14",
+    ),
 )
 
 
@@ -4210,6 +4276,7 @@ def seed_daily_market_jobs(
                 in {
                     "odds_path_role_integrated_t300_nonlinear_v12",
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
+                    "odds_path_role_integrated_registered_band_lcb_v14",
                 }
                 else {}
             ),
@@ -4221,6 +4288,7 @@ def seed_daily_market_jobs(
                     "odds_path_role_integrated_multihorizon_v11",
                     "odds_path_role_integrated_t300_nonlinear_v12",
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
+                    "odds_path_role_integrated_registered_band_lcb_v14",
                 }
                 else 7200
                 if calibrator_strategy in {
@@ -4268,6 +4336,9 @@ def seed_daily_market_jobs(
                 else 88
                 if calibrator_strategy
                 == "odds_path_role_integrated_edge_conditional_lcb_v13"
+                else 87
+                if calibrator_strategy
+                == "odds_path_role_integrated_registered_band_lcb_v14"
                 else 96
             ),
             max_attempts=2,

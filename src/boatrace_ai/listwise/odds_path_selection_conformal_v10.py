@@ -92,6 +92,7 @@ def _simulate_selection_conformal_policy(
     probability_lcb: dict[str, Any],
     daily_budget_yen: int,
     selection_conformal: dict[str, Any],
+    capture_preallocation_candidates: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     dates = {str(race["race_date"]) for race in races}
     if len(dates) > 1:
@@ -182,6 +183,20 @@ def _simulate_selection_conformal_policy(
         for date in sorted(by_day_candidates)
         for candidate in by_day_candidates[date]
     ]
+    if capture_preallocation_candidates:
+        diagnostic["_preallocation_candidates"] = [
+            {
+                key: candidate.get(key)
+                for key in (
+                    "race_id", "race_date", "jcd", "rno", "combination",
+                    "probability", "estimated_odds", "estimated_ev", "safe_ev",
+                    "predicted_closing", "raw_predicted_closing_odds",
+                    "selection_conformal_haircut", "raw_safe_ev",
+                    "probability_lcb_detail", "odds_source",
+                )
+            }
+            for candidate in allocator_input_candidates
+        ]
     coverage = selection_coverage_metrics(
         races, allocator_input_candidates, haircut=haircut
     )

@@ -205,6 +205,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_role_integrated_t300_nonlinear_v12"
     if calibrator_strategy == "odds_path_role_integrated_edge_conditional_lcb_v13":
         return "odds_path_role_integrated_edge_conditional_lcb_v13"
+    if calibrator_strategy == "odds_path_role_integrated_registered_band_lcb_v14":
+        return "odds_path_role_integrated_registered_band_lcb_v14"
     return MODEL_NAME
 
 
@@ -2233,6 +2235,16 @@ def walk_forward_evaluate(
         from .odds_path_role_integrated_v13 import walk_forward_evaluate_v13
 
         return walk_forward_evaluate_v13(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+            closing_fallback_policy=v12_closing_fallback_policy,
+        )
+    if calibrator_strategy == "odds_path_role_integrated_registered_band_lcb_v14":
+        from .odds_path_role_integrated_v14 import walk_forward_evaluate_v14
+
+        return walk_forward_evaluate_v14(
             races,
             daily_budget_yen=daily_budget_yen,
             min_calibration_days=min_calibration_days,
@@ -4627,6 +4639,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_role_integrated_multihorizon_v11",
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
+            "odds_path_role_integrated_registered_band_lcb_v14",
         ),
         default="grid",
     )

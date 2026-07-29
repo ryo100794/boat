@@ -21,7 +21,7 @@ def _calibration(candidate_count: int = 3) -> dict[str, Any]:
         "raw_overprediction_hits": 0.2,
         "adjusted_overprediction_hits": 0.0,
         "overprediction_reduction_hits": 0.2,
-        "adjusted_expected_vs_hit_ratio": 1 / 0.7,
+        "observed_hits_to_adjusted_predicted_hits_ratio": 1 / 0.7,
         "daily_lower_bound_covered": True,
         "missing_t300_races": 0,
     }
@@ -33,11 +33,11 @@ def _divergence() -> dict[str, Any]:
         "missing_t300_races": 0,
         "bands": [{
             "divergence_band": "d_ge_100",
-            "races": 1,
+            "unique_races_in_band": 1,
             "tickets": 2,
             "sum_predicted_probability": 0.4,
             "hits": 1,
-            "hit_to_expected_ratio": 2.5,
+            "observed_hits_to_predicted_hits_ratio": 2.5,
             "stake_yen": 200,
             "return_yen": 800,
             "actual_payout_roi": 4.0,

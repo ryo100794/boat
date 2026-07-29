@@ -25,6 +25,7 @@ STRATEGY_NAME = MODEL_NAME
 REGISTERED_AFTER = "2026-07-29"
 PROSPECTIVE_OUTPUT_KEY = "prospective_role_integrated_v13_walk_forward"
 COMPARISON_ROLE = "v12_closing_with_edge_conditional_probability_lcb_v13_shadow"
+STATUS = "research_invalid_deprecated"
 
 DISCRETE_POLICY_V13: dict[str, Any] = {
     **DISCRETE_POLICY_V12,
@@ -184,13 +185,22 @@ def walk_forward_evaluate_v13(
     prospective_gate.update(_conditional_calibration_gate(
         prospective["conditional_calibration"]
     ))
-    prospective_checks = [
-        value for key, value in prospective_gate.items() if key.endswith("_pass")
-    ]
+    prospective_gate.update({
+        "valid_probability_lower_bound_pass": False,
+        "not_deprecated_pass": False,
+    })
     prospective["promotion_gate"] = prospective_gate
-    prospective["promotion_eligible"] = (
-        bool(prospective_checks) and all(prospective_checks)
-    )
+    prospective["promotion_eligible"] = False
+    prospective.update({
+        "status": STATUS,
+        "research_invalid": True,
+        "deprecated": True,
+        "promotion_specific_metrics_valid": False,
+        "invalid_reason": (
+            "V13 uses optimistic pseudo-counts, double shrinkage and a mismatched "
+            "candidate evaluation population"
+        ),
+    })
     deployment = dict(result.get("deployment_configuration") or {})
     _remove_closing_estimators(deployment)
     deployment.update({
@@ -200,9 +210,15 @@ def walk_forward_evaluate_v13(
         "closing_lower_bound_role": "unchanged_v12_or_explicit_v11_fallback",
         "selected_policy": {"name": "no_bet", "no_bet": True},
         "operational_status": "shadow_only_until_v13_promotion_gate",
+        "deployment_eligible": False,
+        "status": STATUS,
     })
     result.update({
         "model": MODEL_NAME,
+        "status": STATUS,
+        "research_invalid": True,
+        "deprecated": True,
+        "promotion_specific_metrics_valid": False,
         "calibrator_strategy": STRATEGY_NAME,
         "comparison_role": COMPARISON_ROLE,
         "validation_design": (
@@ -222,7 +238,7 @@ def walk_forward_evaluate_v13(
             "strict_prior_divergence_bands"
         ],
         "promotion_gate": prospective_gate,
-        "promotion_eligible": prospective["promotion_eligible"],
+        "promotion_eligible": False,
         PROSPECTIVE_OUTPUT_KEY: prospective,
         "deployment_configuration": deployment,
     })

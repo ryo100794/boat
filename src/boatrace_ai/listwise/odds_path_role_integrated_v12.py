@@ -366,6 +366,7 @@ def walk_forward_evaluate_v12(
     closing_fallback_policy: str = CLOSING_FALLBACK_V11,
     probability_lcb_fit: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
     probability_lcb_metrics: Callable[..., dict[str, Any]] | None = None,
+    probability_lcb_metrics_use_preallocation_population: bool = False,
 ) -> dict[str, Any]:
     """Evaluate V12 closing decisions in the strict-prior role-separated stack."""
     lcb_fit = probability_lcb_fit or fit_probability_lcb
@@ -452,6 +453,12 @@ def walk_forward_evaluate_v12(
             probability_lcb=probability_lcb,
             daily_budget_yen=daily_budget_yen,
             selection_conformal=conformal,
+            capture_preallocation_candidates=(
+                probability_lcb_metrics_use_preallocation_population
+            ),
+        )
+        preallocation_population = purchase_diagnostic.pop(
+            "_preallocation_candidates", []
         )
         research_bankroll: dict[str, Any] | None = None
         research_diagnostic: dict[str, Any] | None = None
@@ -481,15 +488,21 @@ def walk_forward_evaluate_v12(
         if evaluation_date not in output_dates:
             continue
 
-        lcb_evaluation = (
-            probability_lcb_metrics(
+        if probability_lcb_metrics is None:
+            lcb_evaluation = None
+        elif probability_lcb_metrics_use_preallocation_population:
+            lcb_evaluation = probability_lcb_metrics(
+                transformed,
+                closing_forecasts=closing_forecasts,
+                probability_lcb=probability_lcb,
+                selected_candidates=preallocation_population,
+            )
+        else:
+            lcb_evaluation = probability_lcb_metrics(
                 transformed,
                 closing_forecasts=closing_forecasts,
                 probability_lcb=probability_lcb,
             )
-            if probability_lcb_metrics is not None
-            else None
-        )
 
         if research_bankroll is not None and research_diagnostic is not None:
             research_daily.extend(research_bankroll["daily"])
