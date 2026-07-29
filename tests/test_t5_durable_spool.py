@@ -87,8 +87,6 @@ def test_fifteen_minute_db_outage_spools_all_due_t5_and_replays_after_restart(
         spool,
         date_provider=lambda: RACE_DATE,
         fetch=fetch,
-        checkpoint_offsets=(300,),
-        closing_window_seconds=0,
     )
     for minute in (0, 5, 10, 15):
         active_capture_time[0] = first_t5 + timedelta(minutes=minute)
@@ -108,7 +106,7 @@ def test_fifteen_minute_db_outage_spools_all_due_t5_and_replays_after_restart(
         assert conn.execute("SELECT COUNT(*) FROM raw_pages").fetchone()[0] == 4
 
     assert restarted_spool.status()["pending"] == 0
-    assert len(list(archive_dir.rglob("odds3t-cp300-*.html"))) == 4
+    assert len(list(archive_dir.rglob("odds3t-t5-*.html"))) == 4
 
 
 def test_replay_is_idempotent_when_commit_succeeds_before_spool_ack(tmp_path) -> None:
@@ -195,7 +193,6 @@ def test_retrying_postgresql_connection_keeps_waiting_until_db_recovers(
 ) -> None:
     attempts = []
     closed = []
-    retry_hooks = []
 
     @contextmanager
     def recovered_connection(_dsn):
@@ -210,13 +207,10 @@ def test_retrying_postgresql_connection_keeps_waiting_until_db_recovers(
     monkeypatch.setattr(postgresql_collector, "connection", recovered_connection)
     monkeypatch.setattr(postgresql_collector.time, "sleep", lambda _seconds: None)
 
-    with postgresql_collector.retrying_connection(
-        "dsn", on_retry=lambda: retry_hooks.append("retry")
-    ) as conn:
+    with postgresql_collector.retrying_connection("dsn") as conn:
         assert conn == "connection"
 
     assert len(attempts) == 3
-    assert retry_hooks == ["retry", "retry"]
     assert closed == [True]
 
 
