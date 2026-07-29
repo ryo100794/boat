@@ -180,6 +180,104 @@ def test_v7_fixed_policy_enforces_two_ticket_and_exposure_caps() -> None:
     assert result["selected_races"] == 1
 
 
+def test_v7_purchase_diagnostics_explain_missing_inputs() -> None:
+    missing_closing = _race("2026-07-30", 1)
+    complete_closing = _race("2026-07-30", 2)
+    closing = {combination: 10.0 for combination in COMBINATIONS}
+
+    result = v7.simulate_fixed_safe_ev_policy(
+        [missing_closing, complete_closing],
+        closing_forecasts={complete_closing["race_id"]: closing},
+        probability_lcb={"ready": False, "factors": {}},
+        daily_budget_yen=10_000,
+    )
+
+    diagnostic = result["purchase_decision_diagnostics"]
+    assert diagnostic["total_races"] == 2
+    assert diagnostic["closing_forecast_missing_races"] == 1
+    assert diagnostic["lcb_not_ready_races"] == 2
+    assert diagnostic["evaluated_combinations"] == 0
+    assert diagnostic["safe_ev_max"] is None
+    assert diagnostic["safe_ev_p50"] is None
+    assert diagnostic["safe_ev_p90"] is None
+    assert diagnostic["safe_ev_p95"] is None
+    assert diagnostic["safe_ev_p99"] is None
+    assert diagnostic["safe_ev_at_least"] == {
+        "1.00": 0,
+        "1.02": 0,
+        "1.05": 0,
+        "1.10": 0,
+    }
+    assert diagnostic["threshold_pass_candidates"] == 0
+    assert diagnostic["candidates_after_race_cap"] == 0
+    assert diagnostic["purchases_after_allocation"] == 0
+    assert result["tickets"] == 0
+    assert result["stake_yen"] == 0
+
+
+def test_v7_purchase_diagnostics_measure_every_safe_ev_stage() -> None:
+    race = _race("2026-07-30", 1)
+    residual_probability = 0.20 / (len(COMBINATIONS) - 2)
+    race["model_probabilities"] = {
+        combination: (
+            0.45
+            if index == 0
+            else 0.35
+            if index == 1
+            else residual_probability
+        )
+        for index, combination in enumerate(COMBINATIONS)
+    }
+    targets = (
+        [1.101] * 20
+        + [1.051] * 10
+        + [1.021] * 10
+        + [1.001] * 20
+        + [0.99] * 60
+    )
+    closing = {
+        combination: target / race["model_probabilities"][combination]
+        for combination, target in zip(COMBINATIONS, targets, strict=True)
+    }
+
+    result = v7.simulate_fixed_safe_ev_policy(
+        [race],
+        closing_forecasts={race["race_id"]: closing},
+        probability_lcb={
+            "ready": True,
+            "factors": {
+                "top2": 1.0,
+                "top5": 1.0,
+                "top20": 1.0,
+                "rest": 1.0,
+            },
+        },
+        daily_budget_yen=10_000,
+    )
+
+    diagnostic = result["purchase_decision_diagnostics"]
+    assert diagnostic["total_races"] == 1
+    assert diagnostic["closing_forecast_missing_races"] == 0
+    assert diagnostic["lcb_not_ready_races"] == 0
+    assert diagnostic["evaluated_combinations"] == 120
+    assert diagnostic["safe_ev_max"] == pytest.approx(1.101)
+    assert diagnostic["safe_ev_p50"] == pytest.approx(0.9955)
+    assert diagnostic["safe_ev_p90"] == pytest.approx(1.101)
+    assert diagnostic["safe_ev_p95"] == pytest.approx(1.101)
+    assert diagnostic["safe_ev_p99"] == pytest.approx(1.101)
+    assert diagnostic["safe_ev_at_least"] == {
+        "1.00": 60,
+        "1.02": 40,
+        "1.05": 30,
+        "1.10": 20,
+    }
+    assert diagnostic["threshold_pass_candidates"] == 30
+    assert diagnostic["candidates_after_race_cap"] == 2
+    assert diagnostic["purchases_after_allocation"] == 2
+    assert result["tickets"] == 2
+    assert result["stake_yen"] == 200
+
+
 def test_v7_outer_models_and_lcb_never_cross_holdout_date(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,3 +330,24 @@ def test_v7_outer_models_and_lcb_never_cross_holdout_date(
         "quantile_coverage_pass",
         "no_lookahead_pass",
     }
+    fold_diagnostics = [
+        fold["bankroll"]["purchase_decision_diagnostics"]
+        for fold in result["folds"]
+    ]
+    aggregate = result["purchase_decision_diagnostics"]
+    prospective_diagnostic = prospective[
+        "purchase_decision_diagnostics"
+    ]
+    assert [row["total_races"] for row in fold_diagnostics] == [2, 2]
+    assert aggregate["total_races"] == 4
+    assert aggregate["evaluated_combinations"] == sum(
+        row["evaluated_combinations"] for row in fold_diagnostics
+    )
+    assert aggregate["threshold_pass_candidates"] == sum(
+        row["threshold_pass_candidates"] for row in fold_diagnostics
+    )
+    assert aggregate["candidates_after_race_cap"] == sum(
+        row["candidates_after_race_cap"] for row in fold_diagnostics
+    )
+    assert aggregate["purchases_after_allocation"] == result["tickets"]
+    assert prospective_diagnostic == aggregate
