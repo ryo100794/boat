@@ -2023,6 +2023,14 @@ _ODDS_PATH_TRACK_SPECS = (
         "日付順nested L2 / log(closing/T-5) q20 / 日cluster probability LCB / "
         "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
     ),
+    (
+        "odds_path_market_offset_discrete_log_ev_v9",
+        "市場offset 離散対数効用 v9",
+        "v8と同一の10年履歴base確率、outer日以前のT-5市場・結果、公式closingオッズ",
+        "v8市場offset確率 / log(closing/T-5) q20 / 日cluster probability LCB / "
+        "固定safe EV 1.05・最大2点 / 100円単位の離散期待対数効用 / "
+        "日資金1万円・0口許容・日20%/R3%/点1%",
+    ),
 )
 
 
@@ -3754,7 +3762,8 @@ _REPORT_MODEL_FAMILY_ALIASES = (
         r"^(odds_path_(?:observed_closing_return_v4|"
         r"prequential_shrinkage_return_v6|"
         r"crossfit_conservative_ev_v7|"
-        r"market_offset_crossfit_conservative_ev_v8))(?:_|$)"
+        r"market_offset_crossfit_conservative_ev_v8|"
+        r"market_offset_discrete_log_ev_v9))(?:_|$)"
     ),
 )
 

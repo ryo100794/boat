@@ -1066,3 +1066,41 @@ def test_prospective_normalized_ev_uses_only_unseen_days_after_registration() ->
     assert [row["race_date"] for row in top5["daily"]] == ["2026-07-29"]
     assert folds["2026-07-28"]["prospective_top5_narrow_ev_bankroll"] is None
     assert folds["2026-07-29"]["prospective_top5_narrow_ev_bankroll"] is not None
+
+
+def test_cli_accepts_and_dispatches_v9_discrete_strategy(monkeypatch) -> None:
+    import boatrace_ai.listwise.odds_path_discrete_v9 as v9
+
+    args = build_parser().parse_args([
+        "--from-date",
+        "2026-07-22",
+        "--calibrator-strategy",
+        "odds_path_market_offset_discrete_log_ev_v9",
+    ])
+    assert args.calibrator_strategy == v9.STRATEGY_NAME
+
+    expected = {"model": v9.MODEL_NAME, "dispatch": "v9"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v9, "walk_forward_evaluate_v9", fake_walk_forward)
+    races = [{"race_id": "v9-race"}]
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=7,
+        calibrator_strategy=v9.STRATEGY_NAME,
+        evaluation_dates=("2026-07-29",),
+    )
+
+    assert result == expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 7,
+        "evaluation_dates": ("2026-07-29",),
+    }

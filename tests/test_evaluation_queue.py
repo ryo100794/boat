@@ -1521,7 +1521,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1532,6 +1532,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
         "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
         "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
+        "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1584,6 +1585,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert crossfit_v8["priority"] == 93
     assert crossfit_v8["parameters"]["timeout_seconds"] == 7200
+    discrete_v9 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_discrete_log_ev_v9"
+    )
+    assert discrete_v9["priority"] == 92
+    assert discrete_v9["parameters"]["timeout_seconds"] == 7200
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
@@ -3049,3 +3057,39 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
     assert summary["prospective_observed_closing_v4_registered_after"] == (
         "2026-07-29"
     )
+
+
+def test_result_summary_preserves_v9_prospective_and_allocation_diagnostics() -> None:
+    diagnostics = {
+        "threshold_pass_candidates": 40,
+        "candidates_before_allocation": 20,
+        "allocation_candidate_tickets": 12,
+        "purchases_after_allocation": 8,
+        "zero_purchase_days": 2,
+        "zero_reason_counts": {"no_positive_discrete_log_growth": 2},
+    }
+    summary = summarize_result({
+        "model": "odds_path_market_offset_discrete_log_ev_v9",
+        "purchase_decision_diagnostics": diagnostics,
+        "prospective_market_offset_discrete_log_ev_v9_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 31,
+            "evaluated_races": 4_100,
+            "tickets": 320,
+            "roi": 1.08,
+            "roi_without_largest_hit": 1.02,
+            "promotion_eligible": True,
+        },
+    })
+
+    assert summary["model"] == "odds_path_market_offset_discrete_log_ev_v9"
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["candidates_before_allocation"] == 20
+    assert summary["allocation_candidate_tickets"] == 12
+    assert summary["zero_reason_counts"] == {
+        "no_positive_discrete_log_growth": 2
+    }
+    assert summary["prospective_v9_registered_after"] == "2026-07-29"
+    assert summary["prospective_v9_roi"] == 1.08
+    assert summary["prospective_v9_promotion_eligible"] is True

@@ -260,3 +260,42 @@ def test_odds_path_v4_v6_v7_v8_tracks_share_complete_web_metrics(tmp_path) -> No
     assert "閾値通過0" in MODEL_REPORT_HTML
     assert "配分後0" in MODEL_REPORT_HTML
     assert "safe_ev_p95" in MODEL_REPORT_HTML
+
+
+def test_v9_report_track_exposes_discrete_allocation_diagnostics(tmp_path) -> None:
+    diagnostics = {
+        "threshold_pass_candidates": 11,
+        "candidates_before_allocation": 6,
+        "allocation_candidate_tickets": 4,
+        "purchases_after_allocation": 3,
+        "zero_reason_counts": {"no_positive_discrete_log_growth": 1},
+    }
+    rows = _model_track_summaries(
+        tmp_path,
+        [],
+        {"jobs": []},
+        evaluation_jobs=[{
+            "db_job_id": 109,
+            "name": "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260722-29",
+            "status": "完了",
+            "evaluated_races": 918,
+            "evaluation_days": 6,
+            "trifecta_log_loss": 3.68,
+            "roi": 1.03,
+            "purchase_decision_diagnostics": diagnostics,
+        }],
+    )
+    row = next(
+        item
+        for item in rows
+        if item["id"] == "odds_path_market_offset_discrete_log_ev_v9"
+    )
+
+    assert row["model_key"] == "odds_path_market_offset_discrete_log_ev_v9"
+    assert row["trifecta_log_loss"] == 3.68
+    assert row["roi"] == 1.03
+    assert row["purchase_decision_diagnostics"] == diagnostics
+    assert "離散期待対数効用" in row["training"]
+    assert "配分前" in MODEL_REPORT_HTML
+    assert "正効用" in MODEL_REPORT_HTML
+    assert "zero_reason_counts" in MODEL_REPORT_HTML
