@@ -24,6 +24,7 @@ JST = timezone(timedelta(hours=9))
 V12_MODEL = v12_shadow_bundle.INTEGRATED_MODEL_NAME
 V14_MODEL = "odds_path_role_integrated_registered_band_lcb_v14"
 SHADOW_STRATEGY = v12_shadow_bundle.STRATEGY_NAME
+V14_SHADOW_STRATEGY = "v14_registered_band_t300"
 FAMILIES = ("v12", "v14")
 
 
@@ -134,12 +135,12 @@ def _validate_v14(result: Mapping[str, Any]) -> Mapping[str, Any]:
     for key in ("operational_model", "probability_lcb", "selection_conformal", "candidate_policy"):
         if not isinstance(deployment.get(key), Mapping):
             raise ValueError(f"V14 deployment component is missing: {key}")
-    closing = deployment.get("closing_t300_v12_model")
-    point = closing.get("point_model") if isinstance(closing, Mapping) else None
-    if not isinstance(point, Mapping):
-        raise ValueError("V14 report-only closing metadata is missing")
-    if point.get("estimator") is not None:
-        raise ValueError("V14 result must not contain a live closing estimator")
+    if "closing_t300_v12_model" in deployment:
+        raise ValueError("V14 evaluation must not supply a closing model")
+    if not isinstance(result.get("closing_model_identity"), Mapping):
+        raise ValueError("V14 closing model identity is missing")
+    if not isinstance(result.get("closing_model_audit"), Mapping):
+        raise ValueError("V14 closing model audit is missing")
     return deployment
 
 
@@ -257,7 +258,19 @@ def first_race_start(conn: Any, prediction_date: str) -> datetime | None:
         "SELECT MIN(deadline_at) AS first_start FROM races WHERE race_date = %s",
         (prediction_date,),
     ).fetchone()
-    return None if row is None else row["first_start"]
+    if row is None or row["first_start"] is None:
+        return None
+    value = row["first_start"]
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValueError("races.deadline_at must be an ISO datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("races.deadline_at must include a timezone offset")
+    return parsed.astimezone(JST)
 
 
 def _active_state(state_root: Path) -> dict[str, Any] | None:
@@ -324,8 +337,8 @@ def promote(
     release = state_root / "releases" / release_name
     release.mkdir(parents=True, exist_ok=True)
     specs = {
-        family: f"{family}_daily:{SHADOW_STRATEGY}:{row['path']}:{base_model}"
-        for family, row in bundles.items()
+        "v12": f"v12_daily:{SHADOW_STRATEGY}:{bundles['v12']['path']}:{base_model}",
+        "v14": f"v14_daily:{V14_SHADOW_STRATEGY}:{bundles['v14']['path']}:{base_model}",
     }
     env = "\n".join((
         "BOATRACE_T300_SHADOW_MODEL_SPEC=" + shlex.quote(specs["v12"]),
