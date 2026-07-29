@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ class ListwiseLinearModel:
     alpha: float
     learning_rate: float
     epochs: int
+    loss_blend: float | None = None
 
 
 def stable_softmax(scores: np.ndarray) -> np.ndarray:
@@ -56,10 +58,31 @@ def pl_loss_and_score_gradient(
     ranks: np.ndarray,
     *,
     target: str,
+    loss_blend: float | None = None,
 ) -> tuple[float, np.ndarray]:
-    """Mean loss and score gradient for a winner or PL top-three target."""
-    if target not in TARGETS:
+    """Mean loss and gradient for winner, top-three PL, or their convex blend."""
+    if target not in TARGETS and not (
+        target == "blended" and loss_blend is not None
+    ):
         raise ValueError(f"unknown target: {target}")
+    if loss_blend is not None:
+        blend = float(loss_blend)
+        if not 0.0 <= blend <= 1.0:
+            raise ValueError("loss_blend must be between 0 and 1")
+        if blend == 0.0:
+            return pl_loss_and_score_gradient(scores, ranks, target="winner")
+        if blend == 1.0:
+            return pl_loss_and_score_gradient(scores, ranks, target="top3_pl")
+        winner_loss, winner_gradient = pl_loss_and_score_gradient(
+            scores, ranks, target="winner"
+        )
+        top3_loss, top3_gradient = pl_loss_and_score_gradient(
+            scores, ranks, target="top3_pl"
+        )
+        return (
+            (1.0 - blend) * winner_loss + blend * top3_loss,
+            (1.0 - blend) * winner_gradient + blend * top3_gradient,
+        )
     values = np.asarray(scores, dtype=np.float64)
     rank_values = np.asarray(ranks)
     if values.ndim != 2 or values.shape[1] != 6 or rank_values.shape != values.shape:
@@ -103,9 +126,20 @@ def train_listwise_model(
     epochs: int = 3,
     batch_races: int = 1_000,
     scaler: StandardScaler | None = None,
-) -> tuple[ListwiseLinearModel, list[dict[str, float]]]:
-    if target not in TARGETS:
+    loss_blend: float | None = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
+) -> tuple[ListwiseLinearModel, list[dict[str, Any]]]:
+    if target not in TARGETS and not (
+        target == "blended" and loss_blend is not None
+    ):
         raise ValueError(f"unknown target: {target}")
+    if loss_blend is not None and not 0.0 <= float(loss_blend) <= 1.0:
+        raise ValueError("loss_blend must be between 0 and 1")
+    if early_stopping_patience is not None and int(early_stopping_patience) < 1:
+        raise ValueError("early_stopping_patience must be positive")
+    if float(early_stopping_min_delta) < 0.0:
+        raise ValueError("early_stopping_min_delta must be non-negative")
     train_end = min(dataset.race_count, max(0, int(train_race_end)))
     if train_end <= 0:
         raise ValueError("no races available for training")
@@ -115,7 +149,11 @@ def train_listwise_model(
     first_moment = np.zeros_like(weights)
     second_moment = np.zeros_like(weights)
     beta1, beta2, step = 0.9, 0.999, 0
-    history: list[dict[str, float]] = []
+    history: list[dict[str, Any]] = []
+    best_loss = math.inf
+    best_weights: np.ndarray | None = None
+    best_epoch = 0
+    stale_epochs = 0
 
     for epoch in range(max(1, int(epochs))):
         loss_sum = 0.0
@@ -125,7 +163,10 @@ def train_listwise_model(
             matrix = scaler.transform(dataset.matrix[dataset.row_slice(race_start, race_stop)])
             scores = np.asarray(matrix.dot(weights)).reshape(-1, 6)
             loss, score_gradient = pl_loss_and_score_gradient(
-                scores, dataset.ranks[race_start:race_stop], target=target
+                scores,
+                dataset.ranks[race_start:race_stop],
+                target=target,
+                loss_blend=loss_blend,
             )
             gradient = np.asarray(matrix.T.dot(score_gradient.reshape(-1))).reshape(-1)
             gradient += float(alpha) * weights
@@ -141,13 +182,37 @@ def train_listwise_model(
             count = race_stop - race_start
             loss_sum += loss * count
             seen += count
+        epoch_loss = loss_sum / max(1, seen)
+        improved = epoch_loss < best_loss - float(early_stopping_min_delta)
+        if improved:
+            best_loss = epoch_loss
+            best_weights = weights.copy()
+            best_epoch = epoch + 1
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
         history.append({
             "epoch": float(epoch + 1),
-            "training_ranking_log_loss": loss_sum / max(1, seen),
+            "training_ranking_log_loss": epoch_loss,
             "weight_l2": float(np.linalg.norm(weights)),
+            "improved": improved,
         })
+        if (
+            early_stopping_patience is not None
+            and stale_epochs >= int(early_stopping_patience)
+        ):
+            history[-1]["early_stopped"] = True
+            break
+    if best_weights is not None:
+        weights = best_weights
     return ListwiseLinearModel(
-        weights, scaler, target, float(alpha), float(learning_rate), max(1, int(epochs))
+        weights,
+        scaler,
+        target,
+        float(alpha),
+        float(learning_rate),
+        best_epoch,
+        None if loss_blend is None else float(loss_blend),
     ), history
 
 
