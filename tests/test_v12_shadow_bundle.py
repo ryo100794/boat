@@ -315,6 +315,25 @@ def test_source_hash_and_date_mismatches_fail(
         )
 
 
+def test_source_trained_through_accepts_json_list_joblib_tuple_equivalence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluation_path, cache_path, _ = _write_inputs(tmp_path)
+    cache = joblib.load(cache_path)
+    cache["contract"]["trained_through"] = tuple(
+        cache["contract"]["trained_through"]
+    )
+    joblib.dump(cache, cache_path)
+    _install_refit(monkeypatch)
+
+    builder.build_v12_shadow_bundle(
+        evaluation_path,
+        scored_cache=cache_path,
+        output=tmp_path / "tuple-identity.joblib",
+        prediction_date="2026-07-04",
+    )
+
+
 def test_future_dates_and_non_next_day_prediction_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

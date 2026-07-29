@@ -198,7 +198,9 @@ def _validate_source_identity(
     cache_source_hash = str(contract.get("model_sha256") or "")
     if len(evaluation_source_hash) != 64 or evaluation_source_hash != cache_source_hash:
         raise ValueError("source model SHA256 mismatch between evaluation and scored cache")
-    if evaluation.get("source_model_trained_through") != contract.get("trained_through"):
+    if _canonical_sha256(evaluation.get("source_model_trained_through")) != _canonical_sha256(
+        contract.get("trained_through")
+    ):
         raise ValueError("source model trained-through identity mismatch")
     for key in ("from_date", "through_date"):
         left = _iso_date(evaluation.get(key), f"evaluation {key}")
