@@ -132,7 +132,7 @@ def bundle_rows(tmp_path: Path, suffix: str) -> dict[str, dict]:
     return {
         family: {
             "path": str(tmp_path / f"{family}-{suffix}.joblib"),
-            "manifest": {"output": {"bundle_sha256": family[1:] * 64}},
+            "manifest": {"output": {"bundle_sha256": hashlib.sha256(f"{family}:{suffix}".encode()).hexdigest()}},
         }
         for family in updater.FAMILIES
     }
