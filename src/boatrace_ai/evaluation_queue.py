@@ -1507,6 +1507,7 @@ def build_command(
             "odds_path_market_offset_crossfit_conservative_ev",
             "odds_path_market_offset_discrete_log_ev_v9",
             "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+            "odds_path_role_integrated_multihorizon_v11",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -3982,6 +3983,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_market_offset_selection_conformal_discrete_ev_v10",
     ),
+    (
+        "odds_path_role_integrated_multihorizon_v11_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_multihorizon_v11",
+    ),
 )
 
 
@@ -4034,7 +4041,10 @@ def seed_daily_market_jobs(
             "timeout_seconds": (
                 14_400
                 if calibrator_strategy
-                == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+                in {
+                    "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+                    "odds_path_role_integrated_multihorizon_v11",
+                }
                 else 7200
                 if calibrator_strategy in {
                     "odds_path_return",
@@ -4072,6 +4082,9 @@ def seed_daily_market_jobs(
                 else 91
                 if calibrator_strategy
                 == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+                else 90
+                if calibrator_strategy
+                == "odds_path_role_integrated_multihorizon_v11"
                 else 96
             ),
             max_attempts=2,
