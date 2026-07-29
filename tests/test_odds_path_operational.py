@@ -125,6 +125,34 @@ def test_observed_closing_return_model_records_teacher_basis() -> None:
     )
 
 
+def test_hit_shrinkage_prevents_sparse_return_multiplier_extremes() -> None:
+    races = [_race(0), _race(1)]
+    for race in races:
+        race["performance_return_odds"] = dict(race["odds"])
+    model = fit_odds_path_model(
+        races,
+        max_iterations=10,
+        return_price_basis="observed_closing",
+        return_hit_prior=20.0,
+        min_return_multiplier=0.5,
+        max_return_multiplier=1.5,
+    )
+
+    assert model["model_type"] == "odds_path_hit_shrunk_closing_return_v5"
+    assert model["return_hit_prior"] == 20.0
+    assert model["return_multiplier_bounds"] == [0.5, 1.5]
+    multipliers = [
+        row["return_multiplier"]
+        for row in model["performance_priors"]["buckets"].values()
+    ]
+    assert min(multipliers) >= 0.5
+    assert max(multipliers) <= 1.5
+    assert all(
+        0.0 <= row["return_hit_shrinkage_weight"] < 1.0
+        for row in model["performance_priors"]["buckets"].values()
+    )
+
+
 def test_performance_priors_shrink_sparse_hit_and_payout_rates() -> None:
     priors = fit_performance_priors([_race(0)])
 
