@@ -91,6 +91,11 @@ TREND_POINT_KELLY_REGISTERED_AFTER = "2026-07-28"
 # rounded 1.20 haircut before evaluating any later unseen day.
 CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR = 1.20
 MARKET_MAX_SNAPSHOT_AGE_SECONDS = 65.0
+CLEAN_DAY_CALIBRATOR_STRATEGIES = frozenset({
+    "odds_path_role_integrated_registered_band_lcb_v14",
+    "odds_path_role_integrated_selection_free_envelope_v15",
+    "odds_path_role_integrated_fixed_band_passthrough_v16",
+})
 ODDS_CHECKPOINT_SCHEMA_VERSION = 1
 ODDS_CHECKPOINT_OFFSETS_SECONDS = (300, 120, 60, 30, 10)
 PREFETCH_CHECKPOINTS_KEY = "odds_checkpoints"
@@ -209,7 +214,20 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_role_integrated_registered_band_lcb_v14"
     if calibrator_strategy == "odds_path_role_integrated_selection_free_envelope_v15":
         return "odds_path_role_integrated_selection_free_envelope_v15"
+    if calibrator_strategy == "odds_path_role_integrated_fixed_band_passthrough_v16":
+        return "odds_path_role_integrated_fixed_band_passthrough_v16"
     return MODEL_NAME
+
+
+def select_calibrator_evaluation_races(
+    calibrator_strategy: str,
+    *,
+    races: list[dict[str, Any]],
+    clean_races: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if calibrator_strategy in CLEAN_DAY_CALIBRATOR_STRATEGIES:
+        return clean_races
+    return races
 
 
 def attach_forecast_closing_return_prices(
@@ -2257,6 +2275,22 @@ def walk_forward_evaluate(
         from .odds_path_role_integrated_v15 import walk_forward_evaluate_v15
 
         result = walk_forward_evaluate_v15(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+            closing_fallback_policy=v12_closing_fallback_policy,
+        )
+        result["model"] = odds_path_model_name(calibrator_strategy)
+        result["calibrator_strategy"] = calibrator_strategy
+        deployment = result.get("deployment_configuration")
+        if isinstance(deployment, dict):
+            deployment["calibrator_strategy"] = calibrator_strategy
+        return result
+    if calibrator_strategy == "odds_path_role_integrated_fixed_band_passthrough_v16":
+        from .odds_path_role_integrated_v16 import walk_forward_evaluate_v16
+
+        result = walk_forward_evaluate_v16(
             races,
             daily_budget_yen=daily_budget_yen,
             min_calibration_days=min_calibration_days,
@@ -4659,6 +4693,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
             "odds_path_role_integrated_selection_free_envelope_v15",
+            "odds_path_role_integrated_fixed_band_passthrough_v16",
         ),
         default="grid",
     )
@@ -4764,14 +4799,10 @@ def main(argv: list[str] | None = None) -> int:
             **benchmark,
         }
     )
-    evaluation_input_races = (
-        clean_races
-        if args.calibrator_strategy
-        in {
-            "odds_path_role_integrated_registered_band_lcb_v14",
-            "odds_path_role_integrated_selection_free_envelope_v15",
-        }
-        else races
+    evaluation_input_races = select_calibrator_evaluation_races(
+        args.calibrator_strategy,
+        races=races,
+        clean_races=clean_races,
     )
     result = walk_forward_evaluate(
         evaluation_input_races,

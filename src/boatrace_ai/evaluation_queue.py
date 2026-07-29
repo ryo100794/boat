@@ -1513,6 +1513,7 @@ def build_command(
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
             "odds_path_role_integrated_selection_free_envelope_v15",
+            "odds_path_role_integrated_fixed_band_passthrough_v16",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -1538,12 +1539,19 @@ def build_command(
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
             "odds_path_role_integrated_selection_free_envelope_v15",
+            "odds_path_role_integrated_fixed_band_passthrough_v16",
         }:
             fallback_policy = str(
                 params.get("v12_closing_fallback_policy", "v11")
             )
             if fallback_policy not in {"v11", "no_bet"}:
                 raise ValueError("unsupported v12 closing fallback policy")
+            if (
+                strategy
+                == "odds_path_role_integrated_fixed_band_passthrough_v16"
+                and fallback_policy != "no_bet"
+            ):
+                raise ValueError("V16 requires v12_closing_fallback_policy=no_bet")
             command.extend([
                 "--v12-closing-fallback-policy",
                 fallback_policy,
@@ -2751,6 +2759,43 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if isinstance(prospective_v14.get(key), dict):
                 summary[f"prospective_v14_{key}"] = dict(prospective_v14[key])
+    closing_envelope_v15 = payload.get("closing_envelope_conformal")
+    if isinstance(closing_envelope_v15, dict):
+        summary["closing_envelope_conformal"] = dict(closing_envelope_v15)
+    prospective_v15 = payload.get("prospective_role_integrated_v15_walk_forward")
+    if isinstance(prospective_v15, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days", "evaluated_races",
+            "tickets", "hit_tickets", "stake_yen", "return_yen", "profit_yen",
+            "roi", "roi_without_largest_hit", "profit_without_largest_hit_yen",
+            "daily_cluster_bootstrap_roi_lower_95", "effective_hit_count",
+            "largest_hit_return_share", "max_drawdown_yen",
+            "selected_races", "hit_races", "profitable_days",
+            "profitable_day_fraction", "race_selection_rate",
+            "promotion_eligible",
+        ):
+            if key in prospective_v15:
+                summary[f"prospective_v15_{key}"] = prospective_v15[key]
+        for key in ("closing_envelope_conformal", "promotion_gate"):
+            if isinstance(prospective_v15.get(key), dict):
+                summary[f"prospective_v15_{key}"] = dict(prospective_v15[key])
+    prospective_v16 = payload.get("prospective_role_integrated_v16_walk_forward")
+    if isinstance(prospective_v16, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days", "evaluated_races",
+            "tickets", "hit_tickets", "stake_yen", "return_yen", "profit_yen",
+            "roi", "roi_without_largest_hit", "profit_without_largest_hit_yen",
+            "daily_cluster_bootstrap_roi_lower_95", "effective_hit_count",
+            "largest_hit_return_share", "max_drawdown_yen",
+            "selected_races", "hit_races", "profitable_days",
+            "profitable_day_fraction", "race_selection_rate",
+            "promotion_eligible",
+        ):
+            if key in prospective_v16:
+                summary[f"prospective_v16_{key}"] = prospective_v16[key]
+        for key in ("closing_envelope_conformal", "promotion_gate"):
+            if isinstance(prospective_v16.get(key), dict):
+                summary[f"prospective_v16_{key}"] = dict(prospective_v16[key])
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -4221,6 +4266,12 @@ MARKET_EVALUATION_SOURCES = (
         "odds_path_role_integrated_edge_conditional_lcb_v13",
     ),
     (
+        "odds_path_role_integrated_fixed_band_passthrough_v16_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_fixed_band_passthrough_v16",
+    ),
+    (
         "odds_path_role_integrated_selection_free_envelope_v15_daily",
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
@@ -4250,8 +4301,10 @@ def seed_daily_market_jobs(
     for source_spec in MARKET_EVALUATION_SOURCES:
         label, task_type, source_key, calibrator_strategy, *artifact_kinds = source_spec
         if (
-            calibrator_strategy
-            == "odds_path_role_integrated_selection_free_envelope_v15"
+            calibrator_strategy in {
+                "odds_path_role_integrated_selection_free_envelope_v15",
+                "odds_path_role_integrated_fixed_band_passthrough_v16",
+            }
             and through.isoformat() <= "2026-07-29"
         ):
             continue
@@ -4286,8 +4339,10 @@ def seed_daily_market_jobs(
             "daily_budget_yen": 10000,
             "min_calibration_days": (
                 5
-                if calibrator_strategy
-                == "odds_path_role_integrated_selection_free_envelope_v15"
+                if calibrator_strategy in {
+                    "odds_path_role_integrated_selection_free_envelope_v15",
+                    "odds_path_role_integrated_fixed_band_passthrough_v16",
+                }
                 else 2
             ),
             "calibrator_strategy": calibrator_strategy,
@@ -4295,8 +4350,10 @@ def seed_daily_market_jobs(
             **(
                 {"v12_closing_fallback_policy": (
                     "no_bet"
-                    if calibrator_strategy
-                    == "odds_path_role_integrated_selection_free_envelope_v15"
+                    if calibrator_strategy in {
+                        "odds_path_role_integrated_selection_free_envelope_v15",
+                        "odds_path_role_integrated_fixed_band_passthrough_v16",
+                    }
                     else "v11"
                 )}
                 if calibrator_strategy
@@ -4305,6 +4362,7 @@ def seed_daily_market_jobs(
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
                     "odds_path_role_integrated_registered_band_lcb_v14",
                     "odds_path_role_integrated_selection_free_envelope_v15",
+                    "odds_path_role_integrated_fixed_band_passthrough_v16",
                 }
                 else {}
             ),
@@ -4318,6 +4376,7 @@ def seed_daily_market_jobs(
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
                     "odds_path_role_integrated_registered_band_lcb_v14",
                     "odds_path_role_integrated_selection_free_envelope_v15",
+                    "odds_path_role_integrated_fixed_band_passthrough_v16",
                 }
                 else 7200
                 if calibrator_strategy in {
@@ -4338,7 +4397,10 @@ def seed_daily_market_jobs(
             model_key=f"{label}:market_residual:{range_key}",
             parameters=parameters,
             priority=(
-                99
+                100
+                if calibrator_strategy
+                == "odds_path_role_integrated_fixed_band_passthrough_v16"
+                else 99
                 if calibrator_strategy
                 == "odds_path_role_integrated_selection_free_envelope_v15"
                 else 98
