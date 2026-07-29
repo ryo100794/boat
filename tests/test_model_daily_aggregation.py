@@ -218,6 +218,7 @@ def test_odds_path_generation_and_daily_jobs_share_canonical_model_key() -> None
     v7 = "odds_path_crossfit_conservative_ev_v7"
     v8 = "odds_path_market_offset_crossfit_conservative_ev_v8"
     v9 = "odds_path_market_offset_discrete_log_ev_v9"
+    v10 = "odds_path_market_offset_selection_conformal_discrete_ev_v10"
     assert _report_model_key(f"{v4}_daily:market_residual:20260718-28") == v4
     assert _report_model_key(
         f"{v6}_daily:market_residual:20260718-28_market_offset_registered_policy_walk_forward"
@@ -225,6 +226,7 @@ def test_odds_path_generation_and_daily_jobs_share_canonical_model_key() -> None
     assert _report_model_key(f"{v7}_daily:market_residual:20260718-28") == v7
     assert _report_model_key(f"{v8}_daily:market_residual:20260718-28") == v8
     assert _report_model_key(f"{v9}_daily:market_residual:20260718-28") == v9
+    assert _report_model_key(f"{v10}_daily:market_residual:20260718-28") == v10
 
     track = {"id": v6, "label": "事前逐次収縮リターン v6"}
     bankroll = {

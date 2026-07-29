@@ -190,6 +190,11 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_market_offset_crossfit_conservative_ev_v8"
     if calibrator_strategy == "odds_path_market_offset_discrete_log_ev_v9":
         return "odds_path_market_offset_discrete_log_ev_v9"
+    if (
+        calibrator_strategy
+        == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    ):
+        return "odds_path_market_offset_selection_conformal_discrete_ev_v10"
     return MODEL_NAME
 
 
@@ -2182,6 +2187,18 @@ def walk_forward_evaluate(
             min_calibration_days=min_calibration_days,
             evaluation_dates=evaluation_dates,
         )
+    if (
+        calibrator_strategy
+        == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    ):
+        from .odds_path_selection_conformal_v10 import walk_forward_evaluate_v10
+
+        return walk_forward_evaluate_v10(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+        )
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         by_day[str(race["race_date"])].append(race)
@@ -3972,6 +3989,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_crossfit_conservative_ev",
             "odds_path_market_offset_crossfit_conservative_ev",
             "odds_path_market_offset_discrete_log_ev_v9",
+            "odds_path_market_offset_selection_conformal_discrete_ev_v10",
         ),
         default="grid",
     )

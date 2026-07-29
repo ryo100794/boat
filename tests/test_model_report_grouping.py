@@ -299,3 +299,56 @@ def test_v9_report_track_exposes_discrete_allocation_diagnostics(tmp_path) -> No
     assert "配分前" in MODEL_REPORT_HTML
     assert "正効用" in MODEL_REPORT_HTML
     assert "zero_reason_counts" in MODEL_REPORT_HTML
+
+
+def test_v10_report_track_exposes_selection_conformal_guard(tmp_path) -> None:
+    diagnostics = {
+        "raw_selected_candidates": 9,
+        "guarded_threshold_candidates": 3,
+        "purchases_after_allocation": 2,
+        "zero_reason_counts": {"no_candidate_after_selection_conformal": 1},
+    }
+    conformal = {
+        "selection_raw_closing_coverage": 2 / 9,
+        "selection_guarded_closing_coverage": 8 / 9,
+        "haircut_latest": 0.55,
+        "training_days_latest": 6,
+        "training_candidates_latest": 41,
+    }
+    rows = _model_track_summaries(
+        tmp_path,
+        [],
+        {"jobs": []},
+        evaluation_jobs=[{
+            "db_job_id": 110,
+            "name": "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily:market_residual:20260718-29",
+            "status": "完了",
+            "evaluated_races": 918,
+            "evaluation_days": 6,
+            "trifecta_log_loss": 3.67,
+            "roi": 1.04,
+            "purchase_decision_diagnostics": diagnostics,
+            "selection_conformal": conformal,
+            **conformal,
+        }],
+    )
+    row = next(
+        item
+        for item in rows
+        if item["id"]
+        == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    )
+
+    assert row["purchase_decision_diagnostics"] == diagnostics
+    assert row["selection_conformal"] == conformal
+    assert row["selection_guarded_closing_coverage"] == 8 / 9
+    assert row["haircut_latest"] == 0.55
+    assert row["training_days_latest"] == 6
+    assert row["training_candidates_latest"] == 41
+    assert "選択条件付き有限標本conformal" in row["training"]
+    assert "条件終値 raw" in MODEL_REPORT_HTML
+    assert "haircut" in MODEL_REPORT_HTML
+    assert "trainingCandidates" in MODEL_REPORT_HTML
+    assert "条件補正未学習" in MODEL_REPORT_HTML
+    assert "補正後候補0" in MODEL_REPORT_HTML
+    assert "zero_reason_counts" in MODEL_REPORT_HTML

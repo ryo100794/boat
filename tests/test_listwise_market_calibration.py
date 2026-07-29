@@ -25,6 +25,7 @@ from boatrace_ai.listwise.market_calibration import (
     registered_evaluation_dates,
     summarize_registered_policy_daily,
     load_scored_cache,
+    odds_path_model_name,
     score_real_odds_races,
     select_calibrator,
     select_policy,
@@ -1103,4 +1104,45 @@ def test_cli_accepts_and_dispatches_v9_discrete_strategy(monkeypatch) -> None:
         "daily_budget_yen": 10_000,
         "min_calibration_days": 7,
         "evaluation_dates": ("2026-07-29",),
+    }
+
+
+def test_cli_accepts_and_dispatches_v10_selection_conformal_strategy(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.odds_path_selection_conformal_v10 as v10
+
+    args = build_parser().parse_args([
+        "--from-date",
+        "2026-07-22",
+        "--calibrator-strategy",
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+    ])
+    assert args.calibrator_strategy == v10.STRATEGY_NAME
+    assert odds_path_model_name(args.calibrator_strategy) == v10.MODEL_NAME
+
+    expected = {"model": v10.MODEL_NAME, "dispatch": "v10"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v10, "walk_forward_evaluate_v10", fake_walk_forward)
+    races = [{"race_id": "v10-race"}]
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=7,
+        calibrator_strategy=v10.STRATEGY_NAME,
+        evaluation_dates=("2026-07-30",),
+    )
+
+    assert result == expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 7,
+        "evaluation_dates": ("2026-07-30",),
     }

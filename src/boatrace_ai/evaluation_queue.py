@@ -1167,6 +1167,7 @@ def build_command(
             "validation_races", "embargo_days", "batch_races", "immigrants", "mutation_rate",
             "random_injections", "migration_interval", "migration_applied",
             "diversity_rescue", "structural_elite_count", "timeout_seconds",
+            "genetic_protocol_version",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1179,6 +1180,7 @@ def build_command(
         if not cohort or len(cohort) > 80:
             raise ValueError("genetic cohort is required and must be at most 80 characters")
         generation = _integer(params, "generation", 0, 0, 20)
+        _integer(params, "genetic_protocol_version", 4, 1, 99)
         island_id = _integer(params, "island_id", 0, 0, 63)
         island_count = _integer(params, "island_count", 4, 2, 64)
         if island_id >= island_count:
@@ -1504,6 +1506,7 @@ def build_command(
             "odds_path_crossfit_conservative_ev",
             "odds_path_market_offset_crossfit_conservative_ev",
             "odds_path_market_offset_discrete_log_ev_v9",
+            "odds_path_market_offset_selection_conformal_discrete_ev_v10",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -2314,9 +2317,33 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "purchases_after_allocation",
             "zero_purchase_days",
             "zero_reason_counts",
+            "raw_selected_candidates",
+            "guarded_threshold_candidates",
             "safe_ev_max",
             "safe_ev_p95",
             "safe_ev_p99",
+        ):
+            if key in preserved:
+                summary[key] = preserved[key]
+    selection_conformal = payload.get("selection_conformal")
+    if isinstance(selection_conformal, dict):
+        preserved = dict(selection_conformal)
+        summary["selection_conformal"] = preserved
+        for key in (
+            "selection_evaluation_candidates",
+            "selection_raw_covered_candidates",
+            "selection_guarded_covered_candidates",
+            "selection_raw_closing_coverage",
+            "selection_guarded_closing_coverage",
+            "selection_closing_ratio_mean",
+            "selection_closing_ratio_p10",
+            "selection_closing_ratio_median",
+            "haircut_latest",
+            "haircut_min",
+            "haircut_max",
+            "training_days_latest",
+            "training_candidates_latest",
+            "trained_through_date_latest",
         ):
             if key in preserved:
                 summary[key] = preserved[key]
@@ -2547,6 +2574,37 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in prospective_v9:
                 summary[f"prospective_v9_{key}"] = prospective_v9[key]
+    prospective_v10 = payload.get(
+        "prospective_market_offset_selection_conformal_discrete_ev_v10_walk_forward"
+    )
+    if isinstance(prospective_v10, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "effective_hit_count",
+            "largest_hit_return_share",
+            "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss",
+            "market_trifecta_log_loss",
+            "closing_q20_pinball_loss",
+            "closing_q20_lower_coverage",
+            "promotion_eligible",
+        ):
+            if key in prospective_v10:
+                summary[f"prospective_v10_{key}"] = prospective_v10[key]
+        conformal = prospective_v10.get("selection_conformal")
+        if isinstance(conformal, dict):
+            summary["prospective_v10_selection_conformal"] = dict(conformal)
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3815,6 +3873,9 @@ def seed_default_jobs(
     return inserted
 
 
+GENETIC_PROTOCOL_VERSION = 4
+
+
 def seed_daily_genetic_jobs(
     conn: Any,
     *,
@@ -3828,9 +3889,10 @@ def seed_daily_genetic_jobs(
         SELECT 1 FROM model_evaluation_jobs
         WHERE task_type = 'genetic_island_search'
           AND parameters->>'evaluation_date' = ?
+          AND COALESCE(parameters->>'genetic_protocol_version', '0') = ?
         LIMIT 1
         """,
-        (evaluation_date,),
+        (evaluation_date, str(GENETIC_PROTOCOL_VERSION)),
     ).fetchone()
     if existing is not None:
         return []
@@ -3845,6 +3907,7 @@ def seed_daily_genetic_jobs(
             model_key=f"genetic-listwise-{cohort}-g00-i{island_id:02d}",
             parameters={
                 "evaluation_date": evaluation_date,
+                "genetic_protocol_version": GENETIC_PROTOCOL_VERSION,
                 "cohort": cohort,
                 "generation": 0,
                 "island_id": island_id,
@@ -3950,6 +4013,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_market_offset_discrete_log_ev_v9",
     ),
+    (
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+    ),
 )
 
 
@@ -4000,7 +4069,10 @@ def seed_daily_market_jobs(
             "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
             "timeout_seconds": (
-                7200
+                14_400
+                if calibrator_strategy
+                == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+                else 7200
                 if calibrator_strategy in {
                     "odds_path_return",
                     "odds_path_probability",
@@ -4034,6 +4106,9 @@ def seed_daily_market_jobs(
                 else 92
                 if calibrator_strategy
                 == "odds_path_market_offset_discrete_log_ev_v9"
+                else 91
+                if calibrator_strategy
+                == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
                 else 96
             ),
             max_attempts=2,
