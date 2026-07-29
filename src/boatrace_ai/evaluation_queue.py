@@ -1496,6 +1496,7 @@ def build_command(
             "odds_path_return",
             "odds_path_probability",
             "odds_path_closing_return",
+            "odds_path_observed_closing_return",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
