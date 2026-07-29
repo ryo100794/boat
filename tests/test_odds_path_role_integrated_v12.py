@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -178,6 +179,8 @@ def test_walk_forward_keeps_strict_prior_purchase_then_settlement_boundary(
 ) -> None:
     races = [_race(f"2026-07-0{day}") for day in range(1, 4)]
     events: list[tuple[str, str]] = []
+    estimator = object()
+    forecast_models: list[dict[str, Any]] = []
 
     def trained_through(rows):
         return max(str(row["race_date"]) for row in rows) if rows else None
@@ -209,6 +212,10 @@ def test_walk_forward_keeps_strict_prior_purchase_then_settlement_boundary(
             **_v12_artifact(ready=True, adopted=True),
             "prediction_date": prediction_date,
             "trained_through_date": boundary,
+            "point_model": {
+                "engine": "test",
+                "estimator": estimator,
+            },
         }
 
     def fit_v11(rows, *, prediction_date, **kwargs):
@@ -222,14 +229,20 @@ def test_walk_forward_keeps_strict_prior_purchase_then_settlement_boundary(
 
     monkeypatch.setattr(v12, "fit_closing_odds_t300_nonlinear_v12", fit_v12)
     monkeypatch.setattr(v12, "fit_closing_odds_multihorizon_v11", fit_v11)
-    monkeypatch.setattr(
-        v12,
-        "forecast_closing_odds_t300_nonlinear_v12",
-        lambda race, model, **kwargs: {
+
+    def forecast(race, model, **kwargs):
+        assert model["point_model"]["estimator"] is estimator
+        forecast_models.append(model)
+        return {
             "ready": True,
             "lower_final_odds": dict(race["odds"]),
             "future_checkpoint_offsets_used": [],
-        },
+        }
+
+    monkeypatch.setattr(
+        v12,
+        "forecast_closing_odds_t300_nonlinear_v12",
+        forecast,
     )
 
     def fit_conformal(observations, *, evaluation_date, **kwargs):
@@ -343,8 +356,15 @@ def test_walk_forward_keeps_strict_prior_purchase_then_settlement_boundary(
         evaluation_dates=["2026-07-03"],
     )
 
+    json.dumps(result)
     assert result["evaluation_days"] == 1
     fold = result["folds"][0]
+    assert forecast_models
+    assert "estimator" not in fold["closing_model"]["point_model"]
+    assert "estimator" not in fold["closing_v12_model"]["point_model"]
+    assert "estimator" not in result["deployment_configuration"][
+        "closing_t300_v12_model"
+    ]["point_model"]
     assert fold["closing_model_identity"]["selected_model"] == (
         v12.V12_CLOSING_MODEL_NAME
     )

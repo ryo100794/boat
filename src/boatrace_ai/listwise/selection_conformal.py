@@ -14,11 +14,11 @@ from .odds_path_conservative_v7 import (
     _closing_teachers,
     _crossfit_probability_rows,
     _paired_race,
-    _rank_groups,
     fit_closing_log_ratio_q20_model,
     fit_probability_lcb,
     forecast_closing_q20,
 )
+from .edge_conditional_probability_lcb_v13 import probability_lower_bound_details
 
 
 TARGET_COVERAGE = 0.80
@@ -36,7 +36,6 @@ def selected_safe_ev_candidates(
     """Apply the registered pre-haircut selection rule without settlement data."""
     if not probability_lcb.get("ready"):
         return []
-    factors = probability_lcb.get("factors") or {}
     selected: list[dict[str, Any]] = []
     for race in races:
         race_id = str(race["race_id"])
@@ -44,12 +43,12 @@ def selected_safe_ev_candidates(
         probabilities = race.get("model_probabilities") or {}
         if len(closing) != 120 or len(probabilities) != 120:
             continue
-        rank_groups = _rank_groups(probabilities)
         candidates = []
         for combination, predicted_closing in closing.items():
-            probability = float(probabilities[combination]) * float(
-                factors.get(rank_groups[combination], 0.0)
+            lcb_detail = probability_lower_bound_details(
+                race, str(combination), probability_lcb
             )
+            probability = float(lcb_detail["probability"])
             safe_ev = probability * float(predicted_closing)
             if safe_ev < SAFE_EV_THRESHOLD:
                 continue
@@ -60,6 +59,7 @@ def selected_safe_ev_candidates(
                 "probability": probability,
                 "predicted_closing": float(predicted_closing),
                 "raw_safe_ev": safe_ev,
+                "probability_lcb_detail": lcb_detail,
             })
         candidates.sort(
             key=lambda row: (

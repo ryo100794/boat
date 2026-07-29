@@ -1510,6 +1510,7 @@ def build_command(
             "odds_path_market_offset_selection_conformal_discrete_ev_v10",
             "odds_path_role_integrated_multihorizon_v11",
             "odds_path_role_integrated_t300_nonlinear_v12",
+            "odds_path_role_integrated_edge_conditional_lcb_v13",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -1530,7 +1531,10 @@ def build_command(
                 _number(params, "minimum_day_coverage", 1.0, 0.5, 1.0)
             ),
         ]
-        if strategy == "odds_path_role_integrated_t300_nonlinear_v12":
+        if strategy in {
+            "odds_path_role_integrated_t300_nonlinear_v12",
+            "odds_path_role_integrated_edge_conditional_lcb_v13",
+        }:
             fallback_policy = str(
                 params.get("v12_closing_fallback_policy", "v11")
             )
@@ -2674,6 +2678,41 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             summary["prospective_v12_closing_model_identity"] = dict(
                 prospective_identity
             )
+    edge_calibration = payload.get("edge_conditional_probability_calibration")
+    if isinstance(edge_calibration, dict):
+        summary["edge_conditional_probability_calibration"] = dict(edge_calibration)
+        for key in (
+            "evaluation_days", "coverage_days", "daily_lower_bound_coverage",
+            "candidate_count", "raw_expected_hits", "adjusted_expected_hits",
+            "observed_hits", "raw_overprediction_hits",
+            "adjusted_overprediction_hits", "overprediction_reduction_hits",
+            "relative_overprediction_reduction",
+            "adjusted_expected_vs_hit_ratio", "missing_t300_races",
+        ):
+            if key in edge_calibration:
+                summary[f"edge_conditional_{key}"] = edge_calibration[key]
+    divergence = payload.get("strict_prior_divergence_bands")
+    if isinstance(divergence, dict):
+        summary["strict_prior_divergence_bands"] = dict(divergence)
+    prospective_v13 = payload.get("prospective_role_integrated_v13_walk_forward")
+    if isinstance(prospective_v13, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days", "evaluated_races",
+            "tickets", "hit_tickets", "stake_yen", "return_yen", "profit_yen",
+            "roi", "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95", "effective_hit_count",
+            "largest_hit_return_share", "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss", "market_trifecta_log_loss",
+            "closing_q20_lower_coverage", "promotion_eligible",
+        ):
+            if key in prospective_v13:
+                summary[f"prospective_v13_{key}"] = prospective_v13[key]
+        for key in (
+            "conditional_calibration", "strict_prior_divergence_bands",
+            "closing_model_identity",
+        ):
+            if isinstance(prospective_v13.get(key), dict):
+                summary[f"prospective_v13_{key}"] = dict(prospective_v13[key])
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3704,6 +3743,16 @@ DEFAULT_WORK_TICKETS = (
         20,
     ),
     (
+        "MODEL-EDGE-CONDITIONAL-LCB-V13-001",
+        "高EV候補向け階層的確率LCB V13",
+        "モデル",
+        "V12確定オッズ下限とは独立に、strict-prior whole-day crossfitの確率をrank・確率帯・model/normalized-T300-market乖離帯で日クラスタ下方較正する",
+        "V12と同一評価窓・同一資金条件でROI・最大払戻除外ROI・日クラスタbootstrap片側下限を比較し、高EV候補のexpected-vs-hit過大評価と条件付きcoverageが改善する。result/payoutは購入後settlement限定とし、再現可能な評価jobとテストを残す",
+        98,
+        "in_progress",
+        55,
+    ),
+    (
         "UI-MODEL-DAILY-001",
         "モデル個別の日次集計と表タップ選択",
         "WebUI",
@@ -4100,6 +4149,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_role_integrated_t300_nonlinear_v12",
     ),
+    (
+        "odds_path_role_integrated_edge_conditional_lcb_v13_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_edge_conditional_lcb_v13",
+    ),
 )
 
 
@@ -4152,7 +4207,10 @@ def seed_daily_market_jobs(
             **(
                 {"v12_closing_fallback_policy": "v11"}
                 if calibrator_strategy
-                == "odds_path_role_integrated_t300_nonlinear_v12"
+                in {
+                    "odds_path_role_integrated_t300_nonlinear_v12",
+                    "odds_path_role_integrated_edge_conditional_lcb_v13",
+                }
                 else {}
             ),
             "timeout_seconds": (
@@ -4162,6 +4220,7 @@ def seed_daily_market_jobs(
                     "odds_path_market_offset_selection_conformal_discrete_ev_v10",
                     "odds_path_role_integrated_multihorizon_v11",
                     "odds_path_role_integrated_t300_nonlinear_v12",
+                    "odds_path_role_integrated_edge_conditional_lcb_v13",
                 }
                 else 7200
                 if calibrator_strategy in {
@@ -4206,6 +4265,9 @@ def seed_daily_market_jobs(
                 else 89
                 if calibrator_strategy
                 == "odds_path_role_integrated_t300_nonlinear_v12"
+                else 88
+                if calibrator_strategy
+                == "odds_path_role_integrated_edge_conditional_lcb_v13"
                 else 96
             ),
             max_attempts=2,
