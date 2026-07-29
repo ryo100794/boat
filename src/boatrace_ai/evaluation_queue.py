@@ -1456,6 +1456,7 @@ def build_command(
             "model_input", "from_date", "through_date", "daily_budget_yen",
             "min_calibration_days", "calibrator_strategy",
             "minimum_day_coverage", "timeout_seconds",
+            "v12_closing_fallback_policy",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1508,6 +1509,7 @@ def build_command(
             "odds_path_market_offset_discrete_log_ev_v9",
             "odds_path_market_offset_selection_conformal_discrete_ev_v10",
             "odds_path_role_integrated_multihorizon_v11",
+            "odds_path_role_integrated_t300_nonlinear_v12",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -1528,6 +1530,16 @@ def build_command(
                 _number(params, "minimum_day_coverage", 1.0, 0.5, 1.0)
             ),
         ]
+        if strategy == "odds_path_role_integrated_t300_nonlinear_v12":
+            fallback_policy = str(
+                params.get("v12_closing_fallback_policy", "v11")
+            )
+            if fallback_policy not in {"v11", "no_bet"}:
+                raise ValueError("unsupported v12 closing fallback policy")
+            command.extend([
+                "--v12-closing-fallback-policy",
+                fallback_policy,
+            ])
         if through_date is not None:
             command.extend(["--through-date", through_date])
         return command, output
@@ -2348,6 +2360,29 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in preserved:
                 summary[key] = preserved[key]
+    closing_identity = payload.get("closing_model_identity")
+    if isinstance(closing_identity, dict):
+        preserved_identity = dict(closing_identity)
+        summary["closing_model_identity"] = preserved_identity
+        summary["closing_model_requested"] = preserved_identity.get(
+            "requested_model"
+        )
+        summary["closing_model_selected"] = preserved_identity.get(
+            "selected_model_latest",
+            preserved_identity.get("selected_model"),
+        )
+        summary["closing_fallback_policy"] = preserved_identity.get(
+            "fallback_policy"
+        )
+        for key in (
+            "evaluation_folds",
+            "v12_ready_folds",
+            "v12_adopted_folds",
+            "v11_fallback_folds",
+            "no_bet_folds",
+        ):
+            if key in preserved_identity:
+                summary[f"closing_{key}"] = preserved_identity[key]
     if payload.get("source_role") in {
         "secondary_archive_candidate_unverified",
         "secondary_archive_research_only",
@@ -2606,6 +2641,39 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         conformal = prospective_v10.get("selection_conformal")
         if isinstance(conformal, dict):
             summary["prospective_v10_selection_conformal"] = dict(conformal)
+    prospective_v12 = payload.get(
+        "prospective_role_integrated_v12_walk_forward"
+    )
+    if isinstance(prospective_v12, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "effective_hit_count",
+            "largest_hit_return_share",
+            "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss",
+            "market_trifecta_log_loss",
+            "closing_q20_pinball_loss",
+            "closing_q20_lower_coverage",
+            "promotion_eligible",
+        ):
+            if key in prospective_v12:
+                summary[f"prospective_v12_{key}"] = prospective_v12[key]
+        prospective_identity = prospective_v12.get("closing_model_identity")
+        if isinstance(prospective_identity, dict):
+            summary["prospective_v12_closing_model_identity"] = dict(
+                prospective_identity
+            )
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -4026,6 +4094,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_role_integrated_multihorizon_v11",
     ),
+    (
+        "odds_path_role_integrated_t300_nonlinear_v12_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_t300_nonlinear_v12",
+    ),
 )
 
 
@@ -4075,12 +4149,19 @@ def seed_daily_market_jobs(
             "min_calibration_days": 2,
             "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
+            **(
+                {"v12_closing_fallback_policy": "v11"}
+                if calibrator_strategy
+                == "odds_path_role_integrated_t300_nonlinear_v12"
+                else {}
+            ),
             "timeout_seconds": (
                 14_400
                 if calibrator_strategy
                 in {
                     "odds_path_market_offset_selection_conformal_discrete_ev_v10",
                     "odds_path_role_integrated_multihorizon_v11",
+                    "odds_path_role_integrated_t300_nonlinear_v12",
                 }
                 else 7200
                 if calibrator_strategy in {
@@ -4122,6 +4203,9 @@ def seed_daily_market_jobs(
                 else 90
                 if calibrator_strategy
                 == "odds_path_role_integrated_multihorizon_v11"
+                else 89
+                if calibrator_strategy
+                == "odds_path_role_integrated_t300_nonlinear_v12"
                 else 96
             ),
             max_attempts=2,
