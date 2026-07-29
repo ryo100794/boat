@@ -129,6 +129,7 @@ def test_daily_v15_is_queued_ahead_of_v14(tmp_path: Path, monkeypatch) -> None:
     ]
     assert v15["priority"] > v14["priority"]
     assert v15["parameters"]["timeout_seconds"] == 14_400
+    assert v15["parameters"]["min_calibration_days"] == 5
     assert v15["parameters"]["v12_closing_fallback_policy"] == "no_bet"
     assert v15["parameters"]["model_input"] == v14["parameters"]["model_input"]
     assert v15["parameters"]["from_date"] == v14["parameters"]["from_date"]
