@@ -1583,6 +1583,7 @@ def build_command(
             "odds_path_probability",
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
+            "odds_path_observed_closing_return_robust_policy_v17",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
@@ -2418,6 +2419,36 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    chronological = payload.get("chronological_bankroll")
+    if isinstance(chronological, dict):
+        summary["primary_bankroll"] = (
+            "chronological"
+            if chronological.get("primary_promotion_bankroll")
+            else summary.get("primary_bankroll", "legacy")
+        )
+        for key in (
+            "race_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "max_drawdown_yen",
+            "winning_days",
+            "profitable_day_fraction",
+            "roi_without_largest_hit",
+            "largest_hit_return_share",
+            "effective_hit_count",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "bootstrap_probability_roi_above_one",
+            "normalized_drawdown",
+            "daily_stake_limit_fraction",
+        ):
+            value = chronological.get(key)
+            if not isinstance(value, (dict, list)):
+                summary[f"chronological_{key}"] = value
     purchase_diagnostics = payload.get("purchase_decision_diagnostics")
     if isinstance(purchase_diagnostics, dict):
         preserved = dict(purchase_diagnostics)
@@ -4298,6 +4329,12 @@ MARKET_EVALUATION_SOURCES = (
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_observed_closing_return",
+    ),
+    (
+        "odds_path_observed_closing_return_robust_policy_v17_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_observed_closing_return_robust_policy_v17",
     ),
     (
         "odds_path_prequential_shrinkage_return_v6_daily",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from itertools import permutations
 
 import numpy as np
+import boatrace_ai.listwise.market_calibration as market_calibration
 import pytest
 from scipy import sparse
 
@@ -29,8 +30,10 @@ from boatrace_ai.listwise.market_calibration import (
     score_real_odds_races,
     select_calibrator,
     select_policy,
+    select_policy_v17,
     select_return_shrinkage_prequential,
     simulate_policy,
+    v17_policy_ranking_key,
     snapshot_age_seconds,
     write_scored_cache,
     walk_forward_evaluate,
@@ -193,6 +196,7 @@ def test_v4_market_policy_adds_chronological_adaptive_metrics_compatibly() -> No
             "staking_mode": "kelly_025",
         },
         daily_budget_yen=10_000,
+        include_chronological=True,
     )
 
     legacy = result["daily"][0]
@@ -1193,3 +1197,162 @@ def test_cli_accepts_and_dispatches_v10_selection_conformal_strategy(
         "min_calibration_days": 7,
         "evaluation_dates": ("2026-07-30",),
     }
+
+
+@pytest.mark.parametrize(
+    ("metric", "better", "worse"),
+    [
+        ("daily_cluster_bootstrap_roi_lower_95", 1.2, 1.1),
+        ("roi_without_largest_hit", 1.2, 1.1),
+        ("profitable_day_fraction", 0.7, 0.6),
+        ("effective_hit_count", 8.0, 7.0),
+        ("largest_hit_return_share", 0.2, 0.3),
+        ("normalized_drawdown", 0.2, 0.3),
+        ("roi", 1.2, 1.1),
+    ],
+)
+def test_v17_policy_ranking_uses_fixed_robust_lexicographic_order(
+    metric: str, better: float, worse: float
+) -> None:
+    base = {
+        "daily_cluster_bootstrap_roi_lower_95": 1.1,
+        "roi_without_largest_hit": 1.1,
+        "profitable_day_fraction": 0.6,
+        "effective_hit_count": 7.0,
+        "largest_hit_return_share": 0.3,
+        "normalized_drawdown": 0.3,
+        "roi": 1.1,
+    }
+    preferred = {**base, metric: better, "policy": {"name": "z-policy"}}
+    rejected = {**base, metric: worse, "policy": {"name": "a-policy"}}
+
+    assert min([rejected, preferred], key=v17_policy_ranking_key) is preferred
+
+
+def test_v17_policy_ranking_tie_breaks_by_policy_name_and_none_is_worst() -> None:
+    metrics = {
+        "daily_cluster_bootstrap_roi_lower_95": 1.1,
+        "roi_without_largest_hit": 1.1,
+        "profitable_day_fraction": 0.6,
+        "effective_hit_count": 7.0,
+        "largest_hit_return_share": 0.3,
+        "normalized_drawdown": 0.3,
+        "roi": 1.1,
+    }
+    a = {**metrics, "policy": {"name": "a-policy"}}
+    z = {**metrics, "policy": {"name": "z-policy"}}
+    missing = {**metrics, "daily_cluster_bootstrap_roi_lower_95": None,
+               "policy": {"name": "missing"}}
+
+    assert min([z, missing, a], key=v17_policy_ranking_key) is a
+
+
+def test_v17_inner_policy_grid_never_calls_chronological_allocator(
+    monkeypatch,
+) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("inner grid must not build chronological ledgers")
+
+    monkeypatch.setattr(
+        market_calibration, "simulate_chronological_bankroll_day", fail_if_called
+    )
+    races = [_race("2026-07-18", rno) for rno in range(1, 13)]
+    selected, rows = select_policy_v17(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        daily_budget_yen=10_000,
+        policies=[
+            {"name": "no_bet", "no_bet": True},
+            {
+                "name": "candidate",
+                "ev_threshold": 1.0,
+                "max_estimated_ev": None,
+                "max_odds": None,
+                "max_tickets_per_race": 1,
+                "min_model_market_ratio": 1.0,
+                "staking_mode": "kelly_025",
+            },
+        ],
+    )
+
+    assert selected["name"] in {"no_bet", "candidate"}
+    assert all("chronological_bankroll" not in row for row in rows)
+
+
+def test_v17_is_strict_prior_result_invariant_and_chronological_primary(
+    monkeypatch,
+) -> None:
+    policies = [
+        {"name": "no_bet", "no_bet": True},
+        {
+            "name": "robust-a",
+            "ev_threshold": 1.0,
+            "max_estimated_ev": None,
+            "max_odds": None,
+            "max_tickets_per_race": 1,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+        {
+            "name": "robust-b",
+            "ev_threshold": 1.05,
+            "max_estimated_ev": None,
+            "max_odds": 40.0,
+            "max_tickets_per_race": 2,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+    ]
+    monkeypatch.setattr(market_calibration, "default_policy_grid", lambda: policies)
+    dates = ["2026-07-18", "2026-07-19", "2026-07-20", "2026-07-21"]
+    races = [_race(day, rno) for day in dates for rno in range(1, 13)]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+    contaminated = [dict(race) for race in races]
+    for race in contaminated:
+        if race["race_date"] == dates[-1]:
+            race["actual_combination"] = "6-5-4"
+            race["actual_payout_yen"] = 99_990
+
+    kwargs = {
+        "min_calibration_days": 2,
+        "calibrator_strategy": market_calibration.V17_STRATEGY_NAME,
+        "evaluation_dates": [dates[-1]],
+    }
+    clean = walk_forward_evaluate(races, **kwargs)
+    changed = walk_forward_evaluate(contaminated, **kwargs)
+
+    clean_fold = clean["folds"][0]
+    changed_fold = changed["folds"][0]
+    assert clean_fold["calibration_dates"] == dates[:-1]
+    assert all(day < dates[-1] for day in clean_fold["calibration_dates"])
+    assert clean_fold["selected_policy"] == changed_fold["selected_policy"]
+    assert clean_fold["operational_model"]["return_price_basis"] == "observed_closing"
+    assert clean["model"] == market_calibration.V17_MODEL_NAME
+    assert clean["comparison_role"] == market_calibration.V17_COMPARISON_ROLE
+    assert clean["real_betting_enabled"] is False
+    assert clean["deployment_configuration"]["deployment_mode"] == "shadow_only"
+    assert clean["deployment_configuration"]["real_betting_enabled"] is False
+    assert clean["promotion_gate"]["primary_bankroll"] == "chronological_bankroll"
+    assert clean["deployment_configuration"]["walk_forward_gate"][
+        "primary_bankroll"
+    ] == "chronological_bankroll"
+    chronological = clean["chronological_bankroll"]
+    assert chronological["primary_promotion_bankroll"] is True
+    assert chronological["daily_stake_limit_fraction"] == 1.0
+    assert chronological["real_betting_enabled"] is False
+    assert chronological["daily"][0]["gross_stake_yen"] <= (
+        chronological["daily"][0]["initial_gross_stake_allowance_yen"]
+        + max(0, chronological["daily"][0]["realized_cumulative_profit_yen"])
+    )
+
+
+def test_v17_parser_and_model_identity_are_exact() -> None:
+    strategy = market_calibration.V17_STRATEGY_NAME
+    args = build_parser().parse_args([
+        "--from-date", "2026-07-18",
+        "--calibrator-strategy", strategy,
+    ])
+    assert args.calibrator_strategy == strategy
+    assert odds_path_model_name(strategy) == strategy

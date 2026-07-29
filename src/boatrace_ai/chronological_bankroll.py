@@ -129,6 +129,7 @@ def simulate_chronological_bankroll_day(
     *,
     settlement_events: Iterable[Mapping[str, Any]],
     initial_bankroll_yen: int = 10_000,
+    daily_stake_limit_fraction: float = 1.0,
     max_decision_exposure_fraction: float = 0.20,
     race_cap_fraction: float = 0.03,
     ticket_cap_fraction: float = 0.01,
@@ -172,7 +173,19 @@ def simulate_chronological_bankroll_day(
             },
         }
 
+    if not 0.0 <= daily_stake_limit_fraction <= 1.0:
+        raise ValueError(
+            "daily_stake_limit_fraction must be between zero and one"
+        )
     cash_yen = initial_bankroll_yen
+    initial_gross_stake_allowance_yen = (
+        int(initial_bankroll_yen * daily_stake_limit_fraction)
+        // stake_granularity_yen
+        * stake_granularity_yen
+    )
+    gross_stake_yen = 0
+    realized_cumulative_profit_yen = 0
+    realized_positive_cumulative_profit_yen = 0
     peak_equity_yen = initial_bankroll_yen
     max_drawdown_yen = 0
     pending: list[dict[str, Any]] = []
@@ -182,6 +195,8 @@ def simulate_chronological_bankroll_day(
 
     def settle_due(as_of: datetime) -> None:
         nonlocal cash_yen, peak_equity_yen, max_drawdown_yen
+        nonlocal realized_cumulative_profit_yen
+        nonlocal realized_positive_cumulative_profit_yen
         ordered = sorted(
             pending, key=lambda row: (row["available_at"], row["race_id"])
         )
@@ -190,6 +205,13 @@ def simulate_chronological_bankroll_day(
         outstanding = sum(int(row["stake_yen"]) for row in remaining)
         for item in due:
             cash_yen += int(item["return_yen"])
+            realized_profit_yen = (
+                int(item["return_yen"]) - int(item["stake_yen"])
+            )
+            realized_cumulative_profit_yen += realized_profit_yen
+            realized_positive_cumulative_profit_yen += max(
+                0, realized_profit_yen
+            )
             equity = cash_yen + outstanding
             peak_equity_yen = max(peak_equity_yen, equity)
             max_drawdown_yen = max(max_drawdown_yen, peak_equity_yen - equity)
@@ -199,6 +221,12 @@ def simulate_chronological_bankroll_day(
                 "stake_yen": item["stake_yen"], "return_yen": item["return_yen"],
                 "cash_after_yen": cash_yen,
                 "outstanding_stake_yen": outstanding,
+                "realized_cumulative_profit_yen": (
+                    realized_cumulative_profit_yen
+                ),
+                "realized_positive_cumulative_profit_yen": (
+                    realized_positive_cumulative_profit_yen
+                ),
             })
         pending[:] = remaining
 
@@ -213,8 +241,16 @@ def simulate_chronological_bankroll_day(
         before_cash = cash_yen
         race_candidates = by_race[race_id]
         fingerprint = decision_information_fingerprint(race_candidates)
+        gross_stake_allowance_yen = (
+            initial_gross_stake_allowance_yen
+            + realized_positive_cumulative_profit_yen
+        )
+        remaining_gross_stake_allowance_yen = max(
+            0, gross_stake_allowance_yen - gross_stake_yen
+        )
         allocatable_bankroll_yen = (
-            cash_yen // stake_granularity_yen * stake_granularity_yen
+            min(cash_yen, remaining_gross_stake_allowance_yen)
+            // stake_granularity_yen * stake_granularity_yen
         )
         if allocatable_bankroll_yen < stake_granularity_yen:
             allocation = {"selected_sample": [], "allocation_candidate_tickets": 0}
@@ -243,7 +279,26 @@ def simulate_chronological_bankroll_day(
                 {race_id},
                 **call_kwargs,
             )
-        tickets = [dict(row) for row in allocation["selected_sample"]]
+        tickets = []
+        cap_remaining_yen = allocatable_bankroll_yen
+        for source in allocation["selected_sample"]:
+            ticket = dict(source)
+            original_stake = int(ticket["stake_yen"])
+            capped_stake = min(original_stake, cap_remaining_yen)
+            capped_stake = (
+                capped_stake // stake_granularity_yen * stake_granularity_yen
+            )
+            if capped_stake <= 0:
+                continue
+            original_return = int(ticket.get("return_yen") or 0)
+            ticket["stake_yen"] = capped_stake
+            ticket["return_yen"] = (
+                original_return * capped_stake // original_stake
+                if original_stake > 0 else 0
+            )
+            ticket["hit"] = bool(ticket["return_yen"] > 0)
+            tickets.append(ticket)
+            cap_remaining_yen -= capped_stake
         for ticket in tickets:
             ticket_stake = int(ticket["stake_yen"])
             if ticket_stake < 0 or ticket_stake % stake_granularity_yen:
@@ -259,6 +314,7 @@ def simulate_chronological_bankroll_day(
             )
         race_return = sum(int(row["return_yen"]) for row in tickets)
         cash_yen -= race_stake
+        gross_stake_yen += race_stake
         pending.append({
             "race_id": race_id, "available_at": event["available_at"],
             "stake_yen": race_stake, "return_yen": race_return,
@@ -280,6 +336,20 @@ def simulate_chronological_bankroll_day(
             "tickets": len(tickets), "stake_yen": race_stake,
             "cash_before_yen": before_cash, "cash_after_yen": cash_yen,
             "outstanding_stake_yen": outstanding,
+            "initial_gross_stake_allowance_yen": (
+                initial_gross_stake_allowance_yen
+            ),
+            "gross_stake_allowance_yen": gross_stake_allowance_yen,
+            "remaining_gross_stake_allowance_yen": max(
+                0, gross_stake_allowance_yen - gross_stake_yen
+            ),
+            "gross_stake_yen": gross_stake_yen,
+            "realized_cumulative_profit_yen": (
+                realized_cumulative_profit_yen
+            ),
+            "realized_positive_cumulative_profit_yen": (
+                realized_positive_cumulative_profit_yen
+            ),
             "selections": [
                 {"combination": str(row["combination"]),
                  "stake_yen": int(row["stake_yen"])}
@@ -290,6 +360,11 @@ def simulate_chronological_bankroll_day(
     settle_due(datetime.max.replace(tzinfo=timezone.utc))
     stake_yen = sum(int(row["stake_yen"]) for row in selected)
     return_yen = sum(int(row["return_yen"]) for row in selected)
+    hit_returns = [
+        int(row["return_yen"])
+        for row in selected
+        if int(row.get("return_yen") or 0) > 0
+    ]
     return {
         "race_date": race_date, "initial_bankroll_yen": initial_bankroll_yen,
         "closing_bankroll_yen": cash_yen, "available_cash_yen": cash_yen,
@@ -297,11 +372,36 @@ def simulate_chronological_bankroll_day(
         "evaluated_races": len(set(str(value) for value in evaluated_races)),
         "candidate_tickets": len(decisions), "tickets": len(selected),
         "races_bet": len({str(row["race_id"]) for row in selected}),
+        "hit_races": len({
+            str(row["race_id"])
+            for row in selected
+            if int(row.get("return_yen") or 0) > 0
+        }),
         "hit_tickets": sum(bool(row["hit"]) for row in selected),
         "stake_yen": stake_yen, "return_yen": return_yen,
         "profit_yen": cash_yen - initial_bankroll_yen,
         "roi": return_yen / stake_yen if stake_yen else None,
         "max_drawdown_yen": max_drawdown_yen,
+        "largest_hit_return_yen": max(hit_returns, default=0),
+        "hit_return_square_sum_yen2": sum(
+            value * value for value in hit_returns
+        ),
+        "initial_gross_stake_allowance_yen": (
+            initial_gross_stake_allowance_yen
+        ),
+        "final_gross_stake_allowance_yen": (
+            initial_gross_stake_allowance_yen
+            + realized_positive_cumulative_profit_yen
+        ),
+        "gross_stake_yen": gross_stake_yen,
+        "realized_cumulative_profit_yen": realized_cumulative_profit_yen,
+        "realized_positive_cumulative_profit_yen": (
+            realized_positive_cumulative_profit_yen
+        ),
+        "daily_stake_limit_fraction": daily_stake_limit_fraction,
+        "gross_stake_allowance_rule": (
+            "initial_allowance_plus_positive_realized_cumulative_profit"
+        ),
         "allocation_method": allocation_method or (
             "chronological_discrete_conservative_expected_log"
             if allocate_day is allocate_discrete_log_day
@@ -344,8 +444,16 @@ def summarize_chronological_bankroll_days(
         ),
         "tickets": sum(int(row.get("tickets") or 0) for row in rows),
         "races_bet": sum(int(row.get("races_bet") or 0) for row in rows),
+        "hit_races": sum(int(row.get("hit_races") or 0) for row in rows),
         "hit_tickets": sum(
             int(row.get("hit_tickets") or 0) for row in rows
+        ),
+        "largest_hit_return_yen": max(
+            (int(row.get("largest_hit_return_yen") or 0) for row in rows),
+            default=0,
+        ),
+        "hit_return_square_sum_yen2": sum(
+            int(row.get("hit_return_square_sum_yen2") or 0) for row in rows
         ),
         "stake_yen": stake_yen,
         "return_yen": return_yen,
