@@ -33,6 +33,8 @@ COMBINATIONS = [
 
 
 class Estimator:
+    source = "verified-v12-bundle"
+
     def predict(self, rows):
         return [1.0 for _ in rows]
 
@@ -103,6 +105,11 @@ def _v16_deployment(*, envelope_ready: bool = True) -> dict[str, Any]:
         },
         "missing_real_t300_action": "no_bet",
         "real_betting_enabled": False,
+        "closing_t300_v12_model": {
+            "model_name": "closing_odds_t300_nonlinear_v12",
+            "boundary_audit": {"future_checkpoint_imputation": False},
+            "point_model": {"source": "evaluation-artifact-must-not-merge"},
+        },
     }
 
 
@@ -131,10 +138,10 @@ def test_v16_completed_evaluation_is_composed_with_v12_live_estimator(
     bundle = joblib.load(built["path"])
     deployment = bundle["deployment"]
     assert deployment["calibrator_strategy"] == updater.V16_MODEL
-    assert hasattr(
-        deployment["closing_t300_v12_model"]["point_model"]["estimator"],
-        "predict",
-    )
+    estimator = deployment["closing_t300_v12_model"]["point_model"]["estimator"]
+    assert hasattr(estimator, "predict")
+    assert estimator.source == "verified-v12-bundle"
+    assert "source" not in deployment["closing_t300_v12_model"]["point_model"]
     assert deployment["real_betting_enabled"] is False
     assert built["manifest"]["source_evaluation"]["job_id"] == 7600
     assert built["manifest"]["composite"]["merged_components"] == [
@@ -143,6 +150,10 @@ def test_v16_completed_evaluation_is_composed_with_v12_live_estimator(
         "closing_envelope_conformal",
         "candidate_policy",
     ]
+    assert built["manifest"]["composite"]["closing_estimator_policy"] == {
+        "runtime_estimator": "retain_verified_v12_bundle_estimator",
+        "source_evaluation_artifact": "validate_only_never_merge",
+    }
 
 
 def _bundle_rows(tmp_path: Path) -> dict[str, dict[str, Any]]:
