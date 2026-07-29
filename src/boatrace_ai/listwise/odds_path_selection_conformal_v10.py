@@ -167,6 +167,7 @@ def _simulate_selection_conformal_policy(
                 safe_ev=guarded_safe_ev,
             )
             candidate.update({
+                "predicted_closing": float(raw_odds),
                 "raw_predicted_closing_odds": float(raw_odds),
                 "selection_conformal_haircut": float(haircut),
                 "raw_safe_ev": raw_safe_ev,
@@ -176,8 +177,13 @@ def _simulate_selection_conformal_policy(
             diagnostic["guarded_threshold_candidates"] += 1
             diagnostic["candidates_before_allocation"] += 1
 
+    allocator_input_candidates = [
+        candidate
+        for date in sorted(by_day_candidates)
+        for candidate in by_day_candidates[date]
+    ]
     coverage = selection_coverage_metrics(
-        races, raw_selected, haircut=haircut
+        races, allocator_input_candidates, haircut=haircut
     )
     diagnostic["selection_conformal"].update(coverage)
 
@@ -241,6 +247,14 @@ def _aggregate_selection_conformal(folds: list[dict[str, Any]]) -> dict[str, Any
         int(item.get("selection_evaluation_candidates") or 0)
         for item in artifacts
     )
+    observed = sum(
+        int(item.get("selection_observed_closing_candidates") or 0)
+        for item in artifacts
+    )
+    missing = sum(
+        int(item.get("selection_closing_missing_candidates") or 0)
+        for item in artifacts
+    )
     raw_covered = sum(
         int(item.get("selection_raw_covered_candidates") or 0)
         for item in artifacts
@@ -263,6 +277,9 @@ def _aggregate_selection_conformal(folds: list[dict[str, Any]]) -> dict[str, Any
         "evaluation_folds": len(artifacts),
         "ready_folds": len(ready),
         "selection_evaluation_candidates": candidates,
+        "selection_observed_closing_candidates": observed,
+        "selection_closing_missing_candidates": missing,
+        "selection_closing_complete": candidates > 0 and missing == 0,
         "selection_raw_covered_candidates": raw_covered,
         "selection_guarded_covered_candidates": guarded_covered,
         "selection_raw_closing_coverage": (
@@ -286,6 +303,20 @@ def _aggregate_selection_conformal(folds: list[dict[str, Any]]) -> dict[str, Any
         "training_days_latest": latest.get("training_days"),
         "training_candidates_latest": latest.get("training_candidates"),
         "trained_through_date_latest": latest.get("trained_through_date"),
+    }
+
+
+def _selection_coverage_gate(summary: dict[str, Any]) -> dict[str, bool]:
+    coverage = summary.get("selection_guarded_closing_coverage")
+    candidates = int(summary.get("selection_evaluation_candidates") or 0)
+    missing = int(summary.get("selection_closing_missing_candidates") or 0)
+    return {
+        "selection_conditional_coverage_pass": (
+            coverage is not None and 0.75 <= float(coverage) <= 0.95
+        ),
+        "selection_conditional_complete_pass": (
+            candidates > 0 and missing == 0
+        ),
     }
 
 
@@ -370,10 +401,7 @@ def walk_forward_evaluate_v10(
     prospective_summary = _aggregate_selection_conformal(prospective_folds)
     prospective["selection_conformal"] = prospective_summary
     gate = prospective.get("promotion_gate") or {}
-    coverage = prospective_summary.get("selection_guarded_closing_coverage")
-    gate["selection_conditional_coverage_pass"] = (
-        coverage is not None and 0.75 <= float(coverage) <= 0.95
-    )
+    gate.update(_selection_coverage_gate(prospective_summary))
     checks = [value for key, value in gate.items() if key.endswith("_pass")]
     prospective["promotion_gate"] = gate
     prospective["promotion_eligible"] = bool(checks) and all(checks)

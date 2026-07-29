@@ -22,9 +22,9 @@ from .odds_path_conservative_v7 import (
 
 
 TARGET_COVERAGE = 0.80
-MIN_TRAINING_DAYS = 3
-MIN_TRAINING_CANDIDATES = 8
-METHOD = "selected_top2_finite_sample_lower_rank_conformal_v1"
+MIN_TRAINING_DAYS = 5
+MIN_TRAINING_CANDIDATES = 30
+METHOD = "selected_top2_daily_cluster_finite_sample_lower_conformal_v2"
 
 
 def selected_safe_ev_candidates(
@@ -72,6 +72,21 @@ def selected_safe_ev_candidates(
     return selected
 
 
+def _finite_sample_lower_rank(
+    values: np.ndarray, *, target_coverage: float
+) -> tuple[float, int, float]:
+    ordered = np.sort(np.asarray(values, dtype=np.float64))
+    alpha = 1.0 - target_coverage
+    rank = max(
+        1,
+        int(math.floor((len(ordered) + 1) * alpha + 1e-12)),
+    )
+    rank = min(rank, len(ordered))
+    return float(ordered[rank - 1]), rank, (
+        (len(ordered) + 1 - rank) / (len(ordered) + 1)
+    )
+
+
 def fit_selection_conformal_haircut(
     observations: Iterable[dict[str, Any]],
     *,
@@ -91,7 +106,7 @@ def fit_selection_conformal_haircut(
             raise ValueError("selection conformal observations must be prior-day only")
         if math.isfinite(ratio) and ratio > 0.0:
             rows.append({**item, "race_date": date, "closing_ratio": ratio})
-    dates = sorted({str(row["race_date"]) for row in rows})
+    dates = sorted({row["race_date"] for row in rows})
     base = {
         "method": METHOD,
         "target_coverage": target_coverage,
@@ -108,27 +123,42 @@ def fit_selection_conformal_haircut(
             **base,
             "ready": False,
             "haircut": None,
+            "finite_sample_unit": "prior_day",
             "finite_sample_rank": None,
             "finite_sample_coverage": None,
+            "daily_lower_ratios": {},
+            "daily_candidate_counts": {},
             "reason": "insufficient_prior_selected_candidates",
         }
-    ratios = np.sort(np.asarray(
+    ratios = np.asarray(
         [float(row["closing_ratio"]) for row in rows], dtype=np.float64
-    ))
-    alpha = 1.0 - target_coverage
-    rank = max(
-        1,
-        int(math.floor((len(ratios) + 1) * alpha + 1e-12)),
     )
-    rank = min(rank, len(ratios))
-    raw_haircut = float(ratios[rank - 1])
+    by_day: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        by_day[row["race_date"]].append(float(row["closing_ratio"]))
+    daily_lower: dict[str, float] = {}
+    daily_counts: dict[str, int] = {}
+    for date in dates:
+        day_values = np.asarray(by_day[date], dtype=np.float64)
+        daily_counts[date] = len(day_values)
+        daily_lower[date] = _finite_sample_lower_rank(
+            day_values, target_coverage=target_coverage
+        )[0]
+    raw_haircut, rank, finite_coverage = _finite_sample_lower_rank(
+        np.asarray(list(daily_lower.values()), dtype=np.float64),
+        target_coverage=target_coverage,
+    )
     return {
         **base,
         "ready": True,
         "haircut": min(1.0, raw_haircut),
         "uncapped_haircut": raw_haircut,
+        "finite_sample_unit": "prior_day",
         "finite_sample_rank": rank,
-        "finite_sample_coverage": (len(ratios) + 1 - rank) / (len(ratios) + 1),
+        "finite_sample_coverage": finite_coverage,
+        "daily_lower_ratios": daily_lower,
+        "daily_candidate_counts": daily_counts,
+        "daily_lower_ratio_median": float(np.median(list(daily_lower.values()))),
         "ratio_mean": float(np.mean(ratios)),
         "ratio_p10": float(np.quantile(ratios, 0.10)),
         "ratio_p20": float(np.quantile(ratios, 0.20)),
@@ -146,13 +176,22 @@ def selection_coverage_metrics(
     haircut: float | None,
 ) -> dict[str, Any]:
     race_by_id = {str(race["race_id"]): race for race in races}
+    selected = list(selected)
     ratios: list[float] = []
     for candidate in selected:
         race = race_by_id.get(str(candidate["race_id"]))
         closing = (race or {}).get("closing_odds") or {}
         actual = closing.get(str(candidate["combination"]))
-        predicted = float(candidate["predicted_closing"])
-        if actual is None or predicted <= 0.0:
+        predicted = float(
+            candidate.get("raw_predicted_closing_odds")
+            or candidate["predicted_closing"]
+        )
+        if (
+            actual is None
+            or predicted <= 0.0
+            or not math.isfinite(float(actual))
+            or float(actual) <= 0.0
+        ):
             continue
         ratio = float(actual) / predicted
         if math.isfinite(ratio) and ratio > 0.0:
@@ -163,18 +202,23 @@ def selection_coverage_metrics(
         if haircut is not None
         else 0
     )
+    denominator = len(selected)
+    missing = denominator - len(ratios)
     return {
-        "selection_evaluation_candidates": len(ratios),
+        "selection_evaluation_candidates": denominator,
+        "selection_observed_closing_candidates": len(ratios),
+        "selection_closing_missing_candidates": missing,
         "selection_raw_covered_candidates": raw_covered,
         "selection_guarded_covered_candidates": guarded_covered,
         "selection_raw_closing_coverage": (
-            raw_covered / len(ratios) if ratios else None
+            raw_covered / denominator if denominator else None
         ),
         "selection_guarded_closing_coverage": (
-            guarded_covered / len(ratios)
-            if ratios and haircut is not None
+            guarded_covered / denominator
+            if denominator and haircut is not None
             else None
         ),
+        "selection_closing_complete": denominator > 0 and missing == 0,
         "selection_closing_ratio_mean": (
             float(np.mean(ratios)) if ratios else None
         ),

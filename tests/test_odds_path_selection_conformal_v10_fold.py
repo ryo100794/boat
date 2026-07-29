@@ -60,11 +60,11 @@ def _race(race_date: str, rno: int) -> dict:
 def _artifact(evaluation_date: str, trained_through: str | None) -> dict:
     return {
         "ready": True,
-        "method": "selected_top2_finite_sample_lower_rank_conformal_v1",
+        "method": "selected_top2_daily_cluster_finite_sample_lower_conformal_v2",
         "haircut": 0.75,
         "target_coverage": 0.8,
-        "training_days": 3,
-        "training_candidates": 9,
+        "training_days": 5,
+        "training_candidates": 30,
         "evaluation_date": evaluation_date,
         "trained_through_date": trained_through,
     }
@@ -116,8 +116,8 @@ def test_walk_forward_emits_selection_conditional_fold_contract(
     for fold in result["folds"]:
         guard = fold["selection_conformal"]
         assert guard["haircut"] == pytest.approx(0.75)
-        assert guard["training_days"] == 3
-        assert guard["training_candidates"] == 9
+        assert guard["training_days"] == 5
+        assert guard["training_candidates"] == 30
         assert guard["trained_through_date"] < fold["evaluation_date"]
         assert "selection_raw_closing_coverage" in guard
         assert "selection_guarded_closing_coverage" in guard

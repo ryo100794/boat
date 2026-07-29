@@ -1994,6 +1994,14 @@ _ODDS_PATH_TRACK_SPECS = (
         "固定safe EV 1.05・最大2点 / 100円単位の離散期待対数効用 / "
         "日資金1万円・0口許容・日20%/R3%/点1%",
     ),
+    (
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+        "選択条件付き終値保護 v10",
+        "v9と同一の履歴・T-5市場・結果・公式closing。補正教師は各outer日より前の選択候補のみ",
+        "v8市場offset確率 / q20 closing / 日cluster probability LCB / "
+        "safe EV 1.05・race上位2点の選択条件付き有限標本conformal haircut / "
+        "補正後EV再判定 / v9の100円離散期待対数効用・少数時no-bet",
+    ),
 )
 
 
@@ -2064,6 +2072,18 @@ def _odds_path_model_tracks(
                 ),
                 "purchase_decision_diagnostics": job.get(
                     "purchase_decision_diagnostics"
+                ),
+                "selection_conformal": job.get("selection_conformal"),
+                "selection_raw_closing_coverage": job.get(
+                    "selection_raw_closing_coverage"
+                ),
+                "selection_guarded_closing_coverage": job.get(
+                    "selection_guarded_closing_coverage"
+                ),
+                "haircut_latest": job.get("haircut_latest"),
+                "training_days_latest": job.get("training_days_latest"),
+                "training_candidates_latest": job.get(
+                    "training_candidates_latest"
                 ),
                 "threshold_pass_candidates": job.get(
                     "threshold_pass_candidates"
@@ -2865,6 +2885,24 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                         metrics.get("purchase_decision_diagnostics"), dict
                     )
                     else None
+                ),
+                "selection_conformal": (
+                    metrics.get("selection_conformal")
+                    if isinstance(metrics.get("selection_conformal"), dict)
+                    else None
+                ),
+                "selection_raw_closing_coverage": _float_or_none(
+                    metrics.get("selection_raw_closing_coverage")
+                ),
+                "selection_guarded_closing_coverage": _float_or_none(
+                    metrics.get("selection_guarded_closing_coverage")
+                ),
+                "haircut_latest": _float_or_none(
+                    metrics.get("haircut_latest")
+                ),
+                "training_days_latest": metrics.get("training_days_latest"),
+                "training_candidates_latest": metrics.get(
+                    "training_candidates_latest"
                 ),
                 "threshold_pass_candidates": metrics.get(
                     "threshold_pass_candidates"
@@ -3726,7 +3764,8 @@ _REPORT_MODEL_FAMILY_ALIASES = (
         r"prequential_shrinkage_return_v6|"
         r"crossfit_conservative_ev_v7|"
         r"market_offset_crossfit_conservative_ev_v8|"
-        r"market_offset_discrete_log_ev_v9))(?:_|$)"
+        r"market_offset_discrete_log_ev_v9|"
+        r"market_offset_selection_conformal_discrete_ev_v10))(?:_|$)"
     ),
 )
 

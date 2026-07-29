@@ -26,6 +26,7 @@ from boatrace_ai.evaluation_queue import (
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
+    seed_daily_genetic_jobs,
     seed_daily_market_jobs,
     seed_periodic_jobs,
     seed_work_tickets,
@@ -57,6 +58,60 @@ def test_dedupe_key_is_parameter_order_independent() -> None:
     assert dedupe_key("probe", "model", {"a": 1, "b": 2}) == dedupe_key(
         "probe", "model", {"b": 2, "a": 1}
     )
+
+
+def test_daily_genetic_seed_is_scoped_by_protocol_version(monkeypatch) -> None:
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        protocol_exists = False
+
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql, parameters):
+            self.queries.append((sql, parameters))
+            return Result({"found": 1} if self.protocol_exists else None)
+
+    conn = Connection()
+    enqueued = []
+
+    def fake_enqueue(_conn, **kwargs):
+        enqueued.append(kwargs)
+        return len(enqueued)
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+
+    inserted = seed_daily_genetic_jobs(
+        conn,
+        evaluation_date="2026-07-27",
+        now=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        island_count=2,
+        max_generations=1,
+    )
+
+    assert inserted == [1, 2]
+    assert len(enqueued) == 2
+    assert {
+        row["parameters"]["genetic_protocol_version"] for row in enqueued
+    } == {4}
+    query, parameters = conn.queries[0]
+    assert "parameters->>'genetic_protocol_version'" in query
+    assert parameters == ("2026-07-27", "4")
+
+    conn.protocol_exists = True
+    assert seed_daily_genetic_jobs(
+        conn,
+        evaluation_date="2026-07-27",
+        now=datetime(2026, 7, 29, 0, 1, tzinfo=timezone.utc),
+        island_count=2,
+        max_generations=1,
+    ) == []
 
 
 def test_enqueue_parser_loads_parameters_from_file(tmp_path: Path) -> None:
@@ -1521,7 +1576,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1533,6 +1588,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
         "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
         "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260718-25",
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1592,6 +1648,14 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert discrete_v9["priority"] == 92
     assert discrete_v9["parameters"]["timeout_seconds"] == 7200
+    selection_v10 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    )
+    assert selection_v10["priority"] == 91
+    assert selection_v10["parameters"]["timeout_seconds"] == 14_400
+    assert selection_v10["parameters"]["model_input"] == discrete_v9["parameters"]["model_input"]
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
@@ -2896,6 +2960,27 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert v8_command[
         v8_command.index("--calibrator-strategy") + 1
     ] == "odds_path_market_offset_crossfit_conservative_ev"
+    v10_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": (
+                    "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v10_command[
+        v10_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
     orthogonal_command, _ = build_command(
         _job(
             "market_residual_walk_forward",
@@ -3138,3 +3223,62 @@ def test_result_summary_preserves_v9_prospective_and_allocation_diagnostics() ->
     assert summary["prospective_v9_registered_after"] == "2026-07-29"
     assert summary["prospective_v9_roi"] == 1.08
     assert summary["prospective_v9_promotion_eligible"] is True
+
+
+def test_result_summary_preserves_v10_selection_conformal_diagnostics() -> None:
+    diagnostics = {
+        "raw_selected_candidates": 9,
+        "guarded_threshold_candidates": 3,
+        "purchases_after_allocation": 2,
+        "zero_purchase_days": 1,
+        "zero_reason_counts": {"no_candidate_after_selection_conformal": 1},
+    }
+    conformal = {
+        "selection_evaluation_candidates": 9,
+        "selection_raw_covered_candidates": 2,
+        "selection_guarded_covered_candidates": 8,
+        "selection_raw_closing_coverage": 2 / 9,
+        "selection_guarded_closing_coverage": 8 / 9,
+        "selection_closing_ratio_mean": 0.72,
+        "selection_closing_ratio_p10": 0.51,
+        "selection_closing_ratio_median": 0.68,
+        "haircut_latest": 0.55,
+        "haircut_min": 0.48,
+        "haircut_max": 0.60,
+        "training_days_latest": 6,
+        "training_candidates_latest": 41,
+        "trained_through_date_latest": "2026-07-29",
+    }
+    summary = summarize_result({
+        "model": "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+        "purchase_decision_diagnostics": diagnostics,
+        "selection_conformal": conformal,
+        "prospective_market_offset_selection_conformal_discrete_ev_v10_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 31,
+            "evaluated_races": 4_100,
+            "tickets": 301,
+            "roi": 1.06,
+            "roi_without_largest_hit": 1.01,
+            "promotion_eligible": True,
+            "selection_conformal": conformal,
+        },
+    })
+
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["raw_selected_candidates"] == 9
+    assert summary["guarded_threshold_candidates"] == 3
+    assert summary["zero_reason_counts"] == {
+        "no_candidate_after_selection_conformal": 1
+    }
+    assert summary["selection_conformal"] == conformal
+    assert summary["selection_raw_closing_coverage"] == 2 / 9
+    assert summary["selection_guarded_closing_coverage"] == 8 / 9
+    assert summary["haircut_latest"] == 0.55
+    assert summary["training_days_latest"] == 6
+    assert summary["training_candidates_latest"] == 41
+    assert summary["prospective_v10_registered_after"] == "2026-07-29"
+    assert summary["prospective_v10_roi"] == 1.06
+    assert summary["prospective_v10_promotion_eligible"] is True
+    assert summary["prospective_v10_selection_conformal"] == conformal

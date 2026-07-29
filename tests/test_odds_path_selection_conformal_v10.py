@@ -7,8 +7,6 @@ import pytest
 from boatrace_ai.listwise import odds_path_selection_conformal_v10 as v10
 from boatrace_ai.listwise.selection_conformal import (
     fit_selection_conformal_haircut,
-    selected_safe_ev_candidates,
-    selection_coverage_metrics,
 )
 
 
@@ -75,40 +73,51 @@ def _lcb() -> dict:
 def _artifact(haircut: float = 0.5) -> dict:
     return {
         "ready": True,
-        "method": "selected_top2_finite_sample_lower_rank_conformal_v1",
+        "method": "selected_top2_daily_cluster_finite_sample_lower_conformal_v2",
         "haircut": haircut,
         "target_coverage": 0.8,
-        "training_days": 3,
-        "training_candidates": 9,
+        "training_days": 5,
+        "training_candidates": 30,
         "trained_through_date": "2026-07-29",
     }
 
 
-def test_nine_selected_points_produce_finite_sample_guard() -> None:
-    ratios = (0.20, 0.22, 0.24, 0.26, 0.28, 0.30, 0.32, 0.34, 1.10)
+def test_daily_cluster_finite_sample_guard_uses_prior_days_as_units() -> None:
+    daily_ratios = (
+        (0.20, 0.22, 0.24, 0.26, 0.28, 1.10),
+        (0.30, 0.32, 0.34, 0.36, 0.38, 1.10),
+        (0.40, 0.42, 0.44, 0.46, 0.48, 1.10),
+        (0.50, 0.52, 0.54, 0.56, 0.58, 1.10),
+        (0.60, 0.62, 0.64, 0.66, 0.68, 1.10),
+    )
     observations = [
         {
-            "race_date": f"2026-07-{27 + index // 3:02d}",
-            "race_id": f"r{index}",
-            "combination": COMBINATIONS[index],
+            "race_date": f"2026-07-{20 + day_index:02d}",
+            "race_id": f"r{day_index}-{candidate_index}",
+            "combination": COMBINATIONS[candidate_index],
             "closing_ratio": ratio,
         }
-        for index, ratio in enumerate(ratios)
+        for day_index, ratios in enumerate(daily_ratios)
+        for candidate_index, ratio in enumerate(ratios)
     ]
 
     artifact = fit_selection_conformal_haircut(
-        observations, evaluation_date="2026-07-31"
+        observations, evaluation_date="2026-07-25"
     )
 
     assert artifact["ready"] is True
-    assert artifact["training_days"] == 3
-    assert artifact["training_candidates"] == 9
-    assert artifact["finite_sample_rank"] == 2
-    assert artifact["finite_sample_coverage"] == pytest.approx(0.8)
-    assert artifact["haircut"] == pytest.approx(0.22)
+    assert artifact["training_days"] == 5
+    assert artifact["training_candidates"] == 30
+    assert artifact["finite_sample_unit"] == "prior_day"
+    assert artifact["finite_sample_rank"] == 1
+    assert artifact["finite_sample_coverage"] == pytest.approx(5 / 6)
+    assert artifact["daily_candidate_counts"] == {
+        f"2026-07-{20 + index:02d}": 6 for index in range(5)
+    }
+    assert artifact["haircut"] == pytest.approx(0.20)
 
 
-def test_conditional_guard_suppresses_overpredicted_selected_closing() -> None:
+def test_conditional_guard_uses_only_post_haircut_allocator_inputs() -> None:
     races = []
     forecasts = {}
     ratios = (0.20, 0.22, 0.24, 0.26, 0.28, 0.30, 0.32, 0.34, 1.10)
@@ -116,34 +125,80 @@ def test_conditional_guard_suppresses_overpredicted_selected_closing() -> None:
         race, forecast = _race(
             "2026-07-31",
             rno,
-            primary_probability=0.055,
+            primary_probability=0.30,
             actual_closing_ratio=ratio,
         )
         races.append(race)
         forecasts[race["race_id"]] = forecast
-    selected = selected_safe_ev_candidates(
-        races, closing_forecasts=forecasts, probability_lcb=_lcb()
-    )
-    observations = [
-        {
-            "race_date": f"2026-07-{27 + index // 3:02d}",
-            "race_id": f"prior-{index}",
-            "combination": COMBINATIONS[index],
-            "closing_ratio": ratio,
-        }
-        for index, ratio in enumerate(ratios)
-    ]
-    artifact = fit_selection_conformal_haircut(
-        observations, evaluation_date="2026-07-31"
-    )
-    metrics = selection_coverage_metrics(
-        races, selected, haircut=artifact["haircut"]
-    )
 
-    assert len(selected) == 9
+    _bankroll, diagnostic = v10._simulate_selection_conformal_policy(
+        races,
+        closing_forecasts=forecasts,
+        probability_lcb=_lcb(),
+        daily_budget_yen=10_000,
+        selection_conformal=_artifact(0.22),
+    )
+    metrics = diagnostic["selection_conformal"]
+
+    assert diagnostic["raw_selected_candidates"] == 9
+    assert diagnostic["guarded_threshold_candidates"] == 9
+    assert metrics["selection_evaluation_candidates"] == 9
     assert metrics["selection_raw_closing_coverage"] == pytest.approx(1 / 9)
     assert metrics["selection_guarded_closing_coverage"] == pytest.approx(8 / 9)
-    assert artifact["haircut"] < 1.0
+    assert metrics["selection_closing_missing_candidates"] == 0
+    assert metrics["selection_closing_complete"] is True
+
+
+def test_pre_haircut_candidate_rejected_by_guard_is_not_in_coverage() -> None:
+    accepted, accepted_forecast = _race(
+        "2026-07-31", 1, primary_probability=0.30
+    )
+    rejected, rejected_forecast = _race(
+        "2026-07-31", 2, primary_probability=0.055
+    )
+    _bankroll, diagnostic = v10._simulate_selection_conformal_policy(
+        [accepted, rejected],
+        closing_forecasts={
+            accepted["race_id"]: accepted_forecast,
+            rejected["race_id"]: rejected_forecast,
+        },
+        probability_lcb=_lcb(),
+        daily_budget_yen=10_000,
+        selection_conformal=_artifact(0.5),
+    )
+
+    assert diagnostic["raw_selected_candidates"] == 2
+    assert diagnostic["guarded_threshold_candidates"] == 1
+    assert diagnostic["selection_conformal"][
+        "selection_evaluation_candidates"
+    ] == 1
+
+
+def test_missing_closing_stays_in_denominator_and_fails_gate() -> None:
+    race, forecast = _race(
+        "2026-07-31", 1, primary_probability=0.30
+    )
+    selected = max(race["model_probabilities"], key=race["model_probabilities"].get)
+    race["closing_odds"] = {
+        key: value for key, value in race["closing_odds"].items() if key != selected
+    }
+    _bankroll, diagnostic = v10._simulate_selection_conformal_policy(
+        [race],
+        closing_forecasts={race["race_id"]: forecast},
+        probability_lcb=_lcb(),
+        daily_budget_yen=10_000,
+        selection_conformal=_artifact(0.5),
+    )
+    metrics = diagnostic["selection_conformal"]
+    gate = v10._selection_coverage_gate(metrics)
+
+    assert metrics["selection_evaluation_candidates"] == 1
+    assert metrics["selection_observed_closing_candidates"] == 0
+    assert metrics["selection_closing_missing_candidates"] == 1
+    assert metrics["selection_guarded_closing_coverage"] == 0.0
+    assert metrics["selection_closing_complete"] is False
+    assert gate["selection_conditional_coverage_pass"] is False
+    assert gate["selection_conditional_complete_pass"] is False
 
 
 def test_same_or_future_day_calibration_is_rejected() -> None:
@@ -163,7 +218,7 @@ def test_same_or_future_day_calibration_is_rejected() -> None:
 
 @pytest.mark.parametrize(
     ("days", "candidates"),
-    ((2, 9), (3, 7)),
+    ((4, 30), (5, 29)),
 )
 def test_insufficient_prior_selection_sample_forces_no_bet(
     days: int, candidates: int
