@@ -45,6 +45,14 @@ REGISTERED_AFTER = "2026-07-29"
 PROSPECTIVE_OUTPUT_KEY = "prospective_role_integrated_v11_walk_forward"
 DECISION_OFFSET_SECONDS = 300
 DECISION_CHECKPOINT = checkpoint_label(DECISION_OFFSET_SECONDS)
+RESEARCH_PRECONFORMAL_OUTPUT_KEY = "research_preconformal_upper_bound"
+
+RESEARCH_PRECONFORMAL_ARTIFACT: dict[str, Any] = {
+    "ready": True,
+    "haircut": 1.0,
+    "method": "fixed_identity_pre_selection_conformal_upper_bound",
+    "research_only_non_deployable": True,
+}
 
 DISCRETE_POLICY_V11: dict[str, Any] = {
     **DISCRETE_POLICY,
@@ -153,6 +161,46 @@ def _next_date(dates: list[str]) -> str:
     return (date.fromisoformat(dates[-1]) + timedelta(days=1)).isoformat()
 
 
+def _research_preconformal_summary(
+    daily: list[dict[str, Any]],
+    *,
+    evaluated_races: int,
+    eligible_dates: list[str],
+    skipped_dates: list[str],
+    diagnostics_by_date: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    cumulative_daily = _cumulative_daily(daily)
+    bankroll = _summarize_bankroll(
+        cumulative_daily,
+        evaluated_races=evaluated_races,
+        purchase_diagnostic_accumulators=diagnostics_by_date.values(),
+    )
+    largest_hit = max(
+        (
+            int(row.get("largest_hit_return_yen") or 0)
+            for row in cumulative_daily
+        ),
+        default=0,
+    )
+    return {
+        "status": "research_only_non_deployable",
+        "research_only_non_deployable": True,
+        "deployable": False,
+        "included_in_promotion_gate": False,
+        "included_in_deployment_selected_policy": False,
+        "included_in_operational_decision": False,
+        "interpretation": (
+            "Optimistic bankroll diagnostic before selection-conformal haircut; "
+            "it is not an operational or promotion estimate"
+        ),
+        "fixed_selection_conformal": dict(RESEARCH_PRECONFORMAL_ARTIFACT),
+        "eligible_dates": list(eligible_dates),
+        "skipped_dates": list(skipped_dates),
+        "largest_hit_return_yen": largest_hit,
+        **bankroll,
+    }
+
+
 def walk_forward_evaluate_v11(
     races: list[dict[str, Any]],
     *,
@@ -183,6 +231,11 @@ def walk_forward_evaluate_v11(
     daily: list[dict[str, Any]] = []
     diagnostics_by_date: dict[str, dict[str, Any]] = {}
     artifacts_by_date: dict[str, dict[str, Any]] = {}
+    research_daily: list[dict[str, Any]] = []
+    research_diagnostics_by_date: dict[str, dict[str, Any]] = {}
+    research_evaluated_races = 0
+    research_eligible_dates: list[str] = []
+    research_skipped_dates: list[str] = []
 
     for evaluation_date in eligible_dates:
         prior_dates = [value for value in dates if value < evaluation_date]
@@ -220,6 +273,21 @@ def walk_forward_evaluate_v11(
             daily_budget_yen=daily_budget_yen,
             selection_conformal=conformal,
         )
+        research_bankroll: dict[str, Any] | None = None
+        research_diagnostic: dict[str, Any] | None = None
+        research_ready = bool(closing_model.get("ready")) and bool(
+            probability_lcb.get("ready")
+        )
+        if research_ready:
+            research_bankroll, research_diagnostic = (
+                _simulate_selection_conformal_policy(
+                    transformed,
+                    closing_forecasts=closing_forecasts,
+                    probability_lcb=probability_lcb,
+                    daily_budget_yen=daily_budget_yen,
+                    selection_conformal=dict(RESEARCH_PRECONFORMAL_ARTIFACT),
+                )
+            )
 
         # Purchase/allocation has completed. Final odds can now become a teacher
         # for later days, while payout data remains inside allocator settlement.
@@ -232,6 +300,14 @@ def walk_forward_evaluate_v11(
         )
         if evaluation_date not in output_dates:
             continue
+
+        if research_bankroll is not None and research_diagnostic is not None:
+            research_daily.extend(research_bankroll["daily"])
+            research_diagnostics_by_date[evaluation_date] = research_diagnostic
+            research_evaluated_races += len(holdout)
+            research_eligible_dates.append(evaluation_date)
+        else:
+            research_skipped_dates.append(evaluation_date)
 
         probability_result = probability_metrics(transformed)
         closing_result = closing_odds_multihorizon_v11_metrics(
@@ -306,6 +382,13 @@ def walk_forward_evaluate_v11(
             "evaluated_races": 0,
             "folds": [],
             "daily": [],
+            RESEARCH_PRECONFORMAL_OUTPUT_KEY: _research_preconformal_summary(
+                [],
+                evaluated_races=0,
+                eligible_dates=[],
+                skipped_dates=[],
+                diagnostics_by_date={},
+            ),
             "promotion_gate": {},
             "promotion_eligible": False,
         }
@@ -381,6 +464,13 @@ def walk_forward_evaluate_v11(
             else "v11_components_not_ready"
         ),
     }
+    research_preconformal = _research_preconformal_summary(
+        research_daily,
+        evaluated_races=research_evaluated_races,
+        eligible_dates=research_eligible_dates,
+        skipped_dates=research_skipped_dates,
+        diagnostics_by_date=research_diagnostics_by_date,
+    )
 
     return {
         "model": MODEL_NAME,
@@ -410,6 +500,7 @@ def walk_forward_evaluate_v11(
         "selection_conformal_artifacts_by_date": artifacts_by_date,
         "folds": folds,
         "daily": daily,
+        RESEARCH_PRECONFORMAL_OUTPUT_KEY: research_preconformal,
         PROSPECTIVE_OUTPUT_KEY: prospective,
         "promotion_gate": gate,
         "promotion_eligible": prospective["promotion_eligible"],
