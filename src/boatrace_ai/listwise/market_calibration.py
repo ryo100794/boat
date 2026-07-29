@@ -165,8 +165,19 @@ V17_MODEL_NAME = V17_STRATEGY_NAME
 V17_COMPARISON_ROLE = (
     "strict_prior_observed_closing_robust_policy_chronological_shadow"
 )
+V18_STRATEGY_NAME = (
+    "odds_path_observed_closing_return_schedule_quota_v18"
+)
+V18_MODEL_NAME = V18_STRATEGY_NAME
+V18_COMPARISON_ROLE = (
+    "strict_prior_observed_closing_schedule_quota_chronological_shadow"
+)
+V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
+ROBUST_POLICY_STRATEGIES = frozenset({
+    V17_STRATEGY_NAME, V18_STRATEGY_NAME,
+})
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
 V6_RETURN_MULTIPLIER_BOUNDS = (
@@ -194,6 +205,12 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 }
 
 
+def robust_policy_comparison_role(calibrator_strategy: str) -> str:
+    if calibrator_strategy == V18_STRATEGY_NAME:
+        return V18_COMPARISON_ROLE
+    return V17_COMPARISON_ROLE
+
+
 def odds_path_model_name(calibrator_strategy: str) -> str:
     if calibrator_strategy == "odds_path_return":
         return "odds_path_operational_v1"
@@ -203,6 +220,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
+    if calibrator_strategy == V18_STRATEGY_NAME:
+        return V18_MODEL_NAME
     if calibrator_strategy == V17_STRATEGY_NAME:
         return V17_MODEL_NAME
     if calibrator_strategy == "odds_path_hit_shrunk_return":
@@ -954,6 +973,22 @@ def simulate_policy(
             min_stake_yen=STAKE_YEN,
         )
         if include_chronological:
+            ticket_control = policy.get("v18_ticket_control")
+            schedule = None
+            max_daily_tickets = None
+            if ticket_control is not None:
+                max_daily_tickets = int(
+                    ticket_control["learned_daily_ticket_limit"]
+                )
+                schedule = [
+                    {
+                        "race_id": str(race["race_id"]),
+                        "race_date": str(race["race_date"]),
+                        "rno": int(race["rno"]),
+                        "odds_deadline_at": race.get("odds_deadline_at"),
+                    }
+                    for race in races_by_day[race_date]
+                ]
             chronological = simulate_chronological_bankroll_day(
                 race_date,
                 by_day.get(race_date, []),
@@ -963,6 +998,8 @@ def simulate_policy(
                 ),
                 initial_bankroll_yen=daily_budget_yen,
                 daily_stake_limit_fraction=1.0,
+                max_daily_tickets=max_daily_tickets,
+                schedule=schedule,
                 max_decision_exposure_fraction=0.30,
                 race_cap_fraction=0.05,
                 ticket_cap_fraction=0.02,
@@ -976,8 +1013,11 @@ def simulate_policy(
                     "allocation_mode": str(staking["allocation_mode"]),
                 },
                 allocation_method=(
-                    "chronological_adaptive_"
-                    f"{str(staking['allocation_mode'])}"
+                    (
+                        "chronological_v18_schedule_quota_"
+                        if ticket_control is not None
+                        else "chronological_adaptive_"
+                    ) + str(staking["allocation_mode"])
                 ),
             )
             result["chronological_bankroll"] = chronological
@@ -1538,6 +1578,70 @@ def select_policy_v17(
     return dict(selected["policy"]), rows
 
 
+def learn_v18_daily_ticket_control(
+    daily_rows: Iterable[dict[str, Any]],
+    *,
+    quantile: float = V18_TICKET_LIMIT_QUANTILE,
+) -> dict[str, Any]:
+    """Learn a conservative ticket cap from strict-prior daily selections."""
+    if not 0.0 <= quantile <= 1.0:
+        raise ValueError("quantile must be between zero and one")
+    counts = sorted(max(0, int(row.get("tickets") or 0)) for row in daily_rows)
+    if counts:
+        rank = math.floor((len(counts) - 1) * quantile)
+        learned_limit = counts[rank]
+    else:
+        learned_limit = 0
+    return {
+        "method": "strict_prior_daily_ticket_lower_quantile",
+        "quantile": quantile,
+        "prior_days": len(counts),
+        "prior_daily_ticket_counts": counts,
+        "learned_daily_ticket_limit": learned_limit,
+        "stake_granularity_yen": STAKE_YEN,
+        "result_or_payout_fields_used": False,
+    }
+
+
+def select_policy_v18(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    daily_budget_yen: int,
+    policies: Iterable[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Keep V17 policy ranking and learn its operational daily ticket cap."""
+    selected, rows = select_policy_v17(
+        races,
+        calibrator=calibrator,
+        daily_budget_yen=daily_budget_yen,
+        policies=policies,
+    )
+    prepared_races = []
+    for race in races:
+        item = dict(race)
+        item["_policy_calibrated_probabilities"] = blend_probabilities(
+            race["model_probabilities"],
+            race["market_probabilities"],
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        prepared_races.append(item)
+    selected_result = simulate_policy(
+        prepared_races,
+        calibrator=calibrator,
+        policy=selected,
+        daily_budget_yen=daily_budget_yen,
+        include_chronological=False,
+        include_robust_metrics=False,
+    )
+    v18_policy = dict(selected)
+    v18_policy["v18_ticket_control"] = learn_v18_daily_ticket_control(
+        selected_result["daily"]
+    )
+    return v18_policy, rows
+
+
 def policy_calibration_eligible(
     result: dict[str, Any],
     *,
@@ -1872,12 +1976,12 @@ def waiting_walk_forward_result(
         "status": "waiting_for_clean_evaluation_day",
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": (
-            V17_COMPARISON_ROLE
-            if calibrator_strategy == V17_STRATEGY_NAME
+            robust_policy_comparison_role(calibrator_strategy)
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
             else "real_t5_odds_nested_daily_walk_forward_shadow"
         ),
         "deployment_mode": (
-            "shadow_only" if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+            "shadow_only" if calibrator_strategy in ROBUST_POLICY_STRATEGIES else "evaluation"
         ),
         "real_betting_enabled": False,
         "validation_design": (
@@ -1927,7 +2031,7 @@ def waiting_walk_forward_result(
             "profitable_day_fraction": None,
             "normalized_drawdown": None,
             "primary_promotion_bankroll": (
-                calibrator_strategy == V17_STRATEGY_NAME
+                calibrator_strategy in ROBUST_POLICY_STRATEGIES
             ),
         },
         "flat_policy_walk_forward": {
@@ -2325,6 +2429,7 @@ def fit_deployment_configuration(
         "odds_path_closing_return",
         "odds_path_observed_closing_return",
         V17_STRATEGY_NAME,
+        V18_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -2344,6 +2449,7 @@ def fit_deployment_configuration(
                     if calibrator_strategy in {
                         "odds_path_observed_closing_return",
                         V17_STRATEGY_NAME,
+                        V18_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -2424,7 +2530,9 @@ def fit_deployment_configuration(
         for race in policy_races
     )
     policy_selector = (
-        select_policy_v17
+        select_policy_v18
+        if calibrator_strategy == V18_STRATEGY_NAME
+        else select_policy_v17
         if calibrator_strategy == V17_STRATEGY_NAME
         else select_policy
     )
@@ -2441,17 +2549,17 @@ def fit_deployment_configuration(
         ),
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": (
-            V17_COMPARISON_ROLE
-            if calibrator_strategy == V17_STRATEGY_NAME
+            robust_policy_comparison_role(calibrator_strategy)
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
             else "next_day_refit_not_evaluation"
         ),
         "deployment_mode": (
             "shadow_only"
-            if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES else "evaluation"
         ),
         "real_betting_enabled": False,
         "daily_stake_limit_fraction": (
-            1.0 if calibrator_strategy == V17_STRATEGY_NAME else None
+            1.0 if calibrator_strategy in ROBUST_POLICY_STRATEGIES else None
         ),
         "trained_dates": dates,
         "trained_through_date": dates[-1],
@@ -2762,6 +2870,7 @@ def walk_forward_evaluate(
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
+            V18_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -2778,6 +2887,7 @@ def walk_forward_evaluate(
             elif calibrator_strategy in {
                 "odds_path_observed_closing_return",
                 V17_STRATEGY_NAME,
+                V18_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -2796,6 +2906,7 @@ def walk_forward_evaluate(
                         if calibrator_strategy in {
                             "odds_path_observed_closing_return",
                             V17_STRATEGY_NAME,
+                            V18_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -2881,7 +2992,9 @@ def walk_forward_evaluate(
         closing_odds_model = closing_policy_fold["model"]
         closing_odds_evaluation = closing_policy_fold["evaluation"]
         policy_selector = (
-            select_policy_v17
+            select_policy_v18
+            if calibrator_strategy == V18_STRATEGY_NAME
+            else select_policy_v17
             if calibrator_strategy == V17_STRATEGY_NAME
             else select_policy
         )
@@ -3310,10 +3423,10 @@ def walk_forward_evaluate(
         "bootstrap_probability_roi_above_one": (
             chronological_bootstrap.get("probability_roi_above_one")
         ),
-        "primary_promotion_bankroll": calibrator_strategy == V17_STRATEGY_NAME,
+        "primary_promotion_bankroll": calibrator_strategy in ROBUST_POLICY_STRATEGIES,
         "daily_stake_limit_fraction": 1.0,
         "gross_stake_allowance_rule": (
-            "initial_allowance_plus_positive_realized_cumulative_profit"
+            "initial_allowance_plus_positive_part_of_cumulative_net_realized_profit"
         ),
         "legacy_cash_recycling_only_is_primary": False,
     })
@@ -3385,7 +3498,7 @@ def walk_forward_evaluate(
             else True
         ),
     }
-    if calibrator_strategy == V17_STRATEGY_NAME:
+    if calibrator_strategy in ROBUST_POLICY_STRATEGIES:
         promotion_gate = {
             "primary_bankroll": "chronological_bankroll",
             "minimum_evaluation_races": 1000,
@@ -3427,6 +3540,7 @@ def walk_forward_evaluate(
         if calibrator_strategy in {
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
+            V18_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -3453,7 +3567,7 @@ def walk_forward_evaluate(
             else True
         ),
     }
-    if calibrator_strategy == V17_STRATEGY_NAME:
+    if calibrator_strategy in ROBUST_POLICY_STRATEGIES:
         deployment_gate = {
             "primary_bankroll": "chronological_bankroll",
             "minimum_evaluation_days": 7,
@@ -3484,7 +3598,7 @@ def walk_forward_evaluate(
             for key, value in deployment_gate.items()
             if key.endswith("_pass")
         )
-        if calibrator_strategy == V17_STRATEGY_NAME
+        if calibrator_strategy in ROBUST_POLICY_STRATEGIES
         else all(
             deployment_gate[key]
             for key in (
@@ -3504,14 +3618,18 @@ def walk_forward_evaluate(
         deployment_configuration["operational_status"] = "shadow_only_insufficient_evidence"
     else:
         deployment_configuration["operational_status"] = "eligible_for_shadow_promotion"
-    if calibrator_strategy == V17_STRATEGY_NAME:
+    if calibrator_strategy in ROBUST_POLICY_STRATEGIES:
         deployment_configuration.update({
-            "comparison_role": V17_COMPARISON_ROLE,
+            "comparison_role": robust_policy_comparison_role(calibrator_strategy),
             "deployment_mode": "shadow_only",
             "real_betting_enabled": False,
             "daily_stake_limit_fraction": 1.0,
             "primary_promotion_bankroll": "chronological_bankroll",
-            "policy_selection": "strict_prior_lexicographic_robust_v17",
+            "policy_selection": (
+                "strict_prior_lexicographic_robust_v17_schedule_quota_v18"
+                if calibrator_strategy == V18_STRATEGY_NAME
+                else "strict_prior_lexicographic_robust_v17"
+            ),
         })
         deployment_configuration["operational_status"] = (
             "shadow_only_evidence_passed"
@@ -3525,13 +3643,13 @@ def walk_forward_evaluate(
     return {
         "model": odds_path_model_name(calibrator_strategy),
         "comparison_role": (
-            V17_COMPARISON_ROLE
-            if calibrator_strategy == V17_STRATEGY_NAME
+            robust_policy_comparison_role(calibrator_strategy)
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
             else "real_t5_odds_nested_daily_walk_forward_shadow"
         ),
         "calibrator_strategy": calibrator_strategy,
         "deployment_mode": (
-            "shadow_only" if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+            "shadow_only" if calibrator_strategy in ROBUST_POLICY_STRATEGIES else "evaluation"
         ),
         "real_betting_enabled": False,
         "validation_design": (
@@ -5117,6 +5235,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
+            V18_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
