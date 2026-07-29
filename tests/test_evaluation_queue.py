@@ -392,6 +392,45 @@ def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
         )
 
 
+@pytest.mark.parametrize(
+    ("job_threshold", "parent_threshold", "expected_threshold"),
+    [
+        (1.2, 1.0, "1.2"),
+        (None, 1.0, "1.0"),
+        (None, None, "1.2"),
+    ],
+    ids=["explicit-job-wins", "parent-fallback", "default-fallback"],
+)
+def test_newton_refinement_ev_threshold_precedence(
+    tmp_path: Path,
+    job_threshold: float | None,
+    parent_threshold: float | None,
+    expected_threshold: str,
+) -> None:
+    root = tmp_path / "boat"
+    result = root / "data/models/evaluation_queue/job-00007011.json"
+    result.parent.mkdir(parents=True)
+    payload: dict[str, object] = {"feature_schema_version": FEATURE_SCHEMA_VERSION}
+    if parent_threshold is not None:
+        payload["policy"] = {"ev_threshold": parent_threshold}
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    parameters: dict[str, object] = {
+        "search_result": "data/models/evaluation_queue/job-00007011.json",
+        "cache_dir": str(root / "data/models/evaluation_cache/job-00007011"),
+    }
+    if job_threshold is not None:
+        parameters["ev_threshold"] = job_threshold
+
+    command, _output = build_command(
+        _job("listwise_newton_refine", parameters, job_id=7369),
+        app_root=root,
+        python=Path("/venv/python"),
+        db="host=postgres dbname=boatrace",
+    )
+
+    assert command[command.index("--ev-threshold") + 1] == expected_threshold
+
+
 def test_series_feature_cache_profile_and_command(tmp_path: Path) -> None:
     assert TASK_PROFILES["series_feature_cache"] == {
         "category": "maintenance",
@@ -2917,7 +2956,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         "memory_mb": 2048,
         "disk_mb": 256,
         "idle_cpu": 5.0,
-        "max_parallel": 1,
+        "max_parallel": 2,
     }
     assert command[:3] == [
         str(python),

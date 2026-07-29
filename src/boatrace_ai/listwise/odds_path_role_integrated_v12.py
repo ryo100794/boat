@@ -137,7 +137,10 @@ def _strict_prior_forecasts(
     *,
     evaluation_date: str,
     fallback_policy: str,
+    forecast_field: str = "lower_final_odds",
 ) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+    if forecast_field not in {"point_final_odds", "lower_final_odds"}:
+        raise ValueError("unsupported closing forecast field")
     forecasts: dict[str, dict[str, float]] = {}
     contract = _closing_contract(
         v12_model,
@@ -150,6 +153,7 @@ def _strict_prior_forecasts(
         "missing_t300_races": 0,
         "incomplete_t300_races": 0,
         "future_checkpoint_violations": 0,
+        "forecast_field": forecast_field,
         "closing_model_identity": contract,
     }
     selected_model = contract["selected_model"]
@@ -165,7 +169,7 @@ def _strict_prior_forecasts(
                 prediction_date=evaluation_date,
             )
             ready = bool(forecast.get("ready"))
-            lower_values = forecast.get("lower_final_odds") or {}
+            forecast_values = forecast.get(forecast_field) or {}
             future = list(forecast.get("future_checkpoint_offsets_used") or [])
         else:
             assert isinstance(v11_model, Mapping)
@@ -178,7 +182,7 @@ def _strict_prior_forecasts(
             access = forecast.get("checkpoint_access_audit") or {}
             row = (forecast.get("predictions") or {}).get(DECISION_CHECKPOINT) or {}
             ready = bool(row.get("ready"))
-            lower_values = row.get("lower_final_odds") or {}
+            forecast_values = row.get(forecast_field) or {}
             future = list(access.get("future_checkpoint_offsets_used") or [])
             future.extend(row.get("future_checkpoint_offsets_used") or [])
         if future:
@@ -187,15 +191,15 @@ def _strict_prior_forecasts(
         if not ready:
             audit["missing_t300_races"] += 1
             continue
-        lower = {
+        selected_values = {
             str(combination): float(odds)
-            for combination, odds in lower_values.items()
+            for combination, odds in forecast_values.items()
             if math.isfinite(float(odds)) and float(odds) > 0.0
         }
-        if len(lower) != 120:
+        if len(selected_values) != 120:
             audit["incomplete_t300_races"] += 1
             continue
-        forecasts[str(race["race_id"])] = lower
+        forecasts[str(race["race_id"])] = selected_values
         audit["ready_races"] += 1
     return forecasts, audit
 
@@ -364,12 +368,21 @@ def walk_forward_evaluate_v12(
     min_calibration_days: int,
     evaluation_dates: Iterable[str] | None = None,
     closing_fallback_policy: str = CLOSING_FALLBACK_V11,
+    closing_forecast_field: str = "lower_final_odds",
     probability_lcb_fit: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
     probability_lcb_metrics: Callable[..., dict[str, Any]] | None = None,
     probability_lcb_metrics_use_preallocation_population: bool = False,
+    selection_conformal_fit: Callable[..., dict[str, Any]] | None = None,
+    selection_observation_append: Callable[..., int] | None = None,
 ) -> dict[str, Any]:
     """Evaluate V12 closing decisions in the strict-prior role-separated stack."""
     lcb_fit = probability_lcb_fit or fit_probability_lcb
+    conformal_fit = selection_conformal_fit or fit_selection_conformal_haircut
+    observation_append = (
+        selection_observation_append or _append_selection_observations
+    )
+    if closing_forecast_field not in {"point_final_odds", "lower_final_odds"}:
+        raise ValueError("unsupported closing forecast field")
     if closing_fallback_policy not in CLOSING_FALLBACK_POLICIES:
         raise ValueError(
             f"unsupported v12 closing fallback policy: {closing_fallback_policy}"
@@ -393,6 +406,7 @@ def walk_forward_evaluate_v12(
         **DISCRETE_POLICY_V12,
         "daily_budget_yen": daily_budget_yen,
         "closing_fallback_policy": closing_fallback_policy,
+        "closing_forecast_field": closing_forecast_field,
     }
 
     observations: list[dict[str, Any]] = []
@@ -433,7 +447,7 @@ def walk_forward_evaluate_v12(
             if closing_fallback_policy == CLOSING_FALLBACK_V11
             else None
         )
-        conformal = fit_selection_conformal_haircut(
+        conformal = conformal_fit(
             observations,
             evaluation_date=evaluation_date,
         )
@@ -445,6 +459,7 @@ def walk_forward_evaluate_v12(
             closing_v11_model,
             evaluation_date=evaluation_date,
             fallback_policy=closing_fallback_policy,
+            forecast_field=closing_forecast_field,
         )
         closing_identity = dict(access_audit["closing_model_identity"])
         bankroll, purchase_diagnostic = _simulate_selection_conformal_policy(
@@ -478,7 +493,7 @@ def walk_forward_evaluate_v12(
 
         # Purchase/allocation has completed. Final odds can now become a teacher
         # for later days, while payout data remains inside allocator settlement.
-        appended = _append_selection_observations(
+        appended = observation_append(
             observations,
             transformed,
             closing_forecasts=closing_forecasts,
@@ -706,7 +721,7 @@ def walk_forward_evaluate_v12(
             probability_attach=attach_odds_path_probability_v8,
         )
     )
-    deployment_conformal = fit_selection_conformal_haircut(
+    deployment_conformal = conformal_fit(
         observations,
         evaluation_date=deployment_date,
     )

@@ -53,7 +53,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
-    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
+    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
@@ -1512,6 +1512,7 @@ def build_command(
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
+            "odds_path_role_integrated_selection_free_envelope_v15",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -1536,6 +1537,7 @@ def build_command(
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
+            "odds_path_role_integrated_selection_free_envelope_v15",
         }:
             fallback_policy = str(
                 params.get("v12_closing_fallback_policy", "v11")
@@ -2234,6 +2236,12 @@ def build_command(
             )
         model_output = output.with_suffix(".joblib")
         cache = Path(str(params.get("cache_dir") or "/tmp/boatrace-evaluation/newton"))
+        if "ev_threshold" in params:
+            ev_threshold = _number(params, "ev_threshold", 1.2, 1.0, 3.0)
+        else:
+            ev_threshold = float(
+                (search_payload.get("policy") or {}).get("ev_threshold") or 1.2
+            )
         return [
             str(python), "-m", "boatrace_ai.listwise.newton_refine",
             "--db", db,
@@ -2247,10 +2255,7 @@ def build_command(
             "--gradient-tolerance", str(_number(params, "gradient_tolerance", 1e-4, 1e-7, 1e-2)),
             "--cg-tolerance", str(_number(params, "cg_tolerance", 1e-3, 1e-6, 1e-1)),
             "--daily-budget-yen", "10000",
-            "--ev-threshold", str(float(
-                (search_payload.get("policy") or {}).get("ev_threshold")
-                or _number(params, "ev_threshold", 1.2, 1.0, 3.0)
-            )),
+            "--ev-threshold", str(ev_threshold),
         ], output
     raise ValueError(f"unsupported task_type: {task_type}")
 
@@ -4179,6 +4184,12 @@ MARKET_EVALUATION_SOURCES = (
         "odds_path_role_integrated_edge_conditional_lcb_v13",
     ),
     (
+        "odds_path_role_integrated_selection_free_envelope_v15_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_role_integrated_selection_free_envelope_v15",
+    ),
+    (
         "odds_path_role_integrated_registered_band_lcb_v14_daily",
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
@@ -4201,6 +4212,12 @@ def seed_daily_market_jobs(
     inserted: list[int] = []
     for source_spec in MARKET_EVALUATION_SOURCES:
         label, task_type, source_key, calibrator_strategy, *artifact_kinds = source_spec
+        if (
+            calibrator_strategy
+            == "odds_path_role_integrated_selection_free_envelope_v15"
+            and through.isoformat() <= "2026-07-29"
+        ):
+            continue
         artifact_kind = artifact_kinds[0] if artifact_kinds else "evaluation"
         source = conn.execute(
             """
@@ -4234,12 +4251,18 @@ def seed_daily_market_jobs(
             "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
             **(
-                {"v12_closing_fallback_policy": "v11"}
+                {"v12_closing_fallback_policy": (
+                    "no_bet"
+                    if calibrator_strategy
+                    == "odds_path_role_integrated_selection_free_envelope_v15"
+                    else "v11"
+                )}
                 if calibrator_strategy
                 in {
                     "odds_path_role_integrated_t300_nonlinear_v12",
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
                     "odds_path_role_integrated_registered_band_lcb_v14",
+                    "odds_path_role_integrated_selection_free_envelope_v15",
                 }
                 else {}
             ),
@@ -4252,6 +4275,7 @@ def seed_daily_market_jobs(
                     "odds_path_role_integrated_t300_nonlinear_v12",
                     "odds_path_role_integrated_edge_conditional_lcb_v13",
                     "odds_path_role_integrated_registered_band_lcb_v14",
+                    "odds_path_role_integrated_selection_free_envelope_v15",
                 }
                 else 7200
                 if calibrator_strategy in {
@@ -4272,7 +4296,10 @@ def seed_daily_market_jobs(
             model_key=f"{label}:market_residual:{range_key}",
             parameters=parameters,
             priority=(
-                98
+                99
+                if calibrator_strategy
+                == "odds_path_role_integrated_selection_free_envelope_v15"
+                else 98
                 if calibrator_strategy in {
                     "odds_path_return",
                     "odds_path_probability",
