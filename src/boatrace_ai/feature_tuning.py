@@ -863,6 +863,7 @@ def iter_complete_races(
         """,
         params,
     ).fetchall()
+    _finish_postgresql_read(conn)
     race_dates = [str(row["race_date"]) for row in date_rows]
 
     for offset in range(0, len(race_dates), RACE_DATE_CHUNK_SIZE):
@@ -892,10 +893,19 @@ def iter_complete_races(
             ORDER BY r.race_date, r.jcd, r.rno, e.lane
             """,
             (date_chunk[0], date_chunk[-1]),
-        )
+        ).fetchall()
+        # CompatRow owns its values, so the PostgreSQL cursor and transaction
+        # are no longer needed while the much heavier Python transforms run.
+        _finish_postgresql_read(conn)
         if period_lookup:
             rows = enrich_racer_period_rows(rows, period_lookup)
         yield from _group_complete_rows(rows)
+
+
+def _finish_postgresql_read(conn: Any) -> None:
+    """End a materialized READ COMMITTED query without altering SQLite semantics."""
+    if getattr(conn, "dialect", None) == "postgresql":
+        conn.commit()
 
 
 def _group_complete_rows(rows: Iterable[Any]) -> Iterable[list[Any]]:
