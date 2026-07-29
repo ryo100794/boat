@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from ..db import connection, init_db
 from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
+from .t5_spool import DEFAULT_MAX_BYTES, T5DurabilityWorker, T5Spool, replay_spool
 from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
 
 from ..ingestion.live import (
@@ -34,6 +36,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--model", default="data/models/win_model_no_odds_v8.joblib")
     parser.add_argument("--raw-dir", default="data/raw")
+    parser.add_argument(
+        "--t5-spool-dir",
+        default=os.environ.get("BOATRACE_T5_SPOOL_DIR", "data/runtime_spool/t5"),
+    )
+    parser.add_argument(
+        "--t5-spool-max-bytes",
+        type=int,
+        default=int(os.environ.get("BOATRACE_T5_SPOOL_MAX_BYTES", DEFAULT_MAX_BYTES)),
+    )
     parser.add_argument("--date", help="Fix one race date; omit to follow the current JST date automatically.")
     parser.add_argument("--sleep-loop", type=float, default=10.0)
     parser.add_argument("--sleep-page", type=float, default=0.4)
@@ -46,6 +57,16 @@ def main(argv: list[str] | None = None) -> int:
     fixed_date = date.fromisoformat(args.date) if args.date else None
     raw_dir = Path(args.raw_dir)
     model_path = Path(args.model)
+    t5_spool = T5Spool(
+        args.t5_spool_dir,
+        max_bytes=args.t5_spool_max_bytes,
+        archive_raw_dir=raw_dir,
+    )
+    t5_worker = T5DurabilityWorker(
+        t5_spool,
+        date_provider=lambda: operational_race_date(fixed_date, at=now_jst()),
+    )
+    t5_worker.start()
     loop = 0
     schedule_date: date | None = None
     next_schedule_refresh = 0.0
@@ -87,7 +108,16 @@ def main(argv: list[str] | None = None) -> int:
             "program_entries": 0,
         }
         with connection(args.db) as conn:
+            counters["t5_spool_replay"] = replay_spool(t5_spool, conn)
             rows = scheduled_races(conn, target_date)
+            t5_spool.save_schedule(target_date, rows)
+            counters["t5_spool_sync_captures"] = t5_worker.capture_due_once(now=now)
+            synchronous_replay = replay_spool(t5_spool, conn)
+            for key in ("replayed", "failed", "corrupt_tail_records"):
+                counters["t5_spool_replay"][key] += synchronous_replay[key]
+            if synchronous_replay["replayed"]:
+                rows = scheduled_races(conn, target_date)
+                t5_spool.save_schedule(target_date, rows)
             refresh_due = fixed_date is None and (
                 schedule_date != target_date or time.monotonic() >= next_schedule_refresh
             )
@@ -108,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
                 schedule_date = target_date
                 next_schedule_refresh = time.monotonic() + 15 * 60
                 rows = scheduled_races(conn, target_date)
+                t5_spool.save_schedule(target_date, rows)
             priority_odds_ids: set[str] = set()
             for priority_row in t5_priority_rows(rows, now=now):
                 race_id = str(priority_row["race_id"])
@@ -186,9 +217,11 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 )
                 counters["now_jst"] = guard_now.isoformat(timespec="seconds")
+                counters["t5_spool"] = t5_worker.status()
                 print(json.dumps(counters, ensure_ascii=False), flush=True)
                 loop += 1
                 if args.max_loops is not None and loop >= args.max_loops:
+                    t5_worker.stop()
                     return 0
                 time.sleep(min(args.sleep_loop, 2.0 if closing_guarded_rows else 5.0))
                 continue
@@ -281,9 +314,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 time.sleep(args.sleep_page)
         counters["now_jst"] = now.isoformat(timespec="seconds")
+        counters["t5_spool"] = t5_worker.status()
         print(json.dumps(counters, ensure_ascii=False), flush=True)
         loop += 1
         if args.max_loops is not None and loop >= args.max_loops:
+            t5_worker.stop()
             return 0
         time.sleep(args.sleep_loop)
 
