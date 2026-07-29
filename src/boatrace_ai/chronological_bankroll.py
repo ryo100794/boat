@@ -134,6 +134,8 @@ def simulate_chronological_bankroll_day(
     race_cap_fraction: float = 0.03,
     ticket_cap_fraction: float = 0.01,
     max_tickets_per_race: int = 2,
+    max_daily_tickets: int | None = None,
+    schedule: Iterable[Mapping[str, Any]] | None = None,
     stake_granularity_yen: int = STAKE_UNIT_YEN,
     allocate_day: Allocator = allocate_discrete_log_day,
     allocator_kwargs: Mapping[str, Any] | None = None,
@@ -144,6 +146,8 @@ def simulate_chronological_bankroll_day(
         raise ValueError("initial_bankroll_yen must fund at least one 100-yen unit")
     if initial_bankroll_yen % STAKE_UNIT_YEN:
         raise ValueError("initial_bankroll_yen must be divisible by 100")
+    if max_daily_tickets is not None and max_daily_tickets < 0:
+        raise ValueError("max_daily_tickets must be non-negative")
 
     decisions = [dict(candidate) for candidate in candidates]
     by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -156,6 +160,22 @@ def simulate_chronological_bankroll_day(
             raise ValueError(f"inconsistent decision_at for {race_id}")
         decision_times[race_id] = decision_at
         by_race[race_id].append(candidate)
+
+    schedule_times: dict[str, datetime] = {}
+    for item in schedule if schedule is not None else decisions:
+        race_id = str(item["race_id"])
+        decision_at = _decision_at(item)
+        existing = schedule_times.get(race_id)
+        if existing is not None and existing != decision_at:
+            raise ValueError(f"inconsistent schedule time for {race_id}")
+        schedule_times[race_id] = decision_at
+    missing_schedule = set(by_race) - set(schedule_times)
+    if missing_schedule:
+        raise ValueError(
+            "candidate races missing from schedule: "
+            + ", ".join(sorted(missing_schedule))
+        )
+    ordered_schedule_times = sorted(schedule_times.values())
 
     event_by_race: dict[str, dict[str, Any]] = {}
     for source in settlement_events:
@@ -244,7 +264,23 @@ def simulate_chronological_bankroll_day(
             min(cash_yen, remaining_gross_stake_allowance_yen)
             // stake_granularity_yen * stake_granularity_yen
         )
-        if allocatable_bankroll_yen < stake_granularity_yen:
+        schedule_races_elapsed = sum(
+            value <= decision_at for value in ordered_schedule_times
+        )
+        schedule_races_total = len(ordered_schedule_times)
+        cumulative_ticket_quota = (
+            max_daily_tickets * schedule_races_elapsed // schedule_races_total
+            if max_daily_tickets is not None and schedule_races_total
+            else max_daily_tickets
+        )
+        remaining_ticket_quota = (
+            max(0, cumulative_ticket_quota - len(selected))
+            if cumulative_ticket_quota is not None else None
+        )
+        if (
+            allocatable_bankroll_yen < stake_granularity_yen
+            or remaining_ticket_quota == 0
+        ):
             allocation = {"selected_sample": [], "allocation_candidate_tickets": 0}
         else:
             call_kwargs = {
@@ -253,7 +289,7 @@ def simulate_chronological_bankroll_day(
                 "max_daily_exposure_fraction": max_decision_exposure_fraction,
                 "race_cap_fraction": race_cap_fraction,
                 "ticket_cap_fraction": ticket_cap_fraction,
-                "max_daily_tickets": None,
+                "max_daily_tickets": remaining_ticket_quota,
                 "stake_granularity_yen": stake_granularity_yen,
                 "min_stake_yen": stake_granularity_yen,
                 "settlements": {
@@ -276,6 +312,11 @@ def simulate_chronological_bankroll_day(
         for source in allocation["selected_sample"]:
             ticket = dict(source)
             original_stake = int(ticket["stake_yen"])
+            if (
+                remaining_ticket_quota is not None
+                and len(tickets) >= remaining_ticket_quota
+            ):
+                break
             capped_stake = min(original_stake, cap_remaining_yen)
             capped_stake = (
                 capped_stake // stake_granularity_yen * stake_granularity_yen
@@ -336,6 +377,14 @@ def simulate_chronological_bankroll_day(
                 0, gross_stake_allowance_yen - gross_stake_yen
             ),
             "gross_stake_yen": gross_stake_yen,
+            "learned_daily_ticket_limit": max_daily_tickets,
+            "schedule_races_elapsed": schedule_races_elapsed,
+            "schedule_races_total": schedule_races_total,
+            "cumulative_ticket_quota": cumulative_ticket_quota,
+            "remaining_ticket_quota": (
+                max(0, (cumulative_ticket_quota or 0) - len(selected))
+                if cumulative_ticket_quota is not None else None
+            ),
             "realized_cumulative_profit_yen": (
                 realized_cumulative_profit_yen
             ),
@@ -385,8 +434,15 @@ def simulate_chronological_bankroll_day(
         "gross_stake_yen": gross_stake_yen,
         "realized_cumulative_profit_yen": realized_cumulative_profit_yen,
         "daily_stake_limit_fraction": daily_stake_limit_fraction,
+        "learned_daily_ticket_limit": max_daily_tickets,
+        "schedule_races_total": len(ordered_schedule_times),
+        "schedule_quota_rule": (
+            "floor(learned_daily_ticket_limit*scheduled_races_elapsed/"
+            "scheduled_races_total)"
+            if max_daily_tickets is not None else None
+        ),
         "gross_stake_allowance_rule": (
-            "initial_allowance_plus_positive_realized_cumulative_profit"
+            "initial_allowance_plus_positive_part_of_cumulative_net_realized_profit"
         ),
         "allocation_method": allocation_method or (
             "chronological_discrete_conservative_expected_log"
