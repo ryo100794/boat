@@ -644,6 +644,9 @@ def _summarize_bankroll(
     returned = sum(int(row.get("return_yen") or 0) for row in daily)
     selected_races = sum(int(row.get("races_bet") or 0) for row in daily)
     hit_races = sum(int(row.get("hit_races") or 0) for row in daily)
+    profitable_days = sum(
+        int(int(row.get("profit_yen") or 0) > 0) for row in daily
+    )
     largest_hit = max(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
@@ -680,6 +683,10 @@ def _summarize_bankroll(
         "max_drawdown_yen": int(max_drawdown_yen),
         "selected_races": selected_races,
         "hit_races": hit_races,
+        "profitable_days": profitable_days,
+        "profitable_day_fraction": (
+            profitable_days / len(daily) if daily else 0.0
+        ),
         "race_selection_rate": (
             selected_races / evaluated_races if evaluated_races else 0.0
         ),
@@ -924,6 +931,7 @@ def _prospective_summary(
         "minimum_evaluation_races": MIN_PROMOTION_RACES,
         "minimum_tickets": MIN_PROMOTION_TICKETS,
         "minimum_effective_hit_count": MIN_EFFECTIVE_HITS,
+        "minimum_profitable_day_fraction": 0.60,
         "maximum_largest_hit_return_share": (
             MAX_LARGEST_HIT_RETURN_SHARE
         ),
@@ -944,6 +952,9 @@ def _prospective_summary(
         ),
         "effective_hits_pass": (
             float(bankroll["effective_hit_count"]) >= MIN_EFFECTIVE_HITS
+        ),
+        "profitable_day_fraction_pass": (
+            float(bankroll["profitable_day_fraction"]) >= 0.60
         ),
         "largest_hit_share_pass": (
             bankroll["largest_hit_return_share"] is not None
