@@ -5,6 +5,10 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from boatrace_ai.chronological_bankroll import (
+    settlement_events_from_races,
+    simulate_chronological_bankroll_day,
+)
 from boatrace_ai.discrete_log_allocation import allocate_discrete_log_day
 
 from .odds_path_conservative_v7 import (
@@ -269,6 +273,20 @@ def _simulate_selection_conformal_policy(
             min_stake_yen=STAKE_GRANULARITY_YEN,
             max_tickets_per_race=MAX_TICKETS_PER_RACE,
             settlements=settlements,
+        )
+        row["chronological_bankroll"] = simulate_chronological_bankroll_day(
+            date,
+            by_day_candidates.get(date, []),
+            by_day_races[date],
+            settlement_events=settlement_events_from_races(
+                race for race in races if str(race["race_date"]) == date
+            ),
+            initial_bankroll_yen=daily_budget_yen,
+            max_decision_exposure_fraction=MAX_DAILY_EXPOSURE_FRACTION,
+            race_cap_fraction=RACE_CAP_FRACTION,
+            ticket_cap_fraction=TICKET_CAP_FRACTION,
+            max_tickets_per_race=MAX_TICKETS_PER_RACE,
+            stake_granularity_yen=STAKE_GRANULARITY_YEN,
         )
         allocation_candidates = int(row["allocation_candidate_tickets"])
         diagnostic["allocation_candidate_tickets"] += allocation_candidates
