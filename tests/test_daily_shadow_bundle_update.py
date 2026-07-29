@@ -29,7 +29,6 @@ def result_payload(cache: Path, *, model: str) -> dict:
         "probability_lcb": {"method": model + "-lcb", "ready": True},
         "selection_conformal": {"method": model + "-selection", "ready": True},
         "candidate_policy": {"name": model + "-candidate"},
-        "closing_t300_v12_model": {"point_model": {"random_state": 7}},
     }
     return {
         "model": model,
@@ -40,6 +39,15 @@ def result_payload(cache: Path, *, model: str) -> dict:
         "through_date": "2026-07-29",
         "odds_data_signature": {"rows": 120},
         "scored_cache": str(cache),
+        "closing_model_identity": {
+            "model_name": "closing_odds_t300_nonlinear_v12",
+            "selected_model": "closing_odds_t300_nonlinear_v12",
+            "source_model_sha256": "a" * 64,
+        },
+        "closing_model_audit": {
+            "prediction_cutoff": "T-300",
+            "live_estimator_in_report": False,
+        },
         "deployment_configuration": deployment,
     }
 
@@ -128,6 +136,45 @@ def test_v14_composite_keeps_live_v12_estimator_and_merges_roles(tmp_path: Path)
     ]
 
 
+def test_v14_job_7396_shape_uses_v12_live_closing_estimator(tmp_path: Path) -> None:
+    cache = tmp_path / "job-7396-cache.joblib"
+    cache.write_bytes(b"job-7396-cache")
+    payload = result_payload(cache, model=updater.V14_MODEL)
+    deployment = payload["deployment_configuration"]
+    assert "closing_t300_v12_model" not in deployment
+    payload["closing_model_identity"] = {
+        "model_name": "closing_odds_t300_nonlinear_v12",
+        "selected_model": "closing_odds_t300_nonlinear_v12",
+        "trained_through_date": "2026-07-29",
+        "source_model_sha256": "a" * 64,
+    }
+    payload["closing_model_audit"] = {
+        "live_estimator_in_report": False,
+        "report_only": True,
+        "snapshot_target": "T-300",
+    }
+    result = tmp_path / "job-00007396.json"
+    write_json(result, payload)
+    v12_path = tmp_path / "v12-live.joblib"
+    make_v12_bundle(v12_path)
+
+    built = updater.build_v14_composite(
+        job(result, 7396, "v14"),
+        v12_path=v12_path,
+        shared_source={"source_model_sha256": "a" * 64},
+        through_date="2026-07-29",
+        prediction_date="2026-07-30",
+        output_root=tmp_path,
+    )
+
+    merged = joblib.load(built["path"])["deployment"]
+    assert hasattr(
+        merged["closing_t300_v12_model"]["point_model"]["estimator"],
+        "predict",
+    )
+    assert merged["calibrator_strategy"] == updater.V14_MODEL
+
+
 def bundle_rows(tmp_path: Path, suffix: str) -> dict[str, dict]:
     return {
         family: {
@@ -156,6 +203,8 @@ def test_promotion_is_atomic_shadow_only_and_freezes_same_day(tmp_path: Path) ->
     active_target = (state_root / "active").resolve()
     env = (active_target / "model-spec.env").read_text()
     assert "REAL_BETTING_ENABLED=0" in env
+    assert ":v12_role_t300:" in env
+    assert ":v14_registered_band_t300:" in env
     assert (active_target / "model-spec.env").stat().st_mode & 0o777 == 0o600
 
     status = updater.promote(
@@ -186,6 +235,34 @@ def test_promotion_after_first_race_retains_previous_release(tmp_path: Path) -> 
     assert not (state_root / "active").exists()
 
 
+class FirstRaceConnection:
+    def __init__(self, value: object):
+        self.value = value
+
+    def execute(self, _query: str, _parameters: tuple[str]):
+        return self
+
+    def fetchone(self) -> dict[str, object]:
+        return {"first_start": self.value}
+
+
+def test_first_race_start_parses_postgresql_text_jst_iso() -> None:
+    parsed = updater.first_race_start(
+        FirstRaceConnection("2026-07-30T09:15:00+09:00"), "2026-07-30"
+    )
+    assert parsed == datetime(
+        2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=9))
+    )
+    assert parsed is not None and parsed.utcoffset() == timedelta(hours=9)
+
+
+def test_first_race_start_rejects_naive_text() -> None:
+    with pytest.raises(ValueError, match="timezone offset"):
+        updater.first_race_start(
+            FirstRaceConnection("2026-07-30T09:15:00"), "2026-07-30"
+        )
+
+
 def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:
     root = Path(__file__).resolve().parents[1]
     supervisor = (
@@ -197,3 +274,7 @@ def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:
     assert supervisor.count("autostart=false") == 2
     assert "REAL_BETTING_ENABLED" in wrapper
     assert "run-boatrace-intraday-t300-shadow.sh" in wrapper
+    assert "kill -TERM" in wrapper
+    assert "wait \"$child_pid\"" in wrapper
+    assert "sha256sum" in wrapper
+    assert "startretries=20" not in supervisor

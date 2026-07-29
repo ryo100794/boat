@@ -4,11 +4,64 @@ set -Eeuo pipefail
 APP_ROOT="${BOATRACE_APP_ROOT:-/workspace/boat}"
 STATE_ROOT="${BOATRACE_DAILY_MODEL_STATE_ROOT:-$APP_ROOT/data/runtime/daily-shadow-models}"
 SPEC_ENV="$STATE_ROOT/active/model-spec.env"
-[[ -r "$SPEC_ENV" ]] || { echo "verified model spec unavailable: $SPEC_ENV" >&2; exit 1; }
-source "$SPEC_ENV"
-[[ "${BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED:-1}" == 0 ]] || {
-  echo "daily bundle wrapper permits shadow operation only" >&2; exit 1;
+POLL_SECONDS="${BOATRACE_DAILY_SHADOW_SPEC_POLL_SECONDS:-10}"
+SHADOW_RUNNER="$APP_ROOT/scripts/deployment/run-boatrace-intraday-t300-shadow.sh"
+
+child_pid=""
+active_identity=""
+
+stop_child() {
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill -TERM "$child_pid"
+    wait "$child_pid" || true
+  fi
+  child_pid=""
 }
-export BOATRACE_T300_SHADOW_MODEL_SPEC BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS
-export BOATRACE_T300_SHADOW_DATE
-exec "$APP_ROOT/scripts/deployment/run-boatrace-intraday-t300-shadow.sh"
+
+shutdown() {
+  stop_child
+  exit 0
+}
+trap shutdown TERM INT
+
+while true; do
+  if [[ ! -r "$SPEC_ENV" ]]; then
+    sleep "$POLL_SECONDS" & wait $!
+    continue
+  fi
+
+  read -r spec_hash _ < <(sha256sum "$SPEC_ENV")
+  unset BOATRACE_T300_SHADOW_MODEL_SPEC BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS
+  unset BOATRACE_T300_SHADOW_DATE BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED
+  source "$SPEC_ENV"
+  [[ "${BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED:-1}" == 0 ]] || {
+    echo "daily bundle wrapper rejected non-shadow model spec" >&2
+    stop_child
+    sleep "$POLL_SECONDS" & wait $!
+    continue
+  }
+  [[ -n "${BOATRACE_T300_SHADOW_DATE:-}" ]] || {
+    echo "daily bundle wrapper rejected model spec without date" >&2
+    stop_child
+    sleep "$POLL_SECONDS" & wait $!
+    continue
+  }
+
+  identity="${BOATRACE_T300_SHADOW_DATE}:${spec_hash}"
+  if [[ -n "$child_pid" ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+    wait "$child_pid" || true
+    child_pid=""
+    active_identity=""
+  fi
+  if [[ "$identity" != "$active_identity" ]]; then
+    stop_child
+    export BOATRACE_T300_SHADOW_MODEL_SPEC BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS
+    export BOATRACE_T300_SHADOW_DATE
+    export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0
+    "$SHADOW_RUNNER" &
+    child_pid=$!
+    active_identity="$identity"
+  fi
+
+  sleep "$POLL_SECONDS" & wait $!
+done
