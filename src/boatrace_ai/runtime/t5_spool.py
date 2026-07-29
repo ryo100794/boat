@@ -801,8 +801,9 @@ class T5DurabilityWorker:
 
     def manages_row(self, row: Any, *, now: datetime) -> bool:
         """Return whether checkpoint collection owns odds HTTP for this race."""
+        values = _row_dict(row)
         cutoff_at = estimated_deadline_from_start(
-            stored_start_time(row.get("deadline_at"))
+            stored_start_time(values.get("deadline_at"))
         )
         if cutoff_at is None:
             return False

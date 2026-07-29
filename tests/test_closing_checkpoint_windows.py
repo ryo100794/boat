@@ -36,6 +36,19 @@ def _row(cutoff: datetime) -> dict:
     }
 
 
+class _CompatLikeRow:
+    """PostgreSQL adapter rows expose keys/items but no dict.get()."""
+
+    def __init__(self, values: dict) -> None:
+        self._values = values
+
+    def keys(self):
+        return self._values.keys()
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+
 def _capture(captured_at: datetime) -> tuple[dict, bytes]:
     raw = b"stable official odds"
     parsed = {
@@ -62,6 +75,23 @@ def _capture(captured_at: datetime) -> tuple[dict, bytes]:
         ),
         raw,
     )
+
+
+def test_manages_row_accepts_postgresql_compat_row_without_get(tmp_path) -> None:
+    cutoff = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
+    worker = T5DurabilityWorker(
+        T5Spool(tmp_path / "spool"),
+        date_provider=lambda: RACE_DATE,
+        checkpoint_offsets=(300,),
+        checkpoint_window_seconds=10,
+        closing_window_seconds=75,
+    )
+
+    row = _CompatLikeRow(_row(cutoff))
+
+    assert worker.manages_row(
+        row, now=cutoff - timedelta(seconds=310)
+    ) is True
 
 
 def test_restart_expires_old_offsets_and_captures_only_current_checkpoint(tmp_path) -> None:
