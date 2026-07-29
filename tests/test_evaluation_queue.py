@@ -1576,7 +1576,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1589,6 +1589,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
         "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260718-25",
         "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_multihorizon_v11_daily:market_residual:20260718-25",
     }
     protected = next(
         row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
@@ -1656,6 +1657,22 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     assert selection_v10["priority"] == 91
     assert selection_v10["parameters"]["timeout_seconds"] == 14_400
     assert selection_v10["parameters"]["model_input"] == discrete_v9["parameters"]["model_input"]
+    role_integrated_v11 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_role_integrated_multihorizon_v11"
+    )
+    assert role_integrated_v11["priority"] == 90
+    assert role_integrated_v11["parameters"] == {
+        "model_input": discrete_v9["parameters"]["model_input"],
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-25",
+        "daily_budget_yen": 10000,
+        "min_calibration_days": 2,
+        "calibrator_strategy": "odds_path_role_integrated_multihorizon_v11",
+        "minimum_day_coverage": 1.0,
+        "timeout_seconds": 14_400,
+    }
     assert seed_daily_market_jobs(
         conn, app_root=tmp_path, evaluation_date="2026-07-17"
     ) == []
@@ -2984,6 +3001,37 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert v10_command[
         v10_command.index("--calibrator-strategy") + 1
     ] == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    v11_command, v11_output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "daily_budget_yen": 10000,
+                "calibrator_strategy": (
+                    "odds_path_role_integrated_multihorizon_v11"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v11_command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.market_calibration",
+    ]
+    assert v11_command[
+        v11_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_role_integrated_multihorizon_v11"
+    assert v11_command[v11_command.index("--from-date") + 1] == "2026-07-18"
+    assert v11_command[v11_command.index("--through-date") + 1] == "2026-07-24"
+    assert v11_command[v11_command.index("--daily-budget-yen") + 1] == "10000"
+    assert v11_command[v11_command.index("--output") + 1] == str(v11_output)
     orthogonal_command, _ = build_command(
         _job(
             "market_residual_walk_forward",
