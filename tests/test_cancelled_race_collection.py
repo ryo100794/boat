@@ -72,3 +72,41 @@ def test_cancelled_result_is_persisted_and_excluded_from_prediction(
 
     assert counts == {"predicted": 0, "failed": 0}
     assert predicted == []
+
+
+def test_cancelled_odds_page_closes_race_before_result_poll(
+    monkeypatch, tmp_path
+) -> None:
+    database = tmp_path / "cancelled-odds.sqlite"
+    race_date = date(2026, 7, 29)
+    race_id = "2026-07-29-09-02"
+    init_db(database)
+    monkeypatch.setattr(
+        live,
+        "_fetch_page",
+        lambda *args, **kwargs: (
+            "<html><body><h3>※ 該当レースは中止になりました。</h3></body></html>"
+        ),
+    )
+
+    with connection(database) as conn:
+        assert not live.collect_odds(
+            conn,
+            race_date=race_date,
+            jcd="09",
+            rno=2,
+            raw_dir=tmp_path,
+        )
+        race = conn.execute(
+            "SELECT status FROM races WHERE race_id = ?", (race_id,)
+        ).fetchone()
+        result = conn.execute(
+            "SELECT status, trifecta_evaluable, reason "
+            "FROM race_result_status WHERE race_id = ?",
+            (race_id,),
+        ).fetchone()
+
+    assert race["status"] == "final"
+    assert result["status"] == "final"
+    assert result["trifecta_evaluable"] == 0
+    assert result["reason"] == "race_cancelled"
