@@ -23,9 +23,11 @@ from . import v12_shadow_bundle
 JST = timezone(timedelta(hours=9))
 V12_MODEL = v12_shadow_bundle.INTEGRATED_MODEL_NAME
 V14_MODEL = "odds_path_role_integrated_registered_band_lcb_v14"
+V16_MODEL = "odds_path_role_integrated_fixed_band_passthrough_v16"
 SHADOW_STRATEGY = v12_shadow_bundle.STRATEGY_NAME
 V14_SHADOW_STRATEGY = "v14_registered_band_t300"
-FAMILIES = ("v12", "v14")
+V16_SHADOW_STRATEGY = "v16_fixed_band_t300"
+FAMILIES = ("v12", "v14", "v16")
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ def _model(family: str) -> str:
         return V12_MODEL
     if family == "v14":
         return V14_MODEL
+    if family == "v16":
+        return V16_MODEL
     raise ValueError(f"unsupported family: {family}")
 
 
@@ -114,13 +118,22 @@ def _source_identity(result: Mapping[str, Any], result_path: Path) -> dict[str, 
     }
 
 
-def validate_shared_source(v12_job: CompletedJob, v14_job: CompletedJob) -> dict[str, Any]:
+def validate_shared_source(
+    v12_job: CompletedJob,
+    v14_job: CompletedJob,
+    v16_job: CompletedJob | None = None,
+) -> dict[str, Any]:
     left = _source_identity(_json(v12_job.result_path), v12_job.result_path)
-    right = _source_identity(_json(v14_job.result_path), v14_job.result_path)
     keys = tuple(key for key in left if key != "result_path")
-    mismatches = [key for key in keys if left[key] != right[key]]
-    if mismatches:
-        raise ValueError("V12/V14 source mismatch: " + ", ".join(mismatches))
+    for label, job in (("V14", v14_job), ("V16", v16_job)):
+        if job is None:
+            continue
+        right = _source_identity(_json(job.result_path), job.result_path)
+        mismatches = [key for key in keys if left[key] != right[key]]
+        if mismatches:
+            raise ValueError(
+                f"V12/{label} source mismatch: " + ", ".join(mismatches)
+            )
     if len(left["source_model_sha256"]) != 64:
         raise ValueError("invalid shared source model SHA256")
     return left
@@ -141,6 +154,44 @@ def _validate_v14(result: Mapping[str, Any]) -> Mapping[str, Any]:
         raise ValueError("V14 closing model identity is missing")
     if not isinstance(deployment.get("closing_model_artifact_audit"), Mapping):
         raise ValueError("V14 closing model artifact audit is missing")
+    return deployment
+
+
+def _validate_v16(result: Mapping[str, Any]) -> Mapping[str, Any]:
+    if result.get("model") != V16_MODEL or result.get("calibrator_strategy") != V16_MODEL:
+        raise ValueError("V16 result identity mismatch")
+    if result.get("real_betting_enabled") is not False:
+        raise ValueError("V16 evaluation must disable real betting")
+    deployment = result.get("deployment_configuration")
+    if not isinstance(deployment, Mapping) or deployment.get("calibrator_strategy") != V16_MODEL:
+        raise ValueError("V16 deployment identity mismatch")
+    for key in (
+        "operational_model", "probability_lcb", "closing_envelope_conformal",
+        "candidate_policy",
+    ):
+        if not isinstance(deployment.get(key), Mapping):
+            raise ValueError(f"V16 deployment component is missing: {key}")
+    if "closing_t300_v12_model" in deployment:
+        raise ValueError("V16 evaluation must not supply a live closing estimator")
+    probability = deployment["probability_lcb"]
+    if (
+        probability.get("model_name") != "strict_prior_t300_divergence_passthrough_v16"
+        or probability.get("artifact_method")
+        != "fixed_t300_divergence_raw_probability_passthrough_v16"
+        or probability.get("raw_probability_passthrough") is not True
+        or probability.get("uses_result") is not False
+        or probability.get("uses_payout") is not False
+    ):
+        raise ValueError("V16 probability artifact is unsafe or inconsistent")
+    envelope = deployment["closing_envelope_conformal"]
+    if (
+        envelope.get("method")
+        != "selection_free_strict_prior_daily_q20_closing_ratio_v15"
+        or envelope.get("selection_free") is not True
+    ):
+        raise ValueError("V16 closing envelope is unsafe or inconsistent")
+    if deployment.get("real_betting_enabled") is not False:
+        raise ValueError("V16 deployment must disable real betting")
     return deployment
 
 
@@ -253,6 +304,78 @@ def build_v14_composite(
     return {"path": str(output), "manifest": verified}
 
 
+def build_v16_composite(
+    job: CompletedJob,
+    *,
+    v12_path: Path,
+    shared_source: Mapping[str, Any],
+    through_date: str,
+    prediction_date: str,
+    output_root: Path,
+) -> dict[str, Any]:
+    output = output_root / prediction_date / f"v16-{prediction_date}-job-{job.job_id}.joblib"
+    if output.exists():
+        manifest = verify_bundle(
+            output, family="v16", through_date=through_date,
+            prediction_date=prediction_date,
+        )
+        return {"path": str(output), "manifest": manifest}
+    bundle = joblib.load(v12_path)
+    if not isinstance(bundle, dict) or not isinstance(bundle.get("deployment"), dict):
+        raise ValueError("verified V12 bundle is invalid")
+    source = _json(job.result_path)
+    v16 = _validate_v16(source)
+    deployment = copy.deepcopy(bundle["deployment"])
+    merged = (
+        "operational_model", "probability_lcb", "closing_envelope_conformal",
+        "candidate_policy",
+    )
+    for key in merged:
+        deployment[key] = copy.deepcopy(v16[key])
+    for key in ("selected_policy", "operational_status", "missing_real_t300_action"):
+        if key in v16:
+            deployment[key] = copy.deepcopy(v16[key])
+    deployment["calibrator_strategy"] = V16_MODEL
+    deployment["real_betting_enabled"] = False
+    bundle["deployment"] = deployment
+    bundle["deployment_model_family"] = "v16"
+    bundle["source_evaluation_model"] = V16_MODEL
+    base_manifest = _json(v12_path.with_suffix(".manifest.json"))
+    manifest = copy.deepcopy(base_manifest)
+    manifest.pop("output", None)
+    manifest.update({
+        "deployment_model_family": "v16",
+        "prediction_date": prediction_date,
+        "trained_through_date": through_date,
+        "real_betting_enabled": False,
+        "composite": {
+            "closing_estimator_source": str(v12_path),
+            "closing_estimator_source_sha256": _sha256(v12_path),
+            "merged_components": list(merged),
+            "shared_source_identity": dict(shared_source),
+        },
+        "source_evaluation": {
+            "job_id": job.job_id,
+            "model_key": job.model_key,
+            "path": str(job.result_path),
+            "sha256": _sha256(job.result_path),
+            "model": V16_MODEL,
+        },
+    })
+    identities = dict(manifest.get("model_identities") or {})
+    identities.update({
+        "integrated_model": V16_MODEL,
+        "calibrator_strategy": V16_MODEL,
+    })
+    manifest["model_identities"] = identities
+    v12_shadow_bundle._write_bundle_and_manifest_atomic(output, bundle, manifest)
+    verified = verify_bundle(
+        output, family="v16", through_date=through_date,
+        prediction_date=prediction_date,
+    )
+    return {"path": str(output), "manifest": verified}
+
+
 def first_race_start(conn: Any, prediction_date: str) -> datetime | None:
     row = conn.execute(
         "SELECT MIN(deadline_at) AS first_start FROM races WHERE race_date = %s",
@@ -322,9 +445,43 @@ def promote(
         family: str(row["manifest"]["output"]["bundle_sha256"])
         for family, row in bundles.items()
     }
+    specs = {
+        "v12": f"v12_daily:{SHADOW_STRATEGY}:{bundles['v12']['path']}:{base_model}",
+        "v14": f"v14_daily:{V14_SHADOW_STRATEGY}:{bundles['v14']['path']}:{base_model}",
+        "v16": f"v16_daily:{V16_SHADOW_STRATEGY}:{bundles['v16']['path']}:{base_model}",
+    }
     active = _active_state(state_root)
+    extension: dict[str, Any] | None = None
     if active and active.get("prediction_date") == prediction_date:
-        return "already_active" if active.get("model_identities") == identities else "same_day_identity_frozen"
+        active_identities = dict(active.get("model_identities") or {})
+        if active_identities == identities:
+            return "already_active"
+        additive_v16 = (
+            set(active_identities) == {"v12", "v14"}
+            and set(identities) == {"v12", "v14", "v16"}
+            and all(
+                active_identities[family] == identities[family]
+                for family in ("v12", "v14")
+            )
+            and dict(active.get("model_specs") or {})
+            == {family: specs[family] for family in ("v12", "v14")}
+            and dict(active.get("source_jobs") or {})
+            == {family: jobs[family].job_id for family in ("v12", "v14")}
+            and active.get("real_betting_enabled") is False
+        )
+        if not additive_v16:
+            return "same_day_identity_frozen"
+        prediction = date.fromisoformat(prediction_date)
+        if now.date() > prediction or (first_start is not None and now >= first_start):
+            return "first_race_boundary_passed"
+        extension = {
+            "family": "v16",
+            "reason": "pre_first_race_additive_v16_shadow_extension",
+            "extended_at": now.isoformat(),
+            "source_job": jobs["v16"].job_id,
+            "preserved_families": ["v12", "v14"],
+            "real_betting_enabled": False,
+        }
     if active and str(active.get("prediction_date")) > prediction_date:
         return "older_prediction_date_rejected"
     prediction = date.fromisoformat(prediction_date)
@@ -336,26 +493,30 @@ def promote(
     ).hexdigest()[:16]
     release = state_root / "releases" / release_name
     release.mkdir(parents=True, exist_ok=True)
-    specs = {
-        "v12": f"v12_daily:{SHADOW_STRATEGY}:{bundles['v12']['path']}:{base_model}",
-        "v14": f"v14_daily:{V14_SHADOW_STRATEGY}:{bundles['v14']['path']}:{base_model}",
-    }
     env = "\n".join((
         "BOATRACE_T300_SHADOW_MODEL_SPEC=" + shlex.quote(specs["v12"]),
-        "BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=" + shlex.quote(specs["v14"]),
+        "BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=" + shlex.quote(
+            " ".join((specs["v14"], specs["v16"]))
+        ),
         "BOATRACE_T300_SHADOW_DATE=" + shlex.quote(prediction_date),
         "BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0", "",
     ))
     state = {
         "schema_version": 1,
         "prediction_date": prediction_date,
-        "activated_at": now.isoformat(),
+        "activated_at": (
+            str(active.get("activated_at"))
+            if extension is not None and active
+            else now.isoformat()
+        ),
         "first_race_start": first_start.isoformat() if first_start else None,
         "real_betting_enabled": False,
         "model_identities": identities,
         "model_specs": specs,
         "source_jobs": {family: job.job_id for family, job in jobs.items()},
     }
+    if extension is not None:
+        state["extensions"] = [*list(active.get("extensions") or []), extension]
     _atomic_text(release / "model-spec.env", env)
     _atomic_text(release / "state.json", json.dumps(state, indent=2, sort_keys=True) + "\n")
     link = state_root / f".active-{os.getpid()}"
@@ -363,7 +524,7 @@ def promote(
     os.symlink(os.path.relpath(release, state_root), link)
     os.replace(link, state_root / "active")
     _fsync_dir(state_root)
-    return "activated"
+    return "additive_v16_extended" if extension is not None else "activated"
 
 
 def run_once(
@@ -389,7 +550,7 @@ def run_once(
             conn, family=family, through_date=through, app_root=app_root
         ) for family in FAMILIES
     }
-    shared = validate_shared_source(jobs["v12"], jobs["v14"])
+    shared = validate_shared_source(jobs["v12"], jobs["v14"], jobs["v16"])
     v12 = build_v12(
         jobs["v12"], through_date=through, prediction_date=prediction,
         output_root=output_root,
@@ -398,7 +559,11 @@ def run_once(
         jobs["v14"], v12_path=Path(v12["path"]), shared_source=shared,
         through_date=through, prediction_date=prediction, output_root=output_root,
     )
-    bundles = {"v12": v12, "v14": v14}
+    v16 = build_v16_composite(
+        jobs["v16"], v12_path=Path(v12["path"]), shared_source=shared,
+        through_date=through, prediction_date=prediction, output_root=output_root,
+    )
+    bundles = {"v12": v12, "v14": v14, "v16": v16}
     status = promote(
         state_root=state_root, prediction_date=prediction, bundles=bundles,
         jobs=jobs, base_model=base_model,
@@ -413,7 +578,7 @@ def run_once(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Update verified next-day V12/V14 shadow bundles")
+    parser = argparse.ArgumentParser(description="Update verified next-day V12/V14/V16 shadow bundles")
     parser.add_argument("--postgres-dsn", required=True)
     parser.add_argument("--app-root", type=Path, default=Path("/workspace/boat"))
     parser.add_argument("--output-root", type=Path, default=Path("/workspace/boat/data/models/daily-shadow-bundles"))
