@@ -9,6 +9,7 @@ from boatrace_ai.listwise.closing_envelope_conformal_v15 import (
     METHOD,
     apply_closing_envelope_haircut_v15,
     artifact_fingerprint_v15,
+    evaluate_closing_envelope_holdout_v15,
     extract_closing_ratio_observations_v15,
     fit_closing_envelope_conformal_v15,
 )
@@ -155,6 +156,65 @@ def test_minimum_day_race_and_observation_gates(
     assert artifact["ready"] is False
     assert artifact["haircut"] is None
     assert artifact["reason"] == "insufficient_strict_prior_complete_closing_data"
+
+
+def test_strict_holdout_coverage_uses_all_120_and_ignores_result_payout() -> None:
+    artifact = fit_closing_envelope_conformal_v15(
+        _training_races(), evaluation_date="2026-07-25"
+    )
+    holdout = _race(25, 1, ratio=0.70)
+    for combination in COMBINATIONS[:24]:
+        holdout["closing_odds"][combination] = (
+            holdout["predicted_closing_odds"][combination] * 0.50
+        )
+
+    first = evaluate_closing_envelope_holdout_v15(
+        [holdout], artifact=artifact, evaluation_date="2026-07-25"
+    )
+    changed = deepcopy(holdout)
+    changed["actual_combination"] = "654"
+    changed["actual_payout_yen"] = 1
+    changed["purchase_candidates"] = list(COMBINATIONS)
+    second = evaluate_closing_envelope_holdout_v15(
+        [changed], artifact=artifact, evaluation_date="2026-07-25"
+    )
+
+    assert first == second
+    assert first["evaluated_observations"] == 120
+    assert first["covered_observations"] == 96
+    assert first["coverage"] == pytest.approx(0.80)
+    assert first["target_coverage"] == pytest.approx(0.80)
+    assert first["coverage_pass"] is True
+    assert first["complete"] is True
+    assert first["result_used_for_decision"] is False
+    assert first["payout_used_for_decision"] is False
+    assert first["actual_closing_odds_role"] == (
+        "evaluation_only_after_purchase_decision"
+    )
+
+
+def test_strict_holdout_rejects_incomplete_race_atomically() -> None:
+    artifact = fit_closing_envelope_conformal_v15(
+        _training_races(), evaluation_date="2026-07-25"
+    )
+    holdout = _race(25, 1, ratio=0.90)
+    holdout["closing_odds"].pop(COMBINATIONS[-1])
+
+    result = evaluate_closing_envelope_holdout_v15(
+        [holdout], artifact=artifact, evaluation_date="2026-07-25"
+    )
+
+    assert result["input_races"] == 1
+    assert result["accepted_races"] == 0
+    assert result["rejected_races"] == 1
+    assert result["evaluated_observations"] == 0
+    assert result["missing_observations"] == 120
+    assert result["coverage"] is None
+    assert result["coverage_pass"] is False
+    assert result["complete"] is False
+    assert result["rejection_reasons"] == {
+        "incomplete_actual_closing_odds": 1
+    }
 
 
 def test_haircut_applies_to_scalar_and_mapping_without_mutation() -> None:

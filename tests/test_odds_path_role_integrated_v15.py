@@ -19,6 +19,22 @@ def _odds(base: float) -> dict[str, float]:
     return {combination: base + index for index, combination in enumerate(COMBINATIONS)}
 
 
+def _passing_holdout(races: int = 1) -> dict:
+    observations = races * 120
+    return {
+        "target_coverage": 0.8,
+        "complete": True,
+        "input_races": races,
+        "accepted_races": races,
+        "rejected_races": 0,
+        "expected_observations": observations,
+        "evaluated_observations": observations,
+        "missing_observations": 0,
+        "covered_observations": observations,
+        "coverage": 1.0,
+    }
+
+
 def _prewarm_race(
     race_date: str, race_no: int, *, checkpoint_odds=None, captured_age=305.0
 ):
@@ -242,6 +258,7 @@ def test_walk_forward_delegates_to_v12_and_normalizes_v15_result(monkeypatch):
             "folds": [{
                 "evaluation_date": "2026-07-30",
                 "selected_policy": {"name": "v12-policy"},
+                "closing_envelope_holdout_coverage": _passing_holdout(),
                 "selection_conformal": {
                     "ready": True,
                     "haircut": 0.9,
@@ -261,7 +278,12 @@ def test_walk_forward_delegates_to_v12_and_normalizes_v15_result(monkeypatch):
             }],
             v15.V12_PROSPECTIVE_OUTPUT_KEY: {
                 "selection_conformal": {"ready_folds": 1},
-                "promotion_gate": {"base_roi_pass": True},
+                "promotion_gate": {
+                    "base_roi_pass": True,
+                    "selection_conditional_coverage_pass": True,
+                    "selection_conditional_complete_pass": True,
+                    "quantile_coverage_pass": True,
+                },
                 "promotion_eligible": True,
             },
             "deployment_configuration": {
@@ -278,7 +300,7 @@ def test_walk_forward_delegates_to_v12_and_normalizes_v15_result(monkeypatch):
     assert captured["closing_fallback_policy"] == v15.CLOSING_FALLBACK_NO_BET
     assert captured["closing_forecast_field"] == "point_final_odds"
     assert captured["selection_conformal_fit"] is v15._fit_closing_envelope
-    assert captured["selection_observation_append"] is v15.append_closing_envelope_observations_v15
+    assert callable(captured["selection_observation_append"])
     assert captured["initial_selection_observations"] == []
     assert result["model"] == v15.MODEL_NAME
     assert result["selection_free"] is True
@@ -300,7 +322,38 @@ def test_walk_forward_delegates_to_v12_and_normalizes_v15_result(monkeypatch):
     assert deployment["missing_real_t300_action"] == "no_bet"
     assert result["promotion_gate"]["closing_envelope_ready_pass"] is True
     assert result["promotion_gate"]["closing_envelope_no_missing_races_pass"] is True
+    assert result["promotion_gate"]["closing_envelope_holdout_complete_pass"] is True
+    assert result["promotion_gate"]["closing_envelope_holdout_coverage_pass"] is True
+    assert result["closing_envelope_conformal"]["holdout_coverage"] == 1.0
+    for legacy_key in v15._LEGACY_V12_COVERAGE_GATE_KEYS:
+        assert legacy_key not in result["promotion_gate"]
+    assert result["promotion_gate"][
+        "closing_envelope_replaced_legacy_gate_keys"
+    ] == sorted(v15._LEGACY_V12_COVERAGE_GATE_KEYS)
     assert result["promotion_eligible"] is True
+
+
+def test_holdout_coverage_gate_uses_weighted_all_combination_coverage():
+    first = _passing_holdout(1)
+    first["covered_observations"] = 96
+    first["coverage"] = 0.8
+    second = _passing_holdout(2)
+    second["covered_observations"] = 180
+    second["coverage"] = 0.75
+    folds = [
+        {"closing_envelope_conformal": {}, "closing_envelope_holdout_coverage": first},
+        {"closing_envelope_conformal": {}, "closing_envelope_holdout_coverage": second},
+    ]
+
+    summary = v15._aggregate_closing_envelopes(folds)
+    gate = v15._closing_envelope_promotion_gate(summary)
+
+    assert summary["holdout_evaluated_observations"] == 360
+    assert summary["holdout_covered_observations"] == 276
+    assert summary["holdout_coverage"] == pytest.approx(276 / 360)
+    assert summary["holdout_target_coverage"] == 0.8
+    assert gate["closing_envelope_holdout_complete_pass"] is True
+    assert gate["closing_envelope_holdout_coverage_pass"] is False
 
 
 def test_v15_rejects_non_no_bet_closing_fallback():
