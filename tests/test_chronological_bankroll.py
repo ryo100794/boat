@@ -214,3 +214,72 @@ def test_adaptive_selection_is_invariant_to_result_and_payout_before_settlement(
         second["decision_information_sha256"]
     )
     assert first["return_yen"] != second["return_yen"]
+
+
+def _fixed_stake_allocator(
+    race_date, candidates, evaluated_races, *, daily_budget_yen, settlements, **kwargs
+):
+    candidate = dict(candidates[0])
+    requested_stake = 6_000
+    payout_per_unit = int(
+        settlements.get((candidate["race_id"], candidate["combination"]), 0)
+    )
+    return {
+        "allocation_candidate_tickets": 1,
+        "selected_sample": [{
+            **candidate,
+            "stake_yen": requested_stake,
+            "return_yen": payout_per_unit * (requested_stake // 100),
+            "hit": payout_per_unit > 0,
+        }],
+    }
+
+
+def _simulate_fixed_allowance(payouts: list[int]) -> dict:
+    candidates = [
+        _candidate(f"race-{index}", f"12:{index * 10:02d}")
+        for index in range(len(payouts))
+    ]
+    events = [
+        _event(f"race-{index}", f"12:{index * 10 + 5:02d}", payout)
+        for index, payout in enumerate(payouts)
+    ]
+    return simulate_chronological_bankroll_day(
+        DATE,
+        candidates,
+        {row["race_id"] for row in candidates},
+        settlement_events=events,
+        initial_bankroll_yen=10_000,
+        daily_stake_limit_fraction=1.0,
+        max_decision_exposure_fraction=1.0,
+        race_cap_fraction=1.0,
+        ticket_cap_fraction=1.0,
+        allocate_day=_fixed_stake_allocator,
+    )
+
+
+def test_daily_gross_stake_allowance_is_not_reset_for_each_race() -> None:
+    result = _simulate_fixed_allowance([0, 0, 0])
+    decisions = _decisions(result)
+
+    assert [row["stake_yen"] for row in decisions] == [6_000, 4_000, 0]
+    assert result["gross_stake_yen"] == 10_000
+    assert result["initial_gross_stake_allowance_yen"] == 10_000
+    assert result["final_gross_stake_allowance_yen"] == 10_000
+    assert result["realized_cumulative_profit_yen"] == -10_000
+    assert result["daily_stake_limit_fraction"] == 1.0
+
+
+def test_only_positive_realized_profit_increases_daily_allowance() -> None:
+    profitable = _simulate_fixed_allowance([200, 0, 0])
+    losing = _simulate_fixed_allowance([0, 0, 0])
+
+    profitable_decisions = _decisions(profitable)
+    assert [row["stake_yen"] for row in profitable_decisions[:2]] == [6_000, 6_000]
+    assert profitable_decisions[1]["gross_stake_allowance_yen"] == 16_000
+    assert profitable["gross_stake_yen"] <= (
+        profitable["initial_gross_stake_allowance_yen"]
+        + profitable["realized_positive_cumulative_profit_yen"]
+    )
+    assert losing["final_gross_stake_allowance_yen"] == 10_000
+    assert losing["gross_stake_yen"] == 10_000

@@ -1615,7 +1615,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1623,6 +1623,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_operational_daily:market_residual:20260718-25",
         "odds_path_probability_only_daily:market_residual:20260718-25",
         "odds_path_observed_closing_return_v4_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_robust_policy_v17_daily:market_residual:20260718-25",
         "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
         "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
         "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",

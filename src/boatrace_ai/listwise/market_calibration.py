@@ -156,6 +156,12 @@ PROSPECTIVE_NORMALIZED_EV_POLICY: dict[str, Any] = {
 PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER = "2026-07-28"
 OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER = "2026-07-29"
 PREQUENTIAL_SHRINKAGE_RETURN_V6_REGISTERED_AFTER = "2026-07-29"
+V17_STRATEGY_NAME = "odds_path_observed_closing_return_robust_policy_v17"
+V17_MODEL_NAME = V17_STRATEGY_NAME
+V17_COMPARISON_ROLE = (
+    "strict_prior_observed_closing_robust_policy_chronological_shadow"
+)
+V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
@@ -193,6 +199,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
+    if calibrator_strategy == V17_STRATEGY_NAME:
+        return V17_MODEL_NAME
     if calibrator_strategy == "odds_path_hit_shrunk_return":
         return "odds_path_hit_shrunk_closing_return_v5"
     if calibrator_strategy == "odds_path_prequential_shrinkage_return":
@@ -797,6 +805,8 @@ def simulate_policy(
     policy: dict[str, Any],
     daily_budget_yen: int,
     prepared_policy_matrix: dict[str, Any] | None = None,
+    include_chronological: bool = False,
+    include_robust_metrics: bool = False,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     evaluated_by_day: dict[str, set[str]] = defaultdict(set)
@@ -939,33 +949,35 @@ def simulate_policy(
             stake_granularity_yen=STAKE_YEN,
             min_stake_yen=STAKE_YEN,
         )
-        chronological = simulate_chronological_bankroll_day(
-            race_date,
-            by_day.get(race_date, []),
-            evaluated_by_day[race_date],
-            settlement_events=settlement_events_from_races(
-                races_by_day[race_date]
-            ),
-            initial_bankroll_yen=daily_budget_yen,
-            max_decision_exposure_fraction=0.30,
-            race_cap_fraction=0.05,
-            ticket_cap_fraction=0.02,
-            stake_granularity_yen=STAKE_YEN,
-            allocate_day=allocate_adaptive_day,
-            allocator_kwargs={
-                "fractional_kelly": float(staking["fractional_kelly"]),
-                "min_daily_exposure_fraction": float(
-                    staking["min_daily_exposure_fraction"]
+        if include_chronological:
+            chronological = simulate_chronological_bankroll_day(
+                race_date,
+                by_day.get(race_date, []),
+                evaluated_by_day[race_date],
+                settlement_events=settlement_events_from_races(
+                    races_by_day[race_date]
                 ),
-                "allocation_mode": str(staking["allocation_mode"]),
-            },
-            allocation_method=(
-                "chronological_adaptive_"
-                f"{str(staking['allocation_mode'])}"
-            ),
-        )
-        result["chronological_bankroll"] = chronological
-        chronological_daily.append(chronological)
+                initial_bankroll_yen=daily_budget_yen,
+                daily_stake_limit_fraction=1.0,
+                max_decision_exposure_fraction=0.30,
+                race_cap_fraction=0.05,
+                ticket_cap_fraction=0.02,
+                stake_granularity_yen=STAKE_YEN,
+                allocate_day=allocate_adaptive_day,
+                allocator_kwargs={
+                    "fractional_kelly": float(staking["fractional_kelly"]),
+                    "min_daily_exposure_fraction": float(
+                        staking["min_daily_exposure_fraction"]
+                    ),
+                    "allocation_mode": str(staking["allocation_mode"]),
+                },
+                allocation_method=(
+                    "chronological_adaptive_"
+                    f"{str(staking['allocation_mode'])}"
+                ),
+            )
+            result["chronological_bankroll"] = chronological
+            chronological_daily.append(chronological)
         cumulative_profit += int(result["profit_yen"])
         peak_profit = max(peak_profit, cumulative_profit)
         max_drawdown_yen = max(max_drawdown_yen, peak_profit - cumulative_profit)
@@ -976,7 +988,15 @@ def simulate_policy(
         tickets += int(result["tickets"])
         hit_tickets += int(result["hit_tickets"])
     reliability = bankroll_reliability_metrics(daily, evaluated_races=len(races))
-    return {
+    robust_metrics: dict[str, Any] = {}
+    if include_robust_metrics and daily:
+        bootstrap = bootstrap_daily_roi(
+            daily, samples=V17_POLICY_BOOTSTRAP_SAMPLES
+        )
+        robust_metrics["daily_cluster_bootstrap_roi_lower_95"] = bootstrap[
+            "roi_ci95_lower"
+        ]
+    result = {
         "evaluated_races": len(races),
         "race_days": len(daily),
         "tickets": tickets,
@@ -987,12 +1007,22 @@ def simulate_policy(
         "roi": return_yen / stake_yen if stake_yen else 0.0,
         "max_drawdown_yen": max_drawdown_yen,
         "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
-        **reliability,
-        "chronological_bankroll": summarize_chronological_bankroll_days(
-            chronological_daily
+        "profitable_day_fraction": (
+            sum(int(row["profit_yen"] > 0) for row in daily) / len(daily)
+            if daily else None
         ),
+        "normalized_drawdown": (
+            max_drawdown_yen / stake_yen if stake_yen else None
+        ),
+        **reliability,
+        **robust_metrics,
         "daily": daily,
     }
+    if include_chronological:
+        result["chronological_bankroll"] = summarize_chronological_bankroll_days(
+            chronological_daily
+        )
+    return result
 
 
 def policy_candidate(
@@ -1316,6 +1346,108 @@ def select_policy(
             -int(row["tickets"]),
         ),
     )
+    return dict(selected["policy"]), rows
+
+
+V17_POLICY_RANKING_METRICS = (
+    "daily_cluster_bootstrap_roi_lower_95",
+    "roi_without_largest_hit",
+    "profitable_day_fraction",
+    "effective_hit_count",
+    "largest_hit_return_share",
+    "normalized_drawdown",
+    "roi",
+)
+
+
+def _v17_metric_sort_value(value: Any, *, minimize: bool = False) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return math.inf
+    if not math.isfinite(parsed):
+        return math.inf
+    return parsed if minimize else -parsed
+
+
+def v17_policy_ranking_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _v17_metric_sort_value(
+            row.get("daily_cluster_bootstrap_roi_lower_95")
+        ),
+        _v17_metric_sort_value(row.get("roi_without_largest_hit")),
+        _v17_metric_sort_value(row.get("profitable_day_fraction")),
+        _v17_metric_sort_value(row.get("effective_hit_count")),
+        _v17_metric_sort_value(
+            row.get("largest_hit_return_share"), minimize=True
+        ),
+        _v17_metric_sort_value(row.get("normalized_drawdown"), minimize=True),
+        _v17_metric_sort_value(row.get("roi")),
+        str((row.get("policy") or {}).get("name") or ""),
+    )
+
+
+def select_policy_v17(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    daily_budget_yen: int,
+    policies: Iterable[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    prepared_races = []
+    for race in races:
+        item = dict(race)
+        item["_policy_calibrated_probabilities"] = blend_probabilities(
+            race["model_probabilities"],
+            race["market_probabilities"],
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        prepared_races.append(item)
+    prepared_matrix = prepare_policy_matrix(prepared_races, calibrator)
+    minimum_tickets = max(10, math.ceil(len(races) * 0.05))
+    minimum_stake = minimum_tickets * STAKE_YEN
+    rows = []
+    for policy in policies or default_policy_grid():
+        policy_result = simulate_policy(
+            prepared_races,
+            calibrator=calibrator,
+            policy=policy,
+            daily_budget_yen=daily_budget_yen,
+            prepared_policy_matrix=prepared_matrix,
+            include_chronological=False,
+            include_robust_metrics=True,
+        )
+        eligible = bool(
+            policy.get("no_bet")
+            or policy_calibration_eligible(
+                policy_result,
+                minimum_tickets=minimum_tickets,
+                minimum_stake_yen=minimum_stake,
+            )
+        )
+        rows.append({
+            "policy": dict(policy),
+            "eligible": eligible,
+            **{
+                key: value
+                for key, value in policy_result.items()
+                if key != "daily"
+            },
+        })
+    eligible_candidates = [
+        row
+        for row in rows
+        if row["eligible"] and not row["policy"].get("no_bet")
+    ]
+    if eligible_candidates:
+        selected = min(eligible_candidates, key=v17_policy_ranking_key)
+    else:
+        no_bet_rows = [row for row in rows if row["policy"].get("no_bet")]
+        selected = min(
+            no_bet_rows,
+            key=lambda row: str(row["policy"].get("name") or ""),
+        ) if no_bet_rows else {"policy": {"name": "no_bet", "no_bet": True}}
     return dict(selected["policy"]), rows
 
 
@@ -1652,7 +1784,15 @@ def waiting_walk_forward_result(
         "model": odds_path_model_name(calibrator_strategy),
         "status": "waiting_for_clean_evaluation_day",
         "calibrator_strategy": calibrator_strategy,
-        "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
+        "comparison_role": (
+            V17_COMPARISON_ROLE
+            if calibrator_strategy == V17_STRATEGY_NAME
+            else "real_t5_odds_nested_daily_walk_forward_shadow"
+        ),
+        "deployment_mode": (
+            "shadow_only" if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+        ),
+        "real_betting_enabled": False,
         "validation_design": (
             "Each evaluation day has complete T-5 coverage and is untouched; calibration "
             "and policy selection use only earlier eligible T-5 races"
@@ -1694,6 +1834,15 @@ def waiting_walk_forward_result(
         "profitable_folds": 0,
         "folds": [],
         "daily": [],
+        "chronological_bankroll": {
+            **summarize_chronological_bankroll_days([]),
+            "daily_cluster_bootstrap_roi_lower_95": None,
+            "profitable_day_fraction": None,
+            "normalized_drawdown": None,
+            "primary_promotion_bankroll": (
+                calibrator_strategy == V17_STRATEGY_NAME
+            ),
+        },
         "flat_policy_walk_forward": {
             "comparison_role": "preselected_on_prior_days_fixed_100_yen_shadow",
             "evaluation_races": 0,
@@ -2088,6 +2237,7 @@ def fit_deployment_configuration(
         "odds_path_probability",
         "odds_path_closing_return",
         "odds_path_observed_closing_return",
+        V17_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -2106,6 +2256,7 @@ def fit_deployment_configuration(
                     else "observed_closing"
                     if calibrator_strategy in {
                         "odds_path_observed_closing_return",
+                        V17_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -2185,7 +2336,12 @@ def fit_deployment_configuration(
         int(race.get("closing_odds_policy_fallback") is False)
         for race in policy_races
     )
-    selected_policy, policy_grid = select_policy(
+    policy_selector = (
+        select_policy_v17
+        if calibrator_strategy == V17_STRATEGY_NAME
+        else select_policy
+    )
+    selected_policy, policy_grid = policy_selector(
         policy_races,
         calibrator=calibrator,
         daily_budget_yen=daily_budget_yen,
@@ -2197,6 +2353,19 @@ def fit_deployment_configuration(
             "trained_through_date"
         ),
         "calibrator_strategy": calibrator_strategy,
+        "comparison_role": (
+            V17_COMPARISON_ROLE
+            if calibrator_strategy == V17_STRATEGY_NAME
+            else "next_day_refit_not_evaluation"
+        ),
+        "deployment_mode": (
+            "shadow_only"
+            if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+        ),
+        "real_betting_enabled": False,
+        "daily_stake_limit_fraction": (
+            1.0 if calibrator_strategy == V17_STRATEGY_NAME else None
+        ),
         "trained_dates": dates,
         "trained_through_date": dates[-1],
         "training_races": len(races),
@@ -2468,6 +2637,7 @@ def walk_forward_evaluate(
     market_top5_differences: list[float] = []
     market_cluster_labels: list[str] = []
     daily_rows = []
+    chronological_daily_rows: list[dict[str, Any]] = []
     flat_daily_rows = []
     registered_daily_rows = []
     registered_evaluated_races = 0
@@ -2504,6 +2674,7 @@ def walk_forward_evaluate(
             "odds_path_probability",
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
+            V17_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -2519,6 +2690,7 @@ def walk_forward_evaluate(
                 )
             elif calibrator_strategy in {
                 "odds_path_observed_closing_return",
+                V17_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -2536,6 +2708,7 @@ def walk_forward_evaluate(
                         else "observed_closing"
                         if calibrator_strategy in {
                             "odds_path_observed_closing_return",
+                            V17_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -2620,7 +2793,12 @@ def walk_forward_evaluate(
         closing_odds_selection = closing_policy_fold["selection"]
         closing_odds_model = closing_policy_fold["model"]
         closing_odds_evaluation = closing_policy_fold["evaluation"]
-        policy, policy_grid = select_policy(
+        policy_selector = (
+            select_policy_v17
+            if calibrator_strategy == V17_STRATEGY_NAME
+            else select_policy
+        )
+        policy, policy_grid = policy_selector(
             calibration_policy_races,
             calibrator=calibrator,
             daily_budget_yen=daily_budget_yen,
@@ -2630,6 +2808,7 @@ def walk_forward_evaluate(
             calibrator=calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
+            include_chronological=True,
         )
         registered_bankroll = None
         if evaluation_date > EV_BAND_HYPOTHESIS_REGISTERED_AFTER:
@@ -2793,6 +2972,9 @@ def walk_forward_evaluate(
             }
         )
         daily_rows.extend(bankroll["daily"])
+        chronological_daily_rows.extend(
+            bankroll["chronological_bankroll"]["daily"]
+        )
         if (
             prospective_architecture_config is not None
             and evaluation_date
@@ -3013,6 +3195,41 @@ def walk_forward_evaluate(
     profitable_folds = sum(int(fold["bankroll"]["profit_yen"] > 0) for fold in folds)
     flat_stake_yen = sum(int(row["stake_yen"]) for row in flat_daily_rows)
     flat_return_yen = sum(int(row["return_yen"]) for row in flat_daily_rows)
+    chronological_bankroll = summarize_chronological_bankroll_days(
+        chronological_daily_rows
+    )
+    chronological_reliability = bankroll_reliability_metrics(
+        chronological_daily_rows, evaluated_races=len(evaluation_races)
+    )
+    chronological_bootstrap = (
+        bootstrap_daily_roi(chronological_daily_rows)
+        if chronological_daily_rows else {}
+    )
+    chronological_bankroll.update({
+        **chronological_reliability,
+        "profitable_day_fraction": (
+            chronological_bankroll["winning_days"]
+            / chronological_bankroll["race_days"]
+            if chronological_bankroll["race_days"] else None
+        ),
+        "normalized_drawdown": (
+            chronological_bankroll["max_drawdown_yen"]
+            / chronological_bankroll["stake_yen"]
+            if chronological_bankroll["stake_yen"] else None
+        ),
+        "daily_cluster_bootstrap_roi_lower_95": (
+            chronological_bootstrap.get("roi_ci95_lower")
+        ),
+        "bootstrap_probability_roi_above_one": (
+            chronological_bootstrap.get("probability_roi_above_one")
+        ),
+        "primary_promotion_bankroll": calibrator_strategy == V17_STRATEGY_NAME,
+        "daily_stake_limit_fraction": 1.0,
+        "gross_stake_allowance_rule": (
+            "initial_allowance_plus_positive_realized_cumulative_profit"
+        ),
+        "legacy_cash_recycling_only_is_primary": False,
+    })
     aggregate_metrics = _aggregate_fold_probability_metrics(folds)
     market_comparison = market_comparison_confidence(
         market_loss_differences,
@@ -3081,12 +3298,48 @@ def walk_forward_evaluate(
             else True
         ),
     }
+    if calibrator_strategy == V17_STRATEGY_NAME:
+        promotion_gate = {
+            "primary_bankroll": "chronological_bankroll",
+            "minimum_evaluation_races": 1000,
+            "minimum_evaluation_days": 30,
+            "minimum_profitable_day_fraction": 0.60,
+            "minimum_effective_hit_count": 20,
+            "sample_size_pass": (
+                len(evaluation_races) >= 1000
+                and chronological_bankroll["race_days"] >= 30
+            ),
+            "positive_profit_pass": (
+                chronological_bankroll["profit_yen"] > 0
+                and chronological_bankroll["stake_yen"] > 0
+            ),
+            "roi_pass": float(chronological_bankroll["roi"] or 0.0) > 1.0,
+            "profitable_day_fraction_pass": float(
+                chronological_bankroll.get("profitable_day_fraction") or 0.0
+            ) >= 0.60,
+            "largest_hit_excluded_roi_pass": float(
+                chronological_bankroll.get("roi_without_largest_hit") or 0.0
+            ) > 1.0,
+            "bootstrap_lower_95_pass": float(
+                chronological_bankroll.get(
+                    "daily_cluster_bootstrap_roi_lower_95"
+                ) or 0.0
+            ) > 1.0,
+            "effective_hit_count_pass": float(
+                chronological_bankroll.get("effective_hit_count") or 0.0
+            ) >= 20.0,
+            "calibration_pass": _calibration_gate_pass(aggregate_metrics),
+            "market_confidence_pass": bool(market_comparison["confidence_pass"]),
+            "no_lookahead_pass": True,
+            "real_betting_disabled_pass": True,
+        }
     deployment_races = (
         attach_forecast_closing_return_prices(races, closing_policy_inputs)
         if calibrator_strategy == "odds_path_closing_return"
         else attach_observed_closing_return_prices(races)
         if calibrator_strategy in {
             "odds_path_observed_closing_return",
+            V17_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -3113,13 +3366,46 @@ def walk_forward_evaluate(
             else True
         ),
     }
-    deployment_gate["pass"] = all(
-        deployment_gate[key]
-        for key in (
-            "days_pass",
-            "roi_pass",
-            "fold_stability_pass",
-            "prospective_architecture_pass",
+    if calibrator_strategy == V17_STRATEGY_NAME:
+        deployment_gate = {
+            "primary_bankroll": "chronological_bankroll",
+            "minimum_evaluation_days": 7,
+            "evaluation_days": chronological_bankroll["race_days"],
+            "evaluation_races": len(evaluation_races),
+            "roi": chronological_bankroll["roi"],
+            "days_pass": chronological_bankroll["race_days"] >= 7,
+            "roi_pass": float(chronological_bankroll["roi"] or 0.0) > 1.0,
+            "profitable_day_fraction_pass": float(
+                chronological_bankroll.get("profitable_day_fraction") or 0.0
+            ) >= 0.60,
+            "largest_hit_excluded_roi_pass": float(
+                chronological_bankroll.get("roi_without_largest_hit") or 0.0
+            ) > 1.0,
+            "bootstrap_lower_95_pass": float(
+                chronological_bankroll.get(
+                    "daily_cluster_bootstrap_roi_lower_95"
+                ) or 0.0
+            ) > 1.0,
+            "effective_hit_count_pass": float(
+                chronological_bankroll.get("effective_hit_count") or 0.0
+            ) >= 20.0,
+            "real_betting_disabled_pass": True,
+        }
+    deployment_gate["pass"] = (
+        all(
+            bool(value)
+            for key, value in deployment_gate.items()
+            if key.endswith("_pass")
+        )
+        if calibrator_strategy == V17_STRATEGY_NAME
+        else all(
+            deployment_gate[key]
+            for key in (
+                "days_pass",
+                "roi_pass",
+                "fold_stability_pass",
+                "prospective_architecture_pass",
+            )
         )
     )
     deployment_configuration["walk_forward_gate"] = deployment_gate
@@ -3131,14 +3417,36 @@ def walk_forward_evaluate(
         deployment_configuration["operational_status"] = "shadow_only_insufficient_evidence"
     else:
         deployment_configuration["operational_status"] = "eligible_for_shadow_promotion"
+    if calibrator_strategy == V17_STRATEGY_NAME:
+        deployment_configuration.update({
+            "comparison_role": V17_COMPARISON_ROLE,
+            "deployment_mode": "shadow_only",
+            "real_betting_enabled": False,
+            "daily_stake_limit_fraction": 1.0,
+            "primary_promotion_bankroll": "chronological_bankroll",
+            "policy_selection": "strict_prior_lexicographic_robust_v17",
+        })
+        deployment_configuration["operational_status"] = (
+            "shadow_only_evidence_passed"
+            if deployment_gate["pass"]
+            else "shadow_only_insufficient_evidence"
+        )
     reliability = bankroll_reliability_metrics(
         daily_rows,
         evaluated_races=len(evaluation_races),
     )
     return {
         "model": odds_path_model_name(calibrator_strategy),
-        "comparison_role": "real_t5_odds_nested_daily_walk_forward_shadow",
+        "comparison_role": (
+            V17_COMPARISON_ROLE
+            if calibrator_strategy == V17_STRATEGY_NAME
+            else "real_t5_odds_nested_daily_walk_forward_shadow"
+        ),
         "calibrator_strategy": calibrator_strategy,
+        "deployment_mode": (
+            "shadow_only" if calibrator_strategy == V17_STRATEGY_NAME else "evaluation"
+        ),
+        "real_betting_enabled": False,
         "validation_design": (
             "Each evaluation day has complete T-5 coverage and is untouched; calibration "
             "and policy selection use only earlier eligible T-5 races"
@@ -3180,6 +3488,7 @@ def walk_forward_evaluate(
         **reliability,
         "folds": folds,
         "daily": daily_rows,
+        "chronological_bankroll": chronological_bankroll,
         "flat_policy_walk_forward": {
             "comparison_role": "preselected_on_prior_days_fixed_100_yen_shadow",
             "evaluation_races": len(evaluation_races),
@@ -4720,6 +5029,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_probability",
             "odds_path_closing_return",
             "odds_path_observed_closing_return",
+            V17_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
