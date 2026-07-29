@@ -589,8 +589,18 @@ def _new_purchase_diagnostic_accumulator() -> dict[str, Any]:
 def _summarize_purchase_diagnostics(
     accumulators: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
+    sources = list(accumulators)
     combined = _new_purchase_diagnostic_accumulator()
-    for source in accumulators:
+    optional_counts = (
+        "candidates_before_allocation",
+        "allocation_candidate_tickets",
+        "zero_purchase_days",
+    )
+    include_optional = {
+        key for key in optional_counts if any(key in source for source in sources)
+    }
+    zero_reason_counts: dict[str, int] = defaultdict(int)
+    for source in sources:
         for key in (
             "total_races",
             "closing_forecast_missing_races",
@@ -601,6 +611,14 @@ def _summarize_purchase_diagnostics(
             "purchases_after_allocation",
         ):
             combined[key] += int(source.get(key) or 0)
+        for key in include_optional:
+            combined[key] = int(combined.get(key) or 0) + int(
+                source.get(key) or 0
+            )
+        for reason, count in (
+            source.get("zero_reason_counts") or {}
+        ).items():
+            zero_reason_counts[str(reason)] += int(count or 0)
         combined["safe_ev_values"].extend(
             float(value) for value in source.get("safe_ev_values") or []
         )
@@ -630,12 +648,15 @@ def _summarize_purchase_diagnostics(
             "safe_ev_p95": None,
             "safe_ev_p99": None,
         }
-    return {
+    result = {
         **combined,
         **distribution,
         "safe_ev_threshold": SAFE_EV_THRESHOLD,
         "max_tickets_per_race": MAX_TICKETS_PER_RACE,
     }
+    if zero_reason_counts:
+        result["zero_reason_counts"] = dict(sorted(zero_reason_counts.items()))
+    return result
 
 
 def _simulate_fixed_safe_ev_policy(
@@ -1165,6 +1186,7 @@ def _deployment_configuration(
     ] = attach_t5_residual_probabilities,
     calibrator_strategy: str = STRATEGY_NAME,
     operational_status: str = "shadow_only_until_v7_promotion_gate",
+    candidate_policy: dict[str, Any] = FIXED_POLICY,
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in races})
     probability_model = probability_fit(races)
@@ -1200,7 +1222,7 @@ def _deployment_configuration(
         "closing_ready": closing_ready,
         "probability_lcb": probability_lcb,
         "daily_budget_yen": daily_budget_yen,
-        "candidate_policy": dict(FIXED_POLICY),
+        "candidate_policy": dict(candidate_policy),
         "selected_policy": {"name": "no_bet", "no_bet": True},
         "operational_status": operational_status,
     }
@@ -1225,6 +1247,10 @@ def _walk_forward_evaluate_conservative_ev(
         [list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]
     ],
     deployment_waiting_status: str,
+    purchase_simulator: Callable[..., tuple[dict[str, Any], dict[str, Any]]] = (
+        _simulate_fixed_safe_ev_policy
+    ),
+    fixed_policy: dict[str, Any] = FIXED_POLICY,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -1320,7 +1346,7 @@ def _walk_forward_evaluate_conservative_ev(
                 for race in transformed_holdout
             }
         bankroll, purchase_diagnostic_accumulator = (
-            _simulate_fixed_safe_ev_policy(
+            purchase_simulator(
                 transformed_holdout,
                 closing_forecasts=closing_forecasts,
                 probability_lcb=probability_lcb,
@@ -1363,7 +1389,7 @@ def _walk_forward_evaluate_conservative_ev(
             "closing_training_races": len(teachers),
             "closing_model": closing_model,
             "selected_policy": (
-                dict(FIXED_POLICY)
+                dict(fixed_policy)
                 if closing_ready
                 else {"name": "no_bet", "no_bet": True}
             ),
@@ -1423,6 +1449,7 @@ def _walk_forward_evaluate_conservative_ev(
         probability_attach=probability_attach,
         calibrator_strategy=strategy_name,
         operational_status=deployment_waiting_status,
+        candidate_policy=fixed_policy,
     )
     deployment["walk_forward_gate"] = dict(
         prospective["promotion_gate"]
@@ -1434,7 +1461,7 @@ def _walk_forward_evaluate_conservative_ev(
         prospective["promotion_eligible"]
         and deployment["closing_ready"]
     ):
-        deployment["selected_policy"] = dict(FIXED_POLICY)
+        deployment["selected_policy"] = dict(fixed_policy)
         deployment["operational_status"] = (
             "eligible_for_shadow_promotion"
         )
@@ -1449,7 +1476,7 @@ def _walk_forward_evaluate_conservative_ev(
         ),
         "registered_after": registered_after,
         "daily_budget_yen": daily_budget_yen,
-        "fixed_policy": dict(FIXED_POLICY),
+        "fixed_policy": dict(fixed_policy),
         "available_races": len(races),
         "available_days": len(dates),
         "evaluation_days": len(folds),

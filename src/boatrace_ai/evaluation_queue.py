@@ -1501,6 +1501,7 @@ def build_command(
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
             "odds_path_market_offset_crossfit_conservative_ev",
+            "odds_path_market_offset_discrete_log_ev_v9",
         }:
             raise ValueError("unsupported market calibrator_strategy")
         command = [
@@ -2296,7 +2297,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "threshold_pass_candidates",
             "candidates_after_race_cap",
+            "candidates_before_allocation",
+            "allocation_candidate_tickets",
             "purchases_after_allocation",
+            "zero_purchase_days",
+            "zero_reason_counts",
             "safe_ev_max",
             "safe_ev_p95",
             "safe_ev_p99",
@@ -2502,6 +2507,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if key in prospective_v8:
                 summary[f"prospective_v8_{key}"] = prospective_v8[key]
+    prospective_v9 = payload.get(
+        "prospective_market_offset_discrete_log_ev_v9_walk_forward"
+    )
+    if isinstance(prospective_v9, dict):
+        for key in (
+            "status",
+            "registered_after",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "effective_hit_count",
+            "largest_hit_return_share",
+            "calibrated_trifecta_log_loss",
+            "model_trifecta_log_loss",
+            "market_trifecta_log_loss",
+            "closing_q20_pinball_loss",
+            "closing_q20_lower_coverage",
+            "promotion_eligible",
+        ):
+            if key in prospective_v9:
+                summary[f"prospective_v9_{key}"] = prospective_v9[key]
     empirical_policy = payload.get("empirical_lcb_walk_forward")
     if isinstance(empirical_policy, dict):
         for key in (
@@ -3830,6 +3863,12 @@ MARKET_EVALUATION_SOURCES = (
         "calibrated_lightgbm_recency_period_v6_4cpu",
         "odds_path_market_offset_crossfit_conservative_ev",
     ),
+    (
+        "odds_path_market_offset_discrete_log_ev_v9_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_market_offset_discrete_log_ev_v9",
+    ),
 )
 
 
@@ -3887,6 +3926,7 @@ def seed_daily_market_jobs(
                     "odds_path_prequential_shrinkage_return",
                     "odds_path_crossfit_conservative_ev",
                     "odds_path_market_offset_crossfit_conservative_ev",
+                    "odds_path_market_offset_discrete_log_ev_v9",
                 }
                 else 3600
             ),
@@ -3910,6 +3950,9 @@ def seed_daily_market_jobs(
                 else 93
                 if calibrator_strategy
                 == "odds_path_market_offset_crossfit_conservative_ev"
+                else 92
+                if calibrator_strategy
+                == "odds_path_market_offset_discrete_log_ev_v9"
                 else 96
             ),
             max_attempts=2,
