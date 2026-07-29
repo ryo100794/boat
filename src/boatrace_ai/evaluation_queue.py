@@ -4284,7 +4284,12 @@ def seed_daily_market_jobs(
             "from_date": MARKET_FORMAL_FROM_DATE,
             "through_date": through.isoformat(),
             "daily_budget_yen": 10000,
-            "min_calibration_days": 2,
+            "min_calibration_days": (
+                5
+                if calibrator_strategy
+                == "odds_path_role_integrated_selection_free_envelope_v15"
+                else 2
+            ),
             "calibrator_strategy": calibrator_strategy,
             "minimum_day_coverage": 1.0,
             **(
