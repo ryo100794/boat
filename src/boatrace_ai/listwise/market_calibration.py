@@ -207,6 +207,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_role_integrated_edge_conditional_lcb_v13"
     if calibrator_strategy == "odds_path_role_integrated_registered_band_lcb_v14":
         return "odds_path_role_integrated_registered_band_lcb_v14"
+    if calibrator_strategy == "odds_path_role_integrated_selection_free_envelope_v15":
+        return "odds_path_role_integrated_selection_free_envelope_v15"
     return MODEL_NAME
 
 
@@ -2251,6 +2253,22 @@ def walk_forward_evaluate(
             evaluation_dates=evaluation_dates,
             closing_fallback_policy=v12_closing_fallback_policy,
         )
+    if calibrator_strategy == "odds_path_role_integrated_selection_free_envelope_v15":
+        from .odds_path_role_integrated_v15 import walk_forward_evaluate_v15
+
+        result = walk_forward_evaluate_v15(
+            races,
+            daily_budget_yen=daily_budget_yen,
+            min_calibration_days=min_calibration_days,
+            evaluation_dates=evaluation_dates,
+            closing_fallback_policy=v12_closing_fallback_policy,
+        )
+        result["model"] = odds_path_model_name(calibrator_strategy)
+        result["calibrator_strategy"] = calibrator_strategy
+        deployment = result.get("deployment_configuration")
+        if isinstance(deployment, dict):
+            deployment["calibrator_strategy"] = calibrator_strategy
+        return result
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         by_day[str(race["race_date"])].append(race)
@@ -4640,6 +4658,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",
             "odds_path_role_integrated_registered_band_lcb_v14",
+            "odds_path_role_integrated_selection_free_envelope_v15",
         ),
         default="grid",
     )
@@ -4748,7 +4767,10 @@ def main(argv: list[str] | None = None) -> int:
     evaluation_input_races = (
         clean_races
         if args.calibrator_strategy
-        == "odds_path_role_integrated_registered_band_lcb_v14"
+        in {
+            "odds_path_role_integrated_registered_band_lcb_v14",
+            "odds_path_role_integrated_selection_free_envelope_v15",
+        }
         else races
     )
     result = walk_forward_evaluate(
