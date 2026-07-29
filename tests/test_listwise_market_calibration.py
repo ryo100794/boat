@@ -614,6 +614,16 @@ def test_v6_outer_folds_never_pass_holdout_to_inner_selection(
     assert deployment["operational_model"]["adaptive_return_selection"][
         "status"
     ] == "conservative_fallback"
+    prospective = result[
+        "prospective_prequential_shrinkage_return_v6_walk_forward"
+    ]
+    assert prospective["registered_after"] == "2026-07-29"
+    assert prospective["status"] == "waiting_for_first_unseen_day"
+    assert prospective["evaluation_days"] == 0
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+    assert deployment["walk_forward_gate"][
+        "prospective_architecture_pass"
+    ] is False
 
 
 def test_cli_accepts_v6_calibrator_strategy() -> None:

@@ -142,6 +142,7 @@ PROSPECTIVE_NORMALIZED_EV_POLICY: dict[str, Any] = {
 }
 PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER = "2026-07-28"
 OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER = "2026-07-29"
+PREQUENTIAL_SHRINKAGE_RETURN_V6_REGISTERED_AFTER = "2026-07-29"
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
@@ -2282,8 +2283,20 @@ def walk_forward_evaluate(
     prospective_evaluated_races = 0
     prospective_top5_daily_rows = []
     prospective_top5_evaluated_races = 0
-    prospective_v4_daily_rows = []
-    prospective_v4_evaluated_races = 0
+    prospective_architecture_daily_rows = []
+    prospective_architecture_evaluated_races = 0
+    prospective_architecture_config = {
+        "odds_path_observed_closing_return": {
+            "registered_after": OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER,
+            "output_key": "prospective_observed_closing_return_v4_walk_forward",
+            "architecture": "odds_path_observed_closing_return_v4",
+        },
+        "odds_path_prequential_shrinkage_return": {
+            "registered_after": PREQUENTIAL_SHRINKAGE_RETURN_V6_REGISTERED_AFTER,
+            "output_key": "prospective_prequential_shrinkage_return_v6_walk_forward",
+            "architecture": "odds_path_prequential_shrinkage_return_v6",
+        },
+    }.get(calibrator_strategy)
     edge_diagnostic_records = []
     empirical_history_records: list[dict[str, Any]] = []
     empirical_daily_rows: list[dict[str, Any]] = []
@@ -2589,11 +2602,14 @@ def walk_forward_evaluate(
         )
         daily_rows.extend(bankroll["daily"])
         if (
-            calibrator_strategy == "odds_path_observed_closing_return"
-            and evaluation_date > OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER
+            prospective_architecture_config is not None
+            and evaluation_date
+            > str(prospective_architecture_config["registered_after"])
         ):
-            prospective_v4_daily_rows.extend(bankroll["daily"])
-            prospective_v4_evaluated_races += len(holdout_policy_races)
+            prospective_architecture_daily_rows.extend(bankroll["daily"])
+            prospective_architecture_evaluated_races += len(
+                holdout_policy_races
+            )
         flat_daily_rows.extend(flat_bankroll["daily"])
         if registered_bankroll is not None:
             registered_daily_rows.extend(registered_bankroll["daily"])
@@ -2816,23 +2832,37 @@ def walk_forward_evaluate(
         evaluated_races=empirical_evaluated_races,
         folds=empirical_fold_rows,
     )
-    prospective_v4 = summarize_registered_policy_daily(
-        prospective_v4_daily_rows,
-        evaluated_races=prospective_v4_evaluated_races,
+    prospective_architecture = summarize_registered_policy_daily(
+        prospective_architecture_daily_rows,
+        evaluated_races=prospective_architecture_evaluated_races,
         policy={
-            "name": "observed_closing_return_v4_daily_prior_selected_policy",
-            "architecture": "odds_path_observed_closing_return_v4",
+            "name": "architecture_daily_prior_selected_policy",
+            "architecture": (
+                prospective_architecture_config["architecture"]
+                if prospective_architecture_config is not None
+                else None
+            ),
             "minimum_days": MIN_PROSPECTIVE_ARCHITECTURE_DAYS,
             "minimum_tickets": MIN_PROSPECTIVE_ARCHITECTURE_TICKETS,
         },
-        registered_after=OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER,
+        registered_after=(
+            str(prospective_architecture_config["registered_after"])
+            if prospective_architecture_config is not None
+            else OBSERVED_CLOSING_RETURN_V4_REGISTERED_AFTER
+        ),
     )
-    prospective_v4_pass = bool(
-        prospective_v4["evaluation_days"] >= MIN_PROSPECTIVE_ARCHITECTURE_DAYS
-        and prospective_v4["tickets"] >= MIN_PROSPECTIVE_ARCHITECTURE_TICKETS
-        and prospective_v4["profit_yen"] > 0
-        and float(prospective_v4["roi"] or 0.0) > 1.0
-        and float(prospective_v4["roi_without_largest_hit"] or 0.0) > 1.0
+    prospective_architecture_pass = bool(
+        prospective_architecture_config is not None
+        and prospective_architecture["evaluation_days"]
+        >= MIN_PROSPECTIVE_ARCHITECTURE_DAYS
+        and prospective_architecture["tickets"]
+        >= MIN_PROSPECTIVE_ARCHITECTURE_TICKETS
+        and prospective_architecture["profit_yen"] > 0
+        and float(prospective_architecture["roi"] or 0.0) > 1.0
+        and float(
+            prospective_architecture["roi_without_largest_hit"] or 0.0
+        )
+        > 1.0
     )
     promotion_gate = {
         "minimum_evaluation_races": 1000,
@@ -2854,8 +2884,8 @@ def walk_forward_evaluate(
         ),
         "no_lookahead_pass": True,
         "prospective_architecture_pass": (
-            prospective_v4_pass
-            if calibrator_strategy == "odds_path_observed_closing_return"
+            prospective_architecture_pass
+            if prospective_architecture_config is not None
             else True
         ),
     }
@@ -2886,8 +2916,8 @@ def walk_forward_evaluate(
         "roi_pass": return_yen > stake_yen and stake_yen > 0,
         "fold_stability_pass": profitable_folds >= math.ceil(len(folds) * 0.60),
         "prospective_architecture_pass": (
-            prospective_v4_pass
-            if calibrator_strategy == "odds_path_observed_closing_return"
+            prospective_architecture_pass
+            if prospective_architecture_config is not None
             else True
         ),
     }
@@ -2990,11 +3020,11 @@ def walk_forward_evaluate(
         ),
         **(
             {
-                "prospective_observed_closing_return_v4_walk_forward": (
-                    prospective_v4
+                str(prospective_architecture_config["output_key"]): (
+                    prospective_architecture
                 )
             }
-            if calibrator_strategy == "odds_path_observed_closing_return"
+            if prospective_architecture_config is not None
             else {}
         ),
         "market_offset_registered_policy_walk_forward": (
