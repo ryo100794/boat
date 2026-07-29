@@ -277,9 +277,17 @@ def test_only_positive_realized_profit_increases_daily_allowance() -> None:
     profitable_decisions = _decisions(profitable)
     assert [row["stake_yen"] for row in profitable_decisions[:2]] == [6_000, 6_000]
     assert profitable_decisions[1]["gross_stake_allowance_yen"] == 16_000
-    assert profitable["gross_stake_yen"] <= (
-        profitable["initial_gross_stake_allowance_yen"]
-        + profitable["realized_positive_cumulative_profit_yen"]
-    )
+    assert profitable_decisions[2]["stake_yen"] == 0
+    assert profitable_decisions[2]["gross_stake_allowance_yen"] == 10_000
     assert losing["final_gross_stake_allowance_yen"] == 10_000
     assert losing["gross_stake_yen"] == 10_000
+
+
+def test_hit_does_not_expand_allowance_while_cumulative_profit_is_negative() -> None:
+    result = _simulate_fixed_allowance([0, 200, 0])
+    decisions = _decisions(result)
+
+    assert [row["stake_yen"] for row in decisions] == [6_000, 4_000, 0]
+    assert decisions[2]["gross_stake_allowance_yen"] == 10_000
+    assert result["realized_cumulative_profit_yen"] == -2_000
+    assert result["final_gross_stake_allowance_yen"] == 10_000

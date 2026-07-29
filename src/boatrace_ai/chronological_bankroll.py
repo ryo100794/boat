@@ -185,7 +185,6 @@ def simulate_chronological_bankroll_day(
     )
     gross_stake_yen = 0
     realized_cumulative_profit_yen = 0
-    realized_positive_cumulative_profit_yen = 0
     peak_equity_yen = initial_bankroll_yen
     max_drawdown_yen = 0
     pending: list[dict[str, Any]] = []
@@ -196,7 +195,6 @@ def simulate_chronological_bankroll_day(
     def settle_due(as_of: datetime) -> None:
         nonlocal cash_yen, peak_equity_yen, max_drawdown_yen
         nonlocal realized_cumulative_profit_yen
-        nonlocal realized_positive_cumulative_profit_yen
         ordered = sorted(
             pending, key=lambda row: (row["available_at"], row["race_id"])
         )
@@ -209,9 +207,6 @@ def simulate_chronological_bankroll_day(
                 int(item["return_yen"]) - int(item["stake_yen"])
             )
             realized_cumulative_profit_yen += realized_profit_yen
-            realized_positive_cumulative_profit_yen += max(
-                0, realized_profit_yen
-            )
             equity = cash_yen + outstanding
             peak_equity_yen = max(peak_equity_yen, equity)
             max_drawdown_yen = max(max_drawdown_yen, peak_equity_yen - equity)
@@ -223,9 +218,6 @@ def simulate_chronological_bankroll_day(
                 "outstanding_stake_yen": outstanding,
                 "realized_cumulative_profit_yen": (
                     realized_cumulative_profit_yen
-                ),
-                "realized_positive_cumulative_profit_yen": (
-                    realized_positive_cumulative_profit_yen
                 ),
             })
         pending[:] = remaining
@@ -243,7 +235,7 @@ def simulate_chronological_bankroll_day(
         fingerprint = decision_information_fingerprint(race_candidates)
         gross_stake_allowance_yen = (
             initial_gross_stake_allowance_yen
-            + realized_positive_cumulative_profit_yen
+            + max(0, realized_cumulative_profit_yen)
         )
         remaining_gross_stake_allowance_yen = max(
             0, gross_stake_allowance_yen - gross_stake_yen
@@ -347,9 +339,6 @@ def simulate_chronological_bankroll_day(
             "realized_cumulative_profit_yen": (
                 realized_cumulative_profit_yen
             ),
-            "realized_positive_cumulative_profit_yen": (
-                realized_positive_cumulative_profit_yen
-            ),
             "selections": [
                 {"combination": str(row["combination"]),
                  "stake_yen": int(row["stake_yen"])}
@@ -391,13 +380,10 @@ def simulate_chronological_bankroll_day(
         ),
         "final_gross_stake_allowance_yen": (
             initial_gross_stake_allowance_yen
-            + realized_positive_cumulative_profit_yen
+            + max(0, realized_cumulative_profit_yen)
         ),
         "gross_stake_yen": gross_stake_yen,
         "realized_cumulative_profit_yen": realized_cumulative_profit_yen,
-        "realized_positive_cumulative_profit_yen": (
-            realized_positive_cumulative_profit_yen
-        ),
         "daily_stake_limit_fraction": daily_stake_limit_fraction,
         "gross_stake_allowance_rule": (
             "initial_allowance_plus_positive_realized_cumulative_profit"
