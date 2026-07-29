@@ -61,6 +61,12 @@ def compact_text_from_html(html: str) -> str:
     return "\n".join(text_lines_from_html(html))
 
 
+def result_page_is_cancelled(html: str) -> bool:
+    """Recognize the official result page's explicit race-cancellation notice."""
+    text = re.sub(r"\s+", "", compact_text_from_html(html))
+    return "該当レースは中止" in text
+
+
 def parse_race_meta(
     html: str,
     *,
@@ -508,6 +514,14 @@ def parse_beforeinfo_html(html: str) -> dict[str, Any]:
 
 
 def parse_result_html(html: str) -> dict[str, Any]:
+    if result_page_is_cancelled(html):
+        return {
+            "status": "final",
+            "rows": [],
+            "payouts": [],
+            "trifecta_evaluable": False,
+            "result_reason": "race_cancelled",
+        }
     lines = text_lines_from_html(html)
     text = "\n".join(lines)
     if "データはありません" in text:
