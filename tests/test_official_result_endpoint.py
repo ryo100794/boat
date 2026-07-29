@@ -73,3 +73,14 @@ def test_unrelated_cancellation_text_does_not_cancel_race() -> None:
     )
 
     assert parsed["status"] == "unknown"
+
+
+def test_standalone_race_cancelled_label_is_final() -> None:
+    parsed = parse_result_html_v2(
+        "<html><body><div>7月29日<span>中止</span></div>"
+        "<h3>レース中止</h3></body></html>"
+    )
+
+    assert parsed["status"] == "final"
+    assert parsed["trifecta_evaluable"] is False
+    assert parsed["result_reason"] == "race_cancelled"

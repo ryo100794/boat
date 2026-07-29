@@ -63,8 +63,9 @@ def compact_text_from_html(html: str) -> str:
 
 def result_page_is_cancelled(html: str) -> bool:
     """Recognize the official result page's explicit race-cancellation notice."""
-    text = re.sub(r"\s+", "", compact_text_from_html(html))
-    return "該当レースは中止" in text
+    lines = text_lines_from_html(html)
+    text = re.sub(r"\s+", "", "\n".join(lines))
+    return "該当レースは中止" in text or "レース中止" in lines
 
 
 def parse_race_meta(
