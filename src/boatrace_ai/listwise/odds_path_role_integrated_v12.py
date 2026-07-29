@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .closing_odds_multihorizon_v11 import (
     DEFAULT_LOWER_QUANTILE as V11_DEFAULT_LOWER_QUANTILE,
@@ -72,6 +72,17 @@ DISCRETE_POLICY_V12: dict[str, Any] = {
     "decision_offset_seconds": DECISION_OFFSET_SECONDS,
     "future_checkpoint_imputation": False,
 }
+
+
+def _closing_v12_report_model(model: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy a V12 artifact for JSON reporting without its live estimator."""
+    report_model = dict(model)
+    point_model = model.get("point_model")
+    if isinstance(point_model, Mapping):
+        report_model["point_model"] = {
+            key: value for key, value in point_model.items() if key != "estimator"
+        }
+    return report_model
 
 
 def _closing_contract(
@@ -353,8 +364,11 @@ def walk_forward_evaluate_v12(
     min_calibration_days: int,
     evaluation_dates: Iterable[str] | None = None,
     closing_fallback_policy: str = CLOSING_FALLBACK_V11,
+    probability_lcb_fit: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+    probability_lcb_metrics: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate V12 closing decisions in the strict-prior role-separated stack."""
+    lcb_fit = probability_lcb_fit or fit_probability_lcb
     if closing_fallback_policy not in CLOSING_FALLBACK_POLICIES:
         raise ValueError(
             f"unsupported v12 closing fallback policy: {closing_fallback_policy}"
@@ -403,7 +417,7 @@ def walk_forward_evaluate_v12(
             probability_fit=fit_odds_path_probability_v8,
             probability_attach=attach_odds_path_probability_v8,
         )
-        probability_lcb = fit_probability_lcb(crossfit_rows)
+        probability_lcb = lcb_fit(crossfit_rows)
         closing_v12_model = fit_closing_odds_t300_nonlinear_v12(
             training,
             prediction_date=evaluation_date,
@@ -467,6 +481,16 @@ def walk_forward_evaluate_v12(
         if evaluation_date not in output_dates:
             continue
 
+        lcb_evaluation = (
+            probability_lcb_metrics(
+                transformed,
+                closing_forecasts=closing_forecasts,
+                probability_lcb=probability_lcb,
+            )
+            if probability_lcb_metrics is not None
+            else None
+        )
+
         if research_bankroll is not None and research_diagnostic is not None:
             research_daily.extend(research_bankroll["daily"])
             research_diagnostics_by_date[evaluation_date] = research_diagnostic
@@ -482,6 +506,7 @@ def walk_forward_evaluate_v12(
             v12_model=closing_v12_model,
             v11_model=closing_v11_model,
         )
+        closing_v12_report_model = _closing_v12_report_model(closing_v12_model)
         closing_compat = _closing_metric_adapter(closing_result)
         selection_artifact = dict(bankroll.get("selection_conformal") or conformal)
         trained_boundaries = {
@@ -509,8 +534,13 @@ def walk_forward_evaluate_v12(
             "evaluation_races": len(holdout),
             "operational_model": probability_model,
             "probability_lcb": probability_lcb,
-            "closing_model": closing_v12_model,
-            "closing_v12_model": closing_v12_model,
+            **(
+                {"probability_lcb_metrics": lcb_evaluation}
+                if lcb_evaluation is not None
+                else {}
+            ),
+            "closing_model": closing_v12_report_model,
+            "closing_v12_model": closing_v12_report_model,
             "closing_v11_fallback_model": closing_v11_model,
             "closing_model_identity": closing_identity,
             "closing_ready": bool(closing_identity["ready_for_purchase"]),
@@ -656,7 +686,7 @@ def walk_forward_evaluate_v12(
         fallback_policy=closing_fallback_policy,
     )
     deployment_probability = fit_odds_path_probability_v8(races)
-    deployment_lcb = fit_probability_lcb(
+    deployment_lcb = lcb_fit(
         _crossfit_probability_rows(
             races,
             probability_fit=fit_odds_path_probability_v8,
@@ -678,7 +708,9 @@ def walk_forward_evaluate_v12(
         "calibrator_strategy": STRATEGY_NAME,
         "operational_model": deployment_probability,
         "probability_lcb": deployment_lcb,
-        "closing_t300_v12_model": deployment_closing_v12,
+        "closing_t300_v12_model": _closing_v12_report_model(
+            deployment_closing_v12
+        ),
         "closing_v11_fallback_model": deployment_closing_v11,
         "closing_model_identity": deployment_closing_identity,
         "selection_conformal": deployment_conformal,

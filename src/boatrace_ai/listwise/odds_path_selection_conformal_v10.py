@@ -18,7 +18,6 @@ from .odds_path_conservative_v7 import (
     TICKET_CAP_FRACTION,
     _new_purchase_diagnostic_accumulator,
     _policy_candidate,
-    _rank_groups,
     _summarize_bankroll,
     _walk_forward_evaluate_conservative_ev,
 )
@@ -35,6 +34,7 @@ from .selection_conformal import (
     selected_safe_ev_candidates,
     selection_coverage_metrics,
 )
+from .edge_conditional_probability_lcb_v13 import probability_lower_bound_details
 
 
 MODEL_NAME = "odds_path_market_offset_selection_conformal_discrete_ev_v10"
@@ -141,12 +141,11 @@ def _simulate_selection_conformal_policy(
         if len(closing) != 120 or not lcb_ready or not conformal_ready:
             continue
         probabilities = race["model_probabilities"]
-        rank_groups = _rank_groups(probabilities)
-        factors = probability_lcb.get("factors") or {}
         for combination, raw_odds in closing.items():
-            safe_probability = float(probabilities[combination]) * float(
-                factors.get(rank_groups[combination], 0.0)
+            lcb_detail = probability_lower_bound_details(
+                race, str(combination), probability_lcb
             )
+            safe_probability = float(lcb_detail["probability"])
             raw_safe_ev = safe_probability * float(raw_odds)
             diagnostic["evaluated_combinations"] += 1
             diagnostic["safe_ev_values"].append(raw_safe_ev)
@@ -171,6 +170,7 @@ def _simulate_selection_conformal_policy(
                 "raw_predicted_closing_odds": float(raw_odds),
                 "selection_conformal_haircut": float(haircut),
                 "raw_safe_ev": raw_safe_ev,
+                "probability_lcb_detail": lcb_detail,
                 "odds_source": "strict_prior_q20_times_selection_conformal_haircut",
             })
             by_day_candidates[date].append(candidate)
