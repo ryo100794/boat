@@ -18,7 +18,11 @@ import numpy as np
 
 from ..adaptive_allocation import allocate_adaptive_day
 from ..archive_closing_odds import SOURCE_KEY as OFFICIAL_CLOSING_SOURCE_KEY
-from ..bankroll_bootstrap import bootstrap_daily_roi
+from ..bankroll_bootstrap import (
+    DEFAULT_CHUNK_SIZE as BANKROLL_BOOTSTRAP_CHUNK_SIZE,
+    DEFAULT_SEED as BANKROLL_BOOTSTRAP_SEED,
+    bootstrap_daily_roi,
+)
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..chronological_bankroll import (
     settlement_events_from_races,
@@ -1387,6 +1391,84 @@ def v17_policy_ranking_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _v17_batch_bootstrap_roi_lowers(
+    policy_daily_rows: list[list[dict[str, Any]]],
+    *,
+    samples: int = V17_POLICY_BOOTSTRAP_SAMPLES,
+    seed: int = BANKROLL_BOOTSTRAP_SEED,
+    chunk_size: int = BANKROLL_BOOTSTRAP_CHUNK_SIZE,
+    policy_block_size: int = 256,
+) -> list[float | None]:
+    """Compute the unchanged daily bootstrap statistic with shared resamples."""
+
+    if not policy_daily_rows:
+        return []
+    dates = tuple(str(row["race_date"]) for row in policy_daily_rows[0])
+    if not dates:
+        return [None] * len(policy_daily_rows)
+    if any(
+        tuple(str(row["race_date"]) for row in daily) != dates
+        for daily in policy_daily_rows[1:]
+    ):
+        raise ValueError("V17 policy daily rows must share the same date boundary")
+
+    policy_stakes = np.asarray(
+        [
+            [int(row["stake_yen"]) for row in daily]
+            for daily in policy_daily_rows
+        ],
+        dtype=np.int64,
+    )
+    policy_returns = np.asarray(
+        [
+            [int(row["return_yen"]) for row in daily]
+            for daily in policy_daily_rows
+        ],
+        dtype=np.int64,
+    )
+    signatures = np.concatenate((policy_stakes, policy_returns), axis=1)
+    unique_signatures, inverse = np.unique(
+        signatures,
+        axis=0,
+        return_inverse=True,
+    )
+    day_count = len(dates)
+    stakes = unique_signatures[:, :day_count]
+    returns = unique_signatures[:, day_count:]
+    rng = np.random.default_rng(seed)
+    sample_counts = np.zeros((samples, day_count), dtype=np.int16)
+    for start in range(0, samples, chunk_size):
+        current_size = min(chunk_size, samples - start)
+        sampled_days = rng.integers(
+            0,
+            day_count,
+            size=(current_size, day_count),
+        )
+        rows = np.repeat(np.arange(current_size), day_count)
+        np.add.at(
+            sample_counts[start : start + current_size],
+            (rows, sampled_days.ravel()),
+            1,
+        )
+
+    unique_lowers: list[float | None] = []
+    for start in range(0, len(unique_signatures), policy_block_size):
+        stop = min(start + policy_block_size, len(unique_signatures))
+        sampled_stakes = sample_counts @ stakes[start:stop].T
+        sampled_returns = sample_counts @ returns[start:stop].T
+        for column in range(stop - start):
+            valid = sampled_stakes[:, column] > 0
+            if not np.any(valid):
+                unique_lowers.append(None)
+                continue
+            roi = (
+                sampled_returns[valid, column]
+                / sampled_stakes[valid, column]
+            )
+            unique_lowers.append(float(np.quantile(roi, 0.05)))
+    return [unique_lowers[int(index)] for index in inverse]
+
+
 def select_policy_v17(
     races: list[dict[str, Any]],
     *,
@@ -1408,6 +1490,7 @@ def select_policy_v17(
     minimum_tickets = max(10, math.ceil(len(races) * 0.05))
     minimum_stake = minimum_tickets * STAKE_YEN
     rows = []
+    policy_daily_rows = []
     for policy in policies or default_policy_grid():
         policy_result = simulate_policy(
             prepared_races,
@@ -1416,8 +1499,9 @@ def select_policy_v17(
             daily_budget_yen=daily_budget_yen,
             prepared_policy_matrix=prepared_matrix,
             include_chronological=False,
-            include_robust_metrics=True,
+            include_robust_metrics=False,
         )
+        policy_daily_rows.append(policy_result["daily"])
         eligible = bool(
             policy.get("no_bet")
             or policy_calibration_eligible(
@@ -1435,6 +1519,9 @@ def select_policy_v17(
                 if key != "daily"
             },
         })
+    bootstrap_lowers = _v17_batch_bootstrap_roi_lowers(policy_daily_rows)
+    for row, lower in zip(rows, bootstrap_lowers, strict=True):
+        row["daily_cluster_bootstrap_roi_lower_95"] = lower
     eligible_candidates = [
         row
         for row in rows
