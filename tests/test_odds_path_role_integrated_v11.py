@@ -254,7 +254,16 @@ def test_outer_days_fit_strict_prior_and_observe_after_purchase(
 
     def simulate(transformed, **kwargs):
         evaluation_date = str(transformed[0]["race_date"])
-        events.append(("purchase", evaluation_date))
+        artifact = kwargs["selection_conformal"]
+        is_research = bool(artifact.get("research_only_non_deployable"))
+        if is_research:
+            assert artifact["ready"] is True
+            assert artifact["haircut"] == 1.0
+            assert (
+                artifact["method"]
+                == "fixed_identity_pre_selection_conformal_upper_bound"
+            )
+        events.append(("research" if is_research else "purchase", evaluation_date))
         return (
             {
                 "daily": [{
@@ -277,7 +286,7 @@ def test_outer_days_fit_strict_prior_and_observe_after_purchase(
 
     def observe(observations, transformed, **kwargs):
         evaluation_date = kwargs["evaluation_date"]
-        assert events[-1] == ("purchase", evaluation_date)
+        assert events[-1] == ("research", evaluation_date)
         events.append(("observe", evaluation_date))
         observations.append({
             "race_date": evaluation_date,
@@ -349,6 +358,77 @@ def test_outer_days_fit_strict_prior_and_observe_after_purchase(
         assert events.index(("purchase", evaluation_date)) < events.index(
             ("observe", evaluation_date)
         )
+        assert events.index(("research", evaluation_date)) < events.index(
+            ("observe", evaluation_date)
+        )
+
+    assert result["tickets"] == 0
+    assert result["profit_yen"] == 0
+    assert result["daily"] == [
+        {
+            "race_date": value,
+            "evaluated_races": 1,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "races_bet": 0,
+            "hit_races": 0,
+            "cumulative_profit_yen": 0,
+        }
+        for value in ("2026-07-28", "2026-07-29")
+    ]
+    assert all(
+        fold["selected_policy"]["name"] != "research" for fold in result["folds"]
+    )
+    assert (
+        result["deployment_configuration"]["selected_policy"]
+        == {"name": "no_bet", "no_bet": True}
+    )
+    research = result["research_preconformal_upper_bound"]
+    assert research["status"] == "research_only_non_deployable"
+    assert research["research_only_non_deployable"] is True
+    assert research["deployable"] is False
+    assert research["included_in_promotion_gate"] is False
+    assert research["included_in_deployment_selected_policy"] is False
+    assert research["included_in_operational_decision"] is False
+    assert research["eligible_dates"] == ["2026-07-28", "2026-07-29"]
+    assert research["fixed_selection_conformal"]["ready"] is True
+    assert research["fixed_selection_conformal"]["haircut"] == 1.0
+
+
+def test_research_preconformal_summary_reports_bankroll_and_largest_hit_exclusion(
+) -> None:
+    daily = [{
+        "race_date": "2026-07-29",
+        "evaluated_races": 2,
+        "tickets": 2,
+        "hit_tickets": 1,
+        "stake_yen": 1_000,
+        "return_yen": 3_000,
+        "profit_yen": 2_000,
+        "races_bet": 1,
+        "hit_races": 1,
+        "largest_hit_return_yen": 3_000,
+        "hit_return_square_sum_yen2": 9_000_000,
+    }]
+
+    result = v11._research_preconformal_summary(
+        daily,
+        evaluated_races=2,
+        eligible_dates=["2026-07-29"],
+        skipped_dates=[],
+        diagnostics_by_date={},
+    )
+
+    assert result["daily"][0]["cumulative_profit_yen"] == 2_000
+    assert result["roi"] == 3.0
+    assert result["profit_yen"] == 2_000
+    assert result["tickets"] == 2
+    assert result["largest_hit_return_yen"] == 3_000
+    assert result["roi_without_largest_hit"] == 0.0
+    assert result["profit_without_largest_hit_yen"] == -1_000
 
 
 def test_market_calibration_routes_v11_without_changing_v10(
