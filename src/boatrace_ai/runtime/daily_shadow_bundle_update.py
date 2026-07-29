@@ -171,8 +171,18 @@ def _validate_v16(result: Mapping[str, Any]) -> Mapping[str, Any]:
     ):
         if not isinstance(deployment.get(key), Mapping):
             raise ValueError(f"V16 deployment component is missing: {key}")
-    if "closing_t300_v12_model" in deployment:
-        raise ValueError("V16 evaluation must not supply a live closing estimator")
+    source_closing = deployment.get("closing_t300_v12_model")
+    if source_closing is not None:
+        if not isinstance(source_closing, Mapping):
+            raise ValueError("V16 source closing artifact must be a mapping")
+        boundary_audit = source_closing.get("boundary_audit")
+        if (
+            source_closing.get("model_name")
+            != "closing_odds_t300_nonlinear_v12"
+            or not isinstance(boundary_audit, Mapping)
+            or boundary_audit.get("future_checkpoint_imputation") is not False
+        ):
+            raise ValueError("V16 source closing artifact is unsafe or inconsistent")
     probability = deployment["probability_lcb"]
     if (
         probability.get("model_name") != "strict_prior_t300_divergence_passthrough_v16"
@@ -326,6 +336,7 @@ def build_v16_composite(
     source = _json(job.result_path)
     v16 = _validate_v16(source)
     deployment = copy.deepcopy(bundle["deployment"])
+    verified_v12_closing = deployment["closing_t300_v12_model"]
     merged = (
         "operational_model", "probability_lcb", "closing_envelope_conformal",
         "candidate_policy",
@@ -335,6 +346,8 @@ def build_v16_composite(
     for key in ("selected_policy", "operational_status", "missing_real_t300_action"):
         if key in v16:
             deployment[key] = copy.deepcopy(v16[key])
+    if deployment["closing_t300_v12_model"] is not verified_v12_closing:
+        raise ValueError("verified V12 closing estimator was replaced")
     deployment["calibrator_strategy"] = V16_MODEL
     deployment["real_betting_enabled"] = False
     bundle["deployment"] = deployment
@@ -351,6 +364,10 @@ def build_v16_composite(
         "composite": {
             "closing_estimator_source": str(v12_path),
             "closing_estimator_source_sha256": _sha256(v12_path),
+            "closing_estimator_policy": {
+                "runtime_estimator": "retain_verified_v12_bundle_estimator",
+                "source_evaluation_artifact": "validate_only_never_merge",
+            },
             "merged_components": list(merged),
             "shared_source_identity": dict(shared_source),
         },
