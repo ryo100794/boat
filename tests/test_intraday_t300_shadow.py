@@ -10,6 +10,7 @@ import joblib
 import pytest
 
 from boatrace_ai.listwise.edge_conditional_probability_lcb_v14 import METHOD
+from boatrace_ai.runtime import intraday_t300_shadow as shadow_runtime
 from boatrace_ai.runtime.intraday_t300_shadow import (
     DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
     DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
@@ -269,6 +270,34 @@ def test_model_keys_coexist_and_hash_change_under_same_key_fails() -> None:
 
     with pytest.raises(ValueError, match="model identity conflict"):
         run_cycle(store, [Adapter("v12-a", "c" * 64)], now=cycle_time(row))
+
+
+def test_cycle_reports_backlog_and_only_configured_model_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = race("2026-07-30")
+    store = MemoryStore([row], {row.race_id: snapshot(row.target_t300_at)})
+    adapters = [Adapter("v12"), Adapter("v14"), Adapter("v16")]
+    ticks = iter((0.0, 1.0, 3.0, 3.0, 7.0, 7.0, 8.0, 9.0))
+    monkeypatch.setattr(shadow_runtime.time, "perf_counter", lambda: next(ticks))
+
+    result = run_cycle(
+        store, adapters, now=row.target_t300_at + timedelta(seconds=120)
+    )
+
+    assert result["models"] == ["v12", "v14", "v16"]
+    assert result["timing"] == {
+        "cycle_elapsed_seconds": 9.0,
+        "due_races_scanned": 1,
+        "pending_decisions": 3,
+        "initial_pending_backlog_max_seconds": 120.0,
+        "model_decide": {
+            "v12": {"calls": 1, "total_seconds": 2.0, "max_seconds": 2.0},
+            "v14": {"calls": 1, "total_seconds": 4.0, "max_seconds": 4.0},
+            "v16": {"calls": 1, "total_seconds": 1.0, "max_seconds": 1.0},
+        },
+    }
+    assert "v20" not in result["timing"]["model_decide"]
 
 
 def test_default_staleness_limits_and_daemon_cli_are_explicit() -> None:
