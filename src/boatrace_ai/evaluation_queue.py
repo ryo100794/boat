@@ -566,8 +566,17 @@ def enqueue_job(
             "evaluation_through",
         ),
     }.get(task_type)
+    semantic_identity = None
     if semantic_keys and all(name in parameters for name in semantic_keys):
-        identity = {name: parameters[name] for name in semantic_keys}
+        semantic_identity = {name: parameters[name] for name in semantic_keys}
+    elif task_type == "market_residual_walk_forward":
+        # Runtime limits control execution, not the evaluated model or period.
+        semantic_identity = {
+            name: value
+            for name, value in parameters.items()
+            if name != "timeout_seconds"
+        }
+    if semantic_identity:
         existing = conn.execute(
             """
             SELECT job_id
@@ -578,7 +587,7 @@ def enqueue_job(
               AND parameters @> CAST(? AS JSONB)
             LIMIT 1
             """,
-            (task_type, model_key, _json(identity)),
+            (task_type, model_key, _json(semantic_identity)),
         ).fetchone()
         if existing is not None:
             return None
