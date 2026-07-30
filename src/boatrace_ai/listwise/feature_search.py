@@ -613,21 +613,10 @@ def _checkpoint_signature(
     return signature
 
 
-def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    try:
-        checkpoint = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}
-    stored_signature = checkpoint.get("signature")
-    if (
-        not isinstance(stored_signature, dict)
-        or stored_signature.get("checkpoint_version") != CHECKPOINT_VERSION
-        or "source_data_snapshot" not in stored_signature
-    ):
-        return {}
-    if stored_signature != signature:
-        return {}
-    rows = checkpoint.get("search_results")
+def _validated_candidate_rows(
+    rows: Any,
+    signature: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     if not isinstance(rows, list):
         return {}
     allowed_drops = {
@@ -673,6 +662,64 @@ def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[st
         return {}
     return completed
 
+
+def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    stored_signature = checkpoint.get("signature")
+    if (
+        not isinstance(stored_signature, dict)
+        or stored_signature.get("checkpoint_version") != CHECKPOINT_VERSION
+        or "source_data_snapshot" not in stored_signature
+        or stored_signature != signature
+    ):
+        return {}
+    return _validated_candidate_rows(checkpoint.get("search_results"), signature)
+
+
+def _load_reusable_search_results(
+    path: Path,
+    signature: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"reusable search output is unreadable: {path}") from exc
+    expected = {
+        "model": "pastlog_listwise_feature_teacher_search_v1",
+        "races": int(signature["race_count"]),
+        "race_universe_sha256": signature["race_universe_sha256"],
+        "as_of_date": signature.get("as_of_date"),
+        "train_races": int(signature["train_end"]),
+        "selection_races": int(signature["selection_end"] - signature["train_end"]),
+        "holdout_races": int(signature["race_count"] - signature["selection_end"]),
+        "n_features": int(signature["n_features"]),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_variants": [name for name, _drops in signature["feature_variants"]],
+        "teacher_targets": list(signature["targets"]),
+        "loss_blend": signature.get("loss_blend"),
+        "alphas": [float(value) for value in signature["alphas"]],
+    }
+    actual = {name: payload.get(name) for name in expected}
+    if actual != expected:
+        mismatches = [name for name in expected if actual[name] != expected[name]]
+        raise ValueError(
+            "reusable search output metadata mismatch: " + ", ".join(mismatches)
+        )
+    completed = _validated_candidate_rows(payload.get("search_results"), signature)
+    expected_count = (
+        len(signature["feature_variants"])
+        * len(signature["targets"])
+        * len(signature["alphas"])
+    )
+    if len(completed) != expected_count:
+        raise ValueError(
+            f"reusable search output candidates are incomplete: "
+            f"{len(completed)} of {expected_count}"
+        )
+    return completed
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -967,6 +1014,13 @@ def search(
         variants=run_variants,
     )
     completed = _load_checkpoint(checkpoint_path, checkpoint_signature)
+    reuse_search_output = getattr(args, "reuse_search_output", None)
+    if reuse_search_output:
+        reuse_path = Path(reuse_search_output)
+        if reuse_path.resolve() == output.resolve():
+            raise ValueError("reusable search output must differ from output")
+        completed = _load_reusable_search_results(reuse_path, checkpoint_signature)
+        print(json.dumps({"reused_search_candidates": len(completed)}), flush=True)
     if completed:
         print(json.dumps({"checkpoint_resumed_candidates": len(completed)}), flush=True)
     resumed_rows = _ordered_rows(
@@ -1398,6 +1452,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated feature variants to evaluate; defaults to all.",
     )
     parser.add_argument("--checkpoint")
+    parser.add_argument(
+        "--reuse-search-output",
+        help=(
+            "Reuse a completed, identity-matched candidate search and rerun only "
+            "selection, final training, and untouched holdout evaluation."
+        ),
+    )
     parser.add_argument(
         "--variant-workers",
         type=int,
