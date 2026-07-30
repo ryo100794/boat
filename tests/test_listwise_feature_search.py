@@ -14,6 +14,7 @@ from boatrace_ai.feature_tuning import DEFAULT_ABLATION_FEATURE_GROUPS
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
     _checkpoint_signature,
+    _load_reusable_search_results,
     _ordered_rows,
     _selected_row,
     _evaluate_variant,
@@ -85,6 +86,9 @@ def test_worker_clis_are_documented_and_bounded() -> None:
     parser = build_parser()
     assert parser.parse_args([]).variant_workers == 1
     assert "--variant-workers" in parser.format_help()
+    assert parser.parse_args(["--reuse-search-output", "old.json"]).reuse_search_output == (
+        "old.json"
+    )
     assert parser.parse_args([]).candidate_workers == 1
     assert "--candidate-workers" in parser.format_help()
     for value in ("0", "2"):
@@ -93,6 +97,57 @@ def test_worker_clis_are_documented_and_bounded() -> None:
     for value in ("0", "5"):
         with pytest.raises(SystemExit):
             parser.parse_args(["--candidate-workers", value])
+
+
+def test_reusable_search_requires_matching_complete_candidate_identity(tmp_path) -> None:
+    signature = {
+        "race_count": 10,
+        "race_universe_sha256": "a" * 64,
+        "as_of_date": "2026-07-29",
+        "train_end": 6,
+        "selection_end": 8,
+        "n_features": 8192,
+        "feature_variants": [["full", []]],
+        "targets": ["winner"],
+        "alphas": [0.0001],
+    }
+    row = {
+        "feature_variant": "full",
+        "drop_feature_groups": [],
+        "target": "winner",
+        "alpha": 0.0001,
+        "entry_log_loss": 0.33,
+        "ranking_log_loss": 1.3,
+        "winner_top1_accuracy": 0.56,
+        "trifecta_top5_hit_rate": 0.30,
+        "training_history": [],
+    }
+    payload = {
+        "model": "pastlog_listwise_feature_teacher_search_v1",
+        "races": 10,
+        "race_universe_sha256": "a" * 64,
+        "as_of_date": "2026-07-29",
+        "train_races": 6,
+        "selection_races": 2,
+        "holdout_races": 2,
+        "n_features": 8192,
+        "feature_schema_version": feature_search_module.FEATURE_SCHEMA_VERSION,
+        "feature_variants": ["full"],
+        "teacher_targets": ["winner"],
+        "loss_blend": None,
+        "alphas": [0.0001],
+        "search_results": [row],
+    }
+    path = tmp_path / "completed.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    completed = _load_reusable_search_results(path, signature)
+    assert completed[_candidate_key("full", "winner", 0.0001)] == row
+
+    payload["race_universe_sha256"] = "b" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="race_universe_sha256"):
+        _load_reusable_search_results(path, signature)
 
 
 def test_completed_candidates_are_restored_to_canonical_search_order() -> None:
