@@ -2727,6 +2727,7 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
         )
         completed_folds, expected_folds = _remote_job_fold_progress(job)
         rows.append({
+            "pid": job.get("pid"),
             "name": job.get("name"),
             "milestone": job.get("milestone"),
             "kind": job.get("kind"),
@@ -2757,6 +2758,32 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
             "error": (job.get("log_tail") or [])[-1] if job.get("status") == "失敗" else None,
         })
     return rows
+
+
+_ROADMAP_REMOTE_EVALUATION_METADATA = (
+    "generated_at",
+    "host",
+    "workdir",
+    "status",
+    "local_results",
+    "note",
+    "error",
+)
+
+
+def _roadmap_remote_evaluation_summary(
+    remote_evaluations: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep the roadmap payload bounded to fields rendered by its table."""
+    if not isinstance(remote_evaluations, dict):
+        return {"jobs": []}
+    summary = {
+        key: remote_evaluations.get(key)
+        for key in _ROADMAP_REMOTE_EVALUATION_METADATA
+        if key in remote_evaluations
+    }
+    summary["jobs"] = _remote_evaluation_job_summaries(remote_evaluations)
+    return summary
 
 
 def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
@@ -5815,6 +5842,9 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     teleboat = teleboat_status(db_path)
     milestones = _roadmap_milestones(progress, processes, remote_evaluations, teleboat)
     tickets = _roadmap_work_tickets(db_path)
+    public_remote_evaluations = _roadmap_remote_evaluation_summary(
+        remote_evaluations
+    )
 
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
@@ -5827,7 +5857,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         "progress": progress,
         "summary": summary,
         "processes": processes,
-        "remote_evaluations": remote_evaluations,
+        "remote_evaluations": public_remote_evaluations,
         "teleboat": teleboat,
         "quality_gates": _quality_gates(db_path.parent / "models", remote_evaluations),
         "model_artifacts": _latest_model_artifacts(db_path.parent / "models"),
