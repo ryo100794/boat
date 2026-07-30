@@ -48,6 +48,17 @@ def test_walk_forward_executes_newton_residual_branch(monkeypatch) -> None:
 
     def simulated(races, **kwargs):
         race_date = races[0]["race_date"]
+        daily = [
+            {
+                "race_date": race_date,
+                "tickets": 0,
+                "hits": 0,
+                "hit_tickets": 0,
+                "stake_yen": 0,
+                "return_yen": 0,
+                "profit_yen": 0,
+            }
+        ]
         return {
             "evaluated_races": len(races),
             "race_days": 1,
@@ -60,17 +71,8 @@ def test_walk_forward_executes_newton_residual_branch(monkeypatch) -> None:
             "roi": 0.0,
             "max_drawdown_yen": 0,
             "winning_days": 0,
-            "daily": [
-                {
-                    "race_date": race_date,
-                    "tickets": 0,
-                    "hits": 0,
-                    "hit_tickets": 0,
-                    "stake_yen": 0,
-                    "return_yen": 0,
-                    "profit_yen": 0,
-                }
-            ],
+            "daily": daily,
+            "chronological_bankroll": {"daily": list(daily)},
         }
 
     monkeypatch.setattr(market_calibration, "simulate_policy", simulated)
