@@ -4314,7 +4314,7 @@ DEPLOYMENT_DAILY_MARKET_PRIORITIES = {
     "odds_path_role_integrated_registered_band_lcb_v14": 103,
     "odds_path_role_integrated_fixed_band_passthrough_v16": 102,
     "odds_path_observed_closing_return_schedule_quota_v18": 101,
-    "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19": 100,
+    "odds_path_observed_closing_return_schedule_quota_dual_head_v20": 100,
 }
 MARKET_EVALUATION_SOURCES = (
     (
@@ -4593,9 +4593,6 @@ def seed_daily_market_jobs(
                 else 87
                 if calibrator_strategy
                 == "odds_path_role_integrated_registered_band_lcb_v14"
-                else 97
-                if calibrator_strategy
-                == "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
                 else 96
             ),
             max_attempts=2,
