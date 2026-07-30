@@ -41,6 +41,17 @@ def _races(days: int) -> list[dict[str, Any]]:
 
 def _empty_bankroll(races: list[dict[str, Any]]) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in races})
+    daily = [
+        {
+            "race_date": race_date,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+        }
+        for race_date in dates
+    ]
     return {
         "tickets": 0,
         "hit_tickets": 0,
@@ -48,17 +59,16 @@ def _empty_bankroll(races: list[dict[str, Any]]) -> dict[str, Any]:
         "return_yen": 0,
         "profit_yen": 0,
         "roi": None,
-        "daily": [
-            {
-                "race_date": race_date,
-                "tickets": 0,
-                "hit_tickets": 0,
-                "stake_yen": 0,
-                "return_yen": 0,
-                "profit_yen": 0,
-            }
-            for race_date in dates
-        ],
+        "daily": daily,
+        "chronological_bankroll": {
+            "tickets": 0,
+            "hit_tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": None,
+            "daily": deepcopy(daily),
+        },
     }
 
 

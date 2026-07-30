@@ -26,7 +26,7 @@ POLICY = {
 
 
 def _candidate(race_id: str, combination: str, probability: float, odds: float, *, hit: bool = False):
-    return {
+    candidate = {
         "race_id": race_id,
         "combination": combination,
         "probability": probability,
@@ -35,6 +35,9 @@ def _candidate(race_id: str, combination: str, probability: float, odds: float, 
         "actual_payout_yen": int(odds * 100),
         "hit": hit,
     }
+    if hit:
+        candidate["actual_combination"] = combination
+    return candidate
 
 
 def test_candidate_ev_calibration_reports_realized_flat_returns() -> None:
