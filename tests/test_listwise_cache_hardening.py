@@ -18,6 +18,8 @@ from boatrace_ai.hashed_feature_dataset import (
 )
 from boatrace_ai.listwise import feature_search
 from boatrace_ai.listwise.feature_search import (
+    SOURCE_DATA_SNAPSHOT_VERSION,
+    _canonical_sha256,
     _checkpoint_signature,
     _load_checkpoint,
     cleanup_selected_cache_family,
@@ -117,13 +119,24 @@ def test_checkpoint_requires_exact_signature(tmp_path: Path) -> None:
         epochs=1,
         learning_rate=0.02,
     )
+    race_keys = _race_keys()
+    data_snapshot = {
+        "snapshot_version": SOURCE_DATA_SNAPSHOT_VERSION,
+        "race_count": len(race_keys),
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_watermark_sha256": "a" * 64,
+        "trifecta_payouts_sha256": "b" * 64,
+        "selected_cache_manifest_sha256": "c" * 64,
+    }
+    data_snapshot["snapshot_sha256"] = _canonical_sha256(data_snapshot)
     signature = _checkpoint_signature(
         args=args,
-        race_keys=_race_keys(),
+        race_keys=race_keys,
         train_end=1,
         selection_end=2,
         targets=("winner",),
         alphas=(0.1,),
+        data_snapshot=data_snapshot,
     )
     row = {
         "feature_variant": "full",
