@@ -135,7 +135,7 @@ def test_simultaneous_t5_targets_start_in_parallel_before_any_fetch_finishes(
         max_workers=len(simultaneous),
     )
 
-    assert worker.capture_due_once(now=t5_at - timedelta(seconds=30)) == 4
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=10)) == 4
     assert sorted(started) == [1, 2, 3, 4]
     assert spool.status()["pending"] == 4
 
@@ -165,7 +165,7 @@ def test_t5_retry_is_per_target_and_does_not_block_other_simultaneous_races(
         attempts_per_target=2,
     )
 
-    assert worker.capture_due_once(now=t5_at - timedelta(seconds=20)) == 2
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=10)) == 2
     assert attempts == {1: 2, 2: 1}
     assert worker.status()["retry_attempts"] == 1
 
@@ -185,6 +185,47 @@ def test_post_t300_response_is_rejected_and_never_spooled_as_t300(tmp_path) -> N
     assert worker.capture_due_once(now=t5_at - timedelta(seconds=1)) == 0
     assert spool.status()["pending"] == 0
     assert worker.status()["late_rejected"] == 1
+
+
+def test_t300_worker_waits_for_final_capture_window_and_records_provenance(
+    tmp_path,
+) -> None:
+    spool = T5Spool(tmp_path / "spool")
+    t5_at = datetime(2026, 7, 29, 5, 31, tzinfo=timezone.utc)
+    spool.save_schedule(
+        RACE_DATE,
+        _schedule(t5_at.astimezone(JST) + timedelta(minutes=10), count=1),
+    )
+    fetch_times = []
+
+    def fetch(**_kwargs):
+        fetch_times.append(t5_at - timedelta(seconds=8))
+        return _capture(1, fetch_times[-1])
+
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=fetch,
+        capture_lead_seconds=15,
+    )
+
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=20)) == 0
+    assert fetch_times == []
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=10)) == 1
+
+    pending, _ = spool._read_pending_locked(repair_tail=True)
+    event = pending[0]
+    assert datetime.fromisoformat(event["target_t300_at"]) == t5_at
+    assert event["checkpoint_age_before_target_seconds"] == 8.0
+    assert event["parsed"]["_collection"] == {
+        "observation_label": "t300",
+        "target_offset_seconds": 300,
+        "captured_age_seconds": 308.0,
+        "source_update_time": event["source_update_time"],
+        "event_id": event["event_id"],
+        "target_t300_at": t5_at.astimezone(JST).isoformat(),
+        "checkpoint_age_before_target_seconds": 8.0,
+    }
 
 
 def test_t5_worker_starts_before_storage_init_and_survives_retry(monkeypatch) -> None:

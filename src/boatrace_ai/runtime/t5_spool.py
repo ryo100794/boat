@@ -21,6 +21,7 @@ from .time_semantics import estimated_deadline_from_start, stored_start_time
 
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 SCHEMA_VERSION = 1
+DEFAULT_CAPTURE_LEAD_SECONDS = 15.0
 
 
 class SpoolCapacityError(RuntimeError):
@@ -437,17 +438,21 @@ class T5DurabilityWorker:
         poll_seconds: float = 2.0,
         max_workers: int = 24,
         attempts_per_target: int = 2,
+        capture_lead_seconds: float = DEFAULT_CAPTURE_LEAD_SECONDS,
     ) -> None:
         if max_workers <= 0:
             raise ValueError("T-5 max_workers must be positive")
         if attempts_per_target <= 0:
             raise ValueError("T-5 attempts_per_target must be positive")
+        if capture_lead_seconds <= 0 or capture_lead_seconds > 60:
+            raise ValueError("T-5 capture_lead_seconds must be in (0, 60]")
         self.spool = spool
         self.date_provider = date_provider
         self.fetch = fetch
         self.poll_seconds = poll_seconds
         self.max_workers = max_workers
         self.attempts_per_target = attempts_per_target
+        self.capture_lead_seconds = float(capture_lead_seconds)
         self._captured: set[str] = set()
         self._capture_lock = threading.Lock()
         self._stop = threading.Event()
@@ -489,7 +494,10 @@ class T5DurabilityWorker:
             seconds = (t5_at - now).total_seconds()
             race_key = str(row["race_id"])
             capture_key = f"{race_key}:{t5_at.isoformat()}"
-            if capture_key in self._captured or not 0.0 <= seconds <= 60.0:
+            if (
+                capture_key in self._captured
+                or not 0.0 <= seconds <= self.capture_lead_seconds
+            ):
                 continue
             if any(event_id.startswith(f"{race_key}-t5-") for event_id in pending):
                 self._captured.add(capture_key)
@@ -524,6 +532,7 @@ class T5DurabilityWorker:
                 if not self._is_strict_t5_capture(event, t5_at=t5_at):
                     self.counters["late_rejected"] += 1
                     continue
+                self._stamp_t300_provenance(event, t5_at=t5_at)
                 try:
                     self.spool.enqueue(event, raw_payload=raw_payload)
                 except SpoolCapacityError:
@@ -570,6 +579,31 @@ class T5DurabilityWorker:
             t5_at.astimezone(timezone.utc) - captured_at.astimezone(timezone.utc)
         ).total_seconds()
         return 0.0 <= age_seconds <= 60.0
+
+    @staticmethod
+    def _stamp_t300_provenance(
+        event: dict[str, Any], *, t5_at: datetime
+    ) -> None:
+        captured_at = datetime.fromisoformat(str(event["captured_at"]))
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        age_before_target = (
+            t5_at.astimezone(timezone.utc) - captured_at.astimezone(timezone.utc)
+        ).total_seconds()
+        checkpoint_offset = int(MODEL_DECISION_LEAD_MINUTES * 60)
+        event["target_t300_at"] = t5_at.isoformat()
+        event["checkpoint_age_before_target_seconds"] = age_before_target
+        parsed = dict(event.get("parsed") or {})
+        parsed["_collection"] = {
+            "observation_label": "t300",
+            "target_offset_seconds": checkpoint_offset,
+            "captured_age_seconds": checkpoint_offset + age_before_target,
+            "source_update_time": event.get("source_update_time"),
+            "event_id": event.get("event_id"),
+            "target_t300_at": t5_at.isoformat(),
+            "checkpoint_age_before_target_seconds": age_before_target,
+        }
+        event["parsed"] = parsed
 
     def status(self) -> dict[str, Any]:
         return {**self.spool.status(), **self.counters}

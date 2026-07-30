@@ -16,6 +16,7 @@ import joblib
 from ..db import connection
 from ..discrete_log_allocation import allocate_discrete_log_day
 from ..feature_tuning import build_race_features
+from ..features import stored_jst_timestamp_sql
 from ..listwise.closing_envelope_conformal_v15 import (
     METHOD as V15_CLOSING_ENVELOPE_METHOD,
     apply_closing_envelope_haircut_v15,
@@ -364,8 +365,9 @@ class PostgresShadowStore:
         )
 
     def latest_complete_snapshot(self, race: RaceWindow) -> T300Snapshot | None:
+        captured_at = stored_jst_timestamp_sql(self.conn, "candidate.captured_at")
         rows = self.conn.execute(
-            """
+            f"""
             SELECT os.snapshot_id, os.captured_at, os.source_update_time,
                    os.raw_json, ot.combination, ot.odds
             FROM odds_snapshots os
@@ -375,11 +377,11 @@ class PostgresShadowStore:
               FROM odds_snapshots candidate
               JOIN odds_trifecta value ON value.snapshot_id = candidate.snapshot_id
               WHERE candidate.race_id = ? AND candidate.bet_type = 'trifecta'
-                AND candidate.parser_version = ? AND candidate.captured_at <= ?
+                AND candidate.parser_version = ? AND {captured_at} <= CAST(? AS timestamptz)
                 AND value.odds IS NOT NULL AND value.odds > 0
               GROUP BY candidate.snapshot_id, candidate.captured_at
               HAVING COUNT(*) = 120 AND COUNT(DISTINCT value.combination) = 120
-              ORDER BY candidate.captured_at DESC, candidate.snapshot_id DESC LIMIT 1
+              ORDER BY {captured_at} DESC, candidate.snapshot_id DESC LIMIT 1
             )
             ORDER BY ot.combination
             """,
