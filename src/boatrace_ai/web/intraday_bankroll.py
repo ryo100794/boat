@@ -15,6 +15,7 @@ from ..odds_quality import (
     TRIFECTA_PARSER_VERSION,
     plausible_trifecta_odds,
 )
+from .v21_historical_backtest import load_dashboard_payload
 
 
 JST = timezone(timedelta(hours=9))
@@ -332,6 +333,7 @@ def _active_v21_model(model_dir: Path) -> dict[str, Any] | None:
             "model_file": bundle.name,
             "strategy": strategy,
             "runtime_kind": "t300_shadow",
+            "model_dir": str(model_dir),
             "generated_at": generated_at.isoformat(timespec="seconds"),
             "modified_at": generated_at.isoformat(timespec="seconds"),
             "real_betting_enabled": False,
@@ -367,6 +369,18 @@ def _shadow_day_bankroll_simulation(
         """,
         (race_date, PRIMARY_MODEL_ID),
     ).fetchall()
+    if not rows:
+        model_dir = Path(str(selected_model.get("model_dir") or "data/models"))
+        historical = load_dashboard_payload(
+            model_dir.parent / "runtime" / "v21-backtests" / f"{race_date}.json",
+            race_date=race_date,
+            models=models,
+            selected_model=selected_model,
+            schedule=schedule,
+            now_jst=now_jst,
+        )
+        if historical is not None:
+            return historical
     bankroll = starting_bankroll_yen
     peak = bankroll
     max_drawdown = total_stake = total_return = tickets = hits = 0
