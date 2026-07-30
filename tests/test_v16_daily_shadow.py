@@ -283,6 +283,11 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
     base.write_bytes(b"base")
     bundles = _bundle_rows(tmp_path)
     active_jobs = _jobs(tmp_path)
+    bundles["v18"] = {
+        "path": str(tmp_path / "v18.joblib"),
+        "manifest": {"output": {"bundle_sha256": "e" * 64}},
+    }
+    active_jobs["v18"] = _job(tmp_path / "v18.json", 8191, "v18")
     now = datetime(2026, 7, 30, 8, tzinfo=JST)
     _legacy_active(
         state_root,
@@ -302,7 +307,7 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         latest_calls.append(family)
         if family in ("v12", "v14"):
             return _job(tmp_path / f"new-{family}.json", 1000, family)
-        return active_jobs["v16"]
+        return active_jobs[family]
 
     monkeypatch.setattr(updater, "find_completed_job", fixed_job)
     monkeypatch.setattr(updater, "find_latest_completed_job", latest_job)
@@ -315,6 +320,9 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
     )
     monkeypatch.setattr(
         updater, "build_v16_composite", lambda *args, **kwargs: bundles["v16"]
+    )
+    monkeypatch.setattr(
+        updater, "build_v18_composite", lambda *args, **kwargs: bundles["v18"]
     )
     monkeypatch.setattr(
         updater, "first_race_start", lambda *args: now + timedelta(hours=1)
@@ -330,10 +338,10 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         now=now,
     )
 
-    assert result["status"] == "additive_v16_extended"
+    assert result["status"] == "additive_v16_v18_extended"
     assert fixed_calls == [("v12", 12), ("v14", 14)]
-    assert latest_calls == ["v16"]
-    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16}
+    assert latest_calls == ["v16", "v18"]
+    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16, "v18": 8191}
 
 
 def test_additive_extension_rejects_existing_identity_change_and_post_start(

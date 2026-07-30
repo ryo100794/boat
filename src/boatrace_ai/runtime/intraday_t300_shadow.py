@@ -13,6 +13,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import joblib
 
+from ..adaptive_allocation import allocate_adaptive_day
+
 from ..db import connection
 from ..discrete_log_allocation import allocate_discrete_log_day
 from ..feature_tuning import build_race_features
@@ -35,9 +37,11 @@ from ..listwise.edge_conditional_probability_lcb_v14 import (
 from ..listwise.live_shadow import historical_state, load_date_races
 from ..listwise.market_calibration import (
     artifact_model_probabilities,
+    blend_probabilities,
     normalized_market_probabilities,
     normalize_odds_checkpoint,
 )
+from ..listwise.odds_path_operational import attach_odds_path_model
 from ..listwise.odds_path_conservative_v7 import (
     MAX_DAILY_EXPOSURE_FRACTION,
     MAX_TICKETS_PER_RACE,
@@ -1202,6 +1206,262 @@ class V16FixedBandModelAdapter(V12RoleModelAdapter):
         return ShadowDecision(probabilities, closing, selected, reason, diagnostics)
 
 
+class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
+    """Run the fixed job-8191 V18 policy prospectively at T300."""
+
+    strategy_name = "v18_schedule_quota_t300"
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        bundle_path: Path,
+        base_model_path: Path,
+    ) -> None:
+        super().__init__(
+            model_key=model_key,
+            bundle_path=bundle_path,
+            base_model_path=base_model_path,
+        )
+        if self._bundle.get("calibrator_strategy") != (
+            "odds_path_observed_closing_return_schedule_quota_v18"
+        ):
+            raise ValueError("V18 deployment has an unexpected calibrator strategy")
+        if (
+            self._bundle.get("deployment_mode") != "shadow_only"
+            or self._bundle.get("real_betting_enabled") is not False
+            or float(self._bundle.get("daily_stake_limit_fraction", 0.0)) != 1.0
+        ):
+            raise ValueError("V18 deployment must remain 10000-yen shadow-only")
+        self._calibrator = self._component("calibrator")
+        self._operational_model = self._component("operational_model")
+        self._policy = self._component("candidate_policy")
+        self._formal_selection = self._component("selected_policy")
+        control = self._policy.get("v18_ticket_control")
+        if (
+            self._calibrator.get("converged") is not True
+            or self._operational_model.get("model_type")
+            != "odds_path_observed_closing_return_v4"
+            or not isinstance(control, Mapping)
+            or control.get("method")
+            != "strict_prior_daily_ticket_lower_quantile"
+            or int(control.get("learned_daily_ticket_limit") or 0) <= 0
+            or int(control.get("stake_granularity_yen") or 0) != 100
+            or control.get("result_or_payout_fields_used") is not False
+            or self._formal_selection.get("no_bet") is not True
+        ):
+            raise ValueError("V18 fixed policy artifacts are unsafe or inconsistent")
+        self._ticket_limit = int(control["learned_daily_ticket_limit"])
+
+    def _runtime_limits(
+        self, conn: Any, race: RaceWindow, *, bankroll_yen: int
+    ) -> dict[str, int]:
+        schedule = conn.execute(
+            """
+            SELECT r.race_id, r.deadline_at
+            FROM races r
+            WHERE r.race_date = ? AND r.deadline_at IS NOT NULL
+              AND (SELECT COUNT(DISTINCT e.lane) FROM entries e
+                   WHERE e.race_id = r.race_id) = 6
+            ORDER BY r.deadline_at, r.jcd, r.rno, r.race_id
+            """,
+            (race.race_date,),
+        ).fetchall()
+        schedule_ids = [str(row["race_id"]) for row in schedule]
+        if race.race_id not in schedule_ids:
+            raise ValueError("V18 race is missing from known daily schedule")
+        elapsed = schedule_ids.index(race.race_id) + 1
+        quota = self._ticket_limit * elapsed // len(schedule_ids)
+        rows = conn.execute(
+            """
+            SELECT d.selected_candidates, d.total_stake_yen, s.profit_yen
+            FROM intraday_t300_shadow_decisions d
+            LEFT JOIN intraday_t300_shadow_settlements s
+              ON s.decision_id = d.decision_id
+            WHERE d.race_date = ? AND d.model_key = ?
+            """,
+            (race.race_date, self.identity.model_key),
+        ).fetchall()
+        used_tickets = gross_stake_yen = realized_profit_yen = 0
+        for row in rows:
+            selected = row["selected_candidates"] or []
+            if isinstance(selected, str):
+                selected = json.loads(selected)
+            used_tickets += len(selected)
+            gross_stake_yen += int(row["total_stake_yen"] or 0)
+            if row["profit_yen"] is not None:
+                realized_profit_yen += int(row["profit_yen"])
+        gross_allowance_yen = STARTING_BANKROLL_YEN + max(0, realized_profit_yen)
+        remaining_gross_yen = max(0, gross_allowance_yen - gross_stake_yen)
+        return {
+            "schedule_races_elapsed": elapsed,
+            "schedule_races_total": len(schedule_ids),
+            "cumulative_ticket_quota": quota,
+            "used_tickets": used_tickets,
+            "remaining_ticket_quota": max(0, quota - used_tickets),
+            "gross_stake_yen": gross_stake_yen,
+            "realized_cumulative_profit_yen": realized_profit_yen,
+            "gross_stake_allowance_yen": gross_allowance_yen,
+            "remaining_gross_stake_allowance_yen": remaining_gross_yen,
+            "allocatable_bankroll_yen": min(bankroll_yen, remaining_gross_yen),
+        }
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        trained = str(self._bundle.get("trained_through_date") or "")
+        if trained and trained >= race.race_date:
+            raise ValueError("V18 artifacts are not strictly prior to race date")
+        limits = self._runtime_limits(conn, race, bankroll_yen=bankroll_yen)
+        if limits["remaining_ticket_quota"] <= 0:
+            return _no_bet(
+                "v18_schedule_ticket_quota_not_released",
+                diagnostics={"v18_schedule_quota": limits},
+            )
+        allocatable = limits["allocatable_bankroll_yen"]
+        if allocatable < STAKE_GRANULARITY_YEN:
+            return _no_bet(
+                "v18_daily_gross_stake_allowance_exhausted",
+                diagnostics={"v18_schedule_quota": limits},
+            )
+        point = normalize_odds_checkpoint(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "source_update_time": snapshot.source_update_time,
+                "raw_json": snapshot.raw_json,
+                "betting_deadline_at": race.betting_deadline_at.isoformat(),
+                "odds": snapshot.odds,
+            },
+            target_offset_seconds=T300_OFFSET_SECONDS,
+        )
+        if point is None:
+            return _no_bet("inconsistent_t300_snapshot")
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return _no_bet("inconsistent_probability_combination_set")
+        model_race = {
+            "race_id": race.race_id,
+            "race_date": race.race_date,
+            "jcd": race.jcd,
+            "rno": race.rno,
+            "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base,
+            "market_probabilities": market,
+            "odds": dict(snapshot.odds),
+            "odds_checkpoints": {"300": point},
+            "odds_path": [{
+                "minutes_before_decision": 0.0,
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "market_probabilities": market,
+            }],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_model(
+            [model_race], dict(self._operational_model)
+        )[0]
+        probabilities = blend_probabilities(
+            transformed["model_probabilities"],
+            market,
+            model_weight=float(self._calibrator["model_weight"]),
+            temperature=float(self._calibrator["temperature"]),
+        )
+        if (
+            len(probabilities) != 120
+            or set(probabilities) != set(snapshot.odds)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)
+        ):
+            return _no_bet("invalid_v18_probability_output")
+        raw_candidates = []
+        multipliers = transformed.get("historical_return_multipliers") or {}
+        for combination in sorted(probabilities):
+            probability = float(probabilities[combination])
+            market_probability = float(market[combination])
+            odds = float(snapshot.odds[combination])
+            multiplier = float(multipliers.get(combination, 1.0))
+            estimated_ev = probability * odds * multiplier
+            ratio = probability / max(1e-12, market_probability)
+            if estimated_ev < float(self._policy["ev_threshold"]):
+                continue
+            if self._policy.get("max_estimated_ev") is not None and estimated_ev > float(
+                self._policy["max_estimated_ev"]
+            ):
+                continue
+            if self._policy.get("max_odds") is not None and odds > float(self._policy["max_odds"]):
+                continue
+            if ratio < float(self._policy["min_model_market_ratio"]):
+                continue
+            raw_candidates.append({
+                "race_id": race.race_id,
+                "race_date": race.race_date,
+                "jcd": race.jcd,
+                "rno": race.rno,
+                "combination": combination,
+                "probability": probability,
+                "market_probability": market_probability,
+                "model_probability": float(transformed["model_probabilities"][combination]),
+                "estimated_odds": odds,
+                "estimated_ev": estimated_ev,
+                "historical_return_multiplier": multiplier,
+                "real_odds_snapshot_id": snapshot.snapshot_id,
+                "real_odds_captured_at": snapshot.captured_at.isoformat(),
+                "real_odds_combinations": len(snapshot.odds),
+                "odds_source": "real_t300_job8191_v18",
+            })
+        raw_candidates.sort(
+            key=lambda row: (-float(row["estimated_ev"]), -float(row["probability"]), str(row["combination"]))
+        )
+        candidates = raw_candidates[: int(self._policy["max_tickets_per_race"])]
+        allocated = allocate_adaptive_day(
+            race.race_date,
+            candidates,
+            {race.race_id},
+            daily_budget_yen=allocatable,
+            fractional_kelly=1.0,
+            max_daily_exposure_fraction=0.30,
+            min_daily_exposure_fraction=0.0,
+            race_cap_fraction=0.05,
+            ticket_cap_fraction=0.02,
+            max_daily_tickets=limits["remaining_ticket_quota"],
+            allocation_mode="kelly_floor",
+            stake_granularity_yen=STAKE_GRANULARITY_YEN,
+            min_stake_yen=STAKE_GRANULARITY_YEN,
+        )
+        selected = tuple(
+            {key: value for key, value in row.items() if key not in {"hit", "return_yen"}}
+            for row in allocated["selected_sample"]
+        )
+        diagnostics = {
+            "v18_schedule_quota": {
+                **limits,
+                "checkpoint": "t300",
+                "source_snapshot_id": snapshot.snapshot_id,
+                "learned_daily_ticket_limit": self._ticket_limit,
+                "candidate_policy": str(self._policy.get("name") or ""),
+                "formal_selected_policy": str(self._formal_selection.get("name") or "no_bet"),
+                "raw_candidates": len(raw_candidates),
+                "allocation_candidates": int(allocated["allocation_candidate_tickets"]),
+                "decision_features": "t300_or_earlier",
+                "settlement_fields_used_for_capital_only": True,
+                "uses_result_as_model_feature": False,
+                "uses_payout_as_model_feature": False,
+                "real_betting_enabled": False,
+            }
+        }
+        reason = None if selected else _zero_reason(
+            conformal_ready=True,
+            total_races=1,
+            raw_candidates=len(raw_candidates),
+            guarded_candidates=len(candidates),
+            allocation_candidates=int(allocated["allocation_candidate_tickets"]),
+        )
+        return ShadowDecision(
+            probabilities, dict(snapshot.odds), selected, reason, diagnostics
+        )
+
+
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
     "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
         model_key=key, bundle_path=bundle, base_model_path=base
@@ -1213,6 +1473,11 @@ ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = 
     ),
     "v16_fixed_band_t300": lambda key, bundle, base: (
         V16FixedBandModelAdapter(
+            model_key=key, bundle_path=bundle, base_model_path=base
+        )
+    ),
+    "v18_schedule_quota_t300": lambda key, bundle, base: (
+        V18ScheduleQuotaModelAdapter(
             model_key=key, bundle_path=bundle, base_model_path=base
         )
     ),
