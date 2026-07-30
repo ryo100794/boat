@@ -19,10 +19,12 @@ def _object(value: Any) -> dict[str, Any]:
     return {}
 
 
-def queue_model_roadmap_status(db_path: Path) -> dict[str, Any]:
+def queue_model_roadmap_status(
+    db_path: Path, *, connector: Any = None
+) -> dict[str, Any]:
     """Read only recent model/collection jobs needed by the roadmap header."""
     try:
-        with connect(db_path) as conn:
+        with (connector or connect)(db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT job_id, task_type, model_key, status, parameters,

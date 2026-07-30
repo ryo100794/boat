@@ -5830,7 +5830,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
-    progress["queue_model_status"] = queue_model_roadmap_status(db_path)
+    progress["queue_model_status"] = queue_model_roadmap_status(db_path, connector=connect)
 
     summary: dict[str, Any]
     try:
@@ -5890,7 +5890,7 @@ def roadmap_milestones_status(
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
-    progress["queue_model_status"] = queue_model_roadmap_status(db_path)
+    progress["queue_model_status"] = queue_model_roadmap_status(db_path, connector=connect)
     remote_evaluations = _read_remote_eval_status(
         db_path.parent / REMOTE_EVAL_STATUS_NAME
     )
