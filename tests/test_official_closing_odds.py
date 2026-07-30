@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from boatrace_ai.archive_closing_odds import OFFICIAL_SOURCE_KEY, SOURCE_KEY, pending_races
 from boatrace_ai.db import connection, init_db, upsert_race
-from boatrace_ai.evaluation_queue import build_command
+from boatrace_ai.evaluation_queue import build_command, summarize_result
 from boatrace_ai.official_closing_odds import (
     backfill_official_closing_odds,
     official_closing_url,
@@ -122,3 +122,21 @@ def test_archive_queue_selects_official_backfill_module(tmp_path) -> None:
         db="postgresql://test",
     )
     assert command[1:3] == ["-m", "boatrace_ai.official_closing_odds"]
+
+
+def test_official_collection_counts_are_preserved_in_job_summary() -> None:
+    summary = summarize_result(
+        {
+            "status": "completed",
+            "source_role": "primary_official_historical_closing",
+            "source_key": OFFICIAL_SOURCE_KEY,
+            "targets": 20,
+            "stored": 20,
+            "invalid": 0,
+            "fetch_failed": 0,
+            "remaining": 116,
+        }
+    )
+    assert summary["archive_stored"] == 20
+    assert summary["archive_remaining"] == 116
+    assert summary["archive_source_key"] == OFFICIAL_SOURCE_KEY

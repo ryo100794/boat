@@ -2910,6 +2910,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("source_role") in {
         "secondary_archive_candidate_unverified",
         "secondary_archive_research_only",
+        "primary_official_historical_closing",
     }:
         for key in (
             "targets", "stored", "not_found", "invalid", "fetch_failed",
