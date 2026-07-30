@@ -21,6 +21,10 @@ from urllib.parse import parse_qs, urlparse
 
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
+from ..evaluation_probability_summary import (
+    canonicalize_probability_metrics,
+    market_comparison_fields,
+)
 from ..evaluation_result_summary import canonicalize_primary_bankroll
 from ..official import race_page_url, ymd
 from ..odds_quality import TRIFECTA_PARSER_VERSION
@@ -2042,6 +2046,7 @@ def _odds_path_model_tracks(
                 "trifecta_log_loss": job.get("trifecta_log_loss"),
                 "winner_top1_accuracy": job.get("winner_top1_accuracy"),
                 "trifecta_top5_hit_rate": job.get("trifecta_top5_hit_rate"),
+                **_probability_report_fields(job),
                 "closing_odds_log_mae": job.get("closing_odds_log_mae"),
                 "closing_odds_rank_correlation": job.get(
                     "closing_odds_rank_correlation"
@@ -2274,50 +2279,7 @@ def _listwise_model_tracks(
 
 
 def _market_comparison_summary(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
-    top5 = payload.get("top5_hit_difference_calibrated_minus_market") or {}
-    cluster_loss = payload.get(
-        "day_cluster_log_loss_difference_calibrated_minus_market"
-    ) or {}
-    cluster_top5 = payload.get(
-        "day_cluster_top5_hit_difference_calibrated_minus_market"
-    ) or {}
-    if not isinstance(loss, dict) or not loss.get("observations"):
-        return {}
-    return {
-        "market_comparison_races": loss.get("observations"),
-        "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
-        "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
-        "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
-        "market_improvement_probability": _float_or_none(
-            loss.get("probability_less_than_zero")
-        ),
-        "market_top5_delta": _float_or_none(top5.get("mean_difference")),
-        "market_top5_delta_ci95_lower": _float_or_none(top5.get("ci95_lower")),
-        "market_top5_delta_ci95_upper": _float_or_none(top5.get("ci95_upper")),
-        "market_comparison_days": cluster_loss.get("clusters"),
-        "market_day_log_loss_delta_ci95_lower": _float_or_none(
-            cluster_loss.get("ci95_lower")
-        ),
-        "market_day_log_loss_delta_ci95_upper": _float_or_none(
-            cluster_loss.get("ci95_upper")
-        ),
-        "market_day_top5_delta_ci95_lower": _float_or_none(
-            cluster_top5.get("ci95_lower")
-        ),
-        "market_day_top5_delta_ci95_upper": _float_or_none(
-            cluster_top5.get("ci95_upper")
-        ),
-        "market_race_confidence_pass": bool(
-            payload.get("race_level_confidence_pass")
-        ),
-        "market_day_confidence_pass": bool(
-            payload.get("day_cluster_confidence_pass")
-        ),
-        "market_confidence_pass": bool(payload.get("confidence_pass")),
-    }
+    return market_comparison_fields(payload)
 
 
 def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
@@ -2635,13 +2597,75 @@ def _nested_checkpoint_fold_progress(
     return len(completed)
 
 
+_PROBABILITY_REPORT_NUMERIC_FIELDS = (
+    "winner_log_loss",
+    "winner_top1_accuracy",
+    "calibrated_trifecta_log_loss",
+    "trifecta_top5_hit_rate",
+    "model_winner_log_loss",
+    "model_winner_top1_accuracy",
+    "model_trifecta_log_loss",
+    "model_trifecta_top5_hit_rate",
+    "market_winner_log_loss",
+    "market_winner_top1_accuracy",
+    "market_trifecta_log_loss",
+    "market_trifecta_top5_hit_rate",
+    "calibrated_winner_log_loss",
+    "calibrated_winner_top1_accuracy",
+    "calibrated_trifecta_top5_hit_rate",
+    "market_log_loss_delta",
+    "market_log_loss_delta_ci95_lower",
+    "market_log_loss_delta_ci95_upper",
+    "market_improvement_probability",
+    "market_top5_delta",
+    "market_top5_delta_ci95_lower",
+    "market_top5_delta_ci95_upper",
+    "market_day_log_loss_delta_ci95_lower",
+    "market_day_log_loss_delta_ci95_upper",
+    "market_day_top5_delta_ci95_lower",
+    "market_day_top5_delta_ci95_upper",
+)
+
+
+def _canonical_report_metrics(values: dict[str, Any]) -> dict[str, Any]:
+    bankroll = canonicalize_primary_bankroll(values)
+    return canonicalize_probability_metrics(bankroll)
+
+
+def _probability_report_fields(metrics: dict[str, Any]) -> dict[str, Any]:
+    canonical = _canonical_report_metrics(metrics)
+    result = {
+        key: _float_or_none(canonical.get(key))
+        for key in _PROBABILITY_REPORT_NUMERIC_FIELDS
+    }
+    result.update({
+        "market_comparison_races": canonical.get("market_comparison_races"),
+        "market_comparison_days": canonical.get("market_comparison_days"),
+        "market_race_confidence_pass": canonical.get(
+            "market_race_confidence_pass"
+        ),
+        "market_day_confidence_pass": canonical.get(
+            "market_day_confidence_pass"
+        ),
+        "market_confidence_pass": canonical.get("market_confidence_pass"),
+    })
+    return result
+
+
 def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
     for job in jobs or []:
         result = job.get("result") or {}
-        metrics = canonicalize_primary_bankroll(
-            {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
+        metrics = _canonical_report_metrics(
+            {
+                **(result.get("base_metrics") or {}),
+                **(result.get("metrics") or {}),
+                "probability_metrics": result.get("probability_metrics")
+                or (result.get("metrics") or {}).get("probability_metrics"),
+                "market_comparison": result.get("market_comparison")
+                or (result.get("metrics") or {}).get("market_comparison"),
+            }
         )
         completed_folds, expected_folds = _remote_job_fold_progress(job)
         rows.append({
@@ -2669,8 +2693,7 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
             "max_drawdown_yen": metrics.get("max_drawdown_yen"),
             "evaluated_races": metrics.get("evaluated_races"),
             "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
-            "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
-            "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
+            **_probability_report_fields(metrics),
             "real_odds_races": metrics.get("real_odds_races"),
             "skipped_no_real_odds": metrics.get("skipped_no_real_odds"),
             "error": (job.get("log_tail") or [])[-1] if job.get("status") == "失敗" else None,
@@ -2770,7 +2793,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
     }
     for source in rows:
         row = {key: source[key] for key in source.keys()}
-        metrics = canonicalize_primary_bankroll(
+        metrics = _canonical_report_metrics(
             _json_mapping(row.get("result_summary"))
         )
         parameters = _json_mapping(row.get("parameters"))
@@ -3077,23 +3100,11 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "top5_flat_roi": _float_or_none(metrics.get("top5_flat_roi")),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
-                "winner_log_loss": _float_or_none(
-                    metrics.get("winner_log_loss")
-                ),
-                "winner_top1_accuracy": _float_or_none(
-                    metrics.get("winner_top1_accuracy")
-                ),
+                **_probability_report_fields(metrics),
                 "trifecta_log_loss": _float_or_none(
                     metrics.get("trifecta_log_loss")
                     if metrics.get("trifecta_log_loss") is not None
                     else metrics.get("calibrated_trifecta_log_loss")
-                ),
-                "trifecta_top5_hit_rate": _float_or_none(
-                    metrics.get("trifecta_top5_hit_rate")
-                    if metrics.get("trifecta_top5_hit_rate") is not None
-                    else metrics.get(
-                        "calibrated_trifecta_top5_hit_rate"
-                    )
                 ),
                 "closing_odds_log_mae": _float_or_none(
                     metrics.get("closing_odds_log_mae")
