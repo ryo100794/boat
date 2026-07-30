@@ -1,5 +1,6 @@
 import pytest
 
+import boatrace_ai.listwise.market_orthogonal_residual as orthogonal_residual
 from boatrace_ai.listwise.market_calibration import blend_probabilities
 from boatrace_ai.listwise.market_orthogonal_residual import (
     fit_market_projection,
@@ -63,6 +64,46 @@ def test_fit_returns_standard_blend_contract() -> None:
         temperature=result["temperature"],
     )
     assert compatible == pytest.approx(direct)
+
+
+def test_orthogonal_prequential_falls_back_to_exact_raw_identity(
+    monkeypatch,
+) -> None:
+    races = [
+        _race("2026-07-01", "1-2-3", (0.9, 0.1)),
+        _race("2026-07-02", "1-2-3", (0.9, 0.1)),
+    ]
+
+    def market_only(training, *, regularization):
+        return {
+            "projection_beta": 1.0,
+            "residual_coefficient": 0.0,
+            "model_coefficient": 0.0,
+            "market_coefficient": 1.0,
+            "model_weight": 0.0,
+            "temperature": 1.0,
+            "regularization": float(regularization),
+            "training_races": len(training),
+        }
+
+    monkeypatch.setattr(
+        orthogonal_residual, "fit_orthogonal_residual", market_only
+    )
+
+    result = select_regularization_prequential(races, regularizations=(1.0,))
+
+    assert result["calibration_nonregression"]["outer_holdout_used"] is False
+    assert result["calibration_nonregression"]["identity_fallback_applied"] is True
+    calibrator = result["final_calibrator"]
+    assert calibrator["model_weight"] == 1.0
+    assert calibrator["temperature"] == 1.0
+    for race in races:
+        assert orthogonal_residual.orthogonal_probabilities(
+            race["model_probabilities"],
+            race["market_probabilities"],
+            projection_beta=calibrator["projection_beta"],
+            residual_coefficient=calibrator["residual_coefficient"],
+        ) == pytest.approx(race["model_probabilities"])
 
 
 def test_regularization_is_selected_on_forward_days() -> None:
