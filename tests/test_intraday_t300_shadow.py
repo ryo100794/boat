@@ -14,6 +14,7 @@ from boatrace_ai.runtime.intraday_t300_shadow import (
     DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
     DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
     ModelIdentity,
+    PostgresShadowStore,
     RaceWindow,
     ShadowDecision,
     SnapshotCheck,
@@ -152,6 +153,31 @@ class MemoryStore:
 
 def cycle_time(row: RaceWindow) -> datetime:
     return row.target_t300_at + timedelta(seconds=1)
+
+
+def test_postgresql_snapshot_boundary_compares_instants_not_timestamp_text() -> None:
+    executed = {}
+
+    class Cursor:
+        def fetchall(self):
+            return []
+
+    class Conn:
+        dialect = "postgresql"
+
+        def execute(self, statement, params):
+            executed["statement"] = statement
+            executed["params"] = params
+            return Cursor()
+
+    row = race("2026-07-30", suffix="01", hour=8)
+    assert PostgresShadowStore(Conn()).latest_complete_snapshot(row) is None
+
+    statement = executed["statement"]
+    assert "CAST(candidate.captured_at AS timestamptz)" in statement
+    assert "CAST(? AS timestamptz)" in statement
+    assert "candidate.captured_at <= ?" not in statement
+    assert executed["params"][-1] == row.target_t300_at.isoformat()
 
 
 def test_restart_is_idempotent_and_decision_is_immutable() -> None:
