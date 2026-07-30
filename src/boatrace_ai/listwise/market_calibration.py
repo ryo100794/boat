@@ -17,7 +17,7 @@ import joblib
 import numpy as np
 
 from ..adaptive_allocation import allocate_adaptive_day
-from ..archive_closing_odds import SOURCE_KEY as OFFICIAL_CLOSING_SOURCE_KEY
+from ..archive_closing_odds import OFFICIAL_SOURCE_KEY, SOURCE_KEY
 from ..bankroll_bootstrap import (
     DEFAULT_CHUNK_SIZE as BANKROLL_BOOTSTRAP_CHUNK_SIZE,
     DEFAULT_SEED as BANKROLL_BOOTSTRAP_SEED,
@@ -87,6 +87,9 @@ from .stagewise_blend import (
 )
 from .stagewise_mlp import classifier_position_scores, stagewise_trifecta_probabilities
 from ..fast_math import TRIFECTA_COMBINATIONS
+
+
+CLOSING_ODDS_SOURCE_PRIORITY = (OFFICIAL_SOURCE_KEY, SOURCE_KEY)
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
@@ -5113,7 +5116,7 @@ def prefetch_official_closing_odds(
             JOIN archive_closing_odds o
               ON o.race_id = s.race_id
              AND o.source_key = s.source_key
-            WHERE s.source_key = ?
+            WHERE s.source_key IN (?, ?)
               AND s.odds_count = 120
               AND s.race_id IN ({placeholders})
               AND (
@@ -5126,9 +5129,11 @@ def prefetch_official_closing_odds(
               ) = 120
               AND o.odds IS NOT NULL
               AND o.odds > 0
-            ORDER BY s.race_id, o.combination
+            ORDER BY s.race_id,
+              CASE WHEN s.source_key = ? THEN 0 ELSE 1 END,
+              o.combination
             """,
-            [OFFICIAL_CLOSING_SOURCE_KEY, *chunk],
+            [*CLOSING_ODDS_SOURCE_PRIORITY, *chunk, OFFICIAL_SOURCE_KEY],
         ).fetchall()
         for row in rows:
             race_id = str(row["race_id"])
@@ -5146,6 +5151,8 @@ def prefetch_official_closing_odds(
                     "odds": {},
                 },
             )
+            if market["source_key"] != str(row["source_key"]):
+                continue
             market["odds"][str(row["combination"])] = float(row["odds"])
 
     result: dict[str, dict[str, Any]] = {}
@@ -5159,11 +5166,15 @@ def prefetch_official_closing_odds(
             "official_closing_market_probabilities": (
                 normalized_market_probabilities(odds)
             ),
-            "official_closing_source": OFFICIAL_CLOSING_SOURCE_KEY,
-            "official_closing_source_key": OFFICIAL_CLOSING_SOURCE_KEY,
+            "official_closing_source": market["source_key"],
+            "official_closing_source_key": market["source_key"],
             "official_closing_provenance": {
-                "mode": "secondary_archive_of_official_closing_display",
-                "source_key": OFFICIAL_CLOSING_SOURCE_KEY,
+                "mode": (
+                    "primary_official_historical_closing"
+                    if market["source_key"] == OFFICIAL_SOURCE_KEY
+                    else "secondary_archive_of_official_closing_display"
+                ),
+                "source_key": market["source_key"],
                 "fetched_at": market["fetched_at"],
                 "source_url": market["source_url"],
                 "payload_sha256": market["payload_sha256"],
@@ -5265,7 +5276,7 @@ def _archive_closing_data_signature(
         return empty
 
     filters = ["r.race_date >= ?"]
-    params: list[Any] = [OFFICIAL_CLOSING_SOURCE_KEY, from_date]
+    params: list[Any] = [*CLOSING_ODDS_SOURCE_PRIORITY, from_date]
     if through_date is not None:
         filters.append("r.race_date <= ?")
         params.append(through_date)
@@ -5287,7 +5298,7 @@ def _archive_closing_data_signature(
          AND o.source_key = s.source_key
          AND o.odds IS NOT NULL
          AND o.odds > 0
-        WHERE s.source_key = ?
+        WHERE s.source_key IN (?, ?)
           AND {" AND ".join(filters)}
           AND r.deadline_at IS NOT NULL
           AND (
@@ -5669,8 +5680,8 @@ def scored_cache_contract(
         "checkpoint_offsets_seconds": list(
             ODDS_CHECKPOINT_OFFSETS_SECONDS
         ),
-        "official_closing_source_key": OFFICIAL_CLOSING_SOURCE_KEY,
-        "official_closing_contract_version": 1,
+        "official_closing_source_priority": list(CLOSING_ODDS_SOURCE_PRIORITY),
+        "official_closing_contract_version": 2,
         "odds_data_signature": dict(odds_signature),
     }
 

@@ -112,4 +112,4 @@ def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> N
     assert contract["local_closing_offset_seconds"] == 0
     assert contract["checkpoint_schema_version"] == 1
     assert contract["checkpoint_offsets_seconds"] == [300, 120, 60, 30, 10]
-    assert contract["official_closing_contract_version"] == 1
+    assert contract["official_closing_contract_version"] == 2

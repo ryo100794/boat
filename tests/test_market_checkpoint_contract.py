@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from boatrace_ai.archive_closing_odds import (
+    OFFICIAL_SOURCE_KEY,
     SOURCE_KEY,
     ensure_archive_schema,
 )
@@ -21,6 +22,7 @@ from boatrace_ai.listwise.market_calibration import (
     load_scored_cache,
     normalize_odds_checkpoint,
     odds_data_signature,
+    prefetch_official_closing_odds,
     prefetch_trifecta_snapshots,
     score_real_odds_races,
     scored_cache_contract,
@@ -113,7 +115,9 @@ def _insert_checkpoint(
     )
 
 
-def _store_official_archive(conn, *, value: float = 30.0) -> None:
+def _store_official_archive(
+    conn, *, value: float = 30.0, source_key: str = SOURCE_KEY
+) -> None:
     ensure_archive_schema(conn)
     conn.execute(
         """
@@ -124,7 +128,7 @@ def _store_official_archive(conn, *, value: float = 30.0) -> None:
         """,
         (
             RACE_ID,
-            SOURCE_KEY,
+            source_key,
             "2026-07-23T00:00:00+00:00",
             "https://example.test/archive",
             "a" * 64,
@@ -146,7 +150,7 @@ def _store_official_archive(conn, *, value: float = 30.0) -> None:
         ) VALUES (?, ?, ?, ?)
         """,
         [
-            (RACE_ID, SOURCE_KEY, combination, float(value))
+            (RACE_ID, source_key, combination, float(value))
             for combination in TRIFECTA_COMBINATION_KEYS
         ],
     )
@@ -459,6 +463,28 @@ def test_race_contract_keeps_local_and_official_closing_separate(
     assert len(race["odds_checkpoints"]) == 5
     assert dataset["official_closing_odds_races"] == 1
     assert dataset["odds_checkpoint_metadata_conflicts"] == 0
+
+
+def test_primary_official_closing_odds_override_mirror(tmp_path) -> None:
+    database = tmp_path / "closing-priority.sqlite"
+    init_db(database)
+    with connection(database) as conn:
+        _insert_completed_race(conn)
+        _store_official_archive(conn, value=30.0, source_key=SOURCE_KEY)
+        _store_official_archive(
+            conn, value=40.0, source_key=OFFICIAL_SOURCE_KEY
+        )
+
+        prefetched = prefetch_official_closing_odds(
+            conn, target_ids={RACE_ID}
+        )
+
+    race = prefetched[RACE_ID]
+    assert race["official_closing_source"] == OFFICIAL_SOURCE_KEY
+    assert set(race["official_closing_odds"].values()) == {40.0}
+    assert race["official_closing_provenance"]["mode"] == (
+        "primary_official_historical_closing"
+    )
 
 
 def test_checkpoint_and_archive_arrival_invalidate_scored_cache(
