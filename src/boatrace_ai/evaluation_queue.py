@@ -2648,7 +2648,7 @@ def build_command(
         if from_date > through_date:
             raise ValueError("archive closing from_date must not exceed through_date")
         sleep_seconds = _number(params, "sleep_seconds", 1.0, 0.5, 60.0)
-        _integer(params, "timeout_seconds", 86400, 600, 172800)
+        _integer(params, "timeout_seconds", 86400, 600, 86400)
         source = str(params.get("source") or "mirror")
         if source not in {"mirror", "official"}:
             raise ValueError("archive closing source must be mirror or official")
