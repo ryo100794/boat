@@ -25,6 +25,7 @@ from ..bankroll_policy_search import (
 )
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
+from ..feature_schema import SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS
 from ..hashed_feature_dataset import load_hashed_dataset, race_ids_sha256
 from ..modeling import _normalize_lane_probs, trifecta_predictions
 from ..packed_bankroll import (
@@ -177,6 +178,9 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         str(value) for value in selected.get("drop_feature_groups") or ()
     )
     n_features = int(search["n_features"])
+    feature_schema_version = str(search["feature_schema_version"])
+    if feature_schema_version not in SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS:
+        raise ValueError("unsupported feature schema version")
     hasher = FeatureHasher(
         n_features=n_features,
         input_type="dict",
@@ -188,6 +192,7 @@ def run(conn: Any, *, args: argparse.Namespace) -> dict[str, Any]:
         n_features=n_features,
         drop_feature_groups=dropped,
         hasher=hasher,
+        feature_schema_version=feature_schema_version,
     )
     if dataset is None:
         raise ValueError("strict selected feature cache validation failed")

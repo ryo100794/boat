@@ -18,6 +18,10 @@ from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
 from ..db import connection, init_db
 from ..feature_tuning import load_complete_race_ids
+from ..feature_schema import (
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+    SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS,
+)
 from ..hashed_feature_dataset import (
     CACHE_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -79,7 +83,10 @@ def validate_search_race_universe(
             "search result race universe hash does not match the current race universe; "
             "legacy results without race_universe_sha256 must be regenerated"
         )
-    if cache_version != CACHE_VERSION or schema_version != FEATURE_SCHEMA_VERSION:
+    if (
+        cache_version != CACHE_VERSION
+        or schema_version not in SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS
+    ):
         raise ValueError(
             "search result cache/schema version is incompatible; regenerate the search result"
         )
@@ -267,10 +274,15 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "search result train/selection boundaries are invalid for the current race universe"
         )
     dropped = tuple(str(value) for value in selected.get("drop_feature_groups") or ())
+    feature_schema_version = str(search_result["feature_schema_version"])
+    include_decayed_history = (
+        feature_schema_version == DECAYED_HISTORY_FEATURE_SCHEMA_VERSION
+    )
     primary_prefix = variant_cache_prefix(
         Path(args.cache_dir),
         n_features=int(search_result["n_features"]),
         name=str(selected["feature_variant"]),
+        include_decayed_history=include_decayed_history,
     ).resolve()
     recorded_prefix_value = search_result.get("selected_cache_prefix")
     recorded_prefix = Path(recorded_prefix_value) if recorded_prefix_value else None
@@ -287,6 +299,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             n_features=int(search_result["n_features"]),
             drop_feature_groups=dropped,
             hasher=hasher,
+            feature_schema_version=feature_schema_version,
         )
         dataset = load_hashed_dataset(
             primary_prefix,
@@ -294,6 +307,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             n_features=int(search_result["n_features"]),
             drop_feature_groups=dropped,
             hasher=hasher,
+            feature_schema_version=feature_schema_version,
         )
         if dataset is None:
             raise ValueError("legacy cache promotion or strict v2 validation failed")
@@ -313,6 +327,8 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             batch_races=args.batch_races,
             write_cache=args.cache_write_mode == "always",
             fallback_cache_prefixes=fallback_prefixes,
+            include_decayed_history=include_decayed_history,
+            feature_schema_version=feature_schema_version,
         )
     if cache_source == "disk" and cache_prefix != primary_prefix:
         print(json.dumps({

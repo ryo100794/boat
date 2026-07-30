@@ -16,6 +16,9 @@ from boatrace_ai.hashed_feature_dataset import (
     HashedRaceDataset,
     race_ids_sha256,
 )
+from boatrace_ai.feature_schema import (
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+)
 from boatrace_ai.listwise import feature_search
 from boatrace_ai.listwise.feature_search import (
     SOURCE_DATA_SNAPSHOT_VERSION,
@@ -188,6 +191,13 @@ def test_newton_rejects_stale_or_legacy_search_race_universe() -> None:
         "evaluation_race_set_sha256": race_set_sha256(["r4"]),
     }
     validate_search_race_universe(valid, keys)
+    validate_search_race_universe(
+        {
+            **valid,
+            "feature_schema_version": DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+        },
+        keys,
+    )
 
     with pytest.raises(ValueError, match="race count"):
         validate_search_race_universe({**valid, "races": 1}, keys)
