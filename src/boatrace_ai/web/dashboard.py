@@ -38,6 +38,7 @@ from ..standard_evaluation import (
 )
 from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulations
 from .prediction_summary import attach_latest_prediction_summaries
+from .roadmap_model_status import queue_model_roadmap_status
 
 
 JST = timezone(timedelta(hours=9))
@@ -5829,6 +5830,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
+    progress["queue_model_status"] = queue_model_roadmap_status(db_path)
 
     summary: dict[str, Any]
     try:
@@ -5888,6 +5890,7 @@ def roadmap_milestones_status(
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
+    progress["queue_model_status"] = queue_model_roadmap_status(db_path)
     remote_evaluations = _read_remote_eval_status(
         db_path.parent / REMOTE_EVAL_STATUS_NAME
     )
@@ -6936,6 +6939,13 @@ def _roadmap_milestones(
     progress = progress or {}
     processes = processes or []
     remote_evaluations = remote_evaluations or {}
+    queue_model_status = progress.get("queue_model_status") or {}
+    latest_newton = queue_model_status.get("latest_newton") or {}
+    latest_newton_metrics = latest_newton.get("metrics") or {}
+    best_market_v21 = queue_model_status.get("best_market_v21") or {}
+    best_market_metrics = best_market_v21.get("metrics") or {}
+    latest_market_v21 = queue_model_status.get("latest_market_v21") or {}
+    latest_market_metrics = latest_market_v21.get("metrics") or {}
     historical = progress.get("historical") or {}
     realtime = progress.get("realtime") or {}
     shadow_evaluation = progress.get("realtime_shadow_evaluation") or {}
@@ -7104,7 +7114,9 @@ def _roadmap_milestones(
             ),
             "progress": m4_progress,
             "next": (
-                f"標準365日・{int(best_standard_metrics.get('evaluated_races') or best_standard_metrics.get('bankroll_evaluated_races') or 0):,}Rで9モデル比較完了。予測主系と候補を同一期間で比較し、主系を維持する。"
+                f"最新減衰Newton job {int(latest_newton.get('job_id') or 0)}: 1着 {float(latest_newton_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・3T5 {float(latest_newton_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・LogLoss {float(latest_newton_metrics.get('entry_log_loss') or 0):.5f}・no-odds ROI {float(latest_newton_metrics.get('roi') or 0):.4f}。予測研究候補として保持し、収益未達のため現行主系を維持する。"
+                if latest_newton_metrics
+                else f"標準365日・{int(best_standard_metrics.get('evaluated_races') or best_standard_metrics.get('bankroll_evaluated_races') or 0):,}Rで9モデル比較完了。予測主系と候補を同一期間で比較し、主系を維持する。"
                 if standardized_complete
                 else f"統一標準365日v2未完了。未使用holdout評価は1着 {float(listwise_metrics.get('winner_top1_accuracy') or 0) * 100:.2f}%・"
                 f"3T5 {float(listwise_metrics.get('trifecta_top5_hit_rate') or 0) * 100:.2f}%・"
@@ -7127,7 +7139,9 @@ def _roadmap_milestones(
             "status": "未完了/収益ゲート未達",
             "progress": m6_progress,
             "next": (
-                f"標準365日最高ROI {float(best_standard_metrics.get('roi') or 0):.4f}・"
+                f"実オッズV21最良 job {int(best_market_v21.get('job_id') or 0)}: {int(best_market_metrics.get('evaluated_races') or 0):,}R/{int(best_market_metrics.get('evaluation_days') or 0)}日・ROI {float(best_market_metrics.get('roi') or 0):.4f}・損益 {int(best_market_metrics.get('profit_yen') or 0):,}円。直近候補 job {int(latest_market_v21.get('job_id') or 0)} はROI {float(latest_market_metrics.get('roi') or 0):.4f}。標本ゲート未達のため本番no-betを維持し、公式確定オッズ補完とT-5前向き日数を蓄積する。"
+                if best_market_metrics
+                else f"標準365日最高ROI {float(best_standard_metrics.get('roi') or 0):.4f}・"
                 f"損益 {int(best_standard_metrics.get('profit_yen') or 0):,}円。"
                 + (
                     "temporal no-bet 5foldを回収し、収益ゲートで終了判定する。"
