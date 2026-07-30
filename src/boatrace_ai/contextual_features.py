@@ -300,6 +300,249 @@ class RollingState:
                 _update_bucket(bucket, rank=rank, start_timing=start_timing)
 
 
+class DecayedRollingState:
+    """Entity history maintained at several exponential time scales.
+
+    The caller owns the prediction/update boundary. This state accepts completed
+    race rows and enforces chronological access for every entity bucket.
+    """
+
+    HALF_LIVES_DAYS = (30, 90, 365)
+    ENTITY_PRIORS = {
+        "venue_lane": 30.0,
+        "racer": 18.0,
+        "racer_lane": 12.0,
+        "racer_venue": 12.0,
+        "motor": 18.0,
+        "motor_lane": 12.0,
+        "boat": 18.0,
+    }
+
+    def __init__(self) -> None:
+        self.venue_lane: dict[tuple[str, int], dict[int, dict[str, Any]]] = {}
+        self.racer: dict[int, dict[int, dict[str, Any]]] = {}
+        self.racer_lane: dict[tuple[int, int], dict[int, dict[str, Any]]] = {}
+        self.racer_venue: dict[tuple[int, str], dict[int, dict[str, Any]]] = {}
+        self.motor: dict[tuple[str, int], dict[int, dict[str, Any]]] = {}
+        self.motor_lane: dict[tuple[str, int, int], dict[int, dict[str, Any]]] = {}
+        self.boat: dict[tuple[str, int], dict[int, dict[str, Any]]] = {}
+
+    def features_for(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, float]:
+        race_date = _decayed_race_date(row)
+        entities = self._entity_keys(row)
+        for _entity, store, key in entities:
+            if key is not None and (buckets := store.get(key)) is not None:
+                _validate_decayed_order(buckets, race_date)
+
+        item: dict[str, float] = {}
+        for entity, store, key in entities:
+            if key is None:
+                continue
+            buckets = store.get(key)
+            if buckets is None:
+                buckets = _empty_decayed_bucket_set(race_date)
+            else:
+                _decay_bucket_set_to(buckets, race_date)
+            item.update(
+                _decayed_bucket_set_features(
+                    entity,
+                    buckets,
+                    prior=self.ENTITY_PRIORS[entity],
+                )
+            )
+        return item
+
+    def update_race(self, rows: list[sqlite3.Row | dict[str, Any]]) -> None:
+        if not rows:
+            return
+        race_dates = [_decayed_race_date(row) for row in rows]
+        race_date = race_dates[0]
+        if any(value != race_date for value in race_dates[1:]):
+            raise ValueError("all rows in a race update must have the same race_date")
+
+        observations: list[
+            tuple[dict[Any, dict[int, dict[str, Any]]], Any, int, float | None]
+        ] = []
+        for row in rows:
+            rank = int(row["rank"] or 99)
+            if rank <= 0 or rank >= 99:
+                continue
+            start_timing = _finite_start_timing(row["result_start_timing"])
+            for _entity, store, key in self._entity_keys(row):
+                if key is not None:
+                    observations.append((store, key, rank, start_timing))
+
+        # Validate first so a rejected race cannot leave a partial update.
+        for store, key, _rank, _start_timing in observations:
+            buckets = store.get(key)
+            if buckets is not None:
+                _validate_decayed_order(buckets, race_date)
+
+        for store, key, rank, start_timing in observations:
+            buckets = store.setdefault(key, _empty_decayed_bucket_set(race_date))
+            _decay_bucket_set_to(buckets, race_date)
+            for bucket in buckets.values():
+                _update_decayed_bucket(bucket, rank=rank, start_timing=start_timing)
+
+    def _entity_keys(
+        self,
+        row: sqlite3.Row | dict[str, Any],
+    ) -> tuple[tuple[str, dict[Any, dict[int, dict[str, Any]]], Any | None], ...]:
+        lane = _positive_int(row["lane"])
+        venue = str(row["jcd"] or "").strip()
+        racer_no = _positive_int(row["racer_no"])
+        motor_no = _positive_int(row["motor_no"])
+        boat_no = _positive_int(row["boat_no"])
+        venue_lane = (venue, lane) if venue and lane is not None else None
+        return (
+            ("venue_lane", self.venue_lane, venue_lane),
+            ("racer", self.racer, racer_no),
+            (
+                "racer_lane",
+                self.racer_lane,
+                (racer_no, lane) if racer_no is not None and lane is not None else None,
+            ),
+            (
+                "racer_venue",
+                self.racer_venue,
+                (racer_no, venue) if racer_no is not None and venue else None,
+            ),
+            (
+                "motor",
+                self.motor,
+                (venue, motor_no) if venue and motor_no is not None else None,
+            ),
+            (
+                "motor_lane",
+                self.motor_lane,
+                (venue, motor_no, lane)
+                if venue and motor_no is not None and lane is not None
+                else None,
+            ),
+            (
+                "boat",
+                self.boat,
+                (venue, boat_no) if venue and boat_no is not None else None,
+            ),
+        )
+
+
+def _empty_decayed_bucket_set(race_date: date) -> dict[int, dict[str, Any]]:
+    return {
+        half_life: {**_empty_bucket(), "last_date": race_date}
+        for half_life in DecayedRollingState.HALF_LIVES_DAYS
+    }
+
+
+def _decay_bucket_set_to(buckets: dict[int, dict[str, Any]], target_date: date) -> None:
+    _validate_decayed_order(buckets, target_date)
+    for half_life, bucket in buckets.items():
+        last_date = bucket["last_date"]
+        elapsed_days = (target_date - last_date).days
+        if elapsed_days:
+            factor = math.exp2(-float(elapsed_days) / float(half_life))
+            for field in (
+                "count",
+                "wins",
+                "top2",
+                "top3",
+                "rank_sum",
+                "start_sum",
+                "start_count",
+            ):
+                bucket[field] *= factor
+            bucket["last_date"] = target_date
+
+
+def _validate_decayed_order(buckets: dict[int, dict[str, Any]], target_date: date) -> None:
+    if any(target_date < bucket["last_date"] for bucket in buckets.values()):
+        raise ValueError("decayed history cannot move backwards in time")
+
+
+def _update_decayed_bucket(
+    bucket: dict[str, Any],
+    *,
+    rank: int,
+    start_timing: float | None,
+) -> None:
+    bucket["count"] += 1.0
+    bucket["wins"] += float(rank == 1)
+    bucket["top2"] += float(rank <= 2)
+    bucket["top3"] += float(rank <= 3)
+    bucket["rank_sum"] += float(rank)
+    if start_timing is not None:
+        bucket["start_sum"] += start_timing
+        bucket["start_count"] += 1.0
+
+
+def _decayed_bucket_set_features(
+    entity: str,
+    buckets: dict[int, dict[str, Any]],
+    *,
+    prior: float,
+) -> dict[str, float]:
+    item: dict[str, float] = {}
+    metrics_by_half_life: dict[int, dict[str, float]] = {}
+    for half_life in DecayedRollingState.HALF_LIVES_DAYS:
+        bucket = buckets[half_life]
+        count = float(bucket["count"])
+        start_count = float(bucket["start_count"])
+        metrics = {
+            "win_rate_s": _smooth(float(bucket["wins"]), count, prior, 1.0 / 6.0),
+            "top2_rate_s": _smooth(float(bucket["top2"]), count, prior, 2.0 / 6.0),
+            "top3_rate_s": _smooth(float(bucket["top3"]), count, prior, 3.0 / 6.0),
+            "avg_rank_s": (float(bucket["rank_sum"]) + prior * 3.5) / (count + prior),
+            "avg_start_timing_s": (
+                float(bucket["start_sum"]) + prior * 0.17
+            ) / (start_count + prior),
+            "effective_count": count,
+            "has_recent_history": float(count > 1e-12),
+        }
+        metrics_by_half_life[half_life] = metrics
+        prefix = f"decayed_{entity}_{half_life}d"
+        item.update({f"{prefix}_{name}": value for name, value in metrics.items()})
+
+    for name in (
+        "win_rate_s",
+        "top2_rate_s",
+        "top3_rate_s",
+        "avg_rank_s",
+        "avg_start_timing_s",
+        "effective_count",
+    ):
+        item[f"decayed_{entity}_{name}_30d_365d_trend"] = (
+            metrics_by_half_life[30][name] - metrics_by_half_life[365][name]
+        )
+    if not all(math.isfinite(value) for value in item.values()):
+        raise ValueError("decayed history produced a non-finite feature")
+    return item
+
+
+def _decayed_race_date(row: sqlite3.Row | dict[str, Any]) -> date:
+    value = row["race_date"]
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid race_date: {value!r}") from exc
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _finite_start_timing(value: Any) -> float | None:
+    parsed = _num(value)
+    if parsed == -1.0 or not math.isfinite(parsed):
+        return None
+    return parsed
+
+
 def _empty_bucket() -> dict[str, float]:
     return {
         "count": 0.0,
