@@ -1210,6 +1210,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-HISTORICAL-RESIDUAL-001",
         "MODEL-MARKET-POLICY-CAL-001",
         "MODEL-V21-PROSPECTIVE-EVIDENCE-001",
+        "TEST-BASELINE-FAILURES-001",
         "UI-MODEL-DAILY-001",
     } <= keys
     memory_ticket = next(

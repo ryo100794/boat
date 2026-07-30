@@ -381,7 +381,7 @@ def test_pre_first_race_v20_addition_preserves_existing_four_identities(
                 }
             },
         }
-        for family in updater.BUNDLE_FAMILIES
+        for family in (*updater.ALL_FAMILIES, "v20")
     }
     jobs = {
         family: updater.CompletedJob(number, family, tmp_path / f"{family}.json")
@@ -459,7 +459,7 @@ def test_post_first_race_v20_addition_is_rejected(tmp_path: Path) -> None:
                 }
             },
         }
-        for family in updater.BUNDLE_FAMILIES
+        for family in (*updater.ALL_FAMILIES, "v20")
     }
     jobs = {
         family: updater.CompletedJob(number, family, tmp_path / f"{family}.json")
@@ -501,3 +501,63 @@ def test_post_first_race_v20_addition_is_rejected(tmp_path: Path) -> None:
     ) == "first_race_boundary_passed"
     assert (state_root / "active").resolve() == active_before
     assert json.loads((active_before / "state.json").read_text()) == existing
+
+
+def test_v21_adapter_registration_preserves_three_head_routing_and_shadow_only(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base.joblib"
+    bundle = tmp_path / "v21.joblib"
+    joblib.dump({"feature_schema_version": 1}, base)
+    probability = calibrator(model_weight=1.0)
+    ranking = calibrator(model_weight=0.8)
+    purchase = copy.deepcopy(ranking)
+    deployment = {
+        "calibrator_strategy": updater.V21_MODEL,
+        "deployment_mode": "evaluation_only",
+        "real_betting_enabled": False,
+        "daily_stake_limit_fraction": 1.0,
+        "trained_through_date": "2026-07-29",
+        "source_evaluation_job_id": 8666,
+        "outer_result_or_payout_used": False,
+        "winner_and_logloss_head": "probability_head",
+        "trifecta_top5_head": "ranking_head",
+        "market_logloss_comparison_head": "probability_head",
+        "market_top5_comparison_head": "ranking_head",
+        "chronological_bankroll_head": "purchase_head",
+        "calibrator": copy.deepcopy(probability),
+        "probability_calibrator": probability,
+        "ranking_calibrator": ranking,
+        "purchase_calibrator": purchase,
+        "triple_head_calibration": {
+            "architecture": "strict_prior_triple_calibrator_heads_v21",
+            "selection_data": (
+                "strict_prior_training_and_inner_prequential_folds_only"
+            ),
+            "outer_holdout_used": False,
+            "ranking_purchase_share_v18_selection": True,
+            "probability_head": {
+                "role": "winner_and_trifecta_logloss",
+                "calibrator": copy.deepcopy(probability),
+            },
+            "ranking_head": {
+                "role": "trifecta_top5_ranking",
+                "calibrator": copy.deepcopy(ranking),
+            },
+            "purchase_head": {
+                "role": "purchase_policy_and_chronological_bankroll",
+                "calibrator": copy.deepcopy(purchase),
+            },
+        },
+        "operational_model": operational_model(),
+        "candidate_policy": policy(),
+        "selected_policy": {"name": "no_bet", "no_bet": True},
+    }
+    joblib.dump({"deployment": deployment}, bundle)
+    built = build_adapter(
+        f"v21_daily:{updater.V21_SHADOW_STRATEGY}:{bundle}:{base}"
+    )
+    assert built.identity.model_key == "v21_daily"
+    assert built.identity.strategy_name == updater.V21_SHADOW_STRATEGY
+    assert built._calibrator == purchase
+    assert built._bundle["real_betting_enabled"] is False

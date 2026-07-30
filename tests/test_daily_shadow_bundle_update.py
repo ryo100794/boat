@@ -346,3 +346,156 @@ def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:
     assert "wait \"$child_pid\"" in wrapper
     assert "sha256sum" in wrapper
     assert "startretries=20" not in supervisor
+
+
+class RecoveryConnection:
+    def __init__(self, races, decisions):
+        self.races = races
+        self.decisions = decisions
+
+    def execute(self, query, parameters):
+        self.query = " ".join(query.split())
+        self.parameters = parameters
+        return self
+
+    def fetchall(self):
+        if "FROM races r" in self.query:
+            return self.races[: int(self.parameters[1])]
+        if "FROM intraday_t300_shadow_decisions" in self.query:
+            race_ids = set(self.parameters[1])
+            model_keys = set(self.parameters[2])
+            return [
+                row for row in self.decisions
+                if row["race_id"] in race_ids and row["model_key"] in model_keys
+            ]
+        raise AssertionError(self.query)
+
+
+def write_recovery_active(state_root: Path, base: Path) -> tuple[dict, dict]:
+    release = state_root / "releases" / "next-day"
+    release.mkdir(parents=True)
+    specs = {
+        "v18": f"v18_daily:{updater.V18_SHADOW_STRATEGY}:v18.joblib:{base}",
+        "v20": f"v20_daily:{updater.V20_SHADOW_STRATEGY}:v20.joblib:{base}",
+        "v21": f"v21_daily:{updater.V21_SHADOW_STRATEGY}:v21.joblib:{base}",
+    }
+    hashes = {family: hashlib.sha256(family.encode()).hexdigest() for family in specs}
+    state = {
+        "prediction_date": "2026-07-31",
+        "real_betting_enabled": False,
+        "model_identities": hashes,
+        "runtime_model_identities": hashes,
+        "model_specs": specs,
+    }
+    (release / "state.json").write_text(json.dumps(state))
+    (release / "model-spec.env").write_text("BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0\n")
+    (state_root / "active").symlink_to(release.relative_to(state_root))
+    return specs, hashes
+
+
+def test_recovery_gate_requires_first_five_for_v18_v20_v21_below_90_seconds(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    specs, hashes = write_recovery_active(state_root, base)
+    target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    races = [
+        {"race_id": f"race-{index}", "target_t300_at": target + timedelta(minutes=index)}
+        for index in range(5)
+    ]
+    decisions = []
+    for race in races:
+        for family in updater.RECOVERY_FAMILIES:
+            decisions.append({
+                "race_id": race["race_id"],
+                "model_key": specs[family].split(":", 1)[0],
+                "model_hash": hashes[family],
+                "strategy_name": specs[family].split(":", 2)[1],
+                "target_t300_at": race["target_t300_at"],
+                "decision_at": race["target_t300_at"] + timedelta(seconds=89.9),
+            })
+    result = updater.verify_activation_recovery(
+        RecoveryConnection(races, decisions),
+        state_root=state_root, prediction_date="2026-07-31",
+        now=target + timedelta(minutes=10),
+    )
+    assert result["status"] == "passed"
+    assert result["gate_pass"] is True
+    assert result["recorded_decisions"] == 15
+    assert result["maximum_observed_delay_seconds"] == pytest.approx(89.9)
+    assert result["real_betting_enabled"] is False
+    persisted = json.loads((state_root / "activation-recovery.json").read_text())
+    assert persisted["status"] == "passed"
+
+
+def test_recovery_gate_fails_at_90_seconds_and_on_missing_overdue(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    specs, hashes = write_recovery_active(state_root, base)
+    target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    races = [
+        {"race_id": f"race-{index}", "target_t300_at": target + timedelta(minutes=index)}
+        for index in range(5)
+    ]
+    decisions = [{
+        "race_id": "race-0", "model_key": "v18_daily",
+        "model_hash": hashes["v18"],
+        "strategy_name": updater.V18_SHADOW_STRATEGY,
+        "target_t300_at": target,
+        "decision_at": target + timedelta(seconds=90),
+    }]
+    result = updater.verify_activation_recovery(
+        RecoveryConnection(races, decisions),
+        state_root=state_root, prediction_date="2026-07-31",
+        now=target + timedelta(minutes=10),
+    )
+    assert result["status"] == "failed"
+    assert result["gate_pass"] is False
+    assert len(result["late_decisions"]) == 1
+    assert result["missing_overdue"]
+    assert result["recovery_action"] == (
+        "retain_shadow_real_betting_disabled_and_raise_latency_incident"
+    )
+
+
+def test_shadow_runner_uses_intraday_module_with_static_v21_registration() -> None:
+    root = Path(__file__).resolve().parents[1]
+    runner = (
+        root / "scripts" / "deployment" / "run-boatrace-intraday-t300-shadow.sh"
+    ).read_text()
+    assert "-m boatrace_ai.runtime.intraday_t300_shadow" in runner
+    assert "register_v21_shadow_adapter" not in runner
+
+
+def test_main_persists_dependency_failure_and_retries_without_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+
+    def unavailable(*args, **kwargs):
+        raise LookupError("V21 daily refit is pending")
+
+    monkeypatch.setattr(updater.psycopg, "connect", unavailable)
+    result = updater.main([
+        "--postgres-dsn", "host=unused",
+        "--app-root", str(tmp_path),
+        "--output-root", str(tmp_path / "bundles"),
+        "--state-root", str(state_root),
+        "--base-model", str(base),
+        "--through-date", "2026-07-30",
+        "--once",
+    ])
+    assert result == 1
+    recovery = json.loads((state_root / "activation-recovery.json").read_text())
+    assert recovery["prediction_date"] == "2026-07-31"
+    assert recovery["status"] == "activation_blocked_dependency_or_validation"
+    assert recovery["identity_freeze_preserved"] is True
+    assert recovery["real_betting_enabled"] is False
+    assert not (state_root / "active").exists()

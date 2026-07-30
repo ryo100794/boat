@@ -4001,6 +4001,16 @@ DEFAULT_WORK_TICKETS = (
         5,
     ),
     (
+        "TEST-BASELINE-FAILURES-001",
+        "Resolve five repository baseline test failures",
+        "Quality",
+        "Fix the existing empirical market walk-forward, packed bankroll, and tail portfolio expectation mismatches found by the full repository test run.",
+        "The five failing tests reproduce independently, their behavioral contract is reconciled without changing frozen V21 artifacts or prospective evidence, and the full suite passes with zero failures.",
+        82,
+        "queued",
+        5,
+    ),
+    (
         "MODEL-EDGE-CONDITIONAL-LCB-V13-001",
         "高EV候補向け階層的確率LCB V13",
         "モデル",
