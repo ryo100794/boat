@@ -47,6 +47,7 @@ FROZEN_SOURCE_JOB_IDS = {
     "v20": 8458,
     "v21": 8666,
 }
+FROZEN_TRAINED_THROUGH_DATE = "2026-07-29"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,14 @@ def _model(family: str) -> str:
     if family == "v21":
         return V21_MODEL
     raise ValueError(f"unsupported family: {family}")
+
+
+def _manifest_trained_through(family: str, requested_through: str) -> str:
+    return (
+        FROZEN_TRAINED_THROUGH_DATE
+        if family in FROZEN_SOURCE_JOB_IDS
+        else requested_through
+    )
 
 
 def find_latest_completed_job(
@@ -428,7 +437,10 @@ def verify_bundle(
     expected = str((manifest.get("output") or {}).get("bundle_sha256") or "")
     if len(expected) != 64 or _sha256(path) != expected:
         raise ValueError("bundle hash does not match manifest")
-    if _iso(manifest.get("trained_through_date"), "trained_through_date") != through_date:
+    trained_through = _iso(
+        manifest.get("trained_through_date"), "trained_through_date"
+    )
+    if trained_through > through_date or trained_through >= prediction_date:
         raise ValueError("trained-through mismatch")
     if _iso(manifest.get("prediction_date"), "prediction_date") != prediction_date:
         raise ValueError("prediction date mismatch")
@@ -504,7 +516,7 @@ def build_v14_composite(
     manifest.update({
         "deployment_model_family": "v14",
         "prediction_date": prediction_date,
-        "trained_through_date": through_date,
+        "trained_through_date": _manifest_trained_through("v14", through_date),
         "composite": {
             "closing_estimator_source": str(v12_path),
             "closing_estimator_source_sha256": _sha256(v12_path),
@@ -575,7 +587,7 @@ def build_v16_composite(
     manifest.update({
         "deployment_model_family": "v16",
         "prediction_date": prediction_date,
-        "trained_through_date": through_date,
+        "trained_through_date": _manifest_trained_through("v16", through_date),
         "real_betting_enabled": False,
         "composite": {
             "closing_estimator_source": str(v12_path),
@@ -657,7 +669,7 @@ def build_v18_composite(
     manifest.update({
         "deployment_model_family": "v18",
         "prediction_date": prediction_date,
-        "trained_through_date": through_date,
+        "trained_through_date": _manifest_trained_through("v18", through_date),
         "real_betting_enabled": False,
         "composite": {
             "base_probability_source": str(v12_path),
@@ -749,7 +761,7 @@ def build_v20_composite(
     manifest.update({
         "deployment_model_family": "v20",
         "prediction_date": prediction_date,
-        "trained_through_date": through_date,
+        "trained_through_date": _manifest_trained_through("v20", through_date),
         "real_betting_enabled": False,
         "composite": {
             "base_probability_source": str(v12_path),
@@ -835,7 +847,7 @@ def build_v21_composite(
     manifest.update({
         "deployment_model_family": "v21",
         "prediction_date": prediction_date,
-        "trained_through_date": through_date,
+        "trained_through_date": _manifest_trained_through("v21", through_date),
         "real_betting_enabled": False,
         "composite": {
             "base_probability_source": str(v12_path),
