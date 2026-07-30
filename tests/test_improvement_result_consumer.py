@@ -383,6 +383,147 @@ class _LockConnection:
         return _Cursor({"acquired": True})
 
 
+
+def test_missing_source_job_id_is_a_known_mapping_error_without_inference() -> None:
+    candidate = _candidate(
+        1,
+        source_job_id=None,
+        parameters={"source_kind": "standardized_selected"},
+    )
+    with pytest.raises(
+        consumer.FormalMappingUnavailable,
+        match="bankroll candidate lacks source_job_id",
+    ):
+        consumer.formal_follow_up(candidate)
+
+
+
+def test_invalid_source_job_id_reaches_known_mapping_error_without_inference() -> None:
+    candidates = [
+        _candidate(1, parameters={"source_job_id": "not-a-job"}),
+        _candidate(2, parameters={"source_job_id": "not-a-job"}),
+    ]
+    assert consumer.comparison_group_key(candidates[0]) == (
+        consumer.comparison_group_key(candidates[1])
+    )
+    result = consumer.review_group(
+        _ReviewConnection(),
+        candidates,
+        settle_seconds=0,
+        now=NOW,
+    )
+    assert result["status"] == "follow_up_unavailable"
+    assert result["reason"] == "bankroll candidate has invalid source_job_id"
+
+
+def test_mapping_unavailable_group_remains_unreviewed_with_reason() -> None:
+    conn = _ReviewConnection()
+    candidates = [
+        _candidate(1, source_job_id=None),
+        _candidate(2, source_job_id=None, robust_roi=1.2),
+    ]
+    result = consumer.review_group(
+        conn,
+        candidates,
+        settle_seconds=0,
+        now=NOW,
+        enqueue=lambda *_args, **_kwargs: pytest.fail("must not enqueue"),
+    )
+    assert result["status"] == "follow_up_unavailable"
+    assert result["reason"] == "bankroll candidate lacks source_job_id"
+    assert result["candidate_ids"] == [1, 2]
+    assert result["winner_candidate_id"] == 2
+    assert conn.updates == []
+
+
+def test_process_continues_after_known_mapping_error_and_reports_ticket(monkeypatch) -> None:
+    class ProcessConnection(_ReviewConnection):
+        def execute(self, statement, parameters=()):
+            if "pg_try_advisory_xact_lock" in statement:
+                return _Cursor({"acquired": True})
+            return super().execute(statement, parameters)
+
+    conn = ProcessConnection()
+    candidates = [
+        _candidate(1, source_job_id=None),
+        _candidate(2, source_job_id=None, robust_roi=1.2),
+        _candidate(3, source_job_id=3565, robust_roi=0.9),
+        _candidate(4, source_job_id=3565, robust_roi=1.1),
+    ]
+    tickets = []
+    queued = []
+    monkeypatch.setattr(
+        consumer, "_load_supported_candidates", lambda *_a, **_k: candidates
+    )
+    monkeypatch.setattr(
+        consumer, "_review_clearly_non_actionable", lambda *_a, **_k: 0
+    )
+    monkeypatch.setattr(consumer, "_unsupported_pending_count", lambda *_a: 0)
+    monkeypatch.setattr(
+        consumer,
+        "_record_mapping_ticket",
+        lambda _conn, count, reasons: tickets.append((count, reasons)),
+    )
+
+    result = consumer.process_once(
+        conn,
+        settle_seconds=0,
+        enqueue=lambda *_args, **kwargs: queued.append(kwargs) or 9100,
+    )
+
+    assert [group["status"] for group in result["groups"]] == [
+        "follow_up_unavailable",
+        "formal_follow_up_queued",
+    ]
+    assert result["mapping_unavailable_count"] == 1
+    assert result["mapping_unavailable_reasons"][0]["candidate_ids"] == [1, 2]
+    assert result["mapping_unavailable_reasons"][0]["reason"] == (
+        "bankroll candidate lacks source_job_id"
+    )
+    assert result["reviewed"] == 2
+    assert {parameters[-1] for parameters in conn.updates} == {3, 4}
+    assert len(queued) == 1
+    assert tickets == [(0, result["mapping_unavailable_reasons"])]
+
+
+def test_unexpected_value_error_is_not_swallowed(monkeypatch) -> None:
+    conn = _ReviewConnection()
+    monkeypatch.setattr(
+        consumer,
+        "formal_follow_up",
+        lambda _candidate: (_ for _ in ()).throw(ValueError("unexpected failure")),
+    )
+    with pytest.raises(ValueError, match="unexpected failure"):
+        consumer.review_group(
+            conn,
+            [_candidate(1), _candidate(2)],
+            settle_seconds=0,
+            now=NOW,
+        )
+    assert conn.updates == []
+
+
+def test_mapping_ticket_contains_group_count_and_reasons() -> None:
+    class TicketConnection:
+        def __init__(self):
+            self.parameters = None
+
+        def execute(self, _statement, parameters=()):
+            self.parameters = parameters
+            return _Cursor()
+
+    conn = TicketConnection()
+    consumer._record_mapping_ticket(
+        conn,
+        7,
+        [{"group_key": "abcdef1234567890", "reason": "missing source", "candidate_ids": [1, 2]}],
+    )
+    description = conn.parameters[0]
+    assert "7 actionable completed candidates" in description
+    assert "1 comparable groups" in description
+    assert "abcdef123456: missing source" in description
+
+
 def test_unsupported_actionable_candidates_remain_pending_and_are_ticketed(monkeypatch) -> None:
     ticket_counts = []
     monkeypatch.setattr(consumer, "_load_supported_candidates", lambda *_a, **_k: [])
@@ -390,14 +531,14 @@ def test_unsupported_actionable_candidates_remain_pending_and_are_ticketed(monke
     monkeypatch.setattr(consumer, "_unsupported_pending_count", lambda *_a, **_k: 7)
     monkeypatch.setattr(
         consumer,
-        "_record_unsupported_ticket",
-        lambda _conn, count: ticket_counts.append(count),
+        "_record_mapping_ticket",
+        lambda _conn, count, reasons: ticket_counts.append((count, reasons)),
     )
     result = consumer.process_once(_LockConnection(), batch_size=5)
     assert result["unsupported_pending"] == 7
     assert result["clearly_non_actionable_reviewed"] == 2
     assert result["reviewed"] == 2
-    assert ticket_counts == [7]
+    assert ticket_counts == [(7, [])]
 
 
 def test_non_actionable_bulk_review_is_limited_to_invalid_data_source() -> None:

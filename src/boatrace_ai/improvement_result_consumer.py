@@ -53,6 +53,10 @@ ALTER TABLE model_improvement_candidate_reviews
 """
 
 
+class FormalMappingUnavailable(ValueError):
+    """A candidate cannot yet be mapped to a verified formal evaluation."""
+
+
 @dataclass(frozen=True)
 class Candidate:
     candidate_id: int
@@ -215,11 +219,17 @@ def comparison_identity(candidate: Candidate) -> dict[str, Any]:
     if candidate.task_type != "bankroll_policy_search":
         return {"task_type": candidate.task_type, "unsupported_job_id": candidate.job_id}
     params = candidate.parameters
-    source = (
-        {"source_job_id": int(params["source_job_id"])}
-        if params.get("source_job_id") is not None
-        else {"source_kind": params.get("source_kind")}
-    )
+    source_job_id = params.get("source_job_id")
+    if source_job_id is None:
+        source = {"source_kind": params.get("source_kind")}
+    else:
+        try:
+            normalized_source_job_id: Any = int(source_job_id)
+        except (TypeError, ValueError):
+            # Preserve the invalid value for grouping and audit. Validation is
+            # deferred to formal_follow_up; no source id is inferred.
+            normalized_source_job_id = {"invalid_value": str(source_job_id)}
+        source = {"source_job_id": normalized_source_job_id}
     temporal_boundary_names = (
         "evaluation_from", "evaluation_start", "evaluation_through",
         "evaluation_end", "holdout_from", "holdout_start", "holdout_through",
@@ -339,12 +349,20 @@ def formal_follow_up(
     candidate: Candidate,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
     if candidate.task_type != "bankroll_policy_search":
-        raise ValueError(f"unsupported formal follow-up source: {candidate.task_type}")
+        raise FormalMappingUnavailable(
+            f"unsupported formal follow-up source: {candidate.task_type}"
+        )
     params = candidate.parameters
     if params.get("source_job_id") is None:
-        raise ValueError("bankroll candidate lacks source_job_id")
+        raise FormalMappingUnavailable("bankroll candidate lacks source_job_id")
+    try:
+        source_job_id = int(params["source_job_id"])
+    except (TypeError, ValueError) as exc:
+        raise FormalMappingUnavailable(
+            "bankroll candidate has invalid source_job_id"
+        ) from exc
     executable = {
-        "source_job_id": int(params["source_job_id"]),
+        "source_job_id": source_job_id,
         "learning_rate": float(params.get("learning_rate") or 0.02),
         "epochs": int(params.get("epochs") or 2),
         "batch_races": int(params.get("batch_races") or 1000),
@@ -494,17 +512,31 @@ def review_group(
             )
         return {"group_key": group_key, "status": "already_reviewed"}
     valid, invalid = rank_candidates(candidates)
-    for candidate in invalid:
-        _review_candidate(
-            conn, candidate, decision="invalid_metrics",
-            reason="finite chronological ROI is required for comparison", group_key=group_key,
-        )
     if not valid:
+        for candidate in invalid:
+            _review_candidate(
+                conn, candidate, decision="invalid_metrics",
+                reason="finite chronological ROI is required for comparison",
+                group_key=group_key,
+            )
         return {"group_key": group_key, "status": "no_valid_candidate"}
     if len(valid) < 2:
-        return {"group_key": group_key, "status": "pending", "reason": "waiting_for_two_valid_candidates"}
+        return {
+            "group_key": group_key,
+            "status": "pending",
+            "reason": "waiting_for_two_valid_candidates",
+        }
     winner = valid[0]
-    task_type, model_key, parameters, audit = formal_follow_up(winner)
+    try:
+        task_type, model_key, parameters, audit = formal_follow_up(winner)
+    except FormalMappingUnavailable as exc:
+        return {
+            "group_key": group_key,
+            "status": "follow_up_unavailable",
+            "reason": str(exc),
+            "candidate_ids": [item.candidate_id for item in candidates],
+            "winner_candidate_id": winner.candidate_id,
+        }
     downstream = enqueue(
         conn, task_type=task_type, model_key=model_key, parameters=parameters,
         audit_parameters=audit, priority=95, max_attempts=3, parent_job_id=winner.job_id,
@@ -530,6 +562,12 @@ def review_group(
     ).fetchone()
     if inserted is None:
         raise RuntimeError("comparison group was reviewed concurrently")
+    for candidate in invalid:
+        _review_candidate(
+            conn, candidate, decision="invalid_metrics",
+            reason="finite chronological ROI is required for comparison",
+            group_key=group_key,
+        )
     for rank, candidate in enumerate(valid, start=1):
         selected = candidate.candidate_id == winner.candidate_id
         _review_candidate(
@@ -600,10 +638,24 @@ def _unsupported_pending_count(conn: Any) -> int:
     return int(row["count"]) if row is not None else 0
 
 
-def _record_unsupported_ticket(conn: Any, count: int) -> None:
-    if count <= 0:
+def _record_mapping_ticket(
+    conn: Any,
+    unsupported_count: int,
+    mapping_unavailable: list[dict[str, Any]],
+) -> None:
+    if unsupported_count <= 0 and not mapping_unavailable:
         return
-    description = f"{count} actionable completed candidates await a verified formal follow-up mapping"
+    reasons = "; ".join(
+        f"{item['group_key'][:12]}: {item['reason']}"
+        for item in mapping_unavailable
+    )
+    description = (
+        f"{unsupported_count} actionable completed candidates await a verified "
+        f"task mapping; {len(mapping_unavailable)} comparable groups cannot build "
+        f"a formal follow-up"
+    )
+    if reasons:
+        description += f": {reasons}"
     conn.execute(
         """
         INSERT INTO work_tickets(
@@ -651,16 +703,31 @@ def process_once(
     ]
     non_actionable = _review_clearly_non_actionable(conn, batch_size=batch_size)
     unsupported = _unsupported_pending_count(conn) + pending_supported_decisions
-    _record_unsupported_ticket(conn, unsupported)
+    mapping_unavailable = [
+        {
+            "group_key": result["group_key"],
+            "reason": result["reason"],
+            "candidate_ids": result.get("candidate_ids", []),
+            "winner_candidate_id": result.get("winner_candidate_id"),
+        }
+        for result in results
+        if result["status"] == "follow_up_unavailable"
+    ]
+    _record_mapping_ticket(conn, unsupported, mapping_unavailable)
+    final_statuses = {
+        "formal_follow_up_queued", "already_reviewed", "no_valid_candidate"
+    }
     reviewed_groups = sum(
         len(groups[result["group_key"]])
         for result in results
-        if result["status"] not in {"pending"}
+        if result["status"] in final_statuses
     )
     return {
         "status": "completed", "reviewed": reviewed_groups + non_actionable,
         "supported_candidates": len(candidates),
         "unsupported_pending": unsupported,
+        "mapping_unavailable_count": len(mapping_unavailable),
+        "mapping_unavailable_reasons": mapping_unavailable,
         "clearly_non_actionable_reviewed": non_actionable,
         "groups": results,
     }
