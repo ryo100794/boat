@@ -25,6 +25,7 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
+from ..feature_schema import uses_official_series_features
 from ..hashed_feature_dataset import (
     CACHE_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -128,13 +129,24 @@ def day_boundary(race_keys: list[tuple[str, str, str, int]], approximate: int) -
 
 
 def feature_variants() -> list[tuple[str, tuple[str, ...]]]:
+    active_groups = DEFAULT_ABLATION_FEATURE_GROUPS
+    if not uses_official_series_features(FEATURE_SCHEMA_VERSION):
+        active_groups = tuple(
+            group
+            for group in active_groups
+            if group not in {"series_cached", "series_relative"}
+        )
     return [("full", ())] + [
-        (f"drop_{group}", (group,)) for group in DEFAULT_ABLATION_FEATURE_GROUPS
+        (f"drop_{group}", (group,)) for group in active_groups
     ]
 
 
 def _feature_variant_catalog() -> dict[str, tuple[str, ...]]:
-    return dict(feature_variants()) | {
+    backward_compatible_groups = {
+        f"drop_{group}": (group,)
+        for group in DEFAULT_ABLATION_FEATURE_GROUPS
+    }
+    return dict(feature_variants()) | backward_compatible_groups | {
         "drop_card_numeric": ("card_numeric",),
         "drop_card_relative": ("card_relative",),
         "drop_card_numeric_card_relative": ("card_numeric", "card_relative"),

@@ -81,9 +81,11 @@ def test_ev_policy_thresholds_are_parsed_separately_from_model_search() -> None:
 def test_feature_search_covers_full_and_each_single_group_ablation() -> None:
     variants = feature_variants()
     assert variants[0] == ("full", ())
-    assert {drops[0] for _name, drops in variants[1:]} == set(
-        DEFAULT_ABLATION_FEATURE_GROUPS
+    assert {drops[0] for _name, drops in variants[1:]} == (
+        set(DEFAULT_ABLATION_FEATURE_GROUPS)
+        - {"series_cached", "series_relative"}
     )
+    assert len(variants) == 5
     assert all(len(drops) == 1 for _name, drops in variants[1:])
 
 
@@ -102,6 +104,12 @@ def test_feature_variant_selection_is_explicit_and_ordered() -> None:
             "drop_card_numeric_card_relative",
             ("card_numeric", "card_relative"),
         ),
+    )
+    assert parse_feature_variants(
+        "drop_series_cached,drop_series_relative"
+    ) == (
+        ("drop_series_cached", ("series_cached",)),
+        ("drop_series_relative", ("series_relative",)),
     )
     with pytest.raises(argparse.ArgumentTypeError, match="feature variants"):
         parse_feature_variants("unknown")
