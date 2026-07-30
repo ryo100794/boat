@@ -45,8 +45,9 @@ from ..standard_evaluation import race_set_sha256
 
 FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
 
-SELECTION_RULE_VERSION = "ranking-loss-tolerance-top5-v2"
+SELECTION_RULE_VERSION = "ranking-loss-top5-slack-top1-v3"
 SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.01
+SELECTION_TOP5_ABSOLUTE_TOLERANCE = 0.001
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
 
 
@@ -401,16 +402,26 @@ def _selected_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ranking_ceiling = best_ranking_loss * (
         1.0 + SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
     )
-    eligible = [
+    ranking_eligible = [
         row
         for row in rows
         if float(row["ranking_log_loss"]) <= ranking_ceiling + 1e-12
     ]
+    best_top5 = max(
+        float(row["trifecta_top5_hit_rate"])
+        for row in ranking_eligible
+    )
+    top5_floor = best_top5 - SELECTION_TOP5_ABSOLUTE_TOLERANCE
+    eligible = [
+        row
+        for row in ranking_eligible
+        if float(row["trifecta_top5_hit_rate"]) >= top5_floor - 1e-12
+    ]
     return min(eligible, key=lambda row: (
-        -float(row["trifecta_top5_hit_rate"]),
         -float(row["winner_top1_accuracy"]),
         float(row["entry_log_loss"]),
         float(row["ranking_log_loss"]),
+        -float(row["trifecta_top5_hit_rate"]),
     ))
 
 
@@ -965,13 +976,17 @@ def search(
         "selection_ranking_loss_relative_tolerance": (
             SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
         ),
+        "selection_top5_absolute_tolerance": (
+            SELECTION_TOP5_ABSOLUTE_TOLERANCE
+        ),
         "feature_variants": [name for name, _drops in run_variants],
         "teacher_targets": list(targets),
         "loss_blend": loss_blend,
         "alphas": list(alphas),
         "selection_metric": (
-            "ranking log loss within 0.5% of best, then maximum 3T5; "
-            "winner top1 and entry log loss as tie breaks"
+            "ranking log loss within 1% of best and 3T5 within 0.1 percentage "
+            "points of best, then maximum winner top1; entry and ranking log "
+            "loss as tie breaks"
         ),
         "search_results": search_rows,
         "selected": selected_payload,
