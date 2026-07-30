@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 import time
@@ -14,6 +15,7 @@ from sklearn.feature_extraction import FeatureHasher
 
 from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
+from ..cache_entry_series_features import ensure_series_cache_table
 from ..db import connection, init_db
 from ..feature_tuning import (
     DEFAULT_ABLATION_FEATURE_GROUPS,
@@ -50,6 +52,24 @@ SELECTION_RULE_VERSION = "ranking-loss-top5-slack-top1-v3"
 SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.01
 SELECTION_TOP5_ABSOLUTE_TOLERANCE = 0.001
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
+CHECKPOINT_VERSION = 2
+SOURCE_DATA_SNAPSHOT_VERSION = 1
+
+DECAYED_HISTORY_FEATURE_SCHEMA_VERSION = (
+    f"{FEATURE_SCHEMA_VERSION}-decayed-history-v1"
+)
+
+
+def _include_decayed_history(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "include_decayed_history", False))
+
+
+def _effective_feature_schema_version(args: argparse.Namespace) -> str:
+    return (
+        DECAYED_HISTORY_FEATURE_SCHEMA_VERSION
+        if _include_decayed_history(args)
+        else FEATURE_SCHEMA_VERSION
+    )
 
 
 def parse_ev_thresholds(value: str | None, fallback: float) -> tuple[float, ...]:
@@ -179,6 +199,8 @@ def load_variant_dataset(
     n_features: int,
     batch_races: int,
     write_cache: bool = True,
+    include_decayed_history: bool = False,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> tuple[HashedRaceDataset, str]:
     dataset, source, _cache_prefix = load_variant_dataset_with_cache(
         conn,
@@ -189,12 +211,21 @@ def load_variant_dataset(
         n_features=n_features,
         batch_races=batch_races,
         write_cache=write_cache,
+        include_decayed_history=include_decayed_history,
+        feature_schema_version=feature_schema_version,
     )
     return dataset, source
 
 
-def variant_cache_prefix(cache_dir: Path, *, n_features: int, name: str) -> Path:
-    return cache_dir / f"listwise_search_{int(n_features)}_{name}"
+def variant_cache_prefix(
+    cache_dir: Path,
+    *,
+    n_features: int,
+    name: str,
+    include_decayed_history: bool = False,
+) -> Path:
+    history_suffix = "_decayed_history" if include_decayed_history else ""
+    return cache_dir / f"listwise_search_{int(n_features)}_{name}{history_suffix}"
 
 
 def load_variant_dataset_with_cache(
@@ -208,6 +239,8 @@ def load_variant_dataset_with_cache(
     batch_races: int,
     write_cache: bool = True,
     fallback_cache_prefixes: tuple[Path, ...] = (),
+    include_decayed_history: bool = False,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> tuple[HashedRaceDataset, str, Path | None]:
     hasher = FeatureHasher(
         n_features=n_features,
@@ -219,6 +252,7 @@ def load_variant_dataset_with_cache(
         cache_dir,
         n_features=n_features,
         name=name,
+        include_decayed_history=include_decayed_history,
     ).resolve()
     normalized_fallbacks = tuple(prefix.resolve() for prefix in fallback_cache_prefixes)
     read_prefixes = list(dict.fromkeys((primary_prefix, *normalized_fallbacks)))
@@ -229,6 +263,7 @@ def load_variant_dataset_with_cache(
             n_features=n_features,
             drop_feature_groups=normalized,
             hasher=hasher,
+            feature_schema_version=feature_schema_version,
         )
         if loaded is not None:
             return loaded, "disk", read_prefix
@@ -240,6 +275,7 @@ def load_variant_dataset_with_cache(
             conn,
             include_races={race_id for race_id, *_rest in race_keys},
             drop_feature_groups=normalized,
+            include_decayed_history=include_decayed_history,
         ),
         hasher=hasher,
         to_hashable=to_hashable,
@@ -247,6 +283,7 @@ def load_variant_dataset_with_cache(
         drop_feature_groups=normalized,
         batch_size=batch_races * 6,
         write_cache=write_cache,
+        feature_schema_version=feature_schema_version,
     )
     return dataset, source, primary_prefix if write_cache else None
 
@@ -256,6 +293,7 @@ def cleanup_selected_cache_family(
     *,
     n_features: int,
     variants: FeatureVariants | None = None,
+    include_decayed_history: bool = False,
 ) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     for variant_name, _dropped in _resolved_variants(variants):
@@ -263,6 +301,7 @@ def cleanup_selected_cache_family(
             cache_dir,
             n_features=n_features,
             name=variant_name,
+            include_decayed_history=include_decayed_history,
         )
         for path in cache_paths(prefix).values():
             path.unlink(missing_ok=True)
@@ -276,6 +315,7 @@ def selected_cache_candidates(
     *,
     n_features: int,
     variants: FeatureVariants | None = None,
+    include_decayed_history: bool = False,
 ) -> list[Path]:
     candidates: list[Path] = []
     for variant_name, _dropped in _resolved_variants(variants):
@@ -283,6 +323,7 @@ def selected_cache_candidates(
             cache_dir,
             n_features=n_features,
             name=variant_name,
+            include_decayed_history=include_decayed_history,
         )
         if cache_paths(prefix)["manifest"].exists():
             candidates.append(prefix)
@@ -293,6 +334,313 @@ def _candidate_key(variant_name: str, target: str, alpha: float) -> str:
     return json.dumps([variant_name, target, float(alpha)], separators=(",", ":"))
 
 
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _selected_cache_manifest_sha256(
+    cache_dir: Path | None,
+    *,
+    n_features: int,
+    variants: FeatureVariants | None,
+    include_decayed_history: bool = False,
+) -> str:
+    manifests: list[dict[str, Any]] = []
+    if cache_dir is None:
+        return _canonical_sha256(manifests)
+    for prefix in selected_cache_candidates(
+        cache_dir,
+        n_features=n_features,
+        variants=variants,
+        include_decayed_history=include_decayed_history,
+    ):
+        path = cache_paths(prefix)["manifest"]
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"selected cache manifest is invalid: {path}") from exc
+        fields = {
+            name: manifest.get(name)
+            for name in (
+                "cache_version",
+                "feature_schema_version",
+                "race_count",
+                "race_ids_sha256",
+                "n_features",
+                "drop_feature_groups",
+                "matrix_shape",
+                "matrix_nnz",
+                "matrix_dtype",
+                "matrix_file_sha256",
+                "ranks_shape",
+                "ranks_dtype",
+                "ranks_sha256",
+                "ranks_file_sha256",
+            )
+        }
+        for name in (
+            "race_ids_sha256",
+            "matrix_file_sha256",
+            "ranks_sha256",
+            "ranks_file_sha256",
+        ):
+            if not _is_sha256(fields[name]):
+                raise ValueError(
+                    f"selected cache manifest lacks valid {name}: {path}"
+                )
+        manifests.append({"prefix": prefix.name, **fields})
+    return _canonical_sha256(manifests)
+
+
+def _source_table_watermark(
+    conn: Any,
+    *,
+    as_of_date: str,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> str:
+    ensure_series_cache_table(conn)
+    statements = (
+        (
+            "races",
+            """
+            SELECT COUNT(*) AS row_count, MIN(r.updated_at) AS min_updated_at,
+                   MAX(r.updated_at) AS max_updated_at
+            FROM races r
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "entries",
+            """
+            SELECT COUNT(*) AS row_count, MIN(e.updated_at) AS min_updated_at,
+                   MAX(e.updated_at) AS max_updated_at
+            FROM entries e
+            JOIN races r ON r.race_id = e.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "race_results",
+            """
+            SELECT COUNT(*) AS row_count, MIN(rr.updated_at) AS min_updated_at,
+                   MAX(rr.updated_at) AS max_updated_at
+            FROM race_results rr
+            JOIN races r ON r.race_id = rr.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "entry_series_features",
+            """
+            SELECT COUNT(*) AS row_count, MIN(sf.updated_at) AS min_updated_at,
+                   MAX(sf.updated_at) AS max_updated_at
+            FROM entry_series_features sf
+            JOIN races r ON r.race_id = sf.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+    )
+    tables: list[dict[str, Any]] = []
+    for name, statement in statements:
+        row = conn.execute(statement, (as_of_date,)).fetchone()
+        tables.append({
+            "table": name,
+            "row_count": int(row["row_count"] or 0),
+            "min_updated_at": (
+                None
+                if row["min_updated_at"] is None
+                else str(row["min_updated_at"])
+            ),
+            "max_updated_at": (
+                None
+                if row["max_updated_at"] is None
+                else str(row["max_updated_at"])
+            ),
+        })
+
+    period_digest = hashlib.sha256()
+    period_count = 0
+    period_rows = conn.execute(
+        """
+        SELECT year, half, racer_no, raw_json
+        FROM racer_period_stats
+        ORDER BY year, half, racer_no
+        """
+    ).fetchall()
+    for row in period_rows:
+        period_count += 1
+        period_digest.update(
+            json.dumps(
+                [
+                    int(row["year"]),
+                    int(row["half"]),
+                    int(row["racer_no"]),
+                    str(row["raw_json"]),
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        period_digest.update(b"\n")
+    return _canonical_sha256({
+        "watermark_version": 1,
+        "as_of_date": as_of_date,
+        "feature_schema_version": feature_schema_version,
+        "tables": tables,
+        "racer_period_stats_count": period_count,
+        "racer_period_stats_sha256": period_digest.hexdigest(),
+    })
+
+
+def source_data_snapshot(
+    conn: Any,
+    *,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    selected_cache_dir: Path | None = None,
+    n_features: int = 4096,
+    variants: FeatureVariants | None = None,
+    as_of_date: str | None = None,
+    include_decayed_history: bool = False,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Build a cheap source watermark plus immutable payout/cache identities."""
+    expected_ids = [str(race_id) for race_id, *_rest in race_keys]
+    if not expected_ids:
+        raise ValueError("source snapshot requires at least one race")
+    as_of_date = str(as_of_date or race_keys[-1][1])
+    payout_digest = hashlib.sha256()
+    payout_digest.update(b"trifecta-payouts-v1\n")
+    for race_id in expected_ids:
+        payout = payouts.get(race_id)
+        settlements = tuple(payout.get("settlements") or ()) if payout else ()
+        canonical = sorted(
+            (
+                str(row["combination"]),
+                int(row["payout_yen"]),
+                (
+                    None
+                    if row.get("popularity") is None
+                    else int(row["popularity"])
+                ),
+            )
+            for row in settlements
+        )
+        payout_digest.update(
+            json.dumps(
+                [race_id, canonical],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        payout_digest.update(b"\n")
+
+    identity = {
+        "snapshot_version": SOURCE_DATA_SNAPSHOT_VERSION,
+        "race_count": len(expected_ids),
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_watermark_sha256": _source_table_watermark(
+            conn,
+            as_of_date=as_of_date,
+            feature_schema_version=feature_schema_version,
+        ),
+        "trifecta_payouts_sha256": payout_digest.hexdigest(),
+        "selected_cache_manifest_sha256": _selected_cache_manifest_sha256(
+            selected_cache_dir,
+            n_features=n_features,
+            variants=variants,
+            include_decayed_history=include_decayed_history,
+        ),
+    }
+    identity["snapshot_sha256"] = _canonical_sha256(identity)
+    return identity
+
+
+def _validated_source_data_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("source data snapshot identity is required")
+    required = {
+        "snapshot_version",
+        "race_count",
+        "race_universe_sha256",
+        "source_watermark_sha256",
+        "trifecta_payouts_sha256",
+        "selected_cache_manifest_sha256",
+        "snapshot_sha256",
+    }
+    if set(value) != required:
+        raise ValueError("source data snapshot identity fields are invalid")
+    if (
+        value.get("snapshot_version") != SOURCE_DATA_SNAPSHOT_VERSION
+        or isinstance(value.get("race_count"), bool)
+        or not isinstance(value.get("race_count"), int)
+        or int(value["race_count"]) <= 0
+        or any(
+            not _is_sha256(value.get(name))
+            for name in (
+                "race_universe_sha256",
+                "source_watermark_sha256",
+                "trifecta_payouts_sha256",
+                "selected_cache_manifest_sha256",
+                "snapshot_sha256",
+            )
+        )
+    ):
+        raise ValueError("source data snapshot identity is invalid")
+    expected = _canonical_sha256({
+        name: field
+        for name, field in value.items()
+        if name != "snapshot_sha256"
+    })
+    if value["snapshot_sha256"] != expected:
+        raise ValueError("source data snapshot aggregate hash is invalid")
+    return dict(value)
+
+
+def _refresh_selected_cache_identity(
+    signature: dict[str, Any],
+    *,
+    selected_cache_dir: Path | None,
+    n_features: int,
+    variants: FeatureVariants | None,
+    include_decayed_history: bool = False,
+) -> bool:
+    snapshot = dict(signature["source_data_snapshot"])
+    current = _selected_cache_manifest_sha256(
+        selected_cache_dir,
+        n_features=n_features,
+        variants=variants,
+        include_decayed_history=include_decayed_history,
+    )
+    if snapshot["selected_cache_manifest_sha256"] == current:
+        return False
+    snapshot["selected_cache_manifest_sha256"] = current
+    snapshot["snapshot_sha256"] = _canonical_sha256({
+        name: value
+        for name, value in snapshot.items()
+        if name != "snapshot_sha256"
+    })
+    signature["source_data_snapshot"] = snapshot
+    return True
+
+
 def _checkpoint_signature(
     *,
     args: argparse.Namespace,
@@ -301,15 +649,22 @@ def _checkpoint_signature(
     selection_end: int,
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
+    data_snapshot: dict[str, Any],
     variants: FeatureVariants | None = None,
 ) -> dict[str, Any]:
+    verified_snapshot = _validated_source_data_snapshot(data_snapshot)
+    if verified_snapshot["race_count"] != len(race_keys):
+        raise ValueError("source data snapshot race count mismatch")
+    if verified_snapshot["race_universe_sha256"] != race_ids_sha256(race_keys):
+        raise ValueError("source data snapshot race universe mismatch")
     signature = {
-        "checkpoint_version": 1,
+        "checkpoint_version": CHECKPOINT_VERSION,
         "cache_version": CACHE_VERSION,
-        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_schema_version": _effective_feature_schema_version(args),
         "as_of_date": getattr(args, "as_of_date", None),
         "race_count": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_data_snapshot": verified_snapshot,
         "train_end": train_end,
         "selection_end": selection_end,
         "n_features": int(args.n_features),
@@ -322,6 +677,8 @@ def _checkpoint_signature(
             [name, list(dropped)] for name, dropped in _resolved_variants(variants)
         ],
     }
+    if _include_decayed_history(args):
+        signature["include_decayed_history"] = True
     loss_blend = getattr(args, "loss_blend", None)
     if loss_blend is not None:
         signature["loss_blend"] = float(loss_blend)
@@ -411,12 +768,16 @@ def _load_reusable_search_results(
         "selection_races": int(signature["selection_end"] - signature["train_end"]),
         "holdout_races": int(signature["race_count"] - signature["selection_end"]),
         "n_features": int(signature["n_features"]),
-        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_schema_version": signature.get(
+            "feature_schema_version", FEATURE_SCHEMA_VERSION
+        ),
         "feature_variants": [name for name, _drops in signature["feature_variants"]],
         "teacher_targets": list(signature["targets"]),
         "loss_blend": signature.get("loss_blend"),
         "alphas": [float(value) for value in signature["alphas"]],
     }
+    if signature.get("include_decayed_history"):
+        expected["include_decayed_history"] = True
     actual = {name: payload.get(name) for name in expected}
     if actual != expected:
         mismatches = [name for name in expected if actual[name] != expected[name]]
@@ -525,6 +886,10 @@ def _evaluate_variant(
         n_features=int(request["n_features"]),
         batch_races=int(request["batch_races"]),
         write_cache=bool(request["write_cache"]),
+        include_decayed_history=bool(request.get("include_decayed_history", False)),
+        feature_schema_version=str(
+            request.get("feature_schema_version", FEATURE_SCHEMA_VERSION)
+        ),
     )
     missing = [
         (target, alpha)
@@ -669,6 +1034,8 @@ def search(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     run_variants = _resolved_variants(variants)
+    include_decayed_history = _include_decayed_history(args)
+    feature_schema_version = _effective_feature_schema_version(args)
     race_keys = [
         row
         for row in load_complete_race_ids(conn)
@@ -708,6 +1075,18 @@ def search(
         if getattr(args, "checkpoint", None)
         else output.with_name(f".{output.name}.checkpoint.json")
     )
+    payouts = _load_trifecta_payouts(conn)
+    data_snapshot = source_data_snapshot(
+        conn,
+        race_keys=race_keys,
+        payouts=payouts,
+        selected_cache_dir=selected_cache_dir,
+        n_features=int(args.n_features),
+        variants=run_variants,
+        as_of_date=args.as_of_date,
+        include_decayed_history=include_decayed_history,
+        feature_schema_version=feature_schema_version,
+    )
     checkpoint_signature = _checkpoint_signature(
         args=args,
         race_keys=race_keys,
@@ -715,6 +1094,7 @@ def search(
         selection_end=selection_end,
         targets=targets,
         alphas=alphas,
+        data_snapshot=data_snapshot,
         variants=run_variants,
     )
     completed = _load_checkpoint(checkpoint_path, checkpoint_signature)
@@ -740,12 +1120,14 @@ def search(
             selected_cache_dir,
             n_features=args.n_features,
             variants=run_variants,
+            include_decayed_history=include_decayed_history,
         )
         expected_prefix = (
             variant_cache_prefix(
                 selected_cache_dir,
                 n_features=args.n_features,
                 name=str(resumed_selected["feature_variant"]),
+                include_decayed_history=include_decayed_history,
             )
             if resumed_selected is not None
             else None
@@ -757,7 +1139,24 @@ def search(
                 selected_cache_dir,
                 n_features=args.n_features,
                 variants=run_variants,
+                include_decayed_history=include_decayed_history,
             )
+            if completed and _refresh_selected_cache_identity(
+                checkpoint_signature,
+                selected_cache_dir=selected_cache_dir,
+                n_features=int(args.n_features),
+                variants=run_variants,
+                include_decayed_history=include_decayed_history,
+            ):
+                _persist_checkpoint_progress(
+                    checkpoint_path,
+                    checkpoint_signature,
+                    completed,
+                    targets=targets,
+                    alphas=alphas,
+                    variants=run_variants,
+                    last_completed={"kind": "selected_cache_reset"},
+                )
 
     requests: list[dict[str, Any]] = []
     for variant_name, dropped in run_variants:
@@ -788,6 +1187,8 @@ def search(
             "n_features": int(args.n_features),
             "batch_races": int(args.batch_races),
             "write_cache": args.cache_write_mode == "always",
+            "include_decayed_history": include_decayed_history,
+            "feature_schema_version": feature_schema_version,
             "train_end": train_end,
             "selection_end": selection_end,
             "targets": targets,
@@ -876,14 +1277,35 @@ def search(
                     selected_cache_dir,
                     n_features=args.n_features,
                     variants=run_variants,
+                    include_decayed_history=include_decayed_history,
                 )
                 save_prefix = variant_cache_prefix(
                     selected_cache_dir,
                     n_features=args.n_features,
                     name=variant_name,
+                    include_decayed_history=include_decayed_history,
                 )
                 save_hashed_dataset(save_prefix, dataset)
                 active_cache_variant = variant_name
+                if _refresh_selected_cache_identity(
+                    checkpoint_signature,
+                    selected_cache_dir=selected_cache_dir,
+                    n_features=int(args.n_features),
+                    variants=run_variants,
+                    include_decayed_history=include_decayed_history,
+                ):
+                    _persist_checkpoint_progress(
+                        checkpoint_path,
+                        checkpoint_signature,
+                        completed,
+                        targets=targets,
+                        alphas=alphas,
+                        variants=run_variants,
+                        last_completed={
+                            "kind": "selected_cache_manifest",
+                            "feature_variant": variant_name,
+                        },
+                    )
             print(json.dumps({
                 "feature_variant_complete": variant_name,
                 "elapsed_seconds": payload["elapsed_seconds"],
@@ -911,11 +1333,13 @@ def search(
             selected_cache_dir,
             n_features=args.n_features,
             name=str(selected["feature_variant"]),
+            include_decayed_history=include_decayed_history,
         )
         candidates = selected_cache_candidates(
             selected_cache_dir,
             n_features=args.n_features,
             variants=run_variants,
+            include_decayed_history=include_decayed_history,
         )
         if candidates != [selected_cache_prefix]:
             raise RuntimeError("selected cache directory must contain exactly one candidate")
@@ -930,6 +1354,7 @@ def search(
             n_features=args.n_features,
             drop_feature_groups=selected_drops,
             hasher=hasher,
+            feature_schema_version=feature_schema_version,
         )
         if dataset is None:
             raise RuntimeError("selected cache is missing or invalid")
@@ -944,6 +1369,8 @@ def search(
             n_features=args.n_features,
             batch_races=args.batch_races,
             write_cache=args.cache_write_mode == "always",
+            include_decayed_history=include_decayed_history,
+            feature_schema_version=feature_schema_version,
         )
     policy_scaler = fit_scaler(
         dataset, race_end=train_end, batch_rows=args.batch_races * 6
@@ -967,7 +1394,6 @@ def search(
         batch_races=args.batch_races,
         keep_rows=True,
     )
-    payouts = _load_trifecta_payouts(conn)
     selected_ev_threshold, ev_policy_results = select_ev_policy(
         rows_by_race=selection_rows,
         race_keys=race_keys,
@@ -1052,7 +1478,8 @@ def search(
         "evaluation_race_set_sha256": evaluation_hash,
         "n_features": args.n_features,
         "hashed_cache_version": CACHE_VERSION,
-        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_schema_version": feature_schema_version,
+        "include_decayed_history": include_decayed_history,
         "selection_rule_version": SELECTION_RULE_VERSION,
         "selection_ranking_loss_relative_tolerance": (
             SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE
@@ -1146,6 +1573,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Candidates sharing one read-only variant dataset (1-4).",
     )
     parser.add_argument("--as-of-date")
+    parser.add_argument(
+        "--include-decayed-history",
+        action="store_true",
+        help=(
+            "Add leakage-safe 30/90/365-day entity history features using a "
+            "separate experimental cache schema."
+        ),
+    )
     parser.add_argument("--n-features", type=int, default=1 << 13)
     parser.add_argument("--batch-races", type=int, default=1_000)
     parser.add_argument("--epochs", type=int, default=2)
