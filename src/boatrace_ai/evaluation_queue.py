@@ -21,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .db import connection
+from .evaluation_probability_summary import canonicalize_probability_metrics
 from .evaluation_result_summary import canonicalize_primary_bankroll
 from .feature_schema import FEATURE_SCHEMA_VERSION
 from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
@@ -3129,6 +3130,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         primary_bankroll=payload.get("primary_bankroll") or gate_primary,
+    )
+    canonical = canonicalize_probability_metrics(
+        canonical,
+        probability_metrics=(
+            payload.get("probability_metrics")
+            if isinstance(payload.get("probability_metrics"), dict)
+            else None
+        ),
+        market_comparison=(
+            payload.get("market_comparison")
+            if isinstance(payload.get("market_comparison"), dict)
+            else None
+        ),
     )
     return {key: value for key, value in canonical.items() if value is not None}
 
