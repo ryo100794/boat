@@ -92,7 +92,9 @@ def find_latest_completed_job(
         WHERE status = 'completed' AND result_path IS NOT NULL
           AND parameters->>'through_date' = %s
           AND parameters->>'calibrator_strategy' = %s
-        ORDER BY completed_at DESC NULLS LAST, job_id DESC LIMIT 1
+        ORDER BY priority DESC NULLS LAST,
+                 completed_at DESC NULLS LAST, job_id DESC
+        LIMIT 1
         """,
         (_iso(through_date, "through_date"), _model(family)),
     ).fetchone()
