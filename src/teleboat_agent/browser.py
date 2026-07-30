@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
+from .account_balance import AccountBalanceError, TeleboatBalanceProbe
 from .config import Settings
 from .login_probe import LoginProbeError, TeleboatLoginProbe
 from .login_secrets import LoginSecrets
@@ -111,9 +112,10 @@ class PlaywrightVoteExecutor:
 
     def _run(self, request: VoteRequest, *, submit: bool) -> dict[str, object]:
         secrets = self._login_secrets()
-        probe = TeleboatLoginProbe(timeout=30)
+        probe = TeleboatBalanceProbe(timeout=30)
         authenticated = False
         final_triggered = False
+        available_balance_yen: int | None = None
         stage = "browser_start"
         result: dict[str, object] | None = None
         try:
@@ -128,6 +130,15 @@ class PlaywrightVoteExecutor:
                     authenticated = probe._wait_until_authenticated(page, "mobile")
                     if not authenticated:
                         raise VoteExecutionError("official login was not authenticated")
+                    stage = "balance_preflight"
+                    try:
+                        available_balance_yen = probe._read_balance(page, "mobile")
+                        if available_balance_yen < request.total_stake_yen:
+                            raise AccountBalanceError(
+                                "official available balance is insufficient"
+                            )
+                    except AccountBalanceError as exc:
+                        raise VoteExecutionError(str(exc)) from exc
                     stage = "vote_menu"
                     self._open_vote_menu(page, probe, request)
                     stage = "ticket_input"
@@ -146,9 +157,12 @@ class PlaywrightVoteExecutor:
                         "bet_type": request.bet_type.value,
                         "method": request.method.value,
                         "status": "preview_verified",
+                        "available_balance_yen": available_balance_yen,
                         "final_button_clicked": False,
                         "verifications": {
                             "authentication": True,
+                            "available_balance": True,
+                            "sufficient_balance": True,
                             "official_host_allowlist": True,
                             "mode_selection": True,
                             "ticket_inputs": True,
