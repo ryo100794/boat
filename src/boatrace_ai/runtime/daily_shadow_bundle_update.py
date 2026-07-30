@@ -1038,7 +1038,9 @@ def verify_activation_recovery(
     else:
         race_rows = conn.execute(
             """
-            SELECT r.race_id, r.deadline_at - INTERVAL '10 minutes' AS target_t300_at
+            SELECT r.race_id,
+                   r.deadline_at::timestamptz - INTERVAL '10 minutes'
+                     AS target_t300_at
             FROM races r
             WHERE r.race_date = %s AND r.deadline_at IS NOT NULL
               AND (SELECT COUNT(DISTINCT e.lane) FROM entries e
