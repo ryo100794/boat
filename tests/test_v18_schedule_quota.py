@@ -273,6 +273,122 @@ def test_v20_is_distinct_evaluation_only_schedule_quota_model() -> None:
     assert strategy not in market_calibration.ROBUST_POLICY_STRATEGIES
 
 
+def test_v21_builds_three_roles_from_strict_prior_rows(monkeypatch) -> None:
+    calls = []
+
+    def fitted(races, *, calibrator_strategy):
+        calls.append((calibrator_strategy, [race["race_id"] for race in races]))
+        weight = (
+            1.0
+            if calibrator_strategy == market_calibration.V19_STRATEGY_NAME
+            else 0.25
+        )
+        return {
+            "final_calibrator": {"model_weight": weight, "temperature": 1.0},
+            "candidates": [],
+        }
+
+    monkeypatch.setattr(
+        market_calibration, "fit_market_residual_calibrator", fitted
+    )
+    prior = [
+        {"race_id": "prior-1", "race_date": "2026-07-28"},
+        {"race_id": "prior-2", "race_date": "2026-07-29"},
+    ]
+
+    triple = market_calibration.fit_v21_triple_head_calibrators(prior)
+
+    assert calls == [
+        (market_calibration.V19_STRATEGY_NAME, ["prior-1", "prior-2"]),
+        (market_calibration.V18_STRATEGY_NAME, ["prior-1", "prior-2"]),
+    ]
+    assert triple["outer_holdout_used"] is False
+    assert triple["probability_head"]["raw_nonregression_enforced"] is True
+    assert triple["ranking_head"]["raw_nonregression_enforced"] is False
+    assert triple["purchase_head"]["raw_nonregression_enforced"] is False
+    assert (
+        triple["ranking_head"]["selection"]
+        is triple["purchase_head"]["selection"]
+    )
+    assert (
+        triple["ranking_head"]["calibrator"]
+        == triple["purchase_head"]["calibrator"]
+    )
+    assert triple["ranking_purchase_share_v18_selection"] is True
+
+
+def test_v21_split_metrics_use_probability_and_ranking_heads() -> None:
+    race = {
+        "race_id": "split-head",
+        "race_date": "2026-07-30",
+        "actual_combination": "1-2-3",
+        "model_probabilities": {
+            "1-2-3": 0.50,
+            "1-3-2": 0.10,
+            "2-1-3": 0.10,
+            "2-3-1": 0.10,
+            "3-1-2": 0.10,
+            "3-2-1": 0.10,
+        },
+        "market_probabilities": {
+            "1-2-3": 0.01,
+            "1-3-2": 0.25,
+            "2-1-3": 0.20,
+            "2-3-1": 0.19,
+            "3-1-2": 0.18,
+            "3-2-1": 0.17,
+        },
+    }
+    probability = {"model_weight": 0.0, "temperature": 1.0}
+    ranking = {"model_weight": 1.0, "temperature": 1.0}
+
+    probability_only = market_calibration.probability_metrics(
+        [race], calibrator=probability
+    )
+    ranking_only = market_calibration.probability_metrics(
+        [race], calibrator=ranking
+    )
+    split = market_calibration.split_head_probability_metrics(
+        [race],
+        probability_calibrator=probability,
+        ranking_calibrator=ranking,
+    )
+    loss_differences, top5_differences = (
+        market_calibration.split_head_paired_market_differences(
+            [race],
+            probability_calibrator=probability,
+            ranking_calibrator=ranking,
+        )
+    )
+
+    assert split["calibrated_trifecta_log_loss"] == (
+        probability_only["calibrated_trifecta_log_loss"]
+    )
+    assert split["calibrated_winner_log_loss"] == (
+        probability_only["calibrated_winner_log_loss"]
+    )
+    assert split["calibrated_trifecta_top5_hit_rate"] == (
+        ranking_only["calibrated_trifecta_top5_hit_rate"]
+    )
+    assert loss_differences == [0.0]
+    assert top5_differences == [1.0]
+
+
+def test_v21_is_distinct_evaluation_only_triple_head_model() -> None:
+    strategy = market_calibration.V21_STRATEGY_NAME
+    args = market_calibration.build_parser().parse_args([
+        "--from-date", "2026-07-18",
+        "--calibrator-strategy", strategy,
+    ])
+
+    assert args.calibrator_strategy == strategy
+    assert market_calibration.odds_path_model_name(strategy) == strategy
+    assert strategy in market_calibration.SCHEDULE_QUOTA_STRATEGIES
+    assert strategy in market_calibration.EVALUATION_ONLY_STRATEGIES
+    assert strategy in market_calibration.CHRONOLOGICAL_BANKROLL_STRATEGIES
+    assert strategy not in market_calibration.ROBUST_POLICY_STRATEGIES
+
+
 def test_v18_identity_parser_and_primary_mode() -> None:
     strategy = market_calibration.V18_STRATEGY_NAME
     args = market_calibration.build_parser().parse_args([
