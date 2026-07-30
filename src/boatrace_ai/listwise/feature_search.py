@@ -25,7 +25,10 @@ from ..feature_tuning import (
     normalize_drop_feature_groups,
     to_hashable,
 )
-from ..feature_schema import uses_official_series_features
+from ..feature_schema import (
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+    uses_official_series_features,
+)
 from ..hashed_feature_dataset import (
     CACHE_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -55,9 +58,6 @@ DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
 CHECKPOINT_VERSION = 2
 SOURCE_DATA_SNAPSHOT_VERSION = 1
 
-DECAYED_HISTORY_FEATURE_SCHEMA_VERSION = (
-    f"{FEATURE_SCHEMA_VERSION}-decayed-history-v1"
-)
 
 
 def _include_decayed_history(args: argparse.Namespace) -> bool:

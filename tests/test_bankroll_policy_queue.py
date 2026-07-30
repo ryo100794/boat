@@ -11,7 +11,10 @@ from boatrace_ai.evaluation_queue import (
     TASK_PROFILES,
     build_command,
 )
-from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
+from boatrace_ai.feature_schema import (
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION,
+)
 from boatrace_ai.listwise import bankroll_policy_evaluation
 from boatrace_ai.listwise.bankroll_policy_evaluation import (
     _train_model,
@@ -65,7 +68,7 @@ def _job(parameters):
     }
 
 
-def _source(root, *, cache_prefix=None):
+def _source(root, *, cache_prefix=None, schema=FEATURE_SCHEMA_VERSION):
     result = root / "data/models/evaluation_queue/job-00003565.json"
     result.parent.mkdir(parents=True)
     cache = cache_prefix or (
@@ -76,7 +79,7 @@ def _source(root, *, cache_prefix=None):
     result.write_text(
         json.dumps({
             "selected_cache_prefix": str(cache),
-            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "feature_schema_version": schema,
         }),
         encoding="utf-8",
     )
@@ -108,9 +111,14 @@ def _standard_source(root, cache_dir):
     return artifact, cache_prefix
 
 
-def test_bankroll_policy_search_profile_and_command(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "schema",
+    (FEATURE_SCHEMA_VERSION, DECAYED_HISTORY_FEATURE_SCHEMA_VERSION),
+    ids=("current", "decayed-history"),
+)
+def test_bankroll_policy_search_profile_and_command(tmp_path, schema) -> None:
     root = tmp_path / "boat"
-    source, cache = _source(root)
+    source, cache = _source(root, schema=schema)
     python = root / ".venv/bin/python"
     command, output = build_command(
         _job({

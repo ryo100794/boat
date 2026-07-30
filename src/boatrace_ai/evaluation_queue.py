@@ -23,7 +23,10 @@ from zoneinfo import ZoneInfo
 from .db import connection
 from .evaluation_probability_summary import canonicalize_probability_metrics
 from .evaluation_result_summary import canonicalize_primary_bankroll
-from .feature_schema import FEATURE_SCHEMA_VERSION
+from .feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS,
+)
 from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 
 
@@ -2220,7 +2223,7 @@ def build_command(
                 "source_kind must be standardized_selected when provided"
             )
         source_schema = source_payload.get("feature_schema_version")
-        if source_schema != FEATURE_SCHEMA_VERSION:
+        if source_schema not in SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS:
             raise ObsoleteJob(
                 "bankroll source feature schema is obsolete: "
                 f"{source_schema} != {FEATURE_SCHEMA_VERSION}"
@@ -2346,7 +2349,7 @@ def build_command(
             )
         source_payload = json.loads(source_result.read_text(encoding="utf-8"))
         source_schema = source_payload.get("feature_schema_version")
-        if source_schema != FEATURE_SCHEMA_VERSION:
+        if source_schema not in SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS:
             raise ObsoleteJob(
                 "nested source feature schema is obsolete: "
                 f"{source_schema} != {FEATURE_SCHEMA_VERSION}"
@@ -2701,7 +2704,7 @@ def build_command(
                 f"feature search result is not available yet: {search_result}"
             ) from exc
         search_schema = str(search_payload.get("feature_schema_version") or "")
-        if search_schema != FEATURE_SCHEMA_VERSION:
+        if search_schema not in SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS:
             raise ObsoleteJob(
                 f"feature schema {search_schema or 'missing'} is obsolete; "
                 f"current={FEATURE_SCHEMA_VERSION}"

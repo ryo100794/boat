@@ -3,6 +3,13 @@ MISSING_SAFE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v2-series-missing
 SPARSE_MISSING_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v3-series-sparse-missing"
 LOW_COVERAGE_FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v5-low-coverage-guard"
 FEATURE_SCHEMA_VERSION = "pastlog-listwise-hashed-v6-no-untrained-series"
+DECAYED_HISTORY_FEATURE_SCHEMA_VERSION = (
+    f"{FEATURE_SCHEMA_VERSION}-decayed-history-v1"
+)
+SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS = frozenset({
+    FEATURE_SCHEMA_VERSION,
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
+})
 LIGHTGBM_FEATURE_SCHEMA_VERSION = (
     "pastlog-lightgbm-hashed-v6-period-coverage-safe"
 )

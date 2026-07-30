@@ -33,6 +33,7 @@ from boatrace_ai.evaluation_queue import (
     summarize_result,
 )
 from boatrace_ai.feature_schema import (
+    DECAYED_HISTORY_FEATURE_SCHEMA_VERSION,
     FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
 )
@@ -393,6 +394,11 @@ def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
 
 
 @pytest.mark.parametrize(
+    "schema",
+    (FEATURE_SCHEMA_VERSION, DECAYED_HISTORY_FEATURE_SCHEMA_VERSION),
+    ids=("current", "decayed-history"),
+)
+@pytest.mark.parametrize(
     ("job_threshold", "parent_threshold", "expected_threshold"),
     [
         (1.2, 1.0, "1.2"),
@@ -404,13 +410,14 @@ def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
 def test_newton_refinement_ev_threshold_precedence(
     tmp_path: Path,
     job_threshold: float | None,
+    schema: str,
     parent_threshold: float | None,
     expected_threshold: str,
 ) -> None:
     root = tmp_path / "boat"
     result = root / "data/models/evaluation_queue/job-00007011.json"
     result.parent.mkdir(parents=True)
-    payload: dict[str, object] = {"feature_schema_version": FEATURE_SCHEMA_VERSION}
+    payload: dict[str, object] = {"feature_schema_version": schema}
     if parent_threshold is not None:
         payload["policy"] = {"ev_threshold": parent_threshold}
     result.write_text(json.dumps(payload), encoding="utf-8")
