@@ -179,13 +179,30 @@ V19_MODEL_NAME = V19_STRATEGY_NAME
 V19_COMPARISON_ROLE = (
     "strict_prior_observed_closing_schedule_quota_raw_nonregression_challenger"
 )
+V20_STRATEGY_NAME = (
+    "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
+)
+V20_MODEL_NAME = V20_STRATEGY_NAME
+V20_COMPARISON_ROLE = (
+    "strict_prior_dual_head_probability_v19_purchase_v18_evaluation_only"
+)
 V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
-SCHEDULE_QUOTA_STRATEGIES = frozenset({V18_STRATEGY_NAME, V19_STRATEGY_NAME})
+SCHEDULE_QUOTA_STRATEGIES = frozenset({
+    V18_STRATEGY_NAME,
+    V19_STRATEGY_NAME,
+    V20_STRATEGY_NAME,
+})
 ROBUST_POLICY_STRATEGIES = frozenset({
     V17_STRATEGY_NAME,
-    *SCHEDULE_QUOTA_STRATEGIES,
+    V18_STRATEGY_NAME,
+    V19_STRATEGY_NAME,
+})
+EVALUATION_ONLY_STRATEGIES = frozenset({V20_STRATEGY_NAME})
+CHRONOLOGICAL_BANKROLL_STRATEGIES = frozenset({
+    *ROBUST_POLICY_STRATEGIES,
+    *EVALUATION_ONLY_STRATEGIES,
 })
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
@@ -215,6 +232,8 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 
 
 def robust_policy_comparison_role(calibrator_strategy: str) -> str:
+    if calibrator_strategy == V20_STRATEGY_NAME:
+        return V20_COMPARISON_ROLE
     if calibrator_strategy == V19_STRATEGY_NAME:
         return V19_COMPARISON_ROLE
     if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES:
@@ -244,6 +263,42 @@ def fit_market_residual_calibrator(
     )
 
 
+def fit_v20_dual_head_calibrators(
+    races: list[dict[str, Any]],
+) -> dict[str, Any]:
+    training_dates = sorted({str(race["race_date"]) for race in races})
+    probability_selection = fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=V19_STRATEGY_NAME,
+    )
+    purchase_selection = fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=V18_STRATEGY_NAME,
+    )
+    return {
+        "architecture": "strict_prior_dual_calibrator_heads_v20",
+        "selection_data": "strict_prior_training_and_inner_prequential_folds_only",
+        "outer_holdout_used": False,
+        "training_dates": training_dates,
+        "trained_through_date": training_dates[-1] if training_dates else None,
+        "probability_head": {
+            "role": "probability_reporting_and_promotion_calibration",
+            "calibrator_strategy": V19_STRATEGY_NAME,
+            "raw_nonregression_enforced": True,
+            "calibrator": dict(probability_selection["final_calibrator"]),
+            "selection": probability_selection,
+        },
+        "purchase_head": {
+            "role": "purchase_policy_and_chronological_bankroll",
+            "calibrator_strategy": V18_STRATEGY_NAME,
+            "raw_nonregression_enforced": False,
+            "policy_strategy": V18_STRATEGY_NAME,
+            "calibrator": dict(purchase_selection["final_calibrator"]),
+            "selection": purchase_selection,
+        },
+    }
+
+
 def odds_path_model_name(calibrator_strategy: str) -> str:
     if calibrator_strategy == "odds_path_return":
         return "odds_path_operational_v1"
@@ -253,6 +308,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
+    if calibrator_strategy == V20_STRATEGY_NAME:
+        return V20_MODEL_NAME
     if calibrator_strategy == V19_STRATEGY_NAME:
         return V19_MODEL_NAME
     if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES:
@@ -2458,6 +2515,11 @@ def fit_deployment_configuration(
     calibrator_selection: dict[str, Any] | None = None
     calibrator_candidates = 0
     operational_model = None
+    dual_head_calibration = None
+    probability_calibrator = None
+    purchase_calibrator = None
+    probability_calibrator_selection = None
+    purchase_calibrator_selection = None
     if calibrator_strategy in {
         "odds_path_return",
         "odds_path_probability",
@@ -2466,6 +2528,7 @@ def fit_deployment_configuration(
         V17_STRATEGY_NAME,
         V18_STRATEGY_NAME,
         V19_STRATEGY_NAME,
+        V20_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -2487,6 +2550,7 @@ def fit_deployment_configuration(
                         V17_STRATEGY_NAME,
                         V18_STRATEGY_NAME,
                         V19_STRATEGY_NAME,
+                        V20_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -2508,11 +2572,28 @@ def fit_deployment_configuration(
                 ),
             )
         races = attach_odds_path_model(races, operational_model)
-        calibrator_selection = fit_market_residual_calibrator(
-            races,
-            calibrator_strategy=calibrator_strategy,
-        )
-        calibrator = dict(calibrator_selection["final_calibrator"])
+        if calibrator_strategy == V20_STRATEGY_NAME:
+            dual_head_calibration = fit_v20_dual_head_calibrators(races)
+            probability_calibrator_selection = dual_head_calibration[
+                "probability_head"
+            ]["selection"]
+            purchase_calibrator_selection = dual_head_calibration[
+                "purchase_head"
+            ]["selection"]
+            probability_calibrator = dict(
+                dual_head_calibration["probability_head"]["calibrator"]
+            )
+            purchase_calibrator = dict(
+                dual_head_calibration["purchase_head"]["calibrator"]
+            )
+            calibrator_selection = probability_calibrator_selection
+            calibrator = probability_calibrator
+        else:
+            calibrator_selection = fit_market_residual_calibrator(
+                races,
+                calibrator_strategy=calibrator_strategy,
+            )
+            calibrator = dict(calibrator_selection["final_calibrator"])
     elif calibrator_strategy == "newton_residual":
         from .market_residual import (
             fit_fixed_regularization,
@@ -2543,6 +2624,15 @@ def fit_deployment_configuration(
     else:
         raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
 
+    if probability_calibrator is None:
+        probability_calibrator = calibrator
+    if purchase_calibrator is None:
+        purchase_calibrator = calibrator
+    if probability_calibrator_selection is None:
+        probability_calibrator_selection = calibrator_selection
+    if purchase_calibrator_selection is None:
+        purchase_calibrator_selection = calibrator_selection
+
     closing_odds_selection = None
     closing_training_races = verifiable_closing_odds_races(races)
     if closing_odds_training_ready(closing_training_races):
@@ -2569,11 +2659,15 @@ def fit_deployment_configuration(
     )
     selected_policy, policy_grid = policy_selector(
         policy_races,
-        calibrator=calibrator,
+        calibrator=purchase_calibrator,
         daily_budget_yen=daily_budget_yen,
     )
     return {
-        "role": "next_day_refit_not_evaluation",
+        "role": (
+            "evaluation_only_dual_head_refit"
+            if calibrator_strategy == V20_STRATEGY_NAME
+            else "next_day_refit_not_evaluation"
+        ),
         "validation_design": (
             "Refit only after all listed dates are complete; valid strictly after "
             "trained_through_date"
@@ -2581,23 +2675,39 @@ def fit_deployment_configuration(
         "calibrator_strategy": calibrator_strategy,
         "comparison_role": (
             robust_policy_comparison_role(calibrator_strategy)
-            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
+            if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES
             else "next_day_refit_not_evaluation"
         ),
         "deployment_mode": (
-            "shadow_only"
-            if calibrator_strategy in ROBUST_POLICY_STRATEGIES else "evaluation"
+            "evaluation_only"
+            if calibrator_strategy in EVALUATION_ONLY_STRATEGIES
+            else "shadow_only"
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
+            else "evaluation"
         ),
         "real_betting_enabled": False,
         "daily_stake_limit_fraction": (
-            1.0 if calibrator_strategy in ROBUST_POLICY_STRATEGIES else None
+            1.0
+            if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES
+            else None
         ),
         "trained_dates": dates,
         "trained_through_date": dates[-1],
         "training_races": len(races),
-        "calibrator": calibrator,
+        "calibrator": probability_calibrator,
         "operational_model": operational_model,
-        "calibrator_selection": calibrator_selection,
+        "calibrator_selection": probability_calibrator_selection,
+        **(
+            {
+                "dual_head_calibration": dual_head_calibration,
+                "probability_calibrator": probability_calibrator,
+                "probability_calibrator_selection": probability_calibrator_selection,
+                "purchase_calibrator": purchase_calibrator,
+                "purchase_calibrator_selection": purchase_calibrator_selection,
+            }
+            if dual_head_calibration is not None
+            else {}
+        ),
         "calibrator_candidates": calibrator_candidates,
         "closing_odds_selection": closing_odds_selection,
         "closing_odds_training_races": len(closing_training_races),
@@ -2895,6 +3005,11 @@ def walk_forward_evaluate(
         holdout = by_day[evaluation_date]
         calibrator_selection = None
         operational_model = None
+        dual_head_calibration = None
+        probability_calibrator = None
+        purchase_calibrator = None
+        probability_calibrator_selection = None
+        purchase_calibrator_selection = None
         if calibrator_strategy in {
             "odds_path_return",
             "odds_path_probability",
@@ -2903,6 +3018,7 @@ def walk_forward_evaluate(
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
+            V20_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -2921,6 +3037,7 @@ def walk_forward_evaluate(
                 V17_STRATEGY_NAME,
                 V18_STRATEGY_NAME,
                 V19_STRATEGY_NAME,
+                V20_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -2941,6 +3058,7 @@ def walk_forward_evaluate(
                             V17_STRATEGY_NAME,
                             V18_STRATEGY_NAME,
                             V19_STRATEGY_NAME,
+                            V20_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -2965,11 +3083,30 @@ def walk_forward_evaluate(
                 calibration_races, operational_model
             )
             holdout = attach_odds_path_model(holdout, operational_model)
-            calibrator_selection = fit_market_residual_calibrator(
-                calibration_races,
-                calibrator_strategy=calibrator_strategy,
-            )
-            calibrator = dict(calibrator_selection["final_calibrator"])
+            if calibrator_strategy == V20_STRATEGY_NAME:
+                dual_head_calibration = fit_v20_dual_head_calibrators(
+                    calibration_races
+                )
+                probability_calibrator_selection = dual_head_calibration[
+                    "probability_head"
+                ]["selection"]
+                purchase_calibrator_selection = dual_head_calibration[
+                    "purchase_head"
+                ]["selection"]
+                probability_calibrator = dict(
+                    dual_head_calibration["probability_head"]["calibrator"]
+                )
+                purchase_calibrator = dict(
+                    dual_head_calibration["purchase_head"]["calibrator"]
+                )
+                calibrator_selection = probability_calibrator_selection
+                calibrator = probability_calibrator
+            else:
+                calibrator_selection = fit_market_residual_calibrator(
+                    calibration_races,
+                    calibrator_strategy=calibrator_strategy,
+                )
+                calibrator = dict(calibrator_selection["final_calibrator"])
             calibrator_grid = []
         elif calibrator_strategy == "newton_residual":
             from .market_residual import (
@@ -3007,6 +3144,15 @@ def walk_forward_evaluate(
             calibrator, calibrator_grid = select_calibrator(calibration_races)
         else:
             raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
+        if probability_calibrator is None:
+            probability_calibrator = calibrator
+        if purchase_calibrator is None:
+            purchase_calibrator = calibrator
+        if probability_calibrator_selection is None:
+            probability_calibrator_selection = calibrator_selection
+        if purchase_calibrator_selection is None:
+            purchase_calibrator_selection = calibrator_selection
+
         calibration_policy_races = apply_prequential_closing_odds_policy_inputs(
             calibration_races, closing_policy_inputs
         )
@@ -3028,12 +3174,12 @@ def walk_forward_evaluate(
         )
         policy, policy_grid = policy_selector(
             calibration_policy_races,
-            calibrator=calibrator,
+            calibrator=purchase_calibrator,
             daily_budget_yen=daily_budget_yen,
         )
         bankroll = simulate_policy(
             holdout_policy_races,
-            calibrator=calibrator,
+            calibrator=purchase_calibrator,
             policy=policy,
             daily_budget_yen=daily_budget_yen,
             include_chronological=True,
@@ -3042,7 +3188,7 @@ def walk_forward_evaluate(
         if evaluation_date > EV_BAND_HYPOTHESIS_REGISTERED_AFTER:
             registered_bankroll = simulate_policy(
                 holdout_policy_races,
-                calibrator=calibrator,
+                calibrator=purchase_calibrator,
                 policy=REGISTERED_EV_BAND_POLICY,
                 daily_budget_yen=daily_budget_yen,
             )
@@ -3050,7 +3196,7 @@ def walk_forward_evaluate(
         if evaluation_date > PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER:
             prospective_bankroll = simulate_policy(
                 holdout_policy_races,
-                calibrator=calibrator,
+                calibrator=purchase_calibrator,
                 policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
                 daily_budget_yen=daily_budget_yen,
             )
@@ -3058,13 +3204,13 @@ def walk_forward_evaluate(
         if evaluation_date > PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER:
             prospective_top5_bankroll = simulate_flat_policy(
                 holdout_policy_races,
-                calibrator=calibrator,
+                calibrator=purchase_calibrator,
                 policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
                 probability_blender=blend_probabilities,
             )
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
-            calibrator=calibrator,
+            calibrator=purchase_calibrator,
             probability_blender=blend_probabilities,
         )
         empirical_artifact = _fit_prior_empirical_ev_artifact(
@@ -3072,7 +3218,7 @@ def walk_forward_evaluate(
         )
         empirical_bankroll = simulate_empirical_lcb_policy(
             holdout_policy_races,
-            calibrator,
+            purchase_calibrator,
             blend_probabilities,
             empirical_artifact,
             daily_budget_yen,
@@ -3091,21 +3237,23 @@ def walk_forward_evaluate(
         )
         flat_bankroll = simulate_flat_policy(
             holdout_policy_races,
-            calibrator=calibrator,
+            calibrator=purchase_calibrator,
             policy=flat_policy,
             probability_blender=blend_probabilities,
         )
-        metrics = probability_metrics(holdout, calibrator=calibrator)
+        metrics = probability_metrics(
+            holdout, calibrator=probability_calibrator
+        )
         edge_diagnostic_records.extend(
             edge_records(
                 holdout_policy_races,
-                calibrator=calibrator,
+                calibrator=purchase_calibrator,
                 probability_blender=blend_probabilities,
             )
         )
         fold_loss_differences, fold_top5_differences = paired_market_differences(
             holdout,
-            calibrator=calibrator,
+            calibrator=probability_calibrator,
         )
         market_loss_differences.extend(fold_loss_differences)
         market_top5_differences.extend(fold_top5_differences)
@@ -3119,9 +3267,26 @@ def walk_forward_evaluate(
                 "evaluation_date": evaluation_date,
                 "calibration_races": len(calibration_races),
                 "evaluation_races": len(holdout),
-                "calibrator": calibrator,
+                "calibrator": probability_calibrator,
                 "calibrator_strategy": calibrator_strategy,
-                "calibrator_selection": calibrator_selection,
+                "calibrator_selection": probability_calibrator_selection,
+                **(
+                    {
+                        "dual_head_calibration": dual_head_calibration,
+                        "probability_calibrator": probability_calibrator,
+                        "probability_calibrator_selection": (
+                            probability_calibrator_selection
+                        ),
+                        "purchase_calibrator": purchase_calibrator,
+                        "purchase_calibrator_selection": (
+                            purchase_calibrator_selection
+                        ),
+                        "probability_metrics_head": "probability_head",
+                        "chronological_bankroll_head": "purchase_head",
+                    }
+                    if dual_head_calibration is not None
+                    else {}
+                ),
                 "operational_model": operational_model,
                 "closing_odds_model": closing_odds_model,
                 "closing_odds_selection": closing_odds_selection,
@@ -3230,7 +3395,7 @@ def walk_forward_evaluate(
         empirical_evaluated_races += len(holdout_policy_races)
         current_empirical_records = policy_edge_records(
             holdout_policy_races,
-            calibrator,
+            purchase_calibrator,
             blend_probabilities,
         )
         if any(
@@ -3451,7 +3616,9 @@ def walk_forward_evaluate(
         "bootstrap_probability_roi_above_one": (
             chronological_bootstrap.get("probability_roi_above_one")
         ),
-        "primary_promotion_bankroll": calibrator_strategy in ROBUST_POLICY_STRATEGIES,
+        "primary_promotion_bankroll": (
+            calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES
+        ),
         "daily_stake_limit_fraction": 1.0,
         "gross_stake_allowance_rule": (
             "initial_allowance_plus_positive_part_of_cumulative_net_realized_profit"
@@ -3526,7 +3693,7 @@ def walk_forward_evaluate(
             else True
         ),
     }
-    if calibrator_strategy in ROBUST_POLICY_STRATEGIES:
+    if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES:
         promotion_gate = {
             "primary_bankroll": "chronological_bankroll",
             "minimum_evaluation_races": 1000,
@@ -3570,6 +3737,7 @@ def walk_forward_evaluate(
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
+            V20_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -3596,7 +3764,7 @@ def walk_forward_evaluate(
             else True
         ),
     }
-    if calibrator_strategy in ROBUST_POLICY_STRATEGIES:
+    if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES:
         deployment_gate = {
             "primary_bankroll": "chronological_bankroll",
             "minimum_evaluation_days": 7,
@@ -3627,7 +3795,7 @@ def walk_forward_evaluate(
             for key, value in deployment_gate.items()
             if key.endswith("_pass")
         )
-        if calibrator_strategy in ROBUST_POLICY_STRATEGIES
+        if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES
         else all(
             deployment_gate[key]
             for key in (
@@ -3665,6 +3833,26 @@ def walk_forward_evaluate(
             if deployment_gate["pass"]
             else "shadow_only_insufficient_evidence"
         )
+    if calibrator_strategy == V20_STRATEGY_NAME:
+        candidate_policy = deployment_configuration.get(
+            "candidate_policy",
+            deployment_configuration["selected_policy"],
+        )
+        deployment_configuration.update({
+            "comparison_role": V20_COMPARISON_ROLE,
+            "deployment_mode": "evaluation_only",
+            "real_betting_enabled": False,
+            "daily_stake_limit_fraction": 1.0,
+            "primary_promotion_bankroll": "chronological_bankroll",
+            "probability_metrics_head": "probability_head",
+            "chronological_bankroll_head": "purchase_head",
+            "policy_selection": (
+                "v18_strict_prior_residual_schedule_quota_purchase_head"
+            ),
+            "candidate_policy": candidate_policy,
+            "selected_policy": {"name": "no_bet", "no_bet": True},
+            "operational_status": "evaluation_only_challenger",
+        })
     reliability = bankroll_reliability_metrics(
         daily_rows,
         evaluated_races=len(evaluation_races),
@@ -3673,12 +3861,16 @@ def walk_forward_evaluate(
         "model": odds_path_model_name(calibrator_strategy),
         "comparison_role": (
             robust_policy_comparison_role(calibrator_strategy)
-            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
+            if calibrator_strategy in CHRONOLOGICAL_BANKROLL_STRATEGIES
             else "real_t5_odds_nested_daily_walk_forward_shadow"
         ),
         "calibrator_strategy": calibrator_strategy,
         "deployment_mode": (
-            "shadow_only" if calibrator_strategy in ROBUST_POLICY_STRATEGIES else "evaluation"
+            "evaluation_only"
+            if calibrator_strategy in EVALUATION_ONLY_STRATEGIES
+            else "shadow_only"
+            if calibrator_strategy in ROBUST_POLICY_STRATEGIES
+            else "evaluation"
         ),
         "real_betting_enabled": False,
         "validation_design": (
@@ -3778,9 +3970,39 @@ def walk_forward_evaluate(
         "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
         "deployment_configuration": deployment_configuration,
+        **(
+            {
+                "dual_head_architecture": {
+                    "architecture": "strict_prior_dual_calibrator_heads_v20",
+                    "probability_head_role": (
+                        "probability_reporting_and_promotion_calibration"
+                    ),
+                    "purchase_head_role": (
+                        "purchase_policy_and_chronological_bankroll"
+                    ),
+                    "probability_calibrator_strategy": V19_STRATEGY_NAME,
+                    "purchase_calibrator_strategy": V18_STRATEGY_NAME,
+                    "selection_data": (
+                        "strict_prior_training_and_inner_prequential_folds_only"
+                    ),
+                    "outer_holdout_used": False,
+                    "probability_metrics_source": "probability_head",
+                    "promotion_calibration_source": "probability_head",
+                    "chronological_bankroll_source": "purchase_head",
+                }
+            }
+            if calibrator_strategy == V20_STRATEGY_NAME
+            else {}
+        ),
         "promotion_gate": promotion_gate,
-        "promotion_eligible": all(
-            value for key, value in promotion_gate.items() if key.endswith("_pass")
+        "promotion_eligible": (
+            False
+            if calibrator_strategy in EVALUATION_ONLY_STRATEGIES
+            else all(
+                value
+                for key, value in promotion_gate.items()
+                if key.endswith("_pass")
+            )
         ),
     }
 
@@ -5266,6 +5488,7 @@ def build_parser() -> argparse.ArgumentParser:
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
+            V20_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",

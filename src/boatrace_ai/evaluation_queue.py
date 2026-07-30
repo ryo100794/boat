@@ -1587,6 +1587,7 @@ def build_command(
             "odds_path_observed_closing_return_robust_policy_v17",
             "odds_path_observed_closing_return_schedule_quota_v18",
             "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19",
+            "odds_path_observed_closing_return_schedule_quota_dual_head_v20",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
@@ -4372,6 +4373,12 @@ MARKET_EVALUATION_SOURCES = (
         "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19",
     ),
     (
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20_daily",
+        "lightgbm_recency_search",
+        "calibrated_lightgbm_recency_period_v6_4cpu",
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20",
+    ),
+    (
         "odds_path_prequential_shrinkage_return_v6_daily",
         "lightgbm_recency_search",
         "calibrated_lightgbm_recency_period_v6_4cpu",
@@ -4586,6 +4593,9 @@ def seed_daily_market_jobs(
                 else 87
                 if calibrator_strategy
                 == "odds_path_role_integrated_registered_band_lcb_v14"
+                else 97
+                if calibrator_strategy
+                == "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
                 else 96
             ),
             max_attempts=2,

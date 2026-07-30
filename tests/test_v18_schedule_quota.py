@@ -218,6 +218,61 @@ def test_v19_has_distinct_parser_and_model_identity() -> None:
     assert strategy in market_calibration.ROBUST_POLICY_STRATEGIES
 
 
+def test_v20_builds_both_heads_from_the_same_strict_prior_rows(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fitted(races, *, calibrator_strategy):
+        calls.append((calibrator_strategy, [race["race_id"] for race in races]))
+        weight = 1.0 if calibrator_strategy == market_calibration.V19_STRATEGY_NAME else 0.25
+        return {
+            "dates": sorted({race["race_date"] for race in races}),
+            "final_calibrator": {"model_weight": weight, "temperature": 1.0},
+            "candidates": [],
+        }
+
+    monkeypatch.setattr(
+        market_calibration, "fit_market_residual_calibrator", fitted
+    )
+    prior = [
+        {"race_id": "prior-1", "race_date": "2026-07-28"},
+        {"race_id": "prior-2", "race_date": "2026-07-29"},
+    ]
+
+    dual = market_calibration.fit_v20_dual_head_calibrators(prior)
+
+    assert calls == [
+        (market_calibration.V19_STRATEGY_NAME, ["prior-1", "prior-2"]),
+        (market_calibration.V18_STRATEGY_NAME, ["prior-1", "prior-2"]),
+    ]
+    assert dual["outer_holdout_used"] is False
+    assert dual["training_dates"] == ["2026-07-28", "2026-07-29"]
+    assert dual["probability_head"]["raw_nonregression_enforced"] is True
+    assert dual["purchase_head"]["raw_nonregression_enforced"] is False
+    assert dual["probability_head"]["role"] == (
+        "probability_reporting_and_promotion_calibration"
+    )
+    assert dual["purchase_head"]["role"] == (
+        "purchase_policy_and_chronological_bankroll"
+    )
+
+
+def test_v20_is_distinct_evaluation_only_schedule_quota_model() -> None:
+    strategy = market_calibration.V20_STRATEGY_NAME
+    args = market_calibration.build_parser().parse_args([
+        "--from-date", "2026-07-18",
+        "--calibrator-strategy", strategy,
+    ])
+
+    assert args.calibrator_strategy == strategy
+    assert market_calibration.odds_path_model_name(strategy) == strategy
+    assert strategy in market_calibration.SCHEDULE_QUOTA_STRATEGIES
+    assert strategy in market_calibration.EVALUATION_ONLY_STRATEGIES
+    assert strategy in market_calibration.CHRONOLOGICAL_BANKROLL_STRATEGIES
+    assert strategy not in market_calibration.ROBUST_POLICY_STRATEGIES
+
+
 def test_v18_identity_parser_and_primary_mode() -> None:
     strategy = market_calibration.V18_STRATEGY_NAME
     args = market_calibration.build_parser().parse_args([

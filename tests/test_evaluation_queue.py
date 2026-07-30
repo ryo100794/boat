@@ -1615,7 +1615,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         conn, app_root=tmp_path, evaluation_date="2026-07-25"
     )
 
-    assert inserted == list(range(1, 19))
+    assert inserted == list(range(1, 20))
     assert {row["model_key"] for row in calls} == {
         "protected_mlp_prediction:market_residual:20260718-25",
         "calibrated_mlp_recency_selected:market_residual:20260718-25",
@@ -1626,6 +1626,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         "odds_path_observed_closing_return_robust_policy_v17_daily:market_residual:20260718-25",
         "odds_path_observed_closing_return_schedule_quota_v18_daily:market_residual:20260718-25",
         "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20_daily:market_residual:20260718-25",
         "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
         "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
         "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
@@ -1673,6 +1674,13 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
     )
     assert v19["priority"] == 100
     assert v19["parameters"]["timeout_seconds"] == 3600
+    v20 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
+    )
+    assert v20["priority"] == 97
+    assert v20["parameters"]["timeout_seconds"] == 3600
     prequential_v6 = next(
         row for row in calls
         if row["parameters"]["calibrator_strategy"]
@@ -3255,6 +3263,29 @@ def test_market_residual_walk_forward_accepts_v18_schedule_quota(
     )
     assert v19_command[v19_command.index("--calibrator-strategy") + 1] == (
         "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19"
+    )
+
+    v20_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_"
+                    "dual_head_v20"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v20_command[v20_command.index("--calibrator-strategy") + 1] == (
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
     )
 
     odds_path_command, _ = build_command(
