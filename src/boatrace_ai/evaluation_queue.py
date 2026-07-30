@@ -1907,6 +1907,7 @@ def build_command(
             "targets",
             "alphas",
             "feature_variants",
+            "reuse_search_job_id",
             "ev_threshold",
             "ev_thresholds",
             "timeout_seconds",
@@ -1947,19 +1948,37 @@ def build_command(
                         *RESEARCH_PARTITION_FEATURE_VARIANTS,
                     )
                 }
+                variant_names = tuple(dict.fromkeys(
+                    item.strip()
+                    for item in str(params["feature_variants"]).split(",")
+                    if item.strip()
+                ))
+                if not variant_names or any(
+                    name not in available_variants for name in variant_names
+                ):
+                    raise ValueError("unsupported feature_variants")
             else:
-                from .listwise.feature_search import feature_variants
+                from .listwise.feature_search import parse_feature_variants
 
-                available_variants = {name for name, _drops in feature_variants()}
-            variant_names = tuple(dict.fromkeys(
-                item.strip() for item in str(params["feature_variants"]).split(",")
-                if item.strip()
-            ))
-            if not variant_names or any(
-                name not in available_variants for name in variant_names
-            ):
-                raise ValueError("unsupported feature_variants")
+                try:
+                    parsed_variants = parse_feature_variants(
+                        str(params["feature_variants"])
+                    )
+                except argparse.ArgumentTypeError as exc:
+                    raise ValueError("unsupported feature_variants") from exc
+                if parsed_variants is None:
+                    raise ValueError("unsupported feature_variants")
+                variant_names = tuple(name for name, _drops in parsed_variants)
             selected_feature_variants = ",".join(variant_names)
+        reuse_search_job_id = None
+        if params.get("reuse_search_job_id") is not None:
+            if task_type != "listwise_feature_search":
+                raise ValueError(
+                    "reuse_search_job_id is supported only for listwise_feature_search"
+                )
+            reuse_search_job_id = _integer(
+                params, "reuse_search_job_id", 0, 1, 2_147_483_647
+            )
         alpha_values = [
             float(value) for value in str(
                 params.get("alphas", "0.00001,0.0001")
@@ -2003,6 +2022,12 @@ def build_command(
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
         ]
+        if reuse_search_job_id is not None:
+            reuse_output = (
+                app_root / "data" / "models" / "evaluation_queue"
+                / f"job-{reuse_search_job_id:08d}.json"
+            )
+            command.extend(["--reuse-search-output", str(reuse_output)])
         if loss_blend is not None:
             command.extend(["--loss-blend", str(loss_blend)])
         if selected_feature_variants:
