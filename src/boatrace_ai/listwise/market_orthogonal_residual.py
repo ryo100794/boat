@@ -11,6 +11,30 @@ EPSILON = 1e-12
 DEFAULT_REGULARIZATION = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
 
 
+def _raw_identity_calibrator(
+    *,
+    training_races: int,
+    regularization: float,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "projection_beta": 1.0,
+        "model_market_correlation": 0.0,
+        "residual_variance_fraction": 1.0,
+        "residual_coefficient": 1.0,
+        "model_coefficient": 1.0,
+        "market_coefficient": 0.0,
+        "model_weight": 1.0,
+        "temperature": 1.0,
+        "regularization": float(regularization),
+        "iterations": 0,
+        "converged": True,
+        "training_races": int(training_races),
+        "identity_fallback": True,
+        "selection_reason": reason,
+    }
+
+
 def _race_vectors(race: dict[str, Any]) -> tuple[list[str], np.ndarray, np.ndarray, int]:
     combinations = sorted(
         set(race["model_probabilities"]) & set(race["market_probabilities"])
@@ -149,6 +173,7 @@ def probability_metrics(
 ) -> dict[str, Any]:
     loss = 0.0
     market_loss = 0.0
+    raw_model_loss = 0.0
     top5_hits = 0
     for race in races:
         probabilities = orthogonal_probabilities(
@@ -162,6 +187,9 @@ def probability_metrics(
         market_loss -= math.log(
             max(EPSILON, float(race["market_probabilities"].get(actual, 0.0)))
         )
+        raw_model_loss -= math.log(
+            max(EPSILON, float(race["model_probabilities"].get(actual, 0.0)))
+        )
         top5_hits += int(
             actual in sorted(probabilities, key=probabilities.get, reverse=True)[:5]
         )
@@ -169,6 +197,7 @@ def probability_metrics(
     return {
         "evaluated_races": count,
         "trifecta_log_loss": loss / count if count else None,
+        "raw_model_trifecta_log_loss": raw_model_loss / count if count else None,
         "market_trifecta_log_loss": market_loss / count if count else None,
         "trifecta_top5_hit_rate": top5_hits / count if count else None,
     }
@@ -188,6 +217,7 @@ def select_regularization_prequential(
     candidates = []
     for regularization in regularizations:
         weighted_loss = 0.0
+        weighted_raw_model_loss = 0.0
         total = 0
         folds = []
         for index in range(1, len(dates)):
@@ -199,6 +229,9 @@ def select_regularization_prequential(
             metrics = probability_metrics(holdout, calibrator)
             count = int(metrics["evaluated_races"])
             weighted_loss += float(metrics["trifecta_log_loss"]) * count
+            weighted_raw_model_loss += (
+                float(metrics["raw_model_trifecta_log_loss"]) * count
+            )
             total += count
             folds.append(
                 {
@@ -213,6 +246,9 @@ def select_regularization_prequential(
                 "regularization": float(regularization),
                 "prequential_races": total,
                 "prequential_log_loss": weighted_loss / total,
+                "raw_model_prequential_log_loss": (
+                    weighted_raw_model_loss / total
+                ),
                 "folds": folds,
             }
         )
@@ -220,17 +256,67 @@ def select_regularization_prequential(
         candidates,
         key=lambda row: (row["prequential_log_loss"], -row["regularization"]),
     )
+    fitted_calibrator = fit_orthogonal_residual(
+        races, regularization=float(selected["regularization"])
+    )
+    fitted_metrics = probability_metrics(races, fitted_calibrator)
+    prequential_regression = (
+        float(selected["prequential_log_loss"])
+        > float(selected["raw_model_prequential_log_loss"])
+    )
+    refit_regression = (
+        float(fitted_metrics["trifecta_log_loss"])
+        > float(fitted_metrics["raw_model_trifecta_log_loss"])
+    )
+    fallback_reason = (
+        "calibrated_prequential_log_loss_worse_than_raw"
+        if prequential_regression
+        else "calibrated_prior_refit_log_loss_worse_than_raw"
+        if refit_regression
+        else None
+    )
+    final_calibrator = (
+        _raw_identity_calibrator(
+            training_races=len(races),
+            regularization=float(selected["regularization"]),
+            reason=str(fallback_reason),
+        )
+        if fallback_reason is not None
+        else fitted_calibrator
+    )
     return {
         "validation_design": (
             "Market projection is label-free; residual shrinkage is selected on "
-            "forward-only full-day folds"
+            "forward-only full-day folds; raw identity fallback is selected "
+            "without access to the outer holdout"
         ),
         "dates": dates,
         "selected_regularization": selected["regularization"],
-        "prequential_log_loss": selected["prequential_log_loss"],
-        "final_calibrator": fit_orthogonal_residual(
-            races, regularization=float(selected["regularization"])
+        "prequential_log_loss": min(
+            float(selected["prequential_log_loss"]),
+            float(selected["raw_model_prequential_log_loss"]),
         ),
+        "candidate_prequential_log_loss": selected["prequential_log_loss"],
+        "raw_model_prequential_log_loss": selected[
+            "raw_model_prequential_log_loss"
+        ],
+        "calibration_nonregression": {
+            "selection_data": "strict_prior_prequential_and_prior_refit_only",
+            "outer_holdout_used": False,
+            "candidate_trifecta_log_loss": selected["prequential_log_loss"],
+            "raw_trifecta_log_loss": selected[
+                "raw_model_prequential_log_loss"
+            ],
+            "prior_refit_candidate_trifecta_log_loss": fitted_metrics[
+                "trifecta_log_loss"
+            ],
+            "prior_refit_raw_trifecta_log_loss": fitted_metrics[
+                "raw_model_trifecta_log_loss"
+            ],
+            "identity_fallback_applied": fallback_reason is not None,
+            "reason": fallback_reason,
+        },
+        "final_calibrator": final_calibrator,
         "candidates": candidates,
     }
 
@@ -238,12 +324,37 @@ def select_regularization_prequential(
 def fit_fixed_regularization(
     races: list[dict[str, Any]], *, regularization: float = 1.0
 ) -> dict[str, Any]:
+    fitted_calibrator = fit_orthogonal_residual(
+        races, regularization=float(regularization)
+    )
+    metrics = probability_metrics(races, fitted_calibrator)
+    fallback = (
+        float(metrics["trifecta_log_loss"])
+        > float(metrics["raw_model_trifecta_log_loss"])
+    )
+    final_calibrator = (
+        _raw_identity_calibrator(
+            training_races=len(races),
+            regularization=regularization,
+            reason="calibrated_training_log_loss_worse_than_raw",
+        )
+        if fallback
+        else fitted_calibrator
+    )
     return {
         "validation_design": "Fixed residual shrinkage for a single calibration day",
         "dates": sorted({str(race["race_date"]) for race in races}),
         "selected_regularization": float(regularization),
-        "final_calibrator": fit_orthogonal_residual(
-            races, regularization=float(regularization)
-        ),
+        "calibration_nonregression": {
+            "selection_data": "single_prior_training_day_only",
+            "outer_holdout_used": False,
+            "candidate_trifecta_log_loss": metrics["trifecta_log_loss"],
+            "raw_trifecta_log_loss": metrics["raw_model_trifecta_log_loss"],
+            "identity_fallback_applied": fallback,
+            "reason": (
+                "calibrated_training_log_loss_worse_than_raw" if fallback else None
+            ),
+        },
+        "final_calibrator": final_calibrator,
         "candidates": [],
     }
