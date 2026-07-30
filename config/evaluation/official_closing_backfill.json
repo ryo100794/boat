@@ -1,0 +1,7 @@
+{
+  "from_date": "2026-05-10",
+  "through_date": "2026-07-17",
+  "sleep_seconds": 1.0,
+  "source": "official",
+  "timeout_seconds": 172800
+}
