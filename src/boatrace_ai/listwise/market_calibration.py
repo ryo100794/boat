@@ -4554,6 +4554,17 @@ def score_real_odds_races(
             int(len(race.get("official_closing_odds") or {}) == 120)
             for race in races
         ),
+        "primary_official_closing_odds_races": sum(
+            int(
+                race.get("official_closing_source_key")
+                == OFFICIAL_SOURCE_KEY
+            )
+            for race in races
+        ),
+        "fallback_mirror_closing_odds_races": sum(
+            int(race.get("official_closing_source_key") == SOURCE_KEY)
+            for race in races
+        ),
         "odds_checkpoint_metadata_conflicts": int(
             checkpoint_diagnostics.get("metadata_conflict", 0)
         ),
