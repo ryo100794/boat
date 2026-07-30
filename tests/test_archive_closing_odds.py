@@ -86,6 +86,18 @@ def test_archive_winner_must_match_official_payout() -> None:
         verify_winning_payout(odds, combination=winner, payout_yen=payout + 10)
 
 
+def test_archive_winner_accepts_official_integer_display_bucket() -> None:
+    odds = {"1-2-3": 1337.0}
+    verification = verify_winning_payout(
+        odds, combination="1-2-3", payout_yen=133780
+    )
+    assert verification["payout_match_mode"] == "integer_display_bucket"
+    with pytest.raises(ValueError, match="payout mismatch"):
+        verify_winning_payout(
+            odds, combination="1-2-3", payout_yen=133800
+        )
+
+
 def test_archive_storage_is_separate_and_pending_runs_newest_first(tmp_path) -> None:
     db_path = tmp_path / "archive.sqlite"
     init_db(db_path)
