@@ -16,6 +16,7 @@ def test_adaptive_allocation_retains_all_tickets_for_tail_diagnostics() -> None:
             "estimated_ev": 2.0,
             "actual_payout_yen": 2_000,
             "hit": index == 0,
+            **({"actual_combination": "ticket-0"} if index == 0 else {}),
         }
         for index in range(14)
     ]
