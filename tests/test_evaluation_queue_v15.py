@@ -99,7 +99,9 @@ def test_v15_dispatcher_preserves_the_exact_evaluation_population(
     assert fallback_policies == ["no_bet", "no_bet"]
 
 
-def test_daily_v15_is_queued_ahead_of_v14(tmp_path: Path, monkeypatch) -> None:
+def test_daily_deployment_v14_is_queued_ahead_of_exploration_v15(
+    tmp_path: Path, monkeypatch
+) -> None:
     model_dir = tmp_path / "data/models/evaluation_queue"
     model_dir.mkdir(parents=True)
     source_path = model_dir / "source.json"
@@ -131,7 +133,8 @@ def test_daily_v15_is_queued_ahead_of_v14(tmp_path: Path, monkeypatch) -> None:
     v14 = by_strategy[
         "odds_path_role_integrated_registered_band_lcb_v14"
     ]
-    assert v15["priority"] > v14["priority"]
+    assert v14["priority"] == 103
+    assert v14["priority"] > v15["priority"]
     assert v15["parameters"]["timeout_seconds"] == 14_400
     assert v15["parameters"]["min_calibration_days"] == 5
     assert v15["parameters"]["v12_closing_fallback_policy"] == "no_bet"
