@@ -401,6 +401,7 @@ function renderDayBankroll(data){
     localStorage.setItem("boat.bankModel", selected);
   }
   const s = data.stats || {};
+  const modelMetrics = data.model_metrics || {};
   const profit = Number(s.profit_yen || 0);
   $("bankrollStats").innerHTML = [
     ["現在資金",yen(s.current_bankroll_yen),profit >= 0 ? "bankroll-profit" : "bankroll-loss"],
@@ -412,6 +413,12 @@ function renderDayBankroll(data){
     ["口数",s.tickets || 0,""],
     ["的中",`${s.hit_tickets || 0} / ${pct(s.ticket_hit_rate)}`,""],
     ["最大DD",yen(s.max_drawdown_yen),""],
+    ...(modelMetrics.winner_top1_accuracy == null ? [] : [
+      ["1着Top1",pct(modelMetrics.winner_top1_accuracy),""],
+      ["3T5",pct(modelMetrics.trifecta_top5_hit_rate),""],
+      ["3連単LL",Number(modelMetrics.trifecta_log_loss).toFixed(4),""],
+      ["1着LL",Number(modelMetrics.winner_log_loss).toFixed(4),""],
+    ]),
   ].map(([label,value,tone]) => `<div class="bankroll-kpi ${tone}"><b>${value}</b><span>${label}</span></div>`).join("");
   const warning = (data.warnings || []).join(" / ");
   $("bankrollMeta").textContent = `${data.selected_model_label || "-"} / ${s.valid_odds_races || 0}R正常odds / ${s.historical_odds_races || 0}R履歴推定 / 更新 ${String(data.generated_at || "").replace("T"," ").slice(0,19)}${warning ? ` / ${warning}` : ""}`;

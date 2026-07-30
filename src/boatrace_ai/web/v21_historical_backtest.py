@@ -27,6 +27,27 @@ def build_projection(
         (row for row in coverage_days if str(row.get("race_date")) == race_date),
         {},
     )
+    fold = next(
+        (
+            row
+            for row in result.get("folds") or []
+            if str(row.get("evaluation_date")) == race_date
+        ),
+        {},
+    )
+    probability = fold.get("probability_metrics") or {}
+    model_metrics = {
+        "winner_log_loss": probability.get("calibrated_winner_log_loss"),
+        "winner_top1_accuracy": probability.get("calibrated_winner_top1_accuracy"),
+        "trifecta_log_loss": probability.get("calibrated_trifecta_log_loss"),
+        "trifecta_top5_hit_rate": probability.get(
+            "calibrated_trifecta_top5_hit_rate"
+        ),
+        "market_trifecta_log_loss": probability.get("market_trifecta_log_loss"),
+        "market_trifecta_top5_hit_rate": probability.get(
+            "market_trifecta_top5_hit_rate"
+        ),
+    }
     decisions: dict[str, Mapping[str, Any]] = {}
     series = []
     initial = int(day.get("initial_bankroll_yen") or 10_000)
@@ -96,6 +117,7 @@ def build_projection(
         ),
         "coverage": dict(coverage),
         "stats": stats,
+        "model_metrics": model_metrics,
         "series": series,
         "real_betting_enabled": False,
     }
@@ -163,6 +185,7 @@ def load_dashboard_payload(
             "real_betting_enabled": False,
         },
         "stats": projection.get("stats") or {},
+        "model_metrics": projection.get("model_metrics") or {},
         "series": series,
         "schedule": list(schedule),
         "warnings": [

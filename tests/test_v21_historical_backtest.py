@@ -15,6 +15,17 @@ def _result() -> dict:
         "model": "odds_path_observed_closing_return_schedule_quota_triple_head_v21",
         "generated_at": "2026-07-31T00:00:00+00:00",
         "validation_design": "prior dates only",
+        "folds": [{
+            "evaluation_date": "2026-07-30",
+            "probability_metrics": {
+                "calibrated_winner_log_loss": 1.2,
+                "calibrated_winner_top1_accuracy": 0.54,
+                "calibrated_trifecta_log_loss": 3.66,
+                "calibrated_trifecta_top5_hit_rate": 0.38,
+                "market_trifecta_log_loss": 3.70,
+                "market_trifecta_top5_hit_rate": 0.36,
+            },
+        }],
         "coverage_gate": {
             "minimum_day_coverage": 0.99,
             "days": [{
@@ -69,6 +80,8 @@ def test_builds_and_loads_v21_historical_dashboard_projection(tmp_path: Path) ->
     assert payload["stats"]["profit_yen"] == 3_800
     assert payload["series"][0]["venue"] == "桐生"
     assert payload["backtest_source_job_id"] == 9271
+    assert payload["model_metrics"]["winner_top1_accuracy"] == 0.54
+    assert payload["model_metrics"]["trifecta_top5_hit_rate"] == 0.38
 
 
 def test_rejects_non_v21_result() -> None:
