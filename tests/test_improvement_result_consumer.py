@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from boatrace_ai import improvement_result_consumer as consumer
+from boatrace_ai.postgresql import convert_sql
 
 
 NOW = datetime(2026, 7, 30, 12, tzinfo=timezone.utc)
@@ -547,6 +548,19 @@ def test_non_actionable_bulk_review_is_limited_to_invalid_data_source() -> None:
     statement = conn.statements[0][0]
     assert "c.decision = 'invalid_data_source'" in statement
     assert "task_type <>" not in statement
+
+
+
+def test_non_actionable_review_sql_survives_postgresql_placeholder_conversion() -> None:
+    conn = _LoadConnection([{"candidate_id": 1}])
+    consumer._review_clearly_non_actionable(conn, batch_size=20)
+    statement = conn.statements[0][0]
+
+    converted = convert_sql(statement)
+
+    assert "%s" in converted
+    assert "%(" not in converted
+    assert "-invalid-source-job-" in converted
 
 
 def test_unsupported_identity_can_never_group_unrelated_jobs() -> None:

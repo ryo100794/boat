@@ -615,7 +615,7 @@ def _review_clearly_non_actionable(conn: Any, *, batch_size: int) -> int:
         SET reviewed_at = CURRENT_TIMESTAMP,
             review_decision = 'producer_decision_not_actionable',
             review_reason = 'producer rejected the candidate because its data source is invalid',
-            comparison_group_key = c.task_type || ':invalid-source-job:' || c.job_id::text,
+            comparison_group_key = c.task_type || '-invalid-source-job-' || c.job_id::text,
             comparison_rank = NULL, downstream_job_id = NULL
         FROM pending WHERE c.candidate_id = pending.candidate_id
         RETURNING c.candidate_id
