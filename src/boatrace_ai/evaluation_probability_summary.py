@@ -20,6 +20,14 @@ PROBABILITY_HEAD_FIELDS = (
 )
 
 
+PROMOTION_GATE_BOOLEAN_FIELDS = (
+    "sample_size_pass",
+    "effective_hit_count_pass",
+    "calibration_pass",
+    "market_confidence_pass",
+)
+
+
 MARKET_COMPARISON_FIELDS = (
     "market_comparison_races",
     "market_comparison_days",
@@ -136,4 +144,18 @@ def canonicalize_probability_metrics(
         for key, value in market_comparison_fields(comparison).items():
             if result.get(key) is None:
                 result[key] = value
+
+    explicit_gate = result.get("promotion_gate")
+    if isinstance(explicit_gate, Mapping):
+        for key in PROMOTION_GATE_BOOLEAN_FIELDS:
+            value = explicit_gate.get(key)
+            if result.get(key) is None and isinstance(value, bool):
+                result[key] = value
+    failed = {
+        str(key) for key in (result.get("promotion_gate_failed") or [])
+    }
+    if failed.intersection(PROMOTION_GATE_BOOLEAN_FIELDS):
+        for key in PROMOTION_GATE_BOOLEAN_FIELDS:
+            if result.get(key) is None:
+                result[key] = key not in failed
     return result

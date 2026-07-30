@@ -71,6 +71,8 @@ def v20_payload() -> dict[str, object]:
         "promotion_gate": {
             "primary_bankroll": "chronological_bankroll",
             "sample_size_pass": False,
+            "effective_hit_count_pass": False,
+            "calibration_pass": True,
             "market_confidence_pass": False,
         },
         "chronological_bankroll": {
@@ -129,6 +131,13 @@ def test_v20_database_api_exposes_canonical_probability_head(tmp_path: Path) -> 
         """
     )
     summary = summarize_result(v20_payload())
+    for key in (
+        "sample_size_pass",
+        "effective_hit_count_pass",
+        "calibration_pass",
+        "market_confidence_pass",
+    ):
+        summary.pop(key, None)
     conn.execute(
         "INSERT INTO model_evaluation_jobs VALUES "
         "(8458, 'market_residual_walk_forward', 'evaluation', 'v20', "
@@ -147,8 +156,13 @@ def test_v20_database_api_exposes_canonical_probability_head(tmp_path: Path) -> 
     assert row["roi_ci95_lower"] == 1.1147058824
     assert row["promotion_gate_failed"] == [
         "sample_size_pass",
+        "effective_hit_count_pass",
         "market_confidence_pass",
     ]
+    assert row["sample_size_pass"] is False
+    assert row["effective_hit_count_pass"] is False
+    assert row["calibration_pass"] is True
+    assert row["market_confidence_pass"] is False
 
 
 def test_remote_and_existing_model_rows_share_probability_contract() -> None:
