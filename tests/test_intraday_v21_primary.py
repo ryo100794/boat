@@ -129,3 +129,5 @@ def test_dashboard_migrates_saved_v8_selection_once() -> None:
     source = Path("src/boatrace_ai/templates/dashboard.html").read_text(encoding="utf-8")
     assert 'primaryModelVersion = "v21-primary-20260731"' in source
     assert 'localStorage.removeItem("boat.bankModel")' in source
+    assert 'new URLSearchParams(location.search).get("date")' in source
+    assert '/^\\d{4}-\\d{2}-\\d{2}$/' in source

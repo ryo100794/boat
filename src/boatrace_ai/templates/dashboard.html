@@ -263,7 +263,8 @@ function jstDate(){
   return `${m.year}-${m.month}-${m.day}`;
 }
 const today = jstDate();
-$("raceDate").value = "";
+const requestedDate = new URLSearchParams(location.search).get("date") || "";
+$("raceDate").value = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? requestedDate : "";
 $("archivePeriod").value = String(state.archiveDays);
 $("reload").onclick = loadAll;
 $("bankrollModel").onchange = () => {
