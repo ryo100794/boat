@@ -2713,9 +2713,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         with connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT j.job_id, j.task_type, j.model_key, j.status, j.parameters,
-                       j.attempt, j.max_attempts, j.started_at, j.completed_at,
-                       j.decision, j.result_summary, j.result_path, j.error,
+                SELECT j.*,
                        c.metrics AS candidate_metrics,
                        c.parameters AS candidate_parameters,
                        c.created_at AS candidate_created_at
@@ -2751,10 +2749,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     placeholders = ",".join("?" for _ in missing_parent_ids)
                     parent_rows = conn.execute(
                         f"""
-                        SELECT j.job_id, j.task_type, j.model_key, j.status,
-                               j.parameters, j.attempt, j.max_attempts,
-                               j.started_at, j.completed_at, j.decision,
-                               j.result_summary, j.result_path, j.error,
+                        SELECT j.*,
                                c.metrics AS candidate_metrics,
                                c.parameters AS candidate_parameters,
                                c.created_at AS candidate_created_at
@@ -2824,6 +2819,8 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         jobs.append(
             {
                 "db_job_id": row.get("job_id"),
+                "priority": row.get("priority"),
+                "parent_job_id": row.get("parent_job_id"),
                 "name": row.get("model_key"),
                 "milestone": row.get("task_type"),
                 "kind": row.get("task_type"),
@@ -2835,6 +2832,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "valid_for_comparison": not invalid_data_source,
                 "parameters": parameters,
                 "cohort": parameters.get("cohort") or metrics.get("genetic_cohort"),
+                "comparison_role": metrics.get("comparison_role"),
                 "generation": parameters.get("generation"),
                 "island_id": parameters.get("island_id"),
                 "island_count": parameters.get("island_count"),
@@ -3208,11 +3206,105 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
             }
         )
+    jobs, retained_job_ids = _normalize_formal_evaluation_jobs(jobs)
+    candidates = [
+        row for row in candidates
+        if row.get("job_id") in retained_job_ids
+    ]
     return {
         "generated_at": generated_at,
         "jobs": jobs,
         "candidates": candidates,
     }
+
+
+_FORMAL_METRIC_IDENTITY_FIELDS = (
+    "evaluated_races",
+    "evaluation_days",
+    "roi",
+    "stake_yen",
+    "return_yen",
+    "profit_yen",
+    "winner_log_loss",
+    "winner_top1_accuracy",
+    "calibrated_trifecta_log_loss",
+    "trifecta_top5_hit_rate",
+    "closing_odds_log_mae",
+    "closing_odds_rank_correlation",
+)
+
+
+def _normalize_formal_evaluation_jobs(
+    jobs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[Any]]:
+    """Collapse reruns of one formal evaluation without hiding diagnostics."""
+    selected: dict[tuple[Any, ...], tuple[int, dict[str, Any]]] = {}
+    passthrough: list[tuple[int, dict[str, Any]]] = []
+    for index, row in enumerate(jobs):
+        identity = _formal_evaluation_identity(row)
+        if identity is None:
+            passthrough.append((index, row))
+            continue
+        current = selected.get(identity)
+        if current is None or _formal_evaluation_preference(row) > (
+            _formal_evaluation_preference(current[1])
+        ):
+            selected[identity] = (index, row)
+
+    retained = passthrough + list(selected.values())
+    retained.sort(key=lambda item: item[0])
+    rows = [row for _, row in retained]
+    return rows, {row.get("db_job_id") for row in rows}
+
+
+def _formal_evaluation_identity(row: dict[str, Any]) -> tuple[Any, ...] | None:
+    parameters = row.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    decision = str(row.get("decision") or "").lower()
+    formal_marker = (
+        "formal" in decision
+        or row.get("parent_job_id") is not None
+        or _manual_formal_marker(parameters)
+    )
+    if row.get("status") != "完了" or not formal_marker:
+        return None
+
+    period = (
+        parameters.get("from_date") or parameters.get("evaluation_from"),
+        parameters.get("through_date") or parameters.get("evaluation_through"),
+    )
+    strategy = (
+        row.get("milestone"),
+        parameters.get("calibrator_strategy"),
+        parameters.get("strategy"),
+        row.get("comparison_role"),
+    )
+    metrics = tuple(row.get(field) for field in _FORMAL_METRIC_IDENTITY_FIELDS)
+    return (row.get("name"), period, strategy, metrics)
+
+
+def _manual_formal_marker(parameters: dict[str, Any]) -> bool:
+    if any(
+        parameters.get(key) is True
+        for key in ("manual", "manual_formal", "formal", "formal_evaluation")
+    ):
+        return True
+    return any(
+        str(parameters.get(key) or "").lower() in {"manual", "formal", "manual_formal"}
+        for key in ("evaluation_mode", "run_mode", "trigger")
+    )
+
+
+def _formal_evaluation_preference(row: dict[str, Any]) -> tuple[int, int, int, int]:
+    parameters = row.get("parameters")
+    manual = _manual_formal_marker(parameters if isinstance(parameters, dict) else {})
+    return (
+        int(manual),
+        int(row.get("parent_job_id") is not None),
+        int(row.get("priority") or 0),
+        int(row.get("db_job_id") or 0),
+    )
 
 
 _BANKROLL_COMPONENT_KEYS = (

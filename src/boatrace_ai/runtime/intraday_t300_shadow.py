@@ -1258,6 +1258,65 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             raise ValueError("V18 fixed policy artifacts are unsafe or inconsistent")
         self._ticket_limit = int(control["learned_daily_ticket_limit"])
 
+    def _calibrated_head_output(
+        self,
+        conn: Any,
+        race: RaceWindow,
+        snapshot: T300Snapshot,
+        calibrator: Mapping[str, Any],
+    ) -> dict[str, float]:
+        point = normalize_odds_checkpoint(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "source_update_time": snapshot.source_update_time,
+                "raw_json": snapshot.raw_json,
+                "betting_deadline_at": race.betting_deadline_at.isoformat(),
+                "odds": snapshot.odds,
+            },
+            target_offset_seconds=T300_OFFSET_SECONDS,
+        )
+        if point is None:
+            return {}
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return {}
+        model_race = {
+            "race_id": race.race_id,
+            "race_date": race.race_date,
+            "jcd": race.jcd,
+            "rno": race.rno,
+            "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base,
+            "market_probabilities": market,
+            "odds": dict(snapshot.odds),
+            "odds_checkpoints": {"300": point},
+            "odds_path": [{
+                "minutes_before_decision": 0.0,
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "market_probabilities": market,
+            }],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_model(
+            [model_race], dict(self._operational_model)
+        )[0]
+        probabilities = blend_probabilities(
+            transformed["model_probabilities"],
+            market,
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        if (
+            len(probabilities) != 120
+            or set(probabilities) != set(snapshot.odds)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)
+        ):
+            return {}
+        return probabilities
+
     def _runtime_limits(
         self, conn: Any, race: RaceWindow, *, bankroll_yen: int
     ) -> dict[str, int]:
@@ -1521,57 +1580,9 @@ class V20DualHeadModelAdapter(V18ScheduleQuotaModelAdapter):
     def _probability_head_output(
         self, conn: Any, race: RaceWindow, snapshot: T300Snapshot
     ) -> dict[str, float]:
-        point = normalize_odds_checkpoint(
-            {
-                "snapshot_id": snapshot.snapshot_id,
-                "captured_at": snapshot.captured_at.isoformat(),
-                "source_update_time": snapshot.source_update_time,
-                "raw_json": snapshot.raw_json,
-                "betting_deadline_at": race.betting_deadline_at.isoformat(),
-                "odds": snapshot.odds,
-            },
-            target_offset_seconds=T300_OFFSET_SECONDS,
+        return self._calibrated_head_output(
+            conn, race, snapshot, self._probability_calibrator
         )
-        if point is None:
-            return {}
-        base = self._base_probabilities(conn, race)
-        market = normalized_market_probabilities(snapshot.odds)
-        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
-            return {}
-        model_race = {
-            "race_id": race.race_id,
-            "race_date": race.race_date,
-            "jcd": race.jcd,
-            "rno": race.rno,
-            "snapshot_id": snapshot.snapshot_id,
-            "model_probabilities": base,
-            "market_probabilities": market,
-            "odds": dict(snapshot.odds),
-            "odds_checkpoints": {"300": point},
-            "odds_path": [{
-                "minutes_before_decision": 0.0,
-                "snapshot_id": snapshot.snapshot_id,
-                "captured_at": snapshot.captured_at.isoformat(),
-                "market_probabilities": market,
-            }],
-            "odds_path_points": 1,
-        }
-        transformed = attach_odds_path_model(
-            [model_race], dict(self._operational_model)
-        )[0]
-        probabilities = blend_probabilities(
-            transformed["model_probabilities"],
-            market,
-            model_weight=float(self._probability_calibrator["model_weight"]),
-            temperature=float(self._probability_calibrator["temperature"]),
-        )
-        if (
-            len(probabilities) != 120
-            or set(probabilities) != set(snapshot.odds)
-            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)
-        ):
-            return {}
-        return probabilities
 
     def decide(
         self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
@@ -1640,6 +1651,136 @@ class V20DualHeadModelAdapter(V18ScheduleQuotaModelAdapter):
         )
 
 
+class V21TripleHeadModelAdapter(V18ScheduleQuotaModelAdapter):
+    """Record V21 probability, ranking, and V18 purchase heads at T300."""
+
+    strategy_name = "v21_triple_head_t300"
+    expected_calibrator_strategy = (
+        "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+    )
+    allowed_deployment_modes = ("evaluation_only",)
+    artifact_label = "V21"
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        bundle_path: Path,
+        base_model_path: Path,
+    ) -> None:
+        super().__init__(
+            model_key=model_key,
+            bundle_path=bundle_path,
+            base_model_path=base_model_path,
+        )
+        self._probability_calibrator = self._component("probability_calibrator")
+        self._ranking_calibrator = self._component("ranking_calibrator")
+        self._purchase_calibrator = self._component("purchase_calibrator")
+        triple = self._component("triple_head_calibration")
+        probability_head = triple.get("probability_head")
+        ranking_head = triple.get("ranking_head")
+        purchase_head = triple.get("purchase_head")
+        if (
+            self._bundle.get("source_evaluation_job_id") != 8666
+            or self._bundle.get("winner_and_logloss_head") != "probability_head"
+            or self._bundle.get("trifecta_top5_head") != "ranking_head"
+            or self._bundle.get("market_logloss_comparison_head") != "probability_head"
+            or self._bundle.get("market_top5_comparison_head") != "ranking_head"
+            or self._bundle.get("chronological_bankroll_head") != "purchase_head"
+            or self._bundle.get("outer_result_or_payout_used") is not False
+            or triple.get("architecture")
+            != "strict_prior_triple_calibrator_heads_v21"
+            or triple.get("selection_data")
+            != "strict_prior_training_and_inner_prequential_folds_only"
+            or triple.get("outer_holdout_used") is not False
+            or triple.get("ranking_purchase_share_v18_selection") is not True
+            or not isinstance(probability_head, Mapping)
+            or not isinstance(ranking_head, Mapping)
+            or not isinstance(purchase_head, Mapping)
+            or probability_head.get("role") != "winner_and_trifecta_logloss"
+            or ranking_head.get("role") != "trifecta_top5_ranking"
+            or purchase_head.get("role")
+            != "purchase_policy_and_chronological_bankroll"
+            or probability_head.get("calibrator") != self._probability_calibrator
+            or ranking_head.get("calibrator") != self._ranking_calibrator
+            or purchase_head.get("calibrator") != self._purchase_calibrator
+            or self._ranking_calibrator != self._purchase_calibrator
+            or any(
+                calibrator.get("converged") is not True
+                for calibrator in (
+                    self._probability_calibrator,
+                    self._ranking_calibrator,
+                    self._purchase_calibrator,
+                )
+            )
+        ):
+            raise ValueError("V21 triple-head routing or provenance is inconsistent")
+        self._calibrator = self._purchase_calibrator
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        trained = str(self._bundle.get("trained_through_date") or "")
+        if trained and trained >= race.race_date:
+            raise ValueError("V21 artifacts are not strictly prior to race date")
+        probability_output = self._calibrated_head_output(
+            conn, race, snapshot, self._probability_calibrator
+        )
+        ranking_output = self._calibrated_head_output(
+            conn, race, snapshot, self._ranking_calibrator
+        )
+        if not probability_output or not ranking_output:
+            return _no_bet("invalid_v21_probability_or_ranking_head_output")
+
+        purchase = super().decide(
+            conn, race, snapshot, bankroll_yen=bankroll_yen
+        )
+        ranking_top5 = [
+            combination
+            for combination, _ in sorted(
+                ranking_output.items(), key=lambda item: (-item[1], item[0])
+            )[:5]
+        ]
+        diagnostics = dict(purchase.diagnostics)
+        diagnostics["v21_triple_head"] = {
+            "status": "recorded",
+            "checkpoint": "t300",
+            "source_snapshot_id": snapshot.snapshot_id,
+            "source_evaluation_job_id": 8666,
+            "probability_output_head": "probability_head",
+            "ranking_output_head": "ranking_head",
+            "candidate_selection_head": "purchase_head",
+            "chronological_bankroll_head": "purchase_head",
+            "probability_calibrator_sha256": _payload_hash(
+                self._probability_calibrator
+            ),
+            "ranking_calibrator_sha256": _payload_hash(self._ranking_calibrator),
+            "purchase_calibrator_sha256": _payload_hash(self._purchase_calibrator),
+            "probability_output_sha256": _payload_hash(probability_output),
+            "ranking_output_sha256": _payload_hash(ranking_output),
+            "purchase_probabilities_sha256": _payload_hash(
+                purchase.probabilities
+            ),
+            "purchase_decisions_sha256": _payload_hash(
+                purchase.selected_candidates
+            ),
+            "ranking_probabilities": ranking_output,
+            "ranking_top5": ranking_top5,
+            "decision_features": "t300_or_earlier",
+            "outer_result_used": False,
+            "outer_payout_used": False,
+            "settlement_fields_used_for_capital_only": True,
+            "real_betting_enabled": False,
+        }
+        return ShadowDecision(
+            probability_output,
+            purchase.closing_lower_odds,
+            purchase.selected_candidates,
+            purchase.no_bet_reason,
+            diagnostics,
+        )
+
+
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
     "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
         model_key=key, bundle_path=bundle, base_model_path=base
@@ -1661,6 +1802,11 @@ ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = 
     ),
     "v20_dual_head_t300": lambda key, bundle, base: (
         V20DualHeadModelAdapter(
+            model_key=key, bundle_path=bundle, base_model_path=base
+        )
+    ),
+    "v21_triple_head_t300": lambda key, bundle, base: (
+        V21TripleHeadModelAdapter(
             model_key=key, bundle_path=bundle, base_model_path=base
         )
     ),

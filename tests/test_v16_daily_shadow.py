@@ -293,6 +293,11 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         "manifest": {"output": {"bundle_sha256": "f" * 64}},
     }
     active_jobs["v20"] = _job(tmp_path / "v20.json", 8458, "v20")
+    bundles["v21"] = {
+        "path": str(tmp_path / "v21.joblib"),
+        "manifest": {"output": {"bundle_sha256": "1" * 64}},
+    }
+    active_jobs["v21"] = _job(tmp_path / "v21.json", 8666, "v21")
     now = datetime(2026, 7, 30, 8, tzinfo=JST)
     _legacy_active(
         state_root,
@@ -333,6 +338,13 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         updater, "build_v20_composite", lambda *args, **kwargs: bundles["v20"]
     )
     monkeypatch.setattr(
+        updater, "build_v21_composite", lambda *args, **kwargs: bundles["v21"]
+    )
+    monkeypatch.setattr(
+        updater, "verify_activation_recovery",
+        lambda *args, **kwargs: {"status": "monitoring", "gate_pass": False},
+    )
+    monkeypatch.setattr(
         updater, "first_race_start", lambda *args: now + timedelta(hours=1)
     )
 
@@ -346,10 +358,17 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         now=now,
     )
 
-    assert result["status"] == "additive_v16_v18_v20_extended"
-    assert fixed_calls == [("v12", 12), ("v14", 14)]
-    assert latest_calls == ["v16", "v18", "v20"]
-    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16, "v18": 8191, "v20": 8458}
+    assert result["status"] == "additive_v16_v18_v20_v21_extended"
+    assert fixed_calls == [
+        ("v12", 7401),
+        ("v14", 7430),
+        ("v16", 7760),
+        ("v18", 8191),
+        ("v20", 8458),
+        ("v21", 8666),
+    ]
+    assert latest_calls == []
+    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16, "v18": 8191, "v20": 8458, "v21": 8666}
 
 
 def test_additive_extension_rejects_existing_identity_change_and_post_start(
@@ -529,4 +548,3 @@ def test_v16_outside_band_and_missing_envelope_are_no_bet(
     assert missing.decide(
         object(), race, snapshot, bankroll_yen=10_000
     ).no_bet_reason == "closing_envelope_not_ready"
-

@@ -274,6 +274,90 @@ def test_database_evaluation_status_includes_parent_of_recent_job(tmp_path) -> N
     assert "job-2" not in by_name
 
 
+def test_database_evaluation_status_normalizes_duplicate_formal_jobs(tmp_path) -> None:
+    db_path = tmp_path / "queue.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE model_evaluation_jobs (
+          job_id INTEGER PRIMARY KEY, task_type TEXT, category TEXT,
+          model_key TEXT, status TEXT, parameters TEXT, priority INTEGER,
+          attempt INTEGER, max_attempts INTEGER,
+          started_at TEXT, completed_at TEXT, decision TEXT,
+          result_summary TEXT, result_path TEXT, error TEXT,
+          parent_job_id INTEGER
+        );
+        CREATE TABLE model_improvement_candidates (
+          job_id INTEGER PRIMARY KEY, metrics TEXT, parameters TEXT,
+          created_at TEXT
+        );
+        """
+    )
+    model_key = "triple_head_v21_daily:market_residual:20260718-29"
+    metrics = {
+        "evaluation_days": 6,
+        "evaluated_races": 918,
+        "roi": 1.4756097561,
+        "stake_yen": 8200,
+        "return_yen": 12100,
+        "profit_yen": 3900,
+        "winner_log_loss": 1.1649013962,
+        "calibrated_trifecta_log_loss": 3.7089263912,
+        "trifecta_top5_hit_rate": 0.3736383442,
+        "comparison_role": "triple_head",
+    }
+    base_parameters = {
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-29",
+        "calibrator_strategy": "triple_head_v21",
+    }
+    rows = [
+        (8624, base_parameters, 97, "accumulate_formal_evidence", None),
+        (8666, base_parameters, 116, "accumulate_formal_evidence", 8458),
+        (
+            8667,
+            {**base_parameters, "calibrator_strategy": "tail_diagnostic"},
+            80,
+            "accumulate_formal_evidence",
+            None,
+        ),
+        (8668, base_parameters, 10, "research_only", None),
+    ]
+    for job_id, parameters, priority, decision, parent_job_id in rows:
+        conn.execute(
+            """
+            INSERT INTO model_evaluation_jobs (
+              job_id, task_type, category, model_key, status, parameters,
+              priority, attempt, max_attempts, decision, result_summary,
+              parent_job_id
+            ) VALUES (?, 'market_residual_walk_forward', 'evaluation', ?,
+                      'completed', ?, ?, 1, 2, ?, ?, ?)
+            """,
+            (
+                job_id,
+                model_key,
+                json.dumps(parameters),
+                priority,
+                decision,
+                json.dumps(metrics),
+                parent_job_id,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO model_improvement_candidates VALUES (?, ?, '{}', NULL)",
+            (job_id, json.dumps(metrics)),
+        )
+    conn.commit()
+    conn.close()
+
+    status = _database_evaluation_status(db_path)
+
+    assert [row["db_job_id"] for row in status["jobs"]] == [8668, 8667, 8666]
+    assert status["jobs"][-1]["priority"] == 116
+    assert status["jobs"][-1]["parent_job_id"] == 8458
+    assert {row["job_id"] for row in status["candidates"]} == {8666, 8667, 8668}
+
+
 def test_database_evaluation_status_quarantines_invalid_data_source(tmp_path) -> None:
     db_path = tmp_path / "queue.sqlite"
     conn = sqlite3.connect(db_path)
