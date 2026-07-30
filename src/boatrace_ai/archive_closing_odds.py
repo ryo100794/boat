@@ -166,9 +166,15 @@ def verify_winning_payout(
 ) -> dict[str, Any]:
     if combination not in odds:
         raise ValueError("winning combination is absent from archive odds")
-    expected = int(round(float(odds[combination]) * 100.0))
+    winning_odds = float(odds[combination])
+    expected = int(round(winning_odds * 100.0))
     actual = int(payout_yen)
-    if expected != actual:
+    integer_display_bucket = (
+        winning_odds >= 1000.0
+        and winning_odds.is_integer()
+        and expected <= actual < expected + 100
+    )
+    if expected != actual and not integer_display_bucket:
         raise ValueError(
             f"winning payout mismatch: odds={odds[combination]} "
             f"expected={expected} actual={actual}"
@@ -176,8 +182,13 @@ def verify_winning_payout(
     return {
         "status": "winner_only_match_unverified_market",
         "winning_combination": combination,
-        "winning_odds": float(odds[combination]),
+        "winning_odds": winning_odds,
         "payout_yen": actual,
+        "payout_match_mode": (
+            "integer_display_bucket"
+            if integer_display_bucket and expected != actual
+            else "exact"
+        ),
     }
 
 
