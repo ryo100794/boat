@@ -25,7 +25,7 @@ from .bankroll_backtest import (
 from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
 from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
-from .contextual_features import RollingState, _race_sort_key
+from .contextual_features import DecayedRollingState, RollingState, _race_sort_key
 from .feature_schema import (
     FEATURE_SCHEMA_VERSION,
     uses_explicit_card_missing_flags,
@@ -686,9 +686,11 @@ def iter_race_feature_rows(
     include_races: set[str] | None = None,
     drop_feature_groups: Iterable[str] | str | None = None,
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+    include_decayed_history: bool = False,
 ) -> Iterable[list[dict[str, Any]]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     state = RollingState()
+    decayed_state = DecayedRollingState() if include_decayed_history else None
     current_date: str | None = None
     day_updates: list[list[Any]] = []
     for race_rows in iter_complete_races(
@@ -701,6 +703,8 @@ def iter_race_feature_rows(
         if race_date_value != current_date:
             for rows in day_updates:
                 state.update_race(rows)
+                if decayed_state is not None:
+                    decayed_state.update_race(rows)
             day_updates = []
             current_date = race_date_value
         use_race = include_races is None or race_id_value in include_races
@@ -708,18 +712,22 @@ def iter_race_feature_rows(
             yield build_race_features(
                 race_rows,
                 state,
+                decayed_state=decayed_state,
                 drop_feature_groups=drop_feature_groups,
                 feature_schema_version=feature_schema_version,
             )
         day_updates.append(race_rows)
     for rows in day_updates:
         state.update_race(rows)
+        if decayed_state is not None:
+            decayed_state.update_race(rows)
 
 
 def build_race_features(
     race_rows: list[Any],
     state: RollingState,
     *,
+    decayed_state: DecayedRollingState | None = None,
     drop_feature_groups: Iterable[str] | str | None = None,
     feature_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> list[dict[str, Any]]:
@@ -788,6 +796,8 @@ def build_race_features(
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))
+        if decayed_state is not None:
+            item.update(decayed_state.features_for(row))
         if "legacy_composites" in dropped:
             for key in LEGACY_COMPOSITE_FEATURES:
                 item.pop(key, None)
