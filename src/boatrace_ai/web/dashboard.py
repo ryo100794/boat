@@ -2648,6 +2648,11 @@ def _probability_report_fields(metrics: dict[str, Any]) -> dict[str, Any]:
             "market_day_confidence_pass"
         ),
         "market_confidence_pass": canonical.get("market_confidence_pass"),
+        "calibration_pass": canonical.get("calibration_pass"),
+        "sample_size_pass": canonical.get("sample_size_pass"),
+        "effective_hit_count_pass": canonical.get(
+            "effective_hit_count_pass"
+        ),
     })
     return result
 
