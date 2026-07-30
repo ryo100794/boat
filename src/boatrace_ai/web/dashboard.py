@@ -621,6 +621,7 @@ _ACCURACY_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
 _BACKTEST_CACHE: dict[Path, tuple[float, int, dict[str, Any]]] = {}
 _MODEL_REPORT_CACHE: dict[Path, tuple[float, dict[str, Any]]] = {}
 _ROADMAP_CACHE: dict[Path, tuple[float, dict[str, Any]]] = {}
+_ROADMAP_MILESTONE_CACHE: dict[Path, tuple[float, dict[str, Any]]] = {}
 _DEFAULT_DATE_CACHE: dict[Path, tuple[float, str]] = {}
 _DAY_BANKROLL_CACHE: dict[
     tuple[Path, str, str], tuple[float, dict[str, Any]]
@@ -843,6 +844,8 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_html(self, ROADMAP_REPORT_HTML)
                 elif parsed.path == "/api/reports/roadmap-status":
                     send_json(self, roadmap_status(db_path, query))
+                elif parsed.path == "/api/reports/roadmap-milestones":
+                    send_json(self, roadmap_milestones_status(db_path, query))
                 elif parsed.path == "/reports/teleboat":
                     send_html(self, TELEBOAT_REPORT_HTML)
                 elif parsed.path == "/reports/teleboat/setup":
@@ -5827,6 +5830,45 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         "v_file_inventory": _v_file_inventory(PROJECT_ROOT / "src" / "boatrace_ai"),
     }
     _ROADMAP_CACHE[db_path] = (now, payload)
+    return payload
+
+
+def roadmap_milestones_status(
+    db_path: Path,
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Return the small, frequently-read part of the roadmap report."""
+    race_date = query_race_date(db_path, query)
+    now = time.monotonic()
+    cached = _ROADMAP_MILESTONE_CACHE.get(db_path)
+    if cached and now - cached[0] < 30.0:
+        return cached[1]
+
+    try:
+        progress = dict(progress_active_fast(db_path, {"date": [race_date]}))
+    except Exception as exc:
+        progress = {"error": str(exc)}
+    progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
+        db_path.parent / "models"
+    )
+    remote_evaluations = _read_remote_eval_status(
+        db_path.parent / REMOTE_EVAL_STATUS_NAME
+    )
+    remote_evaluations = _merge_standardized_v2_status(
+        remote_evaluations,
+        _load_standardized_v2_bundle(db_path.parent / "models"),
+    )
+    payload = {
+        "generated_at": now_jst().isoformat(timespec="seconds"),
+        "date": race_date,
+        "milestones": _roadmap_milestones(
+            progress,
+            _process_snapshots(),
+            remote_evaluations,
+            teleboat_status(db_path),
+        ),
+    }
+    _ROADMAP_MILESTONE_CACHE[db_path] = (now, payload)
     return payload
 
 
