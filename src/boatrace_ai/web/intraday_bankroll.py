@@ -27,8 +27,10 @@ TICKET_CAP_FRACTION = 0.03
 STAKE_UNIT_YEN = 100
 PAYOUT_PRIOR_WEIGHT = 30.0
 COMBINATIONS = TRIFECTA_COMBINATION_KEYS
+PRIMARY_MODEL_ID = "v21_daily"
+PRIMARY_MODEL_LABEL = "V21 主系 (LightGBM job 2707 + triple-head)"
 MODEL_FILES = (
-    ("no_odds_v8", "no_odds_v8 主系", "win_model_no_odds_v8.joblib"),
+    ("no_odds_v8", "no_odds_v8 比較用", "win_model_no_odds_v8.joblib"),
     ("no_odds_v7", "no_odds_v7", "win_model_no_odds_v7.joblib"),
     ("no_odds_v6", "no_odds_v6", "win_model_no_odds_v6.joblib"),
 )
@@ -95,6 +97,15 @@ def day_bankroll_simulation(
     races = _race_rows(conn, race_date)
     schedule = _race_schedule(races)
     selected_model = next(row for row in models if row["id"] == selected)
+    if selected_model.get("runtime_kind") == "t300_shadow":
+        return _shadow_day_bankroll_simulation(
+            conn,
+            race_date=race_date,
+            selected_model=selected_model,
+            models=models,
+            now_jst=now_jst,
+            starting_bankroll_yen=starting_bankroll_yen,
+        )
     results = _results_by_race(conn, race_date)
     payouts = _payouts_by_race(conn, race_date)
     historical_odds = (
@@ -276,6 +287,9 @@ def _empty_stats(starting_bankroll_yen: int) -> dict[str, Any]:
 
 def _available_models(model_dir: Path) -> list[dict[str, Any]]:
     rows = []
+    primary = _active_v21_model(model_dir)
+    if primary is not None:
+        rows.append(primary)
     for model_id, label, file_name in MODEL_FILES:
         path = model_dir / file_name
         if not path.is_file():
@@ -295,6 +309,152 @@ def _available_models(model_dir: Path) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _active_v21_model(model_dir: Path) -> dict[str, Any] | None:
+    state_path = model_dir.parent / "runtime" / "daily-shadow-models" / "active" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        spec = str((state.get("model_specs") or {}).get("v21") or "")
+        model_key, strategy, bundle_path, base_path = spec.split(":", 3)
+        bundle = Path(bundle_path)
+        base = Path(base_path)
+        if model_key != PRIMARY_MODEL_ID or not bundle.is_file() or not base.is_file():
+            return None
+        generated_at = datetime.fromtimestamp(
+            bundle.stat().st_mtime, timezone.utc
+        ).replace(microsecond=0)
+        return {
+            "id": PRIMARY_MODEL_ID,
+            "label": f"{PRIMARY_MODEL_LABEL} @{generated_at:%Y%m%dT%H%M%SZ}",
+            "path": str(bundle),
+            "base_model_path": str(base),
+            "model_file": bundle.name,
+            "strategy": strategy,
+            "runtime_kind": "t300_shadow",
+            "generated_at": generated_at.isoformat(timespec="seconds"),
+            "modified_at": generated_at.isoformat(timespec="seconds"),
+            "real_betting_enabled": False,
+        }
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _shadow_day_bankroll_simulation(
+    conn,
+    *,
+    race_date: str,
+    selected_model: dict[str, Any],
+    models: list[dict[str, Any]],
+    now_jst: datetime,
+    starting_bankroll_yen: int,
+) -> dict[str, Any]:
+    races = _race_rows(conn, race_date)
+    schedule = _race_schedule(races)
+    race_by_id = {str(row["race_id"]): row for row in races}
+    rows = conn.execute(
+        """
+        SELECT d.race_id, d.decision_at, d.target_t300_at,
+               d.source_snapshot_id, d.decision_status, d.no_bet_reason,
+               d.selected_candidates, d.total_stake_yen,
+               s.stake_yen, s.return_yen, s.profit_yen,
+               s.actual_combination
+        FROM intraday_t300_shadow_decisions d
+        LEFT JOIN intraday_t300_shadow_settlements s
+          ON s.decision_id = d.decision_id
+        WHERE d.race_date = ? AND d.model_key = ?
+        ORDER BY d.target_t300_at, d.race_id
+        """,
+        (race_date, PRIMARY_MODEL_ID),
+    ).fetchall()
+    bankroll = starting_bankroll_yen
+    peak = bankroll
+    max_drawdown = total_stake = total_return = tickets = hits = 0
+    settled_races = selected_races = 0
+    series: list[dict[str, Any]] = []
+    for row in rows:
+        if row["profit_yen"] is None:
+            continue
+        settled_races += 1
+        stake = int(row["stake_yen"] or 0)
+        returned = int(row["return_yen"] or 0)
+        profit = int(row["profit_yen"] or 0)
+        candidates = row["selected_candidates"] or []
+        if isinstance(candidates, str):
+            candidates = json.loads(candidates)
+        candidate_count = len(candidates)
+        hit = returned > 0
+        bankroll += profit
+        peak = max(peak, bankroll)
+        max_drawdown = max(max_drawdown, peak - bankroll)
+        total_stake += stake
+        total_return += returned
+        tickets += candidate_count
+        hits += int(hit)
+        selected_races += int(stake > 0)
+        race_id = str(row["race_id"])
+        race = race_by_id.get(race_id) or {}
+        race_time = _parse_time(race.get("deadline_at"), default_tz=JST)
+        series.append({
+            "race_id": race_id,
+            "venue": race.get("venue_name"),
+            "jcd": race.get("jcd"),
+            "rno": race.get("rno"),
+            "race_time_at": race_time.isoformat(timespec="seconds") if race_time else None,
+            "stake_yen": stake,
+            "return_yen": returned,
+            "profit_yen": bankroll - starting_bankroll_yen,
+            "race_profit_yen": profit,
+            "tickets": candidate_count,
+            "hit": hit,
+            "actual_combination": row["actual_combination"],
+            "odds_basis": "締切5分前V21終値予測",
+        })
+    decision_count = len(rows)
+    valid_snapshots = sum(int(row["source_snapshot_id"] is not None) for row in rows)
+    stats = {
+        "starting_bankroll_yen": starting_bankroll_yen,
+        "current_bankroll_yen": bankroll,
+        "profit_yen": bankroll - starting_bankroll_yen,
+        "stake_yen": total_stake,
+        "return_yen": total_return,
+        "roi": total_return / total_stake if total_stake else None,
+        "evaluated_races": settled_races,
+        "prediction_races": decision_count,
+        "valid_odds_races": valid_snapshots,
+        "historical_odds_races": 0,
+        "selected_races": selected_races,
+        "tickets": tickets,
+        "hit_tickets": hits,
+        "ticket_hit_rate": hits / tickets if tickets else None,
+        "max_drawdown_yen": max_drawdown,
+        "fallback_prediction_races": 0,
+        "rejected_odds_snapshots": 0,
+    }
+    warnings = ["V21前向き主系。性能ゲート未達のため実投票は無効です。"]
+    if decision_count == 0:
+        warnings.append("最初の締切5分前判断を待っています。")
+    return {
+        "available": True,
+        "date": race_date,
+        "generated_at": now_jst.isoformat(timespec="seconds"),
+        "through_race_time_at": series[-1]["race_time_at"] if series else None,
+        "models": models,
+        "selected_model": PRIMARY_MODEL_ID,
+        "selected_model_label": selected_model["label"],
+        "policy": {
+            "starting_bankroll_yen": starting_bankroll_yen,
+            "bet_type": "3連単",
+            "decision": "締切5分前の凍結T300判断",
+            "model": PRIMARY_MODEL_LABEL,
+            "profit_reinvestment": True,
+            "real_betting_enabled": False,
+        },
+        "stats": stats,
+        "series": series,
+        "schedule": schedule,
+        "warnings": warnings,
+    }
 
 
 def ranked_deployable_models(model_dir: Path, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -325,6 +485,7 @@ def ranked_deployable_models(model_dir: Path, *, limit: int = 10) -> list[dict[s
         model["unified_evaluation"] = bool(evaluation)
     models.sort(
         key=lambda row: (
+            row["id"] != PRIMARY_MODEL_ID,
             not row["promotion_eligible"],
             not row["unified_evaluation"],
             -float((row["evaluation"].get("roi") or -1.0)),
@@ -358,9 +519,9 @@ def top_model_day_simulations(
             include_odds=False,
         )
     for rank, model in enumerate(ranked, start=1):
-        predictions = _batch_score_model(
-            feature_cache=feature_cache,
-            model_path=Path(model["path"]),
+        is_shadow = model.get("runtime_kind") == "t300_shadow"
+        predictions = None if is_shadow else _batch_score_model(
+            feature_cache=feature_cache, model_path=Path(model["path"]),
         )
         result = day_bankroll_simulation(
             conn,

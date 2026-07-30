@@ -250,6 +250,11 @@
   </div>
 
 <script>
+const primaryModelVersion = "v21-primary-20260731";
+if(localStorage.getItem("boat.primaryModelVersion") !== primaryModelVersion){
+  localStorage.removeItem("boat.bankModel");
+  localStorage.setItem("boat.primaryModelVersion", primaryModelVersion);
+}
 const state = { raceId:null, jcd:"", combo:"1-2-3", nowIso:null, bankModel:localStorage.getItem("boat.bankModel") || "", archiveController:null, archiveDays:3650, archiveYear:"", archiveView:"overview", archiveParams:{} };
 const $ = id => document.getElementById(id);
 function jstDate(){
