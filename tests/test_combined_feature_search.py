@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from boatrace_ai.db import connection, init_db
+from boatrace_ai.hashed_feature_dataset import race_ids_sha256
 from boatrace_ai.listwise import feature_search as feature_search_module
 from boatrace_ai.listwise.combined_feature_search import (
     COMBINED_FEATURE_VARIANTS,
@@ -25,6 +26,7 @@ def test_combined_search_can_keep_official_and_drop_speculative_research() -> No
     )
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
+    _canonical_sha256,
     _checkpoint_payload,
     _checkpoint_signature,
     _load_checkpoint,
@@ -77,7 +79,28 @@ EXPECTED_COMBINED_VARIANTS = (
 )
 
 
-def _signature(*, variants=None):
+def _source_snapshot(
+    race_keys: list[tuple[str, str, str, int]],
+    *,
+    source_hash: str = "d" * 64,
+) -> dict:
+    identity = {
+        "snapshot_version": 1,
+        "race_count": len(race_keys),
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_watermark_sha256": source_hash,
+        "trifecta_payouts_sha256": "e" * 64,
+        "selected_cache_manifest_sha256": "f" * 64,
+    }
+    identity["snapshot_sha256"] = _canonical_sha256(identity)
+    return identity
+
+
+def _signature(*, variants=None, data_snapshot=None):
+    race_keys = [
+        ("race-a", "2026-07-22", "01", 1),
+        ("race-b", "2026-07-23", "02", 2),
+    ]
     return _checkpoint_signature(
         args=SimpleNamespace(
             as_of_date="2026-07-23",
@@ -86,14 +109,12 @@ def _signature(*, variants=None):
             epochs=1,
             learning_rate=0.02,
         ),
-        race_keys=[
-            ("race-a", "2026-07-22", "01", 1),
-            ("race-b", "2026-07-23", "02", 2),
-        ],
+        race_keys=race_keys,
         train_end=1,
         selection_end=2,
         targets=("winner", "top3_pl"),
         alphas=(0.0001, 0.001),
+        data_snapshot=data_snapshot or _source_snapshot(race_keys),
         variants=variants,
     )
 
@@ -223,6 +244,58 @@ def test_combined_checkpoint_resumes_without_accepting_default_signature(
 
     assert list(resumed.values()) == rows
     assert _load_checkpoint(checkpoint, _signature()) == {}
+
+
+
+def test_checkpoint_v1_without_source_identity_is_rejected(tmp_path: Path) -> None:
+    signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
+    legacy = dict(signature)
+    legacy["checkpoint_version"] = 1
+    legacy.pop("source_data_snapshot")
+    row = _row(*COMBINED_FEATURE_VARIANTS[0], "winner", 0.0001)
+    checkpoint = tmp_path / "legacy-checkpoint.json"
+    checkpoint.write_text(
+        json.dumps({
+            "signature": legacy,
+            "progress": {
+                "completed_candidates": 1,
+                "total_candidates": 36,
+                "completed_variants": 0,
+                "total_variants": 9,
+                "last_completed": row,
+            },
+            "search_results": [row],
+        }),
+        encoding="utf-8",
+    )
+
+    assert _load_checkpoint(checkpoint, signature) == {}
+
+
+def test_same_race_ids_with_corrected_source_reject_old_candidates(
+    tmp_path: Path,
+) -> None:
+    stored_signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
+    race_keys = [
+        ("race-a", "2026-07-22", "01", 1),
+        ("race-b", "2026-07-23", "02", 2),
+    ]
+    corrected_signature = _signature(
+        variants=COMBINED_FEATURE_VARIANTS,
+        data_snapshot=_source_snapshot(race_keys, source_hash="9" * 64),
+    )
+    row = _row(*COMBINED_FEATURE_VARIANTS[0], "winner", 0.0001)
+    checkpoint = tmp_path / "corrected-source-checkpoint.json"
+    checkpoint.write_text(
+        json.dumps({
+            "signature": stored_signature,
+            "search_results": [row],
+        }),
+        encoding="utf-8",
+    )
+
+    assert len(_load_checkpoint(checkpoint, stored_signature)) == 1
+    assert _load_checkpoint(checkpoint, corrected_signature) == {}
 
 
 def test_combined_checkpoint_exposes_atomic_candidate_and_variant_progress(
