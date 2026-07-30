@@ -1672,14 +1672,15 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         if row["parameters"]["calibrator_strategy"]
         == "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19"
     )
-    assert v19["priority"] == 100
+    assert v19["priority"] == 96
     assert v19["parameters"]["timeout_seconds"] == 3600
     v20 = next(
         row for row in calls
         if row["parameters"]["calibrator_strategy"]
         == "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
     )
-    assert v20["priority"] == 97
+    assert v20["priority"] == 100
+    assert v19["priority"] < v20["priority"]
     assert v20["parameters"]["timeout_seconds"] == 3600
     prequential_v6 = next(
         row for row in calls
