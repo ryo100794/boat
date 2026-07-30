@@ -11,6 +11,7 @@ from scipy import sparse
 
 from boatrace_ai import calibrated_shadow_model as calibrated
 from boatrace_ai import recency_mlp_evaluation as recency
+from boatrace_ai.feature_schema import FEATURE_SCHEMA_VERSION
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
 from boatrace_ai.listwise.conditional_order import identity_model
 from boatrace_ai.standard_evaluation import race_set_sha256
@@ -209,10 +210,12 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
         del batch_size
         scored.append((race_start, race_end))
         loss = 0.4 if bundle["half_life"] in {None, 730.0} else 0.5
+        trifecta_loss = 3.8 if bundle["half_life"] is None else 3.9
         return (
             {
                 "entry_log_loss": loss,
                 "entry_brier": 0.1,
+                "trifecta_log_loss": trifecta_loss,
                 "winner_top1_accuracy": 0.2,
                 "trifecta_top1_hit_rate": 0.01,
                 "trifecta_top5_hit_rate": 0.05,
@@ -243,6 +246,59 @@ def test_selection_scores_only_inner_calibration_and_uses_fixed_tie_break(
     assert split["calibration_end"] == "2026-01-11"
     assert all(row["calibration_races"] == 2 for row in candidates)
     assert selected_predictions == {"calibration": [{"half_life": None}]}
+
+
+def test_selection_prioritizes_trifecta_log_loss_inside_entry_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = make_dataset(
+        [
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-03",
+            "2026-01-10",
+            "2026-01-11",
+        ]
+    )
+
+    def fake_train(_dataset: HashedRaceDataset, **kwargs: object) -> dict[str, object]:
+        return {"half_life": kwargs["recency_half_life_days"]}
+
+    def fake_score(
+        _dataset: HashedRaceDataset,
+        *,
+        bundle: dict[str, object],
+        race_start: int,
+        race_end: int,
+        batch_size: int,
+    ) -> tuple[dict[str, float | int], dict[str, list[dict[str, object]]]]:
+        del batch_size, race_start, race_end
+        half_life = bundle["half_life"]
+        return (
+            {
+                "entry_log_loss": 0.3000 if half_life is None else 0.3004,
+                "entry_brier": 0.1,
+                "trifecta_log_loss": 3.9 if half_life is None else 3.7,
+                "winner_top1_accuracy": 0.5,
+                "trifecta_top1_hit_rate": 0.1,
+                "trifecta_top5_hit_rate": 0.3 if half_life is None else 0.29,
+                "evaluated_races": 2,
+            },
+            {"calibration": [{"half_life": half_life}]},
+        )
+
+    monkeypatch.setattr(recency, "train_bundle_from_dataset", fake_train)
+    monkeypatch.setattr(recency, "score_range", fake_score)
+
+    selected, _candidates, split = recency.select_recency_half_life(
+        dataset,
+        outer_train_end=5,
+        half_lives=(None, 365.0),
+        calibration_days=2,
+    )
+
+    assert selected == 365.0
+    assert "minimum calibration trifecta_log_loss" in split["selection_criterion"]
 
 
 def test_trifecta_probability_matrix_is_ordered_and_normalized() -> None:
@@ -549,6 +605,36 @@ def test_load_incumbent_evaluation_enforces_frozen_protocol(tmp_path) -> None:
         )
 
 
+def test_optional_incumbent_mismatch_does_not_block_candidate_evaluation(
+    tmp_path,
+) -> None:
+    prediction_path = tmp_path / "prediction.json"
+    bankroll_path = tmp_path / "bankroll.json"
+    prediction_path.write_text(
+        __import__("json").dumps(
+            {"evaluation_race_set_sha256": "stale"}
+        ),
+        encoding="utf-8",
+    )
+    bankroll_path.write_text(
+        __import__("json").dumps(
+            {"evaluation_race_set_sha256": "stale"}
+        ),
+        encoding="utf-8",
+    )
+
+    prediction, bankroll, status = recency.load_compatible_incumbent_evaluation(
+        prediction_path,
+        bankroll_path,
+        protocol={"race_set_sha256": "current", "prediction_races": 10},
+    )
+
+    assert prediction is None
+    assert bankroll is None
+    assert status["available"] is False
+    assert status["reason"] == "incumbent evaluation race set hash mismatch"
+
+
 def test_protocol_race_validation_rejects_holdout_hash_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -611,20 +697,24 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         "validated_protocol_race_keys",
         lambda *_args, **_kwargs: (dataset.race_keys, training_hash),
     )
-    feature_contract: dict[str, tuple[str, ...]] = {}
+    feature_contract: dict[str, object] = {}
 
     def fake_iter_rows(
         _conn: object,
         *,
         include_races: set[str],
         drop_feature_groups: tuple[str, ...],
+        feature_schema_version: str,
     ):
         del include_races
         feature_contract["rows"] = drop_feature_groups
+        feature_contract["rows_schema"] = feature_schema_version
         return iter(())
 
     def fake_load_dataset(**kwargs: object):
         feature_contract["cache"] = kwargs["drop_feature_groups"]
+        feature_contract["cache_schema"] = kwargs["feature_schema_version"]
+        feature_contract["write_cache"] = kwargs["write_cache"]
         list(kwargs["race_rows"]())
         return dataset, "disk"
 
@@ -756,20 +846,29 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
         path.write_bytes(b"joblib")
 
     monkeypatch.setattr(recency, "dump_joblib_atomic", fake_dump)
+    progress: list[dict[str, object]] = []
 
     result = recency.evaluate_recency_mlp(
         None,
         output_path=output,
         evaluation_date=date(2025, 1, 2),
         feature_cache=tmp_path / "features",
+        write_feature_cache=False,
         model_output_path=model_output,
         deployment_model_output_path=deployment_output,
+        progress_callback=progress.append,
     )
 
     assert final_score_calls == [(training_count, dataset.race_count)]
     assert result["model"] == "calibrated_mlp_recency_selected"
     assert result["drop_feature_groups"] == ["research_correlates"]
-    assert feature_contract == {"rows": ("research_correlates",), "cache": ("research_correlates",)}
+    assert feature_contract == {
+        "rows": ("research_correlates",),
+        "rows_schema": FEATURE_SCHEMA_VERSION,
+        "cache": ("research_correlates",),
+        "cache_schema": FEATURE_SCHEMA_VERSION,
+        "write_cache": False,
+    }
     assert result["selected_recency_half_life_days"] == 365.0
     assert result["entry_log_loss"] == 0.25
     assert result["entry_brier"] == 0.08
@@ -798,13 +897,28 @@ def test_final_evaluation_writes_atomic_training_only_selection_output(
     assert shadow_artifact["metadata"]["drop_feature_groups"] == [
         "research_correlates"
     ]
+    assert shadow_artifact["metadata"]["selection_entry_log_loss_tolerance"] == 0.0005
+    assert shadow_artifact["metadata"]["selection_criterion"]
     assert deployment_artifact["training_races"] == dataset.race_count
     assert deployment_artifact["metadata"]["role"] == "production_candidate"
     assert deployment_artifact["drop_feature_groups"] == ["research_correlates"]
+    assert deployment_artifact["metadata"][
+        "selection_entry_log_loss_tolerance"
+    ] == 0.0005
     assert "outer training only" in result["selection"]["scope"]
     assert output.exists()
     assert not output.with_name(f".{output.name}.tmp").exists()
     assert "BOATRACE_EVAL_MAX_RACE_DATE" not in os.environ
+    assert [row["stage"] for row in progress] == [
+        "protocol_validated",
+        "dataset_ready",
+        "recency_selected",
+        "holdout_scored",
+        "conditional_order_fitted",
+        "bankroll_evaluated",
+        "conditional_payout_evaluated",
+    ]
+    assert all(float(row["elapsed_seconds"]) >= 0.0 for row in progress)
 
 
 def test_bankroll_summary_completes_and_validates_fixed_standard_policy(
@@ -853,12 +967,15 @@ def test_cli_defaults_match_recency_protocol() -> None:
     )
 
     assert args.feature_cache == recency.DEFAULT_FEATURE_CACHE
+    assert args.write_feature_cache is True
     assert args.drop_feature_groups == ("research_correlates",)
     assert args.model_output is None
     assert args.incumbent_prediction is None
     assert args.incumbent_bankroll is None
+    assert args.protected_baseline_model is None
     assert args.half_lives == (None, 180.0, 365.0, 730.0)
     assert args.calibration_days == 180
+    assert args.selection_entry_log_loss_tolerance == 0.0005
 
 
 def test_cli_validates_drop_feature_groups() -> None:

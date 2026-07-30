@@ -20,14 +20,12 @@ from .adaptive_allocation import zero_totals
 from .bankroll_backtest import _load_trifecta_payouts
 from .db import connection, init_db
 from .standard_evaluation import race_set_sha256
+from .training_diagnostics import classifier_training_diagnostics
 from .hashed_feature_dataset import (
     HashedRaceDataset,
     load_or_build_hashed_dataset,
 )
-try:
-    from . import feature_tuning as _feature_source
-except ImportError:
-    from . import modeling_pastlog_v7_stream_hash as _feature_source
+from . import feature_tuning as _feature_source
 
 _ensure_sparse_index32 = _feature_source._ensure_sparse_index32
 iter_race_feature_rows = _feature_source.iter_race_feature_rows
@@ -41,6 +39,26 @@ from .modeling import _race_level_metrics
 
 FEATURE_SET = "pastlog_calibrated_hash_shadow"
 MODEL_KINDS = ("linear", "mlp")
+
+
+def stabilize_sparse_scaler(scaler: StandardScaler) -> StandardScaler:
+    """Repair numerical round-off in incremental sparse variance estimates."""
+    if not all(hasattr(scaler, name) for name in ("mean_", "var_", "scale_")):
+        return scaler
+    mean = np.asarray(scaler.mean_, dtype=np.float64)
+    variance = np.asarray(scaler.var_, dtype=np.float64)
+    scale = np.asarray(scaler.scale_, dtype=np.float64)
+    if not np.all(np.isfinite(mean)):
+        raise ValueError("non-finite sparse scaler mean")
+    invalid = ~np.isfinite(variance) | (variance < 0.0) | ~np.isfinite(scale)
+    if np.any(invalid):
+        variance = variance.copy()
+        scale = scale.copy()
+        variance[invalid] = 0.0
+        scale[invalid] = 1.0
+        scaler.var_ = variance
+        scaler.scale_ = scale
+    return scaler
 
 
 def train_bundle_from_dataset(
@@ -75,6 +93,7 @@ def train_bundle_from_dataset(
                 dataset.matrix[start:end],
                 sample_weight=sample_weights[start:end],
             )
+    stabilize_sparse_scaler(scaler)
 
     classifier = make_classifier(model_kind, alpha=alpha, batch_size=batch_size)
     first = True
@@ -98,6 +117,7 @@ def train_bundle_from_dataset(
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
         "matrix_cached": True,
+        "training_diagnostics": classifier_training_diagnostics(classifier),
         "recency_half_life_days": (
             None
             if recency_half_life_days is None
@@ -150,7 +170,7 @@ def score_dataset_fold(
     matrix = dataset.matrix[row_slice]
     raw_parts = []
     for start, end in matrix_batch_ranges(matrix.shape[0], batch_size):
-        transformed = bundle["scaler"].transform(matrix[start:end])
+        transformed = transform_bundle_matrix(bundle, matrix[start:end])
         raw_parts.append(bundle["classifier"].predict_proba(transformed)[:, 1])
     if not raw_parts:
         return
@@ -301,12 +321,17 @@ def normalize_model_kind(value: str) -> str:
     return model_kind
 
 
+def transform_bundle_matrix(bundle: dict[str, Any], matrix: Any) -> Any:
+    scaler = bundle.get("scaler")
+    return matrix if scaler is None else scaler.transform(matrix)
+
+
 def predict_probabilities(bundle: dict[str, Any], features: list[dict[str, Any]]) -> list[float]:
     matrix = hash_features(
         bundle["hasher"],
         [to_hashable(feature) for feature in features],
     )
-    matrix = bundle["scaler"].transform(matrix)
+    matrix = transform_bundle_matrix(bundle, matrix)
     probabilities = bundle["classifier"].predict_proba(matrix)[:, 1]
     return [float(value) for value in probabilities]
 

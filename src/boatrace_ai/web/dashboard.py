@@ -21,6 +21,11 @@ from urllib.parse import parse_qs, urlparse
 
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
+from ..evaluation_probability_summary import (
+    canonicalize_probability_metrics,
+    market_comparison_fields,
+)
+from ..evaluation_result_summary import canonicalize_primary_bankroll
 from ..official import race_page_url, ymd
 from ..odds_quality import TRIFECTA_PARSER_VERSION
 from ..standard_evaluation import (
@@ -30,7 +35,7 @@ from ..standard_evaluation import (
     evaluate_promotions as evaluate_standard_promotions,
     protocol_sha256 as standard_protocol_sha256,
 )
-from .intraday_bankroll import day_bankroll_simulation
+from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulations
 from .prediction_summary import attach_latest_prediction_summaries
 
 
@@ -620,6 +625,9 @@ _DEFAULT_DATE_CACHE: dict[Path, tuple[float, str]] = {}
 _DAY_BANKROLL_CACHE: dict[
     tuple[Path, str, str], tuple[float, dict[str, Any]]
 ] = {}
+_TOP_MODEL_BANKROLL_CACHE: dict[
+    tuple[Path, str], tuple[float, dict[str, Any]]
+] = {}
 _VENUE_API_CACHE: dict[tuple[Path, str], tuple[float, dict[str, Any]]] = {}
 _DAY_API_CACHE: dict[tuple[Path, str, str], tuple[float, dict[str, Any]]] = {}
 _GUIDE_API_CACHE: dict[tuple[Path, str, int, int, int], tuple[float, dict[str, Any]]] = {}
@@ -651,6 +659,27 @@ def day_bankroll_cached(
             model_dir=db_path.parent / "models",
         )
     _DAY_BANKROLL_CACHE[key] = (now, payload)
+    return payload
+
+
+def top_model_bankroll_cached(
+    db_path: Path,
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    race_date = query_race_date(db_path, query)
+    key = (db_path, race_date)
+    now = time.monotonic()
+    cached = _TOP_MODEL_BANKROLL_CACHE.get(key)
+    if cached and now - cached[0] < 30.0:
+        return cached[1]
+    with connect(db_path) as conn:
+        payload = top_model_day_simulations(
+            conn,
+            race_date=race_date,
+            model_dir=db_path.parent / "models",
+            limit=10,
+        )
+    _TOP_MODEL_BANKROLL_CACHE[key] = (now, payload)
     return payload
 
 
@@ -775,6 +804,8 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                     send_json(self, day_overview_fast(db_path, query))
                 elif parsed.path == "/api/day-bankroll":
                     send_json(self, day_bankroll_cached(db_path, query))
+                elif parsed.path == "/api/day-bankroll-top-models":
+                    send_json(self, top_model_bankroll_cached(db_path, query))
                 elif parsed.path == "/api/guide":
                     send_json(self, purchase_guide_fast(db_path, query))
                 elif parsed.path == "/api/live-wipe":
@@ -798,6 +829,16 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                             model_performance_report(db_path, query)
                         ),
                     )
+                elif parsed.path == "/api/reports/model-performance/daily":
+                    send_json(
+                        self,
+                        model_performance_daily_report(
+                            model_performance_report(db_path, query),
+                            query,
+                        ),
+                    )
+                elif parsed.path == "/api/reports/genetic-evolution":
+                    send_json(self, genetic_evolution_report(db_path))
                 elif parsed.path == "/reports/roadmap":
                     send_html(self, ROADMAP_REPORT_HTML)
                 elif parsed.path == "/api/reports/roadmap-status":
@@ -988,11 +1029,27 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     fold_metrics: list[dict[str, Any]] = []
     bankroll: list[dict[str, Any]] = []
     bankroll_daily: dict[str, list[dict[str, Any]]] = {}
+    empirical_lcb_walk_forward: list[dict[str, Any]] = []
     sweeps: list[dict[str, Any]] = []
     feature_diagnostics: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     standardized = _load_standardized_v2_bundle(model_dir)
     standardized_labels: set[str] = set()
+
+    runtime_state_dir = db_path.parent / "runtime" / "daily-shadow-models"
+    runtime_reports: dict[str, Any] = {}
+    for key, filename in (
+        ("v21_activation_recovery", "activation-recovery.json"),
+        ("v21_prospective_evidence", "v21-prospective-evidence.json"),
+    ):
+        path = runtime_state_dir / filename
+        try:
+            runtime_reports[key] = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            runtime_reports[key] = None
+        except Exception as exc:
+            runtime_reports[key] = None
+            errors.append({"file": str(path), "error": str(exc)})
 
     for path in sorted(model_dir.glob("*.json")):
         try:
@@ -1001,6 +1058,20 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             errors.append({"file": path.name, "error": str(exc)})
             continue
         label = _report_label(path, data)
+        empirical_policy = data.get("empirical_lcb_walk_forward")
+        if isinstance(empirical_policy, dict):
+            empirical_lcb_walk_forward.append(
+                _empirical_lcb_walk_forward_summary(path, label, empirical_policy)
+            )
+        component_rows, component_daily = _bankroll_component_summaries(
+            path,
+            label,
+            data,
+            _bankroll_prediction_metrics(data),
+            component_label_prefix=path.stem,
+        )
+        bankroll.extend(component_rows)
+        bankroll_daily.update(component_daily)
         conditional_metrics = data.get("conditional_order")
         direct_bankroll = data.get("bankroll")
         bankroll_confidence = data.get("bankroll_confidence") or {}
@@ -1182,6 +1253,9 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         }
     )
     queued_evaluations = _database_evaluation_status(db_path)
+    empirical_lcb_walk_forward.extend(
+        _database_empirical_lcb_walk_forward(queued_evaluations["jobs"])
+    )
     queue_backtests, queue_bankroll, queue_daily = _database_evaluation_artifacts(
         queued_evaluations,
         model_dir,
@@ -1203,9 +1277,15 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     evaluation_jobs = queued_evaluations["jobs"] + legacy_evaluation_jobs
     backtests.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
     bankroll.sort(key=lambda item: (item.get("generated_at") or "", item["name"]))
+    empirical_lcb_walk_forward = _latest_named_rows(empirical_lcb_walk_forward)
     sweeps.sort(key=lambda item: (item.get("entry_log_loss") is None, item.get("entry_log_loss") or 999, item["name"]))
     feature_diagnostics.sort(key=lambda item: (item.get("generated_at") or "", item["file"]))
-    model_tracks = _model_track_summaries(model_dir, backtests, remote_evaluations)
+    model_tracks = _model_track_summaries(
+        model_dir,
+        backtests,
+        remote_evaluations,
+        evaluation_jobs=evaluation_jobs,
+    )
     model_catalog, model_daily = _model_report_catalog(
         model_tracks=model_tracks,
         backtests=backtests,
@@ -1228,6 +1308,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "fold_metrics": fold_metrics,
         "bankroll": bankroll,
         "bankroll_daily": bankroll_daily,
+        "empirical_lcb_walk_forward": empirical_lcb_walk_forward,
         "model_catalog": model_catalog,
         "model_daily": model_daily,
         "sweeps": sweeps,
@@ -1237,6 +1318,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
         "remote_generated_at": remote_evaluations.get("generated_at"),
         "standardized_evaluation": _standardized_v2_public_status(standardized),
+        **runtime_reports,
         "errors": errors,
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
@@ -1246,7 +1328,53 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
 def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:
     public = dict(report)
     public.pop("bankroll_daily", None)
+    daily_index: dict[str, dict[str, Any]] = {}
+    for key, value in (report.get("model_daily") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        metadata = dict(value)
+        rows = metadata.pop("rows", [])
+        metadata["row_count"] = len(rows) if isinstance(rows, list) else 0
+        metadata["loaded"] = metadata["row_count"] == 0
+        if metadata["loaded"]:
+            metadata["rows"] = []
+        daily_index[str(key)] = metadata
+    public["model_daily"] = daily_index
     return public
+
+
+def model_performance_daily_report(
+    report: dict[str, Any],
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    key = str((query.get("model_key") or [""])[0]).strip()
+    if not key:
+        return {
+            "model_key": "",
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "model_keyを指定してください",
+        }
+    value = (report.get("model_daily") or {}).get(key)
+    if not isinstance(value, dict):
+        return {
+            "model_key": key,
+            "loaded": True,
+            "rows": [],
+            "unavailable_reason": "指定モデルの日次評価はありません",
+        }
+    return {**value, "loaded": True}
+
+
+def genetic_evolution_report(db_path: Path) -> dict[str, Any]:
+    status = _database_evaluation_status(db_path)
+    jobs = [
+        row
+        for row in status["jobs"]
+        if row.get("kind") == "genetic_island_search"
+        or str(row.get("name") or "").startswith("genetic-champion-")
+    ]
+    return {"generated_at": status["generated_at"], "jobs": jobs}
 
 
 def _model_performance_report_contract(
@@ -1265,13 +1393,51 @@ def _model_performance_report_contract(
         None,
     )
     return {
-        "version": "model-performance-v3",
+        "version": "model-performance-v4",
         "principles": [
             "異なる評価母集団の数値は横比較しない",
             "損失は艇Entry LLと3連単LLを区別する",
             "投資0円はROI 0ではなく購入なしと表示する",
             "正式T-5評価は事前登録日以降の完全日だけを集計する",
         ],
+        "stages": [
+            {
+                "id": "outcome_prediction",
+                "label": "着順確率",
+                "teacher": "確定着順",
+                "metrics": ["艇Entry LL", "1着Top1", "3連単Top5"],
+                "gate": "同一365日holdoutで基準モデルを劣化させない",
+            },
+            {
+                "id": "closing_odds",
+                "label": "確定オッズ予測",
+                "teacher": "締切直前の公式確定オッズ",
+                "metrics": ["対数オッズMAE", "順位相関", "取得遅延"],
+                "gate": "完全取得日のwalk-forward評価だけを使用する",
+            },
+            {
+                "id": "purchase_policy",
+                "label": "購入・資金配分",
+                "teacher": "払戻と資金制約下の実現損益",
+                "metrics": ["ROI", "損益", "最大DD", "ROI片側95%下限"],
+                "gate": "過去日だけで方針を選び未使用日でROI下限1超",
+            },
+            {
+                "id": "promotion",
+                "label": "本番昇格",
+                "teacher": "なし（上流3段の判定集約）",
+                "metrics": ["予測gate", "オッズ品質gate", "資金gate"],
+                "gate": "全必須gate合格。未達はno-betまたはshadowを維持",
+            },
+        ],
+        "metric_definitions": {
+            "entry_log_loss": "各艇の着順確率に対する対数損失。低いほど良い",
+            "winner_top1_accuracy": "1着予測の的中レース率",
+            "trifecta_top5_hit_rate": "正解3連単が予測上位5点に含まれるレース率",
+            "roi": "払戻総額を投資総額で割った値。購入なしは未評価",
+            "roi_ci95_lower": "日単位再標本化によるROI片側95%下限",
+            "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
+        },
         "groups": [
             {
                 "id": "standard_365d",
@@ -1687,6 +1853,8 @@ def _model_track_summaries(
     model_dir: Path,
     backtests: list[dict[str, Any]],
     remote_evaluations: dict[str, Any],
+    *,
+    evaluation_jobs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     main = next(
         (row for row in backtests if row.get("file") == "backtest_no_odds_v8.json"),
@@ -1802,7 +1970,162 @@ def _model_track_summaries(
         *_calibrated_model_tracks(remote_evaluations),
         *_listwise_model_tracks(remote_evaluations, model_dir),
         *_market_calibrated_model_tracks(remote_evaluations, model_dir),
+        *_odds_path_model_tracks(evaluation_jobs or []),
     ]
+
+
+_ODDS_PATH_TRACK_SPECS = (
+    (
+        "odds_path_observed_closing_return_v4",
+        "締切オッズ実績リターン v4",
+        "確定3連単着順、および各評価日より前の公式確定オッズ対払戻倍率",
+        "上流の過去ログ三連単確率、T-5市場確率、モデル/市場乖離と順位、"
+        "オッズ系列の短期/長期傾き・加速度・変動、過去的中lift / "
+        "Newton較正・完全日walk-forward・1日1万円",
+    ),
+    (
+        "odds_path_prequential_shrinkage_return_v6",
+        "事前逐次収縮リターン v6",
+        "確定3連単着順と払戻。各評価日より前のinner日だけで収縮priorと倍率境界を選択",
+        "v4と同じ11特徴（上流確率、T-5市場、乖離/順位、オッズ傾き・加速度・変動、"
+        "過去的中lift） / inner prequentialでhit prior×倍率境界18候補を選択 / "
+        "外側完全日walk-forward・1日1万円",
+    ),
+    (
+        "odds_path_crossfit_conservative_ev_v7",
+        "Crossfit保守EV v7",
+        "10年履歴base三連単確率、各outer日以前のT-5結果、公式closingオッズ",
+        "baseをoffsetとする純粋120クラスT-5 residual / "
+        "log(closing/T-5) q20 / 日次cluster probability LCB / "
+        "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
+    ),
+    (
+        "odds_path_market_offset_crossfit_conservative_ev_v8",
+        "市場offset Crossfit保守EV v8",
+        "10年履歴base三連単確率、各outer日以前のT-5市場・結果、公式closingオッズ",
+        "log(T-5市場)固定offset＋標準化base/market残差・rank差・odds trend / "
+        "日付順nested L2 / log(closing/T-5) q20 / 日cluster probability LCB / "
+        "固定safe EV 1.05・最大2点・Kelly 0.25・日20%/R3%/点1%",
+    ),
+    (
+        "odds_path_market_offset_discrete_log_ev_v9",
+        "市場offset 離散対数効用 v9",
+        "v8と同一の10年履歴base確率、outer日以前のT-5市場・結果、公式closingオッズ",
+        "v8市場offset確率 / log(closing/T-5) q20 / 日cluster probability LCB / "
+        "固定safe EV 1.05・最大2点 / 100円単位の離散期待対数効用 / "
+        "日資金1万円・0口許容・日20%/R3%/点1%",
+    ),
+    (
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+        "選択条件付き終値保護 v10",
+        "v9と同一の履歴・T-5市場・結果・公式closing。補正教師は各outer日より前の選択候補のみ",
+        "v8市場offset確率 / q20 closing / 日cluster probability LCB / "
+        "safe EV 1.05・race上位2点の選択条件付き有限標本conformal haircut / "
+        "補正後EV再判定 / v9の100円離散期待対数効用・少数時no-bet",
+    ),
+)
+
+
+def _odds_path_model_tracks(
+    evaluation_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for model_key, label, teacher, training in _ODDS_PATH_TRACK_SPECS:
+        matches = [
+            job
+            for job in evaluation_jobs
+            if str(job.get("name") or "").lower().startswith(model_key)
+        ]
+        job = max(
+            matches,
+            key=lambda item: int(
+                item.get("db_job_id") or item.get("job_id") or 0
+            ),
+            default={},
+        )
+        rows.append(
+            {
+                "id": model_key,
+                "model_key": model_key,
+                "label": label,
+                "role": "比較評価・shadowのみ",
+                "status": job.get("status") or "未登録",
+                "evaluation_group": "t5_walk_forward",
+                "include_odds": True,
+                "model_file": f"{model_key}.json",
+                "teacher": teacher,
+                "training": training,
+                "eligible_races": job.get("evaluated_races"),
+                "evaluation_days": job.get("evaluation_days"),
+                "backtest_available": job.get("status") == "完了",
+                "winner_log_loss": job.get("winner_log_loss"),
+                "trifecta_log_loss": job.get("trifecta_log_loss"),
+                "winner_top1_accuracy": job.get("winner_top1_accuracy"),
+                "trifecta_top5_hit_rate": job.get("trifecta_top5_hit_rate"),
+                **_probability_report_fields(job),
+                "closing_odds_log_mae": job.get("closing_odds_log_mae"),
+                "closing_odds_rank_correlation": job.get(
+                    "closing_odds_rank_correlation"
+                ),
+                "closing_odds_interval_coverage": job.get(
+                    "closing_odds_interval_coverage"
+                ),
+                "closing_q20_pinball_loss": job.get(
+                    "closing_q20_pinball_loss"
+                ),
+                "closing_q20_lower_coverage": job.get(
+                    "closing_q20_lower_coverage"
+                ),
+                "closing_snapshot_age_seconds": job.get(
+                    "closing_snapshot_age_seconds"
+                ),
+                "stake_yen": job.get("stake_yen"),
+                "return_yen": job.get("return_yen"),
+                "roi": job.get("roi"),
+                "profit_yen": job.get("profit_yen"),
+                "max_drawdown_yen": job.get("max_drawdown_yen"),
+                "tickets": job.get("tickets"),
+                "hit_tickets": job.get("hit_tickets"),
+                "roi_without_largest_hit": job.get(
+                    "roi_without_largest_hit"
+                ),
+                "daily_cluster_bootstrap_roi_lower_95": job.get(
+                    "daily_cluster_bootstrap_roi_lower_95"
+                ),
+                "purchase_decision_diagnostics": job.get(
+                    "purchase_decision_diagnostics"
+                ),
+                "selection_conformal": job.get("selection_conformal"),
+                "selection_raw_closing_coverage": job.get(
+                    "selection_raw_closing_coverage"
+                ),
+                "selection_guarded_closing_coverage": job.get(
+                    "selection_guarded_closing_coverage"
+                ),
+                "haircut_latest": job.get("haircut_latest"),
+                "training_days_latest": job.get("training_days_latest"),
+                "training_candidates_latest": job.get(
+                    "training_candidates_latest"
+                ),
+                "threshold_pass_candidates": job.get(
+                    "threshold_pass_candidates"
+                ),
+                "candidates_after_race_cap": job.get(
+                    "candidates_after_race_cap"
+                ),
+                "purchases_after_allocation": job.get(
+                    "purchases_after_allocation"
+                ),
+                "safe_ev_max": job.get("safe_ev_max"),
+                "safe_ev_p95": job.get("safe_ev_p95"),
+                "safe_ev_p99": job.get("safe_ev_p99"),
+                "effective_hit_count": job.get("effective_hit_count"),
+                "largest_hit_return_share": job.get(
+                    "largest_hit_return_share"
+                ),
+            }
+        )
+    return rows
 
 
 def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1840,6 +2163,9 @@ def _calibrated_model_tracks(remote_evaluations: dict[str, Any]) -> list[dict[st
                 "target_races": None,
                 "backtest_available": job.get("status") == "完了" and bool(result),
                 "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                "winner_log_loss": _float_or_none(
+                    metrics.get("winner_log_loss")
+                ),
                 "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
                 "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
             }
@@ -1969,50 +2295,7 @@ def _listwise_model_tracks(
 
 
 def _market_comparison_summary(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    loss = payload.get("log_loss_difference_calibrated_minus_market") or {}
-    top5 = payload.get("top5_hit_difference_calibrated_minus_market") or {}
-    cluster_loss = payload.get(
-        "day_cluster_log_loss_difference_calibrated_minus_market"
-    ) or {}
-    cluster_top5 = payload.get(
-        "day_cluster_top5_hit_difference_calibrated_minus_market"
-    ) or {}
-    if not isinstance(loss, dict) or not loss.get("observations"):
-        return {}
-    return {
-        "market_comparison_races": loss.get("observations"),
-        "market_log_loss_delta": _float_or_none(loss.get("mean_difference")),
-        "market_log_loss_delta_ci95_lower": _float_or_none(loss.get("ci95_lower")),
-        "market_log_loss_delta_ci95_upper": _float_or_none(loss.get("ci95_upper")),
-        "market_improvement_probability": _float_or_none(
-            loss.get("probability_less_than_zero")
-        ),
-        "market_top5_delta": _float_or_none(top5.get("mean_difference")),
-        "market_top5_delta_ci95_lower": _float_or_none(top5.get("ci95_lower")),
-        "market_top5_delta_ci95_upper": _float_or_none(top5.get("ci95_upper")),
-        "market_comparison_days": cluster_loss.get("clusters"),
-        "market_day_log_loss_delta_ci95_lower": _float_or_none(
-            cluster_loss.get("ci95_lower")
-        ),
-        "market_day_log_loss_delta_ci95_upper": _float_or_none(
-            cluster_loss.get("ci95_upper")
-        ),
-        "market_day_top5_delta_ci95_lower": _float_or_none(
-            cluster_top5.get("ci95_lower")
-        ),
-        "market_day_top5_delta_ci95_upper": _float_or_none(
-            cluster_top5.get("ci95_upper")
-        ),
-        "market_race_confidence_pass": bool(
-            payload.get("race_level_confidence_pass")
-        ),
-        "market_day_confidence_pass": bool(
-            payload.get("day_cluster_confidence_pass")
-        ),
-        "market_confidence_pass": bool(payload.get("confidence_pass")),
-    }
+    return market_comparison_fields(payload)
 
 
 def _market_bootstrap_summary(path: Path | None) -> dict[str, Any]:
@@ -2249,6 +2532,12 @@ def _market_calibrated_model_tracks(
                 "backtest_available": status == "完了" and bool(result),
                 "entry_log_loss": None,
                 "trifecta_log_loss": displayed_log_loss,
+                "winner_log_loss": _float_or_none(
+                    metrics.get("winner_log_loss")
+                ),
+                "winner_top1_accuracy": _float_or_none(
+                    metrics.get("winner_top1_accuracy")
+                ),
                 "model_trifecta_log_loss": _float_or_none(
                     metrics.get("model_trifecta_log_loss")
                 ),
@@ -2294,14 +2583,114 @@ def _remote_job_fold_progress(job: dict[str, Any]) -> tuple[int, int | None]:
     return completed_folds, expected_folds
 
 
+def _nested_checkpoint_fold_progress(
+    job_id: int,
+    *,
+    root: Path | None = None,
+) -> int:
+    checkpoint_dir = (
+        (root or PROJECT_ROOT)
+        / "data/models/evaluation_cache/nested_annual"
+        / f"job-{int(job_id):08d}"
+    )
+    completed: set[int] = set()
+    for metadata_path in checkpoint_dir.glob("fold-*.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            fold = int(metadata.get("fold"))
+            arrays_path = checkpoint_dir / str(metadata.get("npz_file") or "")
+            if (
+                metadata.get("checkpoint_version") == 1
+                and metadata.get("complete") is True
+                and 1 <= fold <= 5
+                and arrays_path.is_file()
+                and isinstance(metadata.get("boundary_audit"), dict)
+                and metadata["boundary_audit"].get("passed") is True
+            ):
+                completed.add(fold)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return len(completed)
+
+
+_PROBABILITY_REPORT_NUMERIC_FIELDS = (
+    "winner_log_loss",
+    "winner_top1_accuracy",
+    "calibrated_trifecta_log_loss",
+    "trifecta_top5_hit_rate",
+    "model_winner_log_loss",
+    "model_winner_top1_accuracy",
+    "model_trifecta_log_loss",
+    "model_trifecta_top5_hit_rate",
+    "market_winner_log_loss",
+    "market_winner_top1_accuracy",
+    "market_trifecta_log_loss",
+    "market_trifecta_top5_hit_rate",
+    "calibrated_winner_log_loss",
+    "calibrated_winner_top1_accuracy",
+    "calibrated_trifecta_top5_hit_rate",
+    "market_log_loss_delta",
+    "market_log_loss_delta_ci95_lower",
+    "market_log_loss_delta_ci95_upper",
+    "market_improvement_probability",
+    "market_top5_delta",
+    "market_top5_delta_ci95_lower",
+    "market_top5_delta_ci95_upper",
+    "market_day_log_loss_delta_ci95_lower",
+    "market_day_log_loss_delta_ci95_upper",
+    "market_day_top5_delta_ci95_lower",
+    "market_day_top5_delta_ci95_upper",
+)
+
+
+def _canonical_report_metrics(values: dict[str, Any]) -> dict[str, Any]:
+    bankroll = canonicalize_primary_bankroll(values)
+    return canonicalize_probability_metrics(bankroll)
+
+
+def _probability_report_fields(metrics: dict[str, Any]) -> dict[str, Any]:
+    canonical = _canonical_report_metrics(metrics)
+    result = {
+        key: _float_or_none(canonical.get(key))
+        for key in _PROBABILITY_REPORT_NUMERIC_FIELDS
+    }
+    result.update({
+        "market_comparison_races": canonical.get("market_comparison_races"),
+        "market_comparison_days": canonical.get("market_comparison_days"),
+        "market_race_confidence_pass": canonical.get(
+            "market_race_confidence_pass"
+        ),
+        "market_day_confidence_pass": canonical.get(
+            "market_day_confidence_pass"
+        ),
+        "market_confidence_pass": canonical.get("market_confidence_pass"),
+        "calibration_pass": canonical.get("calibration_pass"),
+        "sample_size_pass": canonical.get("sample_size_pass"),
+        "effective_hit_count_pass": canonical.get(
+            "effective_hit_count_pass"
+        ),
+    })
+    return result
+
+
 def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
     for job in jobs or []:
         result = job.get("result") or {}
-        metrics = {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
+        metrics = _canonical_report_metrics(
+            {
+                **(result.get("base_metrics") or {}),
+                **(result.get("metrics") or {}),
+                "probability_metrics": result.get("probability_metrics")
+                or (result.get("metrics") or {}).get("probability_metrics"),
+                "market_comparison": result.get("market_comparison")
+                or (result.get("metrics") or {}).get("market_comparison"),
+            }
+        )
         completed_folds, expected_folds = _remote_job_fold_progress(job)
         rows.append({
+            "pid": job.get("pid"),
             "name": job.get("name"),
             "milestone": job.get("milestone"),
             "kind": job.get("kind"),
@@ -2310,17 +2699,54 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
             "elapsed": (job.get("process") or {}).get("elapsed"),
             "completed_folds": completed_folds or None,
             "expected_folds": expected_folds,
+            "primary_bankroll": metrics.get("primary_bankroll"),
+            "legacy_batch_bankroll": metrics.get("legacy_batch_bankroll"),
+            "legacy_batch_roi": _float_or_none(metrics.get("legacy_batch_roi")),
+            "legacy_batch_stake_yen": metrics.get("legacy_batch_stake_yen"),
+            "legacy_batch_return_yen": metrics.get("legacy_batch_return_yen"),
+            "legacy_batch_profit_yen": metrics.get("legacy_batch_profit_yen"),
+            "legacy_batch_max_drawdown_yen": metrics.get(
+                "legacy_batch_max_drawdown_yen"
+            ),
             "roi": _float_or_none(metrics.get("roi")),
             "profit_yen": metrics.get("profit_yen"),
+            "stake_yen": metrics.get("stake_yen"),
+            "return_yen": metrics.get("return_yen"),
+            "max_drawdown_yen": metrics.get("max_drawdown_yen"),
             "evaluated_races": metrics.get("evaluated_races"),
             "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
-            "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
-            "trifecta_top5_hit_rate": _float_or_none(metrics.get("trifecta_top5_hit_rate")),
+            **_probability_report_fields(metrics),
             "real_odds_races": metrics.get("real_odds_races"),
             "skipped_no_real_odds": metrics.get("skipped_no_real_odds"),
             "error": (job.get("log_tail") or [])[-1] if job.get("status") == "失敗" else None,
         })
     return rows
+
+
+_ROADMAP_REMOTE_EVALUATION_METADATA = (
+    "generated_at",
+    "host",
+    "workdir",
+    "status",
+    "local_results",
+    "note",
+    "error",
+)
+
+
+def _roadmap_remote_evaluation_summary(
+    remote_evaluations: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep the roadmap payload bounded to fields rendered by its table."""
+    if not isinstance(remote_evaluations, dict):
+        return {"jobs": []}
+    summary = {
+        key: remote_evaluations.get(key)
+        for key in _ROADMAP_REMOTE_EVALUATION_METADATA
+        if key in remote_evaluations
+    }
+    summary["jobs"] = _remote_evaluation_job_summaries(remote_evaluations)
+    return summary
 
 
 def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
@@ -2330,9 +2756,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
         with connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT j.job_id, j.task_type, j.model_key, j.status,
-                       j.attempt, j.max_attempts, j.started_at, j.completed_at,
-                       j.decision, j.result_summary, j.result_path, j.error,
+                SELECT j.*,
                        c.metrics AS candidate_metrics,
                        c.parameters AS candidate_parameters,
                        c.created_at AS candidate_created_at
@@ -2343,6 +2767,61 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 LIMIT 100
                 """
             ).fetchall()
+            try:
+                parent_ids = [
+                    int(row["parent_job_id"])
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT parent_job_id
+                        FROM (
+                          SELECT parent_job_id
+                          FROM model_evaluation_jobs
+                          WHERE category = 'evaluation'
+                          ORDER BY job_id DESC
+                          LIMIT 100
+                        ) recent
+                        WHERE parent_job_id IS NOT NULL
+                        """
+                    ).fetchall()
+                ]
+                known_ids = {int(row["job_id"]) for row in rows}
+                missing_parent_ids = [
+                    job_id for job_id in parent_ids if job_id not in known_ids
+                ]
+                if missing_parent_ids:
+                    placeholders = ",".join("?" for _ in missing_parent_ids)
+                    parent_rows = conn.execute(
+                        f"""
+                        SELECT j.*,
+                               c.metrics AS candidate_metrics,
+                               c.parameters AS candidate_parameters,
+                               c.created_at AS candidate_created_at
+                        FROM model_evaluation_jobs j
+                        LEFT JOIN model_improvement_candidates c
+                          ON c.job_id = j.job_id
+                        WHERE j.job_id IN ({placeholders})
+                        """,
+                        tuple(missing_parent_ids),
+                    ).fetchall()
+                    rows = list(rows) + list(parent_rows)
+            except Exception:
+                # Legacy SQLite report fixtures predate parent_job_id.
+                pass
+            current_attempt_started = {}
+            try:
+                run_rows = conn.execute(
+                    """
+                    SELECT r.job_id, r.started_at
+                    FROM model_evaluation_job_runs r
+                    JOIN model_evaluation_jobs j ON j.job_id = r.job_id
+                    WHERE r.attempt = j.attempt AND r.status = 'running'
+                    """
+                ).fetchall()
+                current_attempt_started = {
+                    int(row["job_id"]): row["started_at"] for row in run_rows
+                }
+            except Exception:
+                pass
     except Exception:
         return {"generated_at": generated_at, "jobs": [], "candidates": []}
 
@@ -2357,36 +2836,345 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
     }
     for source in rows:
         row = {key: source[key] for key in source.keys()}
-        metrics = _json_mapping(row.get("result_summary"))
+        metrics = _canonical_report_metrics(
+            _json_mapping(row.get("result_summary"))
+        )
+        parameters = _json_mapping(row.get("parameters"))
         status = str(row.get("status") or "")
+        invalid_data_source = bool(
+            row.get("decision") == "invalid_data_source"
+            or metrics.get("data_source_validation_pass") is False
+        )
+        if invalid_data_source:
+            metrics = {}
+        task_type = str(row.get("task_type") or "")
+        nested_expected_folds = 5 if task_type == "bankroll_policy_nested_annual" else None
+        nested_completed_folds = (
+            _nested_checkpoint_fold_progress(int(row["job_id"]))
+            if nested_expected_folds is not None
+            else None
+        )
+        if nested_expected_folds is not None and status == "completed":
+            nested_completed_folds = max(
+                int(nested_completed_folds or 0),
+                int(metrics.get("fold_count") or 0),
+            )
         jobs.append(
             {
                 "db_job_id": row.get("job_id"),
+                "priority": row.get("priority"),
+                "parent_job_id": row.get("parent_job_id"),
                 "name": row.get("model_key"),
                 "milestone": row.get("task_type"),
                 "kind": row.get("task_type"),
-                "status": status_labels.get(status, status or "-"),
+                "status": (
+                    "無効" if invalid_data_source
+                    else status_labels.get(status, status or "-")
+                ),
+                "decision": row.get("decision"),
+                "valid_for_comparison": not invalid_data_source,
+                "parameters": parameters,
+                "cohort": parameters.get("cohort") or metrics.get("genetic_cohort"),
+                "comparison_role": metrics.get("comparison_role"),
+                "generation": parameters.get("generation"),
+                "island_id": parameters.get("island_id"),
+                "island_count": parameters.get("island_count"),
+                "population_size": parameters.get("population_size"),
+                "local_generations": parameters.get("local_generations"),
+                "max_generations": parameters.get("max_generations"),
+                "mutation_rate": parameters.get("mutation_rate", 0.35),
+                "random_injections": parameters.get("random_injections", 1),
+                "diversity_rescue": bool(parameters.get("diversity_rescue")),
+                "structural_elite_count": parameters.get("structural_elite_count"),
+                "migration_applied": bool(parameters.get("migration_applied")),
+                "immigrant_count": len(parameters.get("immigrants") or []),
+                "genetic_fitness": _float_or_none(metrics.get("genetic_fitness")),
+                "genetic_evaluated_individuals": (
+                    metrics.get("genetic_evaluated_individuals")
+                    or (
+                        int(parameters.get("population_size") or 0)
+                        * int(parameters.get("local_generations") or 0)
+                        if status == "completed"
+                        and row.get("task_type") == "genetic_island_search"
+                        else 0
+                    )
+                ),
+                "genetic_history": (
+                    metrics.get("genetic_history")
+                    if isinstance(metrics.get("genetic_history"), list)
+                    else []
+                ),
+                "evaluation_days": metrics.get("evaluation_days"),
+                "promotion_eligible": metrics.get("promotion_eligible"),
+                "prediction_deployment_eligible": metrics.get(
+                    "prediction_deployment_eligible"
+                ),
+                "deployment_model_artifact_saved": metrics.get(
+                    "deployment_model_artifact_saved"
+                ),
+                "prediction_deployment_gate_passed": metrics.get(
+                    "prediction_deployment_gate_passed"
+                ),
+                "prediction_deployment_gate_total": metrics.get(
+                    "prediction_deployment_gate_total"
+                ),
+                "prediction_deployment_gate_failed": metrics.get(
+                    "prediction_deployment_gate_failed"
+                ) or [],
+                "promotion_gate_passed": metrics.get("promotion_gate_passed"),
+                "promotion_gate_total": metrics.get("promotion_gate_total"),
+                "promotion_gate_failed": metrics.get("promotion_gate_failed") or [],
+                "holdout_temporal_minimum_roi": _float_or_none(
+                    metrics.get("holdout_temporal_minimum_roi")
+                ),
+                "holdout_temporal_fold_rois": (
+                    metrics.get("holdout_temporal_fold_rois") or []
+                ),
+                "fold_count": metrics.get("fold_count"),
+                "fold_rois": metrics.get("fold_rois") or [],
+                "minimum_fold_roi": _float_or_none(
+                    metrics.get("minimum_fold_roi")
+                ),
+                "largest_hit_excluded_roi": _float_or_none(
+                    metrics.get("largest_hit_excluded_roi")
+                ),
+                "roi_ci95_lower": _float_or_none(metrics.get("roi_ci95_lower")),
+                "roi_ci95_upper": _float_or_none(metrics.get("roi_ci95_upper")),
+                "probability_roi_above_one": _float_or_none(
+                    metrics.get("probability_roi_above_one")
+                ),
                 "running": status == "running",
-                "elapsed": _database_job_elapsed(row.get("started_at"), status),
-                "completed_folds": None,
-                "expected_folds": None,
+                "elapsed": _database_job_elapsed(
+                    current_attempt_started.get(
+                        int(row["job_id"]), row.get("started_at")
+                    ),
+                    status,
+                ),
+                "completed_folds": nested_completed_folds,
+                "expected_folds": nested_expected_folds,
+                "primary_bankroll": metrics.get("primary_bankroll"),
+                "legacy_batch_bankroll": metrics.get("legacy_batch_bankroll"),
+                "legacy_batch_roi": _float_or_none(
+                    metrics.get("legacy_batch_roi")
+                ),
+                "legacy_batch_stake_yen": metrics.get("legacy_batch_stake_yen"),
+                "legacy_batch_return_yen": metrics.get("legacy_batch_return_yen"),
+                "legacy_batch_profit_yen": metrics.get("legacy_batch_profit_yen"),
+                "legacy_batch_max_drawdown_yen": metrics.get(
+                    "legacy_batch_max_drawdown_yen"
+                ),
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
+                "stake_yen": metrics.get("stake_yen"),
+                "return_yen": metrics.get("return_yen"),
+                "max_drawdown_yen": metrics.get("max_drawdown_yen"),
+                "tickets": metrics.get("tickets"),
+                "hit_tickets": metrics.get("hit_tickets"),
+                "roi_without_largest_hit": _float_or_none(
+                    metrics.get("roi_without_largest_hit")
+                ),
+                "daily_cluster_bootstrap_roi_lower_95": _float_or_none(
+                    metrics.get("daily_cluster_bootstrap_roi_lower_95")
+                ),
+                "purchase_decision_diagnostics": (
+                    metrics.get("purchase_decision_diagnostics")
+                    if isinstance(
+                        metrics.get("purchase_decision_diagnostics"), dict
+                    )
+                    else None
+                ),
+                "selection_conformal": (
+                    metrics.get("selection_conformal")
+                    if isinstance(metrics.get("selection_conformal"), dict)
+                    else None
+                ),
+                "selection_raw_closing_coverage": _float_or_none(
+                    metrics.get("selection_raw_closing_coverage")
+                ),
+                "selection_guarded_closing_coverage": _float_or_none(
+                    metrics.get("selection_guarded_closing_coverage")
+                ),
+                "haircut_latest": _float_or_none(
+                    metrics.get("haircut_latest")
+                ),
+                "training_days_latest": metrics.get("training_days_latest"),
+                "training_candidates_latest": metrics.get(
+                    "training_candidates_latest"
+                ),
+                "threshold_pass_candidates": metrics.get(
+                    "threshold_pass_candidates"
+                ),
+                "candidates_after_race_cap": metrics.get(
+                    "candidates_after_race_cap"
+                ),
+                "purchases_after_allocation": metrics.get(
+                    "purchases_after_allocation"
+                ),
+                "safe_ev_max": _float_or_none(metrics.get("safe_ev_max")),
+                "safe_ev_p95": _float_or_none(metrics.get("safe_ev_p95")),
+                "safe_ev_p99": _float_or_none(metrics.get("safe_ev_p99")),
+                "closing_q20_pinball_loss": _float_or_none(
+                    metrics.get("closing_q20_pinball_loss")
+                ),
+                "closing_q20_lower_coverage": _float_or_none(
+                    metrics.get("closing_q20_lower_coverage")
+                ),
                 "evaluated_races": metrics.get("evaluated_races")
                 or metrics.get("evaluation_races"),
-                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
-                "winner_top1_accuracy": _float_or_none(
-                    metrics.get("winner_top1_accuracy")
+                "benchmark_status": metrics.get("benchmark_status"),
+                "benchmark_days": metrics.get("benchmark_days"),
+                "benchmark_population_races": metrics.get("benchmark_population_races"),
+                "benchmark_odds_eligible_races": metrics.get("benchmark_odds_eligible_races"),
+                "benchmark_evaluated_races": metrics.get("benchmark_evaluated_races"),
+                "registered_ev_band_status": metrics.get("registered_ev_band_status"),
+                "registered_ev_band_registered_after": metrics.get(
+                    "registered_ev_band_registered_after"
                 ),
-                "trifecta_top5_hit_rate": _float_or_none(
-                    metrics.get("trifecta_top5_hit_rate")
+                "registered_ev_band_evaluation_days": metrics.get(
+                    "registered_ev_band_evaluation_days"
+                ),
+                "registered_ev_band_tickets": metrics.get("registered_ev_band_tickets"),
+                "registered_ev_band_hit_tickets": metrics.get(
+                    "registered_ev_band_hit_tickets"
+                ),
+                "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
+                "prospective_normalized_ev_status": metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) or metrics.get(
+                    "prospective_normalized_ev_status"
+                ),
+                "prospective_normalized_ev_registered_after": metrics.get(
+                    "prospective_observed_closing_v4_registered_after"
+                ) or metrics.get(
+                    "prospective_normalized_ev_registered_after"
+                ),
+                "prospective_normalized_ev_evaluation_days": metrics.get(
+                    "prospective_observed_closing_v4_evaluation_days"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
+                    "prospective_normalized_ev_evaluation_days"
+                ),
+                "prospective_normalized_ev_tickets": metrics.get(
+                    "prospective_observed_closing_v4_tickets"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
+                    "prospective_normalized_ev_tickets"
+                ),
+                "prospective_normalized_ev_hit_tickets": metrics.get(
+                    "prospective_observed_closing_v4_hit_tickets"
+                ) if metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ) is not None else metrics.get(
+                    "prospective_normalized_ev_hit_tickets"
+                ),
+                "prospective_normalized_ev_roi": _float_or_none(
+                    metrics.get("prospective_observed_closing_v4_roi")
+                    if metrics.get("prospective_observed_closing_v4_status")
+                    is not None
+                    else metrics.get("prospective_normalized_ev_roi")
+                ),
+                "prospective_observed_closing_v4_status": metrics.get(
+                    "prospective_observed_closing_v4_status"
+                ),
+                "prospective_observed_closing_v4_registered_after": metrics.get(
+                    "prospective_observed_closing_v4_registered_after"
+                ),
+                "prospective_observed_closing_v4_evaluation_days": metrics.get(
+                    "prospective_observed_closing_v4_evaluation_days"
+                ),
+                "prospective_observed_closing_v4_tickets": metrics.get(
+                    "prospective_observed_closing_v4_tickets"
+                ),
+                "prospective_observed_closing_v4_hit_tickets": metrics.get(
+                    "prospective_observed_closing_v4_hit_tickets"
+                ),
+                "prospective_observed_closing_v4_roi": _float_or_none(
+                    metrics.get("prospective_observed_closing_v4_roi")
+                ),
+                "prospective_observed_closing_v4_profit_yen": metrics.get(
+                    "prospective_observed_closing_v4_profit_yen"
+                ),
+                "prospective_observed_closing_v4_roi_without_largest_hit": (
+                    _float_or_none(
+                        metrics.get(
+                            "prospective_observed_closing_v4_roi_without_largest_hit"
+                        )
+                    )
+                ),
+                "prospective_v7_status": metrics.get(
+                    "prospective_v7_status"
+                ),
+                "prospective_v7_registered_after": metrics.get(
+                    "prospective_v7_registered_after"
+                ),
+                "prospective_v7_evaluation_days": metrics.get(
+                    "prospective_v7_evaluation_days"
+                ),
+                "prospective_v7_tickets": metrics.get(
+                    "prospective_v7_tickets"
+                ),
+                "prospective_v7_hit_tickets": metrics.get(
+                    "prospective_v7_hit_tickets"
+                ),
+                "prospective_v7_roi": _float_or_none(
+                    metrics.get("prospective_v7_roi")
+                ),
+                "prospective_v7_roi_without_largest_hit": _float_or_none(
+                    metrics.get(
+                        "prospective_v7_roi_without_largest_hit"
+                    )
+                ),
+                "prospective_v7_daily_cluster_bootstrap_roi_lower_95": (
+                    _float_or_none(
+                        metrics.get(
+                            "prospective_v7_daily_cluster_bootstrap_roi_lower_95"
+                        )
+                    )
+                ),
+                "empirical_lcb_walk_forward": (
+                    _empirical_lcb_walk_forward_from_metrics(metrics)
+                ),
+                "high_ev_tickets": metrics.get("high_ev_tickets"),
+                "high_ev_realized_roi": _float_or_none(
+                    metrics.get("high_ev_realized_roi")
+                ),
+                "top5_flat_tickets": metrics.get("top5_flat_tickets"),
+                "top5_flat_hit_rate": _float_or_none(
+                    metrics.get("top5_flat_hit_rate")
+                ),
+                "top5_flat_roi": _float_or_none(metrics.get("top5_flat_roi")),
+                "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
+                **_probability_report_fields(metrics),
+                "trifecta_log_loss": _float_or_none(
+                    metrics.get("trifecta_log_loss")
+                    if metrics.get("trifecta_log_loss") is not None
+                    else metrics.get("calibrated_trifecta_log_loss")
+                ),
+                "closing_odds_log_mae": _float_or_none(
+                    metrics.get("closing_odds_log_mae")
+                ),
+                "closing_odds_rank_correlation": _float_or_none(
+                    metrics.get("closing_odds_rank_correlation")
+                ),
+                "closing_odds_interval_coverage": _float_or_none(
+                    metrics.get("closing_odds_interval_coverage")
+                ),
+                "closing_snapshot_age_seconds": _float_or_none(
+                    metrics.get("closing_snapshot_age_seconds")
+                ),
+                "tail_portfolio_diagnostics": metrics.get(
+                    "tail_portfolio_diagnostics"
                 ),
                 "result_path": row.get("result_path"),
                 "error": row.get("error") if status == "failed" else None,
             }
         )
-        candidate_metrics = _json_mapping(row.get("candidate_metrics"))
-        if not candidate_metrics:
+        candidate_metrics = canonicalize_primary_bankroll(
+            _json_mapping(row.get("candidate_metrics"))
+        )
+        if invalid_data_source or not candidate_metrics:
             continue
         candidates.append(
             {
@@ -2404,6 +3192,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "trifecta_top5_hit_rate": _float_or_none(
                     candidate_metrics.get("trifecta_top5_hit_rate")
                 ),
+                "closing_odds_log_mae": _float_or_none(
+                    candidate_metrics.get("closing_odds_log_mae")
+                ),
+                "closing_odds_rank_correlation": _float_or_none(
+                    candidate_metrics.get("closing_odds_rank_correlation")
+                ),
+                "closing_odds_interval_coverage": _float_or_none(
+                    candidate_metrics.get("closing_odds_interval_coverage")
+                ),
+                "closing_snapshot_age_seconds": _float_or_none(
+                    candidate_metrics.get("closing_snapshot_age_seconds")
+                ),
+                "tail_portfolio_diagnostics": candidate_metrics.get(
+                    "tail_portfolio_diagnostics"
+                ),
                 "payout_feature_candidate_schema": candidate_metrics.get(
                     "payout_feature_candidate_schema"
                 ),
@@ -2412,6 +3215,20 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "payout_feature_candidate_roi": _float_or_none(
                     candidate_metrics.get("payout_feature_candidate_roi")
+                ),
+                "payout_feature_candidate_profit_yen": candidate_metrics.get(
+                    "payout_feature_candidate_profit_yen"
+                ),
+                "payout_feature_candidate_max_drawdown_yen": candidate_metrics.get(
+                    "payout_feature_candidate_max_drawdown_yen"
+                ),
+                "payout_feature_roi_ci95_lower": _float_or_none(
+                    candidate_metrics.get("payout_feature_roi_ci95_lower")
+                ),
+                "payout_feature_probability_roi_above_one": _float_or_none(
+                    candidate_metrics.get(
+                        "payout_feature_probability_roi_above_one"
+                    )
                 ),
                 "payout_feature_legacy_roi": _float_or_none(
                     candidate_metrics.get("payout_feature_legacy_roi")
@@ -2432,11 +3249,176 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
             }
         )
+    jobs, retained_job_ids = _normalize_formal_evaluation_jobs(jobs)
+    candidates = [
+        row for row in candidates
+        if row.get("job_id") in retained_job_ids
+    ]
     return {
         "generated_at": generated_at,
         "jobs": jobs,
         "candidates": candidates,
     }
+
+
+_FORMAL_METRIC_IDENTITY_FIELDS = (
+    "evaluated_races",
+    "evaluation_days",
+    "roi",
+    "stake_yen",
+    "return_yen",
+    "profit_yen",
+    "winner_log_loss",
+    "winner_top1_accuracy",
+    "calibrated_trifecta_log_loss",
+    "trifecta_top5_hit_rate",
+    "closing_odds_log_mae",
+    "closing_odds_rank_correlation",
+)
+
+
+def _normalize_formal_evaluation_jobs(
+    jobs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[Any]]:
+    """Collapse reruns of one formal evaluation without hiding diagnostics."""
+    selected: dict[tuple[Any, ...], tuple[int, dict[str, Any]]] = {}
+    passthrough: list[tuple[int, dict[str, Any]]] = []
+    for index, row in enumerate(jobs):
+        identity = _formal_evaluation_identity(row)
+        if identity is None:
+            passthrough.append((index, row))
+            continue
+        current = selected.get(identity)
+        if current is None or _formal_evaluation_preference(row) > (
+            _formal_evaluation_preference(current[1])
+        ):
+            selected[identity] = (index, row)
+
+    retained = passthrough + list(selected.values())
+    retained.sort(key=lambda item: item[0])
+    rows = [row for _, row in retained]
+    return rows, {row.get("db_job_id") for row in rows}
+
+
+def _formal_evaluation_identity(row: dict[str, Any]) -> tuple[Any, ...] | None:
+    parameters = row.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    decision = str(row.get("decision") or "").lower()
+    formal_marker = (
+        "formal" in decision
+        or row.get("parent_job_id") is not None
+        or _manual_formal_marker(parameters)
+    )
+    if row.get("status") != "完了" or not formal_marker:
+        return None
+
+    period = (
+        parameters.get("from_date") or parameters.get("evaluation_from"),
+        parameters.get("through_date") or parameters.get("evaluation_through"),
+    )
+    strategy = (
+        row.get("milestone"),
+        parameters.get("calibrator_strategy"),
+        parameters.get("strategy"),
+        row.get("comparison_role"),
+    )
+    metrics = tuple(row.get(field) for field in _FORMAL_METRIC_IDENTITY_FIELDS)
+    return (row.get("name"), period, strategy, metrics)
+
+
+def _manual_formal_marker(parameters: dict[str, Any]) -> bool:
+    if any(
+        parameters.get(key) is True
+        for key in ("manual", "manual_formal", "formal", "formal_evaluation")
+    ):
+        return True
+    return any(
+        str(parameters.get(key) or "").lower() in {"manual", "formal", "manual_formal"}
+        for key in ("evaluation_mode", "run_mode", "trigger")
+    )
+
+
+def _formal_evaluation_preference(row: dict[str, Any]) -> tuple[int, int, int, int]:
+    parameters = row.get("parameters")
+    manual = _manual_formal_marker(parameters if isinstance(parameters, dict) else {})
+    return (
+        int(manual),
+        int(row.get("parent_job_id") is not None),
+        int(row.get("priority") or 0),
+        int(row.get("db_job_id") or 0),
+    )
+
+
+_BANKROLL_COMPONENT_KEYS = (
+    "market_offset_multinomial_kelly_walk_forward",
+    "conservative_market_offset_kelly_walk_forward",
+    "conformal_lower_market_offset_kelly_diagnostic",
+    "conformal_lower_market_offset_kelly_walk_forward",
+    "trend_point_market_offset_kelly_diagnostic",
+    "trend_point_market_offset_kelly_walk_forward",
+    "market_offset_registered_policy_walk_forward",
+    "registered_ev_band_walk_forward",
+    "prospective_normalized_ev_walk_forward",
+)
+
+
+def _bankroll_prediction_metrics(data: dict[str, Any]) -> dict[str, Any]:
+    entry_log_loss = data.get("entry_log_loss")
+    if entry_log_loss is None:
+        entry_log_loss = data.get("calibrated_trifecta_log_loss")
+    if entry_log_loss is None:
+        entry_log_loss = data.get("trifecta_log_loss")
+    metrics = {
+        "entry_log_loss": entry_log_loss,
+        "entry_brier": data.get("entry_brier"),
+        "winner_top1_accuracy": data.get("winner_top1_accuracy"),
+        "trifecta_top1_hit_rate": data.get("trifecta_top1_hit_rate"),
+        "trifecta_top5_hit_rate": data.get("trifecta_top5_hit_rate"),
+        "ranking_log_loss": data.get("ranking_log_loss"),
+        "evaluated_races": data.get("evaluated_races"),
+        "evaluation_race_set_sha256": data.get("evaluation_race_set_sha256"),
+    }
+    return {
+        key: value
+        for key, value in metrics.items()
+        if value is not None
+    }
+
+
+def _bankroll_component_summaries(
+    path: Path,
+    label: str,
+    data: dict[str, Any],
+    prediction_metrics: dict[str, Any],
+    *,
+    component_label_prefix: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    rows: list[dict[str, Any]] = []
+    daily: dict[str, list[dict[str, Any]]] = {}
+    model_name = data.get("model") or label
+    label_prefix = component_label_prefix or label
+    for component_key in _BANKROLL_COMPONENT_KEYS:
+        component = data.get(component_key)
+        if not isinstance(component, dict) or not component:
+            continue
+        if not any(
+            component.get(key) is not None
+            for key in ("roi", "stake_yen", "tickets", "evaluation_days")
+        ):
+            continue
+        component_label = f"{label_prefix}_{component_key}"
+        component_result = {
+            **prediction_metrics,
+            **component,
+            "model": f"{model_name}_{component_key}",
+            "generated_at": data.get("generated_at"),
+        }
+        rows.append(_bankroll_summary(path, component_label, component_result))
+        component_daily = _daily_report_rows(component.get("daily") or [])
+        if component_daily:
+            daily[component_label] = component_daily
+    return rows, daily
 
 
 def _database_evaluation_artifacts(
@@ -2450,7 +3432,20 @@ def _database_evaluation_artifacts(
     daily: dict[str, list[dict[str, Any]]] = {}
     seen_models: set[str] = set()
     root = model_dir.resolve()
-    for candidate in queue_status.get("candidates") or []:
+    candidates = list(queue_status.get("candidates") or [])
+    # Search jobs can emit one artifact per GA island. Keep this bounded scan
+    # focused on candidates that explain realized or adaptive bankroll results.
+    candidates.sort(
+        key=lambda candidate: not any(
+            candidate.get(key) is not None
+            for key in (
+                "payout_feature_candidate_roi",
+                "roi",
+                "profit_yen",
+            )
+        )
+    )
+    for candidate in candidates:
         model_key = str(candidate.get("model_key") or "").strip()
         if not model_key or model_key in seen_models:
             continue
@@ -2476,20 +3471,7 @@ def _database_evaluation_artifacts(
             continue
         seen_models.add(model_key)
         label = model_key
-        prediction_metrics = {
-            key: data.get(key)
-            for key in (
-                "entry_log_loss",
-                "entry_brier",
-                "winner_top1_accuracy",
-                "trifecta_top1_hit_rate",
-                "trifecta_top5_hit_rate",
-                "ranking_log_loss",
-                "evaluated_races",
-                "evaluation_race_set_sha256",
-            )
-            if data.get(key) is not None
-        }
+        prediction_metrics = _bankroll_prediction_metrics(data)
         if prediction_metrics.get("entry_log_loss") is not None:
             backtests.append(
                 _backtest_summary(
@@ -2537,6 +3519,14 @@ def _database_evaluation_artifacts(
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
                     daily[walk_label] = walk_daily
+        component_rows, component_daily = _bankroll_component_summaries(
+            path,
+            label,
+            data,
+            prediction_metrics,
+        )
+        bankroll_rows.extend(component_rows)
+        daily.update(component_daily)
         if len(seen_models) >= max(1, int(maximum_artifacts)):
             break
     return backtests, bankroll_rows, daily
@@ -2678,8 +3668,96 @@ def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
     }
 
 
+def _empirical_lcb_walk_forward_from_metrics(
+    metrics: dict[str, Any],
+) -> dict[str, Any] | None:
+    prefix = "empirical_lcb_"
+    if not any(str(key).startswith(prefix) for key in metrics):
+        return None
+    policy = {
+        key.removeprefix(prefix): value
+        for key, value in metrics.items()
+        if str(key).startswith(prefix)
+        and key
+        not in {
+            "empirical_lcb_tail_portfolio_diagnostics",
+            "empirical_lcb_roi_lower95",
+        }
+    }
+    tail = metrics.get("empirical_lcb_tail_portfolio_diagnostics")
+    if isinstance(tail, dict):
+        policy["tail_portfolio_diagnostics"] = tail
+    if metrics.get("empirical_lcb_roi_lower95") is not None:
+        policy["tail_bootstrap_roi_lower95"] = metrics[
+            "empirical_lcb_roi_lower95"
+        ]
+    return policy
+
+
+def _empirical_lcb_walk_forward_summary(
+    path: Path,
+    label: str,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    tail = policy.get("tail_portfolio_diagnostics")
+    normal = tail.get("normal") if isinstance(tail, dict) else None
+    tail_lower95 = policy.get("tail_bootstrap_roi_lower95")
+    if tail_lower95 is None and isinstance(normal, dict):
+        tail_lower95 = normal.get("daily_cluster_bootstrap_roi_lower_95")
+    roi_without_largest = policy.get("roi_without_largest_hit")
+    if roi_without_largest is None and isinstance(normal, dict):
+        roi_without_largest = normal.get("roi_excluding_largest_hit")
+    return {
+        "name": label,
+        "file": path.name,
+        "status": policy.get("status"),
+        "calibration_ready_folds": policy.get("calibration_ready_folds"),
+        "minimum_ready_evaluation_days": policy.get(
+            "minimum_ready_evaluation_days"
+        ),
+        "evaluation_days": policy.get("evaluation_days"),
+        "tickets": policy.get("tickets"),
+        "stake_yen": policy.get("stake_yen"),
+        "return_yen": policy.get("return_yen"),
+        "profit_yen": policy.get("profit_yen"),
+        "roi": _float_or_none(policy.get("roi")),
+        "roi_without_largest_hit": _float_or_none(roi_without_largest),
+        "sample_size_pass": policy.get("sample_size_pass"),
+        "tail_bootstrap_roi_lower95": _float_or_none(tail_lower95),
+    }
+
+
+def _database_empirical_lcb_walk_forward(
+    jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        policy = job.get("empirical_lcb_walk_forward")
+        if not isinstance(policy, dict):
+            continue
+        result_path = str(job.get("result_path") or "")
+        path = Path(result_path) if result_path else Path("database-result.json")
+        rows.append(
+            _empirical_lcb_walk_forward_summary(
+                path,
+                str(job.get("name") or f"job-{job.get('db_job_id')}"),
+                policy,
+            )
+        )
+    return rows
+
+
+def _latest_named_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        latest[str(row.get("name") or "-")] = row
+    return sorted(latest.values(), key=lambda row: str(row.get("name") or ""))
+
+
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
+    data = canonicalize_primary_bankroll(data)
     policy = data.get("policy") or {}
+    policy_selection = data.get("policy_selection") or {}
     tickets = data.get("tickets")
     if tickets is None:
         tickets = data.get("selected_tickets")
@@ -2695,10 +3773,21 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "file": path.name,
         "generated_at": data.get("generated_at"),
         "evaluation_scope": _evaluation_scope(path, data.get("daily") or []),
+        "benchmark_status": data.get("benchmark_status"),
+        "benchmark_days": data.get("benchmark_days"),
+        "benchmark_population_races": data.get("benchmark_population_races"),
+        "benchmark_odds_eligible_races": data.get("benchmark_odds_eligible_races"),
+        "benchmark_evaluated_races": data.get("benchmark_evaluated_races"),
+        "benchmark_odds_coverage": _float_or_none(data.get("benchmark_odds_coverage")),
         "feature_set": data.get("feature_set") or policy.get("feature_set"),
         "model": data.get("model") or policy.get("model"),
         "daily_budget_yen": policy.get("daily_budget_yen"),
         "stake_model": policy.get("stake_model"),
+        "no_bet": bool(policy.get("no_bet")),
+        "no_bet_reason": policy.get("no_bet_reason") or policy_selection.get("source"),
+        "policy_selection_source": policy_selection.get("source"),
+        "primary_bankroll": data.get("primary_bankroll"),
+        "legacy_batch_bankroll": data.get("legacy_batch_bankroll"),
         "evaluated_races": data.get("bankroll_evaluated_races") or data.get("evaluated_races"),
         "entry_log_loss": _float_or_none(data.get("entry_log_loss")),
         "winner_top1_accuracy": _float_or_none(data.get("winner_top1_accuracy")),
@@ -2706,6 +3795,8 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "race_days": data.get("race_days"),
         "selected_races": selected_races,
         "tickets": tickets,
+        "hit_tickets": data.get("hit_tickets"),
+        "hit_races": data.get("hit_races"),
         "candidate_tickets": data.get("candidate_tickets"),
         "stake_yen": data.get("stake_yen"),
         "return_yen": data.get("return_yen"),
@@ -2717,6 +3808,13 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "roi_delta_ci95_upper": _float_or_none(data.get("roi_delta_ci95_upper")),
         "ticket_hit_rate": ticket_hit_rate,
         "race_hit_rate": _float_or_none(data.get("race_hit_rate")),
+        "ticket_hit_rate_ci95_lower": _float_or_none(data.get("ticket_hit_rate_ci95_lower")),
+        "ticket_hit_rate_ci95_upper": _float_or_none(data.get("ticket_hit_rate_ci95_upper")),
+        "race_hit_rate_ci95_lower": _float_or_none(data.get("race_hit_rate_ci95_lower")),
+        "race_hit_rate_ci95_upper": _float_or_none(data.get("race_hit_rate_ci95_upper")),
+        "largest_hit_return_share": _float_or_none(data.get("largest_hit_return_share")),
+        "effective_hit_count": _float_or_none(data.get("effective_hit_count")),
+        "roi_without_largest_hit": _float_or_none(data.get("roi_without_largest_hit")),
         "winning_days": data.get("winning_days"),
         "losing_days": data.get("losing_days"),
         "budget_utilization": _float_or_none(data.get("budget_utilization")),
@@ -2744,7 +3842,7 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
         result = job.get("result") or {}
-        metrics = result.get("metrics") or {}
+        metrics = canonicalize_primary_bankroll(result.get("metrics") or {})
         if metrics.get("roi") is None:
             continue
         attribution = result.get("ticket_roi_attribution")
@@ -2845,6 +3943,14 @@ _REPORT_MODEL_SUFFIXES = re.compile(r"(?:(?:_backtest|_10000|_2fold))+$")
 _REPORT_MODEL_FAMILY_ALIASES = (
     re.compile(r"^(no_odds_v\d+)(?:_|$)"),
     re.compile(r"^(calibrated_(?:linear|mlp)_shadow)(?:_|$)"),
+    re.compile(
+        r"^(odds_path_(?:observed_closing_return_v4|"
+        r"prequential_shrinkage_return_v6|"
+        r"crossfit_conservative_ev_v7|"
+        r"market_offset_crossfit_conservative_ev_v8|"
+        r"market_offset_discrete_log_ev_v9|"
+        r"market_offset_selection_conformal_discrete_ev_v10))(?:_|$)"
+    ),
 )
 
 
@@ -4699,6 +5805,9 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     teleboat = teleboat_status(db_path)
     milestones = _roadmap_milestones(progress, processes, remote_evaluations, teleboat)
     tickets = _roadmap_work_tickets(db_path)
+    public_remote_evaluations = _roadmap_remote_evaluation_summary(
+        remote_evaluations
+    )
 
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
@@ -4711,7 +5820,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
         "progress": progress,
         "summary": summary,
         "processes": processes,
-        "remote_evaluations": remote_evaluations,
+        "remote_evaluations": public_remote_evaluations,
         "teleboat": teleboat,
         "quality_gates": _quality_gates(db_path.parent / "models", remote_evaluations),
         "model_artifacts": _latest_model_artifacts(db_path.parent / "models"),
@@ -4852,6 +5961,14 @@ _LOCAL_EVALUATION_METRICS = (
     "stake_yen",
     "return_yen",
     "evaluated_races",
+    "benchmark_status",
+    "benchmark_days",
+    "benchmark_population_races",
+    "benchmark_odds_eligible_races",
+    "benchmark_missing_odds_races",
+    "benchmark_odds_coverage",
+    "benchmark_evaluated_races",
+    "benchmark_evaluation_coverage",
     "selected_races",
     "tickets",
     "hit_tickets",
@@ -4862,6 +5979,7 @@ _LOCAL_EVALUATION_METRICS = (
     "real_odds_races",
     "entry_log_loss",
     "entry_brier",
+    "winner_log_loss",
     "winner_top1_accuracy",
     "trifecta_top5_hit_rate",
     "trifecta_top1_hit_rate",
@@ -4979,6 +6097,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
                     if key in bankroll
                 }
             )
+    metrics = canonicalize_primary_bankroll({**data, **metrics})
     result["metrics"] = metrics
     result["model"] = data.get("model")
     result["status"] = data.get("status")
@@ -5163,7 +6282,7 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
         result = (job or {}).get("result") or {}
-        metrics = result.get("metrics") or {}
+        metrics = canonicalize_primary_bankroll(result.get("metrics") or {})
         attribution = result.get("ticket_roi_attribution") or {}
         stability = attribution.get("fold_stability") or {}
         if metrics.get("roi") is None and not stability:
@@ -5202,6 +6321,7 @@ def _bankroll_gate_records(model_dir: Path) -> list[dict[str, Any]]:
             continue
         if not _is_bankroll_result(data):
             continue
+        data = canonicalize_primary_bankroll(data)
         rows.append(
             {
                 "file": path.name,
@@ -5236,7 +6356,6 @@ _STANDARDIZED_V2_JOB_NAMES = {
     "standardized_365d_v2_no_odds_v8",
     "standardized_365d_v2_pastlog_v7",
     "standardized_365d_v2_pastlog_v9_research",
-    "standardized_365d_v2_calibrated_linear",
     "standardized_365d_v2_calibrated_mlp",
     "standardized_365d_v2_listwise_feature_teacher",
     "standardized_365d_v2_listwise_newton",

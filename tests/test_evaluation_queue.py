@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,8 @@ from boatrace_ai.evaluation_queue import (
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
+    seed_daily_genetic_jobs,
+    seed_daily_market_jobs,
     seed_periodic_jobs,
     seed_work_tickets,
     summarize_result,
@@ -57,6 +60,112 @@ def test_dedupe_key_is_parameter_order_independent() -> None:
     )
 
 
+def test_daily_genetic_seed_is_scoped_by_protocol_version(monkeypatch) -> None:
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        protocol_exists = False
+
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql, parameters):
+            self.queries.append((sql, parameters))
+            return Result({"found": 1} if self.protocol_exists else None)
+
+    conn = Connection()
+    enqueued = []
+
+    def fake_enqueue(_conn, **kwargs):
+        enqueued.append(kwargs)
+        return len(enqueued)
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+
+    inserted = seed_daily_genetic_jobs(
+        conn,
+        evaluation_date="2026-07-27",
+        now=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        island_count=2,
+        max_generations=1,
+    )
+
+    assert inserted == [1, 2]
+    assert len(enqueued) == 2
+    assert {
+        row["parameters"]["genetic_protocol_version"] for row in enqueued
+    } == {4}
+    query, parameters = conn.queries[0]
+    assert "parameters->>'genetic_protocol_version'" in query
+    assert parameters == ("2026-07-27", "4")
+
+    conn.protocol_exists = True
+    assert seed_daily_genetic_jobs(
+        conn,
+        evaluation_date="2026-07-27",
+        now=datetime(2026, 7, 29, 0, 1, tzinfo=timezone.utc),
+        island_count=2,
+        max_generations=1,
+    ) == []
+
+
+def test_enqueue_parser_loads_parameters_from_file(tmp_path: Path) -> None:
+    parameters_file = tmp_path / "parameters.json"
+    parameters_file.write_text('{"from_year": 2016, "to_year": 2026}', encoding="utf-8")
+    args = evaluation_queue.build_parser().parse_args(
+        [
+            "enqueue",
+            "--task-type",
+            "racer_stats_backfill",
+            "--model-key",
+            "official_racer_periods_2016_2026",
+            "--parameters-file",
+            str(parameters_file),
+            "--priority",
+            "93",
+            "--max-attempts",
+            "3",
+        ]
+    )
+
+    assert evaluation_queue.load_job_parameters(args.parameters_file) == {
+        "from_year": 2016,
+        "to_year": 2026,
+    }
+    assert args.priority == 93
+    assert args.max_attempts == 3
+
+
+def test_load_job_parameters_rejects_non_object(tmp_path: Path) -> None:
+    parameters_file = tmp_path / "parameters.json"
+    parameters_file.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="one JSON object"):
+        evaluation_queue.load_job_parameters(parameters_file)
+
+
+def test_cpu_times_are_limited_to_process_affinity(tmp_path: Path) -> None:
+    stat = tmp_path / "stat"
+    stat.write_text(
+        "cpu  300 0 100 600 30 0 0 0 0 0\n"
+        "cpu0 100 0 20 200 10 0 0 0 0 0\n"
+        "cpu1 80 0 30 100 5 0 0 0 0 0\n"
+        "cpu2 120 0 50 300 15 0 0 0 0 0\n",
+        encoding="utf-8",
+    )
+
+    assert evaluation_queue._read_cpu_times({0, 2}, stat_path=stat) == (
+        525,
+        815,
+    )
+    assert evaluation_queue._read_cpu_times(None, stat_path=stat) == (630, 1030)
+
+
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
@@ -74,6 +183,68 @@ def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "archive_market_oracle",
+            {
+                "from_date": "2025-07-25",
+                "through_date": "2026-07-24",
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "daily_budget_yen": 10000,
+                "timeout_seconds": 43200,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.listwise.archive_market_oracle"]
+    assert command[command.index("--from-date") + 1] == "2025-07-25"
+    assert command[command.index("--daily-budget-yen") + 1] == "10000"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_archive_closing_backfill_is_rate_limited_and_serial(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "archive_closing_backfill",
+            {
+                "from_date": "2026-06-01",
+                "through_date": "2026-06-30",
+                "sleep_seconds": 1.5,
+                "max_pages": 4000,
+                "timeout_seconds": 86400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["archive_closing_backfill"] == {
+        "category": "collection",
+        "memory_mb": 512,
+        "disk_mb": 256,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+    assert command[1:3] == ["-m", "boatrace_ai.archive_closing_odds"]
+    assert command[command.index("--sleep-seconds") + 1] == "1.5"
+    assert command[command.index("--max-pages") + 1] == "4000"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_archive_closing_backfill_result_is_collection_not_rejection() -> None:
+    assert result_decision(
+        "archive_closing_backfill",
+        {"archive_stored": 4000, "archive_remaining": 12000},
+    ) == "collection_complete"
+
+
 def test_calibrated_mlp_recency_search_profile() -> None:
     assert TASK_PROFILES["calibrated_mlp_recency_search"] == {
         "category": "evaluation",
@@ -82,6 +253,43 @@ def test_calibrated_mlp_recency_search_profile() -> None:
         "idle_cpu": 15.0,
         "max_parallel": 1,
     }
+
+
+def test_model_cache_archive_uses_backup_profile_and_allowlisted_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    cache = root / "data/models/legacy.matrix.npz"
+    command, output = build_command(
+        _job(
+            "gdrive_model_cache_archive",
+            {
+                "paths": ["data/models/legacy.matrix.npz"],
+                "timeout_seconds": 86400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["gdrive_model_cache_archive"] == {
+        "category": "backup",
+        "memory_mb": 512,
+        "disk_mb": 2048,
+        "idle_cpu": 3.0,
+        "max_parallel": 1,
+    }
+    assert command[-2:] == ["--path", str(cache)]
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+    with pytest.raises(ValueError, match="inside data/models"):
+        build_command(
+            _job("gdrive_model_cache_archive", {"paths": ["../secret"]}),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 def test_repository_hygiene_profile_is_low_resource_and_serial() -> None:
@@ -182,6 +390,45 @@ def test_obsolete_feature_schema_refinement_is_cancelled_before_execution(
             python=Path("/venv/python"),
             db="host=postgres dbname=boatrace",
         )
+
+
+@pytest.mark.parametrize(
+    ("job_threshold", "parent_threshold", "expected_threshold"),
+    [
+        (1.2, 1.0, "1.2"),
+        (None, 1.0, "1.0"),
+        (None, None, "1.2"),
+    ],
+    ids=["explicit-job-wins", "parent-fallback", "default-fallback"],
+)
+def test_newton_refinement_ev_threshold_precedence(
+    tmp_path: Path,
+    job_threshold: float | None,
+    parent_threshold: float | None,
+    expected_threshold: str,
+) -> None:
+    root = tmp_path / "boat"
+    result = root / "data/models/evaluation_queue/job-00007011.json"
+    result.parent.mkdir(parents=True)
+    payload: dict[str, object] = {"feature_schema_version": FEATURE_SCHEMA_VERSION}
+    if parent_threshold is not None:
+        payload["policy"] = {"ev_threshold": parent_threshold}
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    parameters: dict[str, object] = {
+        "search_result": "data/models/evaluation_queue/job-00007011.json",
+        "cache_dir": str(root / "data/models/evaluation_cache/job-00007011"),
+    }
+    if job_threshold is not None:
+        parameters["ev_threshold"] = job_threshold
+
+    command, _output = build_command(
+        _job("listwise_newton_refine", parameters, job_id=7369),
+        app_root=root,
+        python=Path("/venv/python"),
+        db="host=postgres dbname=boatrace",
+    )
+
+    assert command[command.index("--ev-threshold") + 1] == expected_threshold
 
 
 def test_series_feature_cache_profile_and_command(tmp_path: Path) -> None:
@@ -645,6 +892,8 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
         "none,180,365",
         "--calibration-days",
         "120",
+        "--selection-entry-log-loss-tolerance",
+        "0.0005",
     ]
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
@@ -667,29 +916,114 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
     )
     assert base_command[groups_index] == "base_pastlog"
 
+    research_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "drop_feature_groups": "raw_equipment_identifiers",
+                "protected_blend": True,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    research_cache_index = research_command.index("--feature-cache") + 1
+    research_groups_index = research_command.index("--drop-feature-groups") + 1
+    assert research_command[research_cache_index].endswith(
+        "calibrated_shadow_features_16384__drop_raw_equipment_identifiers"
+    )
+    assert research_command[research_groups_index] == "raw_equipment_identifiers"
+
+    official_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "drop_feature_groups": (
+                    "live_official_context,speculative_research,"
+                    "raw_equipment_identifiers"
+                ),
+                "protected_blend": True,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    official_cache_index = official_command.index("--feature-cache") + 1
+    official_groups_index = official_command.index("--drop-feature-groups") + 1
+    assert official_command[official_cache_index].endswith(
+        "calibrated_shadow_features_16384__drop_raw_equipment_identifiers_"
+        "speculative_research_live_official_context"
+    )
+    assert official_command[official_groups_index] == (
+        "raw_equipment_identifiers,speculative_research,live_official_context"
+    )
+
+    protected_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {"evaluation_date": "2026-07-22", "protected_blend": True},
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert protected_command[-2:] == [
+        "--protected-baseline-model",
+        str(root / "data/models/standardized_365d_v2/no_odds_v8.joblib"),
+    ]
+
     default_command, _ = build_command(
         _job("calibrated_mlp_recency_search", {"evaluation_date": "2026-07-22"}),
         app_root=root,
         python=python,
         db="postgresql://test",
     )
-    assert default_command[-4:] == [
+    assert default_command[-6:] == [
         "--half-lives",
         "none,180,365,730",
         "--calibration-days",
         "180",
+        "--selection-entry-log-loss-tolerance",
+        "0.0005",
     ]
+
+    selected_command, _ = build_command(
+        _job(
+            "calibrated_mlp_recency_search",
+            {
+                "evaluation_date": "2026-07-26",
+                "half_lives": "none",
+                "protected_blend": True,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    selected_index = selected_command.index("--half-lives") + 1
+    assert selected_command[selected_index] == "none"
 
 
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
         ({}, "evaluation_date is required"),
-        ({"evaluation_date": "2026-07-22", "half_lives": "none"}, "at least 2"),
         ({"evaluation_date": "2026-07-22", "half_lives": "none,29"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "half_lives": "none,nan"}, "finite numbers"),
         ({"evaluation_date": "2026-07-22", "calibration_days": 29}, "calibration_days"),
+        (
+            {
+                "evaluation_date": "2026-07-22",
+                "selection_entry_log_loss_tolerance": 0.051,
+            },
+            "selection_entry_log_loss_tolerance",
+        ),
         ({"evaluation_date": "2026-07-22", "timeout_seconds": 299}, "timeout_seconds"),
+        ({"evaluation_date": "2026-07-22", "protected_blend": "yes"}, "boolean"),
         ({"evaluation_date": "2026-07-22", "command": "rm -rf /"}, "unsupported"),
         ({"evaluation_date": "2026-07-22", "feature_cache": "/tmp/cache"}, "unsupported"),
         ({"evaluation_date": "2026-07-22", "drop_feature_groups": "future"}, "unknown"),
@@ -728,6 +1062,61 @@ def test_feature_search_rejects_unregistered_target(tmp_path) -> None:
             python=tmp_path / "python",
             db="postgresql://test",
         )
+
+
+def test_feature_search_accepts_explicit_feature_variants(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "feature_variants": "full,drop_research_correlates",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+    index = command.index("--feature-variants")
+    assert command[index + 1] == "full,drop_research_correlates"
+
+
+def test_combined_search_accepts_registered_feature_variant_subset(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "combined_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "feature_variants": "keep_card_numeric",
+                "targets": "winner",
+                "alphas": "0.00001",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+    index = command.index("--combined-feature-variants")
+    assert command[index + 1] == "keep_card_numeric"
+
+
+def test_feature_search_accepts_bounded_ev_policy_selection_grid(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "ev_thresholds": "1.0,1.2,1.5",
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+
+    index = command.index("--ev-thresholds")
+    assert command[index + 1] == "1,1.2,1.5"
+    assert "--ev-threshold" not in command
 
 
 @pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
@@ -769,9 +1158,21 @@ def test_fresh_work_ticket_seed_registers_feature_search_parallelization(
         )
         """
     )
+    class CursorWithoutRowcount:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchone(self):
+            return self.cursor.fetchone()
+
+    class ConnectionWithoutRowcount:
+        def execute(self, statement, parameters=()):
+            return CursorWithoutRowcount(conn.execute(statement, parameters))
+
+    compat_conn = ConnectionWithoutRowcount()
     try:
-        assert seed_work_tickets(conn) == len(DEFAULT_WORK_TICKETS)
-        assert seed_work_tickets(conn) == 0
+        assert seed_work_tickets(compat_conn) == len(DEFAULT_WORK_TICKETS)
+        assert seed_work_tickets(compat_conn) == 0
         actual = conn.execute(
             """
             SELECT ticket_key, title, area, description, acceptance_criteria,
@@ -797,6 +1198,7 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
     assert {
         "OPS-EVAL-MEM-001",
         "OPS-GITHUB-SYNC-001",
+        "OPS-REPO-SYNC-001",
         "DOCS-HIERARCHY-001",
         "MODEL-FEATURE-COMBINE-001",
         "MODEL-SERIES-CACHE-001",
@@ -804,6 +1206,11 @@ def test_default_work_tickets_include_sync_hygiene_and_model_followups() -> None
         "MODEL-RECENCY-001",
         "MODEL-VENUE-001",
         "MODEL-SEGMENT-001",
+        "MODEL-MARKET-RESIDUAL-001",
+        "MODEL-HISTORICAL-RESIDUAL-001",
+        "MODEL-MARKET-POLICY-CAL-001",
+        "MODEL-V21-PROSPECTIVE-EVIDENCE-001",
+        "TEST-BASELINE-FAILURES-001",
         "UI-MODEL-DAILY-001",
     } <= keys
     memory_ticket = next(
@@ -846,6 +1253,214 @@ def test_result_summary_and_decision_use_nested_evaluation_metrics() -> None:
     assert summary["evaluated_races"] == 136
     assert summary["trifecta_log_loss"] == 3.84
     assert result_decision("market_curvature", summary) == "confirm_on_new_holdout"
+
+
+def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
+    summary = summarize_result({
+        "promotion_gate": {
+            "minimum_tickets": True,
+            "minimum_betting_days": False,
+            "roi_above_one": True,
+        },
+        "holdout_temporal_stability": {
+            "minimum_roi": 0.94,
+            "folds": [{"roi": 1.10}, {"roi": 0.94}, {"roi": 1.03}],
+        },
+    })
+
+    assert summary["promotion_gate_passed"] == 2
+    assert summary["promotion_gate_total"] == 3
+    assert summary["promotion_gate_failed"] == ["minimum_betting_days"]
+    assert summary["holdout_temporal_minimum_roi"] == 0.94
+    assert summary["holdout_temporal_fold_rois"] == [1.10, 0.94, 1.03]
+
+
+def test_result_summary_preserves_bankroll_model_protocol() -> None:
+    summary = summarize_result({
+        "comparison_role": "bankroll_policy_model",
+        "coefficient_optimizer": "newton_cg",
+        "ev_calibration_mode": "contextual_point",
+        "ev_calibration_usage": "prior_selection_fit_then_applied_to_policy_and_holdout",
+        "evaluation_from": "2025-07-25",
+        "evaluation_through": "2026-07-24",
+        "selection_races": 74331,
+        "holdout_races": 49506,
+    })
+
+    assert summary == {
+        "comparison_role": "bankroll_policy_model",
+        "coefficient_optimizer": "newton_cg",
+        "ev_calibration_mode": "contextual_point",
+        "ev_calibration_usage": "prior_selection_fit_then_applied_to_policy_and_holdout",
+        "evaluation_from": "2025-07-25",
+        "evaluation_through": "2026-07-24",
+        "selection_races": 74331,
+        "holdout_races": 49506,
+    }
+
+
+def test_result_summary_combines_bankroll_and_nested_prediction_metrics() -> None:
+    summary = summarize_result({
+        "roi": 0.92,
+        "profit_yen": -17000,
+        "selection_prediction_metrics": {
+            "entry_log_loss": 0.400,
+            "winner_top1_accuracy": 0.500,
+            "trifecta_top5_hit_rate": 0.250,
+        },
+        "holdout_prediction_metrics": {
+            "entry_log_loss": 0.327,
+            "winner_top1_accuracy": 0.568,
+            "trifecta_top5_hit_rate": 0.330,
+        },
+        "bankroll_confidence": {
+            "roi_ci95_lower": 0.805,
+            "roi_ci95_upper": 1.042,
+            "probability_roi_above_one": 0.098,
+        },
+    })
+
+    assert summary["roi"] == 0.92
+    assert summary["entry_log_loss"] == 0.327
+    assert summary["winner_top1_accuracy"] == 0.568
+    assert summary["trifecta_top5_hit_rate"] == 0.330
+    assert summary["roi_ci95_lower"] == 0.805
+    assert summary["roi_ci95_upper"] == 1.042
+    assert summary["probability_roi_above_one"] == 0.098
+
+
+def test_result_summary_preserves_raw_archive_transfer_metrics() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "source_files_before": 35,
+        "source_files_after": 24,
+        "source_bytes_before": 664383,
+        "source_bytes_after": 506907,
+        "archived_files_removed": 11,
+        "archived_bytes_removed": 157476,
+        "staging_files": 0,
+    })
+
+    assert summary["archived_files_removed"] == 11
+    assert summary["archived_bytes_removed"] == 157476
+    assert summary["source_files_after"] == 24
+    assert summary["staging_files"] == 0
+
+
+def test_result_summary_preserves_archive_closing_odds_counts() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "source_role": "secondary_archive_candidate_unverified",
+        "source_key": "archive-v1",
+        "from_date": "2026-07-20",
+        "through_date": "2026-07-27",
+        "targets": 50,
+        "stored": 48,
+        "invalid": 2,
+        "fetch_failed": 0,
+        "not_found": 0,
+        "remaining": 1223,
+    })
+
+    assert summary["archive_targets"] == 50
+    assert summary["archive_stored"] == 48
+    assert summary["archive_invalid"] == 2
+    assert summary["archive_remaining"] == 1223
+
+
+def test_standardized_manifest_summary_reports_selected_and_best_candidate() -> None:
+    summary = summarize_result({
+        "protocol_id": "standard_365d_v2",
+        "comparison_ready": True,
+        "valid_model_count": 3,
+        "models": [
+            {
+                "model_id": "incumbent",
+                "entry_log_loss": 0.37,
+                "winner_top1_accuracy": 0.56,
+                "trifecta_top5_hit_rate": 0.31,
+                "roi": 0.76,
+                "profit_yen": -300,
+            },
+            {"model_id": "candidate-a", "roi": 0.83, "profit_yen": -100},
+            {"model_id": "candidate-b", "roi": 0.80, "profit_yen": -200},
+        ],
+        "promotion_decision": {
+            "incumbent_model_id": "incumbent",
+            "selected_model_id": "incumbent",
+            "eligible_candidate_ids": [],
+            "status": "retain_incumbent",
+        },
+    })
+
+    assert summary == {
+        "entry_log_loss": 0.37,
+        "winner_top1_accuracy": 0.56,
+        "trifecta_top5_hit_rate": 0.31,
+        "roi": 0.76,
+        "profit_yen": -300,
+        "model": "incumbent",
+        "best_candidate_model": "candidate-a",
+        "best_candidate_roi": 0.83,
+        "best_candidate_profit_yen": -100,
+        "comparison_ready": True,
+        "valid_model_count": 3,
+        "promotion_eligible": False,
+        "status": "retain_incumbent",
+    }
+
+
+def test_genetic_island_summary_exposes_live_champion_metrics() -> None:
+    summary = summarize_result({
+        "model": "genetic_listwise_island_v1-20260726T010000Z-g00-i00",
+        "cohort": "20260726T010000Z",
+        "generation": 0,
+        "island_id": 0,
+        "population_size": 8,
+        "history": [{"local_generation": 0}, {"local_generation": 1}],
+        "champion": {
+            "fitness": -1.23,
+            "metrics": {
+                "entry_log_loss": 0.34,
+                "winner_top1_accuracy": 0.56,
+                "trifecta_top5_hit_rate": 0.31,
+                "evaluated_races": 3000,
+            },
+        },
+    })
+
+    assert summary["genetic_fitness"] == -1.23
+    assert summary["genetic_cohort"] == "20260726T010000Z"
+    assert summary["genetic_generation"] == 0
+    assert summary["genetic_island_id"] == 0
+    assert summary["genetic_evaluated_individuals"] == 16
+    assert summary["entry_log_loss"] == 0.34
+    assert summary["winner_top1_accuracy"] == 0.56
+    assert summary["trifecta_top5_hit_rate"] == 0.31
+
+
+def test_repository_sync_summary_preserves_deferred_reason() -> None:
+    summary = summarize_result({
+        "status": "completed",
+        "action": "deferred_active_evaluation",
+        "ahead": 48,
+        "behind": 0,
+        "active_evaluations": 1,
+    })
+
+    assert summary == {
+        "action": "deferred_active_evaluation",
+        "ahead": 48,
+        "behind": 0,
+        "active_evaluations": 1,
+        "status": "completed",
+    }
+    assert result_decision("repository_sync", summary) == (
+        "repository_sync_deferred"
+    )
+    assert result_decision(
+        "repository_sync", {"action": "fast_forwarded"}
+    ) == "maintenance_complete"
 
 
 def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
@@ -892,6 +1507,30 @@ def test_result_summary_preserves_paired_payout_feature_comparison() -> None:
     )
 
 
+def test_market_walk_forward_requires_explicit_promotion_eligibility() -> None:
+    summary = summarize_result({
+        "model": "market-candidate",
+        "promotion_eligible": False,
+        "roi": 7.42,
+        "profit_yen": 3_210,
+        "evaluation_races": 170,
+        "evaluation_days": 1,
+        "winner_log_loss": 1.10,
+        "winner_top1_accuracy": 0.58,
+    })
+
+    assert summary["winner_log_loss"] == 1.10
+    assert summary["winner_top1_accuracy"] == 0.58
+    assert result_decision("market_residual_walk_forward", summary) == (
+        "accumulate_formal_evidence"
+    )
+    summary["promotion_eligible"] = True
+    assert (
+        result_decision("market_residual_walk_forward", summary)
+        == "promotion_candidate"
+    )
+
+
 def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> None:
     summary = summarize_result({
         "promotion_eligible": True,
@@ -903,6 +1542,8 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
                 "roi": 1.08,
                 "profit_yen": 8_000,
                 "stake_yen": 100_000,
+                "return_yen": 108_000,
+                "max_drawdown_yen": 12_000,
                 "policy": {
                     "payout_tail_schema": "conditional_payout_tail_v1",
                     "payout_feature_schema": "conditional_payout_interactions_v2",
@@ -922,17 +1563,208 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     assert summary["payout_feature_candidate_roi"] == 1.08
     assert summary["payout_feature_candidate_profit_yen"] == 8_000
     assert summary["payout_feature_candidate_stake_yen"] == 100_000
+    assert summary["payout_feature_candidate_return_yen"] == 108_000
+    assert summary["payout_feature_candidate_max_drawdown_yen"] == 12_000
     assert (
         summary["payout_feature_candidate_schema"]
         == "conditional_payout_tail_v1"
     )
     assert summary["payout_feature_roi_ci95_lower"] == 1.01
+    assert summary["payout_feature_probability_roi_above_one"] == 0.98
     assert summary["payout_feature_gate_pass"] is True
     assert summary["payout_feature_promotion_eligible"] is False
     assert (
         result_decision("conditional_payout_tail", summary)
         == "reject_or_research_only"
     )
+
+
+def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -> None:
+    model_dir = tmp_path / "data" / "models" / "evaluation_queue"
+    model_dir.mkdir(parents=True)
+    sources = {
+        "calibrated_mlp_prediction_deployment": model_dir / "protected.json",
+        "calibrated_mlp_recency_card_features": model_dir / "mlp.json",
+        "calibrated_lightgbm_recency_period_v6_4cpu": model_dir / "lightgbm.json",
+    }
+    for path in sources.values():
+        path.with_suffix(".joblib").write_bytes(b"model")
+    sources["calibrated_mlp_prediction_deployment"].with_name(
+        "protected.deployment.joblib"
+    ).write_bytes(b"model")
+
+    class FakeConn:
+        parameters = ()
+
+        def execute(self, _sql, parameters):
+            self.parameters = parameters
+            return self
+
+        def fetchone(self):
+            source_key = self.parameters[1]
+            return {"result_path": str(sources[source_key])}
+
+    conn = FakeConn()
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+
+    inserted = seed_daily_market_jobs(
+        conn, app_root=tmp_path, evaluation_date="2026-07-25"
+    )
+
+    assert inserted == list(range(1, 21))
+    assert {row["model_key"] for row in calls} == {
+        "protected_mlp_prediction:market_residual:20260718-25",
+        "calibrated_mlp_recency_selected:market_residual:20260718-25",
+        "calibrated_lightgbm_recency_selected:market_residual:20260718-25",
+        "odds_path_operational_daily:market_residual:20260718-25",
+        "odds_path_probability_only_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_v4_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_robust_policy_v17_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_schedule_quota_v18_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20_daily:market_residual:20260718-25",
+        "odds_path_observed_closing_return_schedule_quota_triple_head_v21_daily:market_residual:20260718-25",
+        "odds_path_prequential_shrinkage_return_v6_daily:market_residual:20260718-25",
+        "odds_path_crossfit_conservative_ev_v7_daily:market_residual:20260718-25",
+        "odds_path_market_offset_crossfit_conservative_ev_v8_daily:market_residual:20260718-25",
+        "odds_path_market_offset_discrete_log_ev_v9_daily:market_residual:20260718-25",
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_multihorizon_v11_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_t300_nonlinear_v12_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_edge_conditional_lcb_v13_daily:market_residual:20260718-25",
+        "odds_path_role_integrated_registered_band_lcb_v14_daily:market_residual:20260718-25",
+    }
+    protected = next(
+        row for row in calls if row["model_key"].startswith("protected_mlp_prediction:")
+    )
+    assert Path(protected["parameters"]["model_input"]).name == (
+        "protected.deployment.joblib"
+    )
+    assert all(
+        row["parameters"]["through_date"] == "2026-07-25"
+        and row["parameters"]["from_date"] == "2026-07-18"
+        for row in calls
+    )
+    odds_path = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"] == "odds_path_return"
+    )
+    assert odds_path["priority"] == 98
+    assert odds_path["parameters"]["timeout_seconds"] == 7200
+    probability_only = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"] == "odds_path_probability"
+    )
+    assert probability_only["priority"] == 98
+    assert probability_only["parameters"]["timeout_seconds"] == 7200
+    observed_closing = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return"
+    )
+    assert observed_closing["priority"] == 96
+    assert observed_closing["parameters"]["timeout_seconds"] == 3600
+    v19 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19"
+    )
+    assert v19["priority"] == 96
+    assert v19["parameters"]["timeout_seconds"] == 3600
+    v20 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
+    )
+    assert v20["priority"] == 100
+    assert v19["priority"] < v20["priority"]
+    assert v20["parameters"]["timeout_seconds"] == 3600
+    v21 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+    )
+    assert v21["priority"] == 97
+    assert v21["priority"] < v20["priority"]
+    assert v21["parameters"]["timeout_seconds"] == 3600
+    prequential_v6 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_prequential_shrinkage_return"
+    )
+    assert prequential_v6["priority"] == 95
+    assert prequential_v6["parameters"]["timeout_seconds"] == 7200
+    crossfit_v7 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_crossfit_conservative_ev"
+    )
+    assert crossfit_v7["priority"] == 94
+    assert crossfit_v7["parameters"]["timeout_seconds"] == 7200
+    crossfit_v8 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_crossfit_conservative_ev"
+    )
+    assert crossfit_v8["priority"] == 93
+    assert crossfit_v8["parameters"]["timeout_seconds"] == 7200
+    discrete_v9 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_discrete_log_ev_v9"
+    )
+    assert discrete_v9["priority"] == 92
+    assert discrete_v9["parameters"]["timeout_seconds"] == 7200
+    selection_v10 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    )
+    assert selection_v10["priority"] == 91
+    assert selection_v10["parameters"]["timeout_seconds"] == 14_400
+    assert selection_v10["parameters"]["model_input"] == discrete_v9["parameters"]["model_input"]
+    role_integrated_v11 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_role_integrated_multihorizon_v11"
+    )
+    assert role_integrated_v11["priority"] == 90
+    assert role_integrated_v11["parameters"] == {
+        "model_input": discrete_v9["parameters"]["model_input"],
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-25",
+        "daily_budget_yen": 10000,
+        "min_calibration_days": 2,
+        "calibrator_strategy": "odds_path_role_integrated_multihorizon_v11",
+        "minimum_day_coverage": 1.0,
+        "timeout_seconds": 14_400,
+    }
+    role_integrated_v12 = next(
+        row for row in calls
+        if row["parameters"]["calibrator_strategy"]
+        == "odds_path_role_integrated_t300_nonlinear_v12"
+    )
+    assert role_integrated_v12["priority"] == 104
+    assert role_integrated_v12["parameters"] == {
+        "model_input": discrete_v9["parameters"]["model_input"],
+        "from_date": "2026-07-18",
+        "through_date": "2026-07-25",
+        "daily_budget_yen": 10000,
+        "min_calibration_days": 2,
+        "calibrator_strategy": "odds_path_role_integrated_t300_nonlinear_v12",
+        "minimum_day_coverage": 1.0,
+        "v12_closing_fallback_policy": "v11",
+        "timeout_seconds": 14_400,
+    }
+    assert seed_daily_market_jobs(
+        conn, app_root=tmp_path, evaluation_date="2026-07-17"
+    ) == []
 
 
 def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
@@ -952,6 +1784,7 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
     ]
     assert standardized[0]["parameters"]["timeout_seconds"] == 86400
     assert standardized[0]["max_attempts"] == 3
+    assert standardized[0]["priority"] == 70
     drop_base_mlp = next(
         row for row in calls
         if row["model_key"] == "calibrated_mlp_recency_drop_base_pastlog"
@@ -1001,6 +1834,54 @@ def test_default_seed_contains_parameter_sweep(monkeypatch) -> None:
         if row["task_type"] != "conditional_payout_tail"
     )
 
+    calls.clear()
+    inserted = seed_default_jobs(
+        object(),
+        evaluation_date="2026-07-23",
+        include_standardized=False,
+    )
+    assert len(inserted) == 14
+    assert all(row["task_type"] != "standardized_365d" for row in calls)
+
+
+def test_standardized_evaluation_due_uses_weekly_cadence() -> None:
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class DueConnection:
+        def __init__(self, row):
+            self.row = row
+
+        def execute(self, statement, parameters=()):
+            assert "task_type = ?" in statement
+            assert parameters == ("standardized_365d",)
+            return Result(self.row)
+
+    assert evaluation_queue.standardized_evaluation_due(
+        DueConnection(None), evaluation_date="2026-07-28"
+    )
+    completed = DueConnection({
+        "evaluation_date": "2026-07-21",
+        "status": "completed",
+    })
+    assert not evaluation_queue.standardized_evaluation_due(
+        completed, evaluation_date="2026-07-27"
+    )
+    assert evaluation_queue.standardized_evaluation_due(
+        completed, evaluation_date="2026-07-28"
+    )
+    running = DueConnection({
+        "evaluation_date": "2026-07-01",
+        "status": "running",
+    })
+    assert not evaluation_queue.standardized_evaluation_due(
+        running, evaluation_date="2026-07-28"
+    )
+
 
 class _PeriodicScheduleConnection:
     def __init__(self):
@@ -1029,14 +1910,19 @@ def test_periodic_seed_uses_low_backup_priority_and_skips_completed_bucket(
     monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
     now = datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
 
-    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3, 4]
+    assert seed_periodic_jobs(conn, now=now) == [1, 2, 3, 4, 5]
     assert seed_periodic_jobs(conn, now=now) == []
-    assert len(calls) == 4
+    assert len(calls) == 5
     backup = next(row for row in calls if row["task_type"] == "gdrive_raw_archive")
     assert backup["priority"] == 10
+    assert backup["parameters"]["schedule_bucket"] == (
+        "2026-07-23T12:00:00+00:00"
+    )
     series = next(row for row in calls if row["task_type"] == "series_feature_cache")
     assert series["priority"] == 45
     assert series["parameters"]["from_date"] == "2026-07-09"
+    sync = next(row for row in calls if row["task_type"] == "repository_sync")
+    assert sync["priority"] == 25
 
 
 def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:
@@ -1081,6 +1967,33 @@ def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:
                 "training_through": "2025-07-23",
                 "evaluation_from": "2025-07-24",
                 "evaluation_through": "2026-07-23",
+            },
+        ),
+        (
+            "market_residual_walk_forward",
+            "odds-path-v21:market_residual:20260718-29",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002707.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10000,
+                "min_calibration_days": 2,
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+                ),
+                "minimum_day_coverage": 1.0,
+                "timeout_seconds": 14400,
+            },
+            {
+                "model_input": "data/models/evaluation_queue/job-00002707.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10000,
+                "min_calibration_days": 2,
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+                ),
+                "minimum_day_coverage": 1.0,
             },
         ),
     ],
@@ -1142,7 +2055,7 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
 
     def fake_connection(_db):
         nonlocal connection_count
-        names = ("startup", "maintenance", "claim")
+        names = ("startup", "cleanup", "seeding", "claim")
         name = names[connection_count]
         connection_count += 1
         return Scope(name)
@@ -1153,8 +2066,23 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(evaluation_queue, "seed_work_tickets", lambda _conn: 0)
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "requeue_stale_jobs",
         lambda *_a, **_k: events.append("requeue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_queue_state",
+        lambda *_a, **_k: events.append("reconcile"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "record_overdue_work_ticket_events",
+        lambda *_a, **_k: events.append("audit-overdue"),
     )
     monkeypatch.setattr(
         evaluation_queue,
@@ -1163,11 +2091,36 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "standardized_evaluation_due",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_daily_market_jobs",
+        lambda *_a, **_k: events.append("seed-market"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_daily_genetic_jobs",
+        lambda *_a, **_k: events.append("seed-genetic"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "genetic_cache_evaluation_date",
+        lambda _root: (
+            evaluation_queue.datetime.now(evaluation_queue.JST).date()
+            - evaluation_queue.timedelta(days=1)
+        ).isoformat(),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_periodic_jobs",
         lambda *_a, **_k: events.append("seed-periodic"),
     )
     resources = ResourceSnapshot(32000, 10000, 100.0, 16, 0.0)
-    monkeypatch.setattr(evaluation_queue, "system_resources", lambda: resources)
+    monkeypatch.setattr(
+        evaluation_queue, "system_resources", lambda **_kwargs: resources
+    )
     monkeypatch.setattr(
         evaluation_queue,
         "claim_job",
@@ -1186,9 +2139,101 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     ])
 
     assert evaluation_queue.run_worker(args) == 0
-    assert events.index("commit:maintenance") < events.index("enter:claim")
-    assert events.index("seed-periodic") < events.index("commit:maintenance")
+    assert events.index("recover-completed") < events.index("requeue")
+    assert events.index("recover-completed") < events.index("commit:cleanup")
+    assert events.index("reconcile") < events.index("commit:cleanup")
+    assert events.index("audit-overdue") < events.index("commit:cleanup")
+    assert events.index("commit:cleanup") < events.index("enter:seeding")
+    assert events.index("seed-market") < events.index("commit:seeding")
+    assert events.index("seed-genetic") < events.index("commit:seeding")
+    assert events.index("seed-periodic") < events.index("commit:seeding")
+    assert events.index("commit:seeding") < events.index("enter:claim")
     assert events.index("enter:claim") < events.index("claim")
+
+
+def test_scheduler_seeds_without_claiming_jobs(monkeypatch, tmp_path) -> None:
+    events = []
+
+    class Scope:
+        def __enter__(self):
+            events.append("enter")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("commit")
+
+    monkeypatch.setattr(evaluation_queue, "connection", lambda _db: Scope())
+    monkeypatch.setattr(evaluation_queue, "ensure_schema", lambda _conn: None)
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_work_tickets",
+        lambda _conn: events.append("seed-work"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_completed_job_runs",
+        lambda *_a, **_k: events.append("recover-completed"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "requeue_stale_jobs",
+        lambda *_a, **_k: events.append("requeue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "reconcile_queue_state",
+        lambda *_a, **_k: events.append("reconcile"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "record_overdue_work_ticket_events",
+        lambda *_a, **_k: events.append("audit-overdue"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_default_jobs",
+        lambda *_a, **_k: events.append("seed-defaults"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "standardized_evaluation_due",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_daily_market_jobs",
+        lambda *_a, **_k: events.append("seed-market"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "genetic_cache_evaluation_date",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "seed_periodic_jobs",
+        lambda *_a, **_k: events.append("seed-periodic"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
+        "claim_job",
+        lambda *_a, **_k: pytest.fail("scheduler must not claim evaluation jobs"),
+    )
+    monkeypatch.setattr(evaluation_queue.time, "monotonic", lambda: 10000.0)
+    args = evaluation_queue.build_parser().parse_args([
+        "schedule",
+        "--db", "postgresql://test",
+        "--app-root", str(tmp_path),
+        "--seed-defaults",
+        "--once",
+    ])
+
+    assert evaluation_queue.run_scheduler(args) == 0
+    assert events == [
+        "enter", "seed-work", "commit",
+        "enter", "recover-completed", "requeue", "reconcile", "audit-overdue", "commit",
+        "enter", "seed-defaults", "seed-market", "seed-periodic", "commit",
+    ]
 
 
 def test_supervisor_runs_four_postgresql_queue_workers() -> None:
@@ -1198,8 +2243,29 @@ def test_supervisor_runs_four_postgresql_queue_workers() -> None:
 
     assert "boatrace_ai.evaluation_queue run" in config
     assert "numprocs=4" in config
-    assert "--seed-defaults" in config
+    assert "--seed-defaults" not in config
+    assert "--schedule-periodic" not in config
     assert "--vm-limit-gib 0" in config
+    assert 'BOATRACE_PG_APPLICATION_NAME="boatrace_evaluator"' in config
+    assert 'BOATRACE_PG_WORK_MEM="128MB"' in config
+
+    scheduler = Path(
+        "scripts/deployment/supervisor-boatrace-evaluation-scheduler.ini"
+    ).read_text(encoding="utf-8")
+    assert "boatrace_ai.evaluation_queue schedule" in scheduler
+    assert "--seed-defaults" in scheduler
+    assert "--schedule-interval 60" in scheduler
+    assert 'BOATRACE_PG_APPLICATION_NAME="boatrace_scheduler"' in scheduler
+
+
+def test_worker_sets_database_memory_defaults_without_overriding(monkeypatch) -> None:
+    monkeypatch.delenv("BOATRACE_PG_APPLICATION_NAME", raising=False)
+    monkeypatch.setenv("BOATRACE_PG_WORK_MEM", "256MB")
+
+    evaluation_queue._configure_worker_database_memory()
+
+    assert os.environ["BOATRACE_PG_APPLICATION_NAME"] == "boatrace_evaluator"
+    assert os.environ["BOATRACE_PG_WORK_MEM"] == "256MB"
 
 
 def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> None:
@@ -1255,6 +2321,19 @@ def test_feature_search_profiles_fit_the_32gb_quota_and_migrate_old_defaults() -
         "listwise_feature_search",
         16384,
     )
+    lightgbm_memory_migration = next(
+        (statement, params)
+        for statement, params in conn.calls
+        if params == (14336, "lightgbm_recency_search", 65536)
+    )
+    assert "status = 'queued'" in lightgbm_memory_migration[0]
+    lightgbm_worker_migration = next(
+        (statement, params)
+        for statement, params in conn.calls
+        if params == (4, "lightgbm_recency_search", "16")
+    )
+    assert "jsonb_set" in lightgbm_worker_migration[0]
+    assert "status = 'queued'" in lightgbm_worker_migration[0]
 
 class _QueryResult:
     def __init__(self, row=None):
@@ -1268,14 +2347,20 @@ class _ClaimConnection:
     def __init__(self, state):
         self.state = state
         self.saved_timeouts = []
+        self.candidate_sql = ""
+        self.update_sql = ""
+        self.events = []
 
     def execute(self, statement, parameters=()):
         sql = " ".join(statement.split())
-        if "pg_advisory_xact_lock" in sql:
+        self.events.append(sql)
+        if "pg_advisory_xact_lock" in sql or sql.startswith("LOCK TABLE"):
             return _QueryResult()
         if "SELECT jobs.*" in sql:
+            self.candidate_sql = sql
             return _QueryResult(dict(self.state))
         if "UPDATE model_evaluation_jobs" in sql and "RETURNING *" in sql:
+            self.update_sql = sql
             saved = json.loads(parameters[1])
             self.saved_timeouts.append(saved["timeout_seconds"])
             self.state.update({
@@ -1323,6 +2408,19 @@ class _LifecycleConnection:
         raise AssertionError(f"unexpected SQL: {sql}")
 
 
+def test_high_memory_evaluations_reserve_six_gib_for_services() -> None:
+    resources = ResourceSnapshot(
+        available_memory_mb=28000,
+        available_disk_mb=10000,
+        idle_cpu_percent=100.0,
+        cpu_count=16,
+        load_1m=0.0,
+        memory_limit_mb=32000,
+    )
+
+    assert evaluation_queue._evaluation_reservation_mb(resources) == 25856
+
+
 def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     state = {
         "job_id": 387,
@@ -1349,6 +2447,14 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed is not None
     assert claimed["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200]
+    assert conn.events[0].startswith("SELECT pg_advisory_xact_lock")
+    assert conn.events[1].startswith("SELECT jobs.*")
+    assert not any(event.startswith("LOCK TABLE") for event in conn.events)
+    assert "jobs.parent_job_id IS NULL" in conn.candidate_sql
+    assert "parent.status = 'completed'" in conn.candidate_sql
+    assert "work_tickets" not in conn.candidate_sql
+    assert "SUM(running.min_free_memory_mb)" in conn.candidate_sql
+    assert "started_at = CURRENT_TIMESTAMP" in conn.update_sql
 
     state.update({
         "status": "queued",
@@ -1364,6 +2470,330 @@ def test_timeout_retry_doubles_once_when_job_387_is_next_claimed() -> None:
     assert claimed_again is not None
     assert claimed_again["parameters"]["timeout_seconds"] == 43200
     assert conn.saved_timeouts == [43200, 43200]
+
+
+def test_overdue_ticket_records_corrective_event_without_state_transition() -> None:
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, statement, parameters=()):
+            self.sql = " ".join(statement.split())
+            return _QueryResult({"count": 2})
+
+    conn = Connection()
+
+    assert evaluation_queue.record_overdue_work_ticket_events(conn) == 2
+    assert "INSERT INTO work_ticket_events" in conn.sql
+    assert "deadline_overdue" in conn.sql
+    assert "continue_independent_jobs_and_replan_overdue_ticket" in conn.sql
+    assert "UPDATE work_tickets" not in conn.sql
+    assert "UPDATE model_evaluation_jobs" not in conn.sql
+    assert "event.created_at >= ticket.due_at" in conn.sql
+
+
+def test_recover_worker_closes_interrupted_attempt() -> None:
+    events = []
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            sql = " ".join(statement.split())
+            events.append((sql, parameters))
+            if "UPDATE model_evaluation_jobs" in sql:
+                return Result([{"job_id": 3566, "attempt": 2}])
+            if "UPDATE model_evaluation_job_runs" in sql:
+                return Result()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    recovered = evaluation_queue.recover_worker_job(
+        Connection(),
+        worker_id="evaluator-02",
+    )
+
+    assert recovered == 1
+    parent_sql, parent_parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in parent_sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in parent_sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in parent_sql
+    assert parent_parameters == ("evaluator-02",)
+    run_sql, run_parameters = events[1]
+    assert "status = 'failed'" in run_sql
+    assert "completed_at = CURRENT_TIMESTAMP" in run_sql
+    assert run_parameters == (3566, 2)
+
+
+def test_requeue_stale_jobs_closes_matching_running_attempt() -> None:
+    events = []
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            sql = " ".join(statement.split())
+            events.append((sql, parameters))
+            if "UPDATE model_evaluation_jobs" in sql:
+                return Result([{"job_id": 3566, "attempt": 2}])
+            if "UPDATE model_evaluation_job_runs" in sql:
+                return Result()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    requeued = evaluation_queue.requeue_stale_jobs(
+        Connection(),
+        stale_minutes=90,
+    )
+
+    assert requeued == 1
+    assert len(events) == 1
+    sql, parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "), stale_jobs AS" in sql
+    assert "UPDATE model_evaluation_jobs" in sql
+    assert "UPDATE model_evaluation_job_runs AS runs" in sql
+    assert "RETURNING jobs.job_id, jobs.attempt" in sql
+    assert "runs.status = 'running'" in sql
+    assert "runs.job_id = stale_jobs.job_id" in sql
+    assert "runs.attempt = stale_jobs.attempt" in sql
+    assert "completed_at = CURRENT_TIMESTAMP" in sql
+    assert parameters == (90, "worker lease expired", "worker lease expired")
+
+
+def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
+    events = []
+
+    class Result:
+        def fetchall(self):
+            return [{"job_id": 3564}]
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            events.append((" ".join(statement.split()), parameters))
+            return Result()
+
+    cancelled = evaluation_queue.reconcile_queue_state(Connection())
+
+    assert cancelled == 1
+    sql, parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in sql
+    assert "SET status = 'cancelled'" in sql
+    assert "completed_at = CURRENT_TIMESTAMP" in sql
+    assert "WHERE status = 'queued' AND attempt >= max_attempts" in sql
+    assert "running" not in sql
+    assert parameters == (
+        "queue reconciliation cancelled exhausted job: "
+        "attempt reached max_attempts",
+    )
+
+
+class _CompletedRunReconciliationConnection:
+    def __init__(self, result_path: Path, *, max_attempts: int = 2):
+        self.parent = {
+            "job_id": 7855,
+            "task_type": "market_residual_walk_forward",
+            "category": "evaluation",
+            "model_key": "realtime_odds_shadow",
+            "parameters": json.dumps({"evaluation_date": "2026-07-29"}),
+            "status": "running",
+            "attempt": 1,
+            "max_attempts": max_attempts,
+            "worker_id": "evaluator-03",
+        }
+        self.run = {
+            "run_id": 9001,
+            "status": "completed",
+            "result_path": str(result_path),
+            "error": None,
+        }
+        self.candidates = []
+        self.calls = []
+
+    def execute(self, statement, parameters=()):
+        sql = " ".join(statement.split())
+        self.calls.append((sql, parameters))
+        if sql.startswith("SELECT jobs.*"):
+            if (
+                self.parent["status"] == "running"
+                and self.run["status"] == "completed"
+                and self.run["result_path"]
+            ):
+                row = dict(self.parent)
+                row.update({
+                    "run_id": self.run["run_id"],
+                    "run_result_path": self.run["result_path"],
+                })
+                return _RowsResult([row])
+            return _RowsResult([])
+        if (
+            sql.startswith("UPDATE model_evaluation_jobs")
+            and "SET status = 'completed'" in sql
+        ):
+            self.parent.update({
+                "status": "completed",
+                "result_path": parameters[0],
+                "result_summary": json.loads(parameters[1]),
+                "decision": parameters[2],
+                "worker_id": None,
+                "error": None,
+            })
+            return _RowsResult()
+        if (
+            sql.startswith("UPDATE model_evaluation_job_runs")
+            and "SET status = 'completed'" in sql
+        ):
+            self.run.update({
+                "status": "completed",
+                "result_path": parameters[0],
+                "error": None,
+            })
+            return _RowsResult()
+        if sql.startswith("INSERT INTO model_improvement_candidates"):
+            self.candidates.append(parameters)
+            return _RowsResult()
+        if sql.startswith("UPDATE model_evaluation_jobs"):
+            self.parent.update({
+                "status": parameters[0],
+                "error": parameters[2],
+                "worker_id": None,
+            })
+            return _RowsResult()
+        if (
+            sql.startswith("UPDATE model_evaluation_job_runs")
+            and "SET status = 'failed'" in sql
+        ):
+            self.run.update({
+                "status": "failed",
+                "error": parameters[0],
+            })
+            return _RowsResult()
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class _RowsResult:
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+
+    def fetchall(self):
+        return self.rows
+
+
+def _write_reconciliation_result(app_root: Path) -> Path:
+    path = app_root / "data" / "models" / "evaluation_queue" / "job-00007855.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({
+            "model": "realtime_odds_shadow",
+            "bankroll": {
+                "roi": 1.2,
+                "profit_yen": 200,
+            },
+            "promotion_eligible": False,
+        }),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_reconcile_completed_job_run_updates_parent_and_candidate(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    result_path = _write_reconciliation_result(app_root)
+    conn = _CompletedRunReconciliationConnection(result_path)
+
+    recovered = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert recovered == 1
+    assert conn.parent["status"] == "completed"
+    assert conn.parent["result_path"] == str(result_path.resolve())
+    assert conn.parent["result_summary"]["roi"] == 1.2
+    assert conn.parent["decision"] == "accumulate_formal_evidence"
+    assert conn.run["status"] == "completed"
+    assert len(conn.candidates) == 1
+    select_sql, select_parameters = conn.calls[0]
+    assert "runs.attempt = jobs.attempt" in select_sql
+    assert "FOR UPDATE OF jobs, runs SKIP LOCKED" in select_sql
+    assert select_parameters == (16,)
+
+
+def test_reconcile_completed_job_run_requeues_invalid_path(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    outside_path = tmp_path / "outside.json"
+    outside_path.write_text("{}", encoding="utf-8")
+    conn = _CompletedRunReconciliationConnection(outside_path)
+
+    recovered = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert recovered == 0
+    assert conn.parent["status"] == "queued"
+    assert conn.run["status"] == "failed"
+    assert "result_path is outside app_root" in conn.parent["error"]
+    assert conn.run["error"] == conn.parent["error"]
+    assert conn.candidates == []
+
+
+def test_reconcile_completed_job_run_is_idempotent(tmp_path) -> None:
+    app_root = tmp_path / "app"
+    result_path = _write_reconciliation_result(app_root)
+    conn = _CompletedRunReconciliationConnection(result_path)
+
+    first = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+    second = evaluation_queue.reconcile_completed_job_runs(
+        conn,
+        app_root=app_root,
+    )
+
+    assert (first, second) == (1, 0)
+    assert conn.parent["status"] == "completed"
+    assert len(conn.candidates) == 1
+
+
+def test_retry_pending_jobs_locks_targets_in_consistent_order() -> None:
+    events = []
+
+    class Result:
+        def fetchall(self):
+            return [{"job_id": 8}, {"job_id": 13}]
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            events.append((" ".join(statement.split()), parameters))
+            return Result()
+
+    retried = evaluation_queue.retry_pending_jobs(
+        Connection(),
+        include_failed=True,
+        include_running=True,
+    )
+
+    assert retried == 2
+    sql, parameters = events[0]
+    assert "WITH locked_jobs AS MATERIALIZED" in sql
+    assert "ORDER BY job_id FOR UPDATE SKIP LOCKED" in sql
+    assert "WHERE jobs.job_id = locked_jobs.job_id" in sql
+    assert "status IN ('queued','failed','running')" in sql
+    assert parameters == ()
 
 
 def test_timeout_retry_never_shortens_a_larger_configured_limit() -> None:
@@ -1554,6 +2984,58 @@ def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None
     assert result_decision("combined_feature_search", {"roi": 0.8}) == (
         "refine_selected_candidate"
     )
+    assert result_decision(
+        "combined_feature_search",
+        {"roi": 1.2, "profit_yen": 2000, "promotion_eligible": True},
+    ) == "refine_selected_candidate"
+
+
+def test_listwise_feature_search_command_preserves_fixed_loss_blend(tmp_path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-29",
+                "targets": "top3_pl",
+                "loss_blend": 0.375,
+                "timeout_seconds": 21600,
+            },
+            job_id=88,
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--targets") + 1] == "top3_pl"
+    assert command[command.index("--loss-blend") + 1] == "0.375"
+
+
+def test_genetic_island_command_preserves_full_day_embargo(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "genetic_island_search",
+            {
+                "evaluation_date": "2026-07-29",
+                "cohort": "ga-v4-test",
+                "generation": 0,
+                "island_id": 0,
+                "island_count": 2,
+                "seed": 17,
+                "train_races": 2000,
+                "validation_races": 500,
+                "embargo_days": 2,
+            },
+            job_id=89,
+        ),
+        app_root=tmp_path,
+        python=tmp_path / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--embargo-days") + 1] == "2"
 
 
 @pytest.mark.parametrize("parameter", ["variant_workers", "candidate_workers", "cache_dir"])
@@ -1573,3 +3055,796 @@ def test_combined_feature_search_rejects_injected_worker_or_path(
             python=tmp_path / "python",
             db="postgresql://test",
         )
+
+def test_lightgbm_recency_search_profile() -> None:
+    assert TASK_PROFILES["lightgbm_recency_search"] == {
+        "category": "evaluation",
+        "memory_mb": 14336,
+        "disk_mb": 1024,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
+
+
+def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    python = root / ".venv/bin/python"
+    command, output = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "half_lives": "none,365",
+                "drop_feature_groups": "legacy_composites",
+                "n_estimators": 400,
+                "num_leaves": 63,
+                "max_depth": 8,
+                "min_child_samples": 200,
+                "feature_fraction": 0.8,
+                "max_bin": 127,
+                "n_jobs": 24,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[0:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.lightgbm_recency_evaluation",
+    ]
+
+    single_half_life_command, _ = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "half_lives": "none",
+                "architecture_presets": "compact,balanced,interaction",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert single_half_life_command[
+        single_half_life_command.index("--half-lives") + 1
+    ] == "none"
+    assert command[command.index("--feature-cache") + 1].endswith(
+        "lightgbm_v6_features_16384_drop_legacy_composites"
+    )
+    assert "--no-write-feature-cache" in command
+    assert command[command.index("--drop-feature-groups") + 1] == (
+        "legacy_composites"
+    )
+    expected = {
+        "--half-lives": "none,365",
+        "--n-estimators": "400",
+        "--num-leaves": "63",
+        "--max-depth": "8",
+        "--min-child-samples": "200",
+        "--feature-fraction": "0.8",
+        "--max-bin": "127",
+        "--n-jobs": "24",
+    }
+    for flag, value in expected.items():
+        assert command[command.index(flag) + 1] == value
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_lightgbm_structural_presets_are_forwarded(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    incumbent = root / "data/models/evaluation_queue/job-00002707.json"
+    incumbent.parent.mkdir(parents=True)
+    incumbent.write_text("{}", encoding="utf-8")
+    command, _ = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-24",
+                "architecture_presets": "compact,balanced,interaction",
+                "selection_entry_log_loss_tolerance": 0.0005,
+                "incumbent_result": (
+                    "data/models/evaluation_queue/job-00002707.json"
+                ),
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--architecture-presets") + 1] == (
+        "compact,balanced,interaction"
+    )
+    assert command[
+        command.index("--selection-entry-log-loss-tolerance") + 1
+    ] == "0.0005"
+    assert command[command.index("--incumbent-prediction") + 1] == str(
+        incumbent
+    )
+    assert command[command.index("--incumbent-bankroll") + 1] == str(
+        incumbent
+    )
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({}, "evaluation_date is required"),
+        ({"evaluation_date": "2026-07-24", "max_depth": 0}, "max_depth"),
+        ({"evaluation_date": "2026-07-24", "n_estimators": 9}, "n_estimators"),
+        (
+            {"evaluation_date": "2026-07-24", "drop_feature_groups": "future"},
+            "unknown",
+        ),
+        (
+            {"evaluation_date": "2026-07-24", "command": "arbitrary"},
+            "unsupported",
+        ),
+    ],
+)
+def test_lightgbm_recency_search_rejects_invalid_parameters(
+    tmp_path: Path,
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job("lightgbm_recency_search", parameters),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    model = root / "data/models/evaluation_queue/job-00002606.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"artifact")
+    python = root / ".venv/bin/python"
+
+    command, output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": "newton_residual",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["market_residual_walk_forward"] == {
+        "category": "evaluation",
+        "memory_mb": 2048,
+        "disk_mb": 256,
+        "idle_cpu": 5.0,
+        "max_parallel": 2,
+    }
+    assert command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.market_calibration",
+    ]
+    expected_cache = (
+        root / "data/models/evaluation_cache/market_scored"
+        / "job-00002606_2026-07-18_2026-07-24.races.joblib"
+    )
+    assert command[command.index("--scored-cache") + 1] == str(expected_cache)
+    assert command[command.index("--model") + 1] == str(model)
+    assert command[command.index("--calibrator-strategy") + 1] == "newton_residual"
+    assert command[command.index("--through-date") + 1] == "2026-07-24"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_market_residual_walk_forward_accepts_v18_schedule_quota(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    model = root / "data/models/evaluation_queue/job-00002606.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"artifact")
+    python = root / ".venv/bin/python"
+    expected_cache = (
+        root / "data/models/evaluation_cache/market_scored"
+        / "job-00002606_2026-07-18_2026-07-24.races.joblib"
+    )
+
+    command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_v18"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--calibrator-strategy") + 1] == (
+        "odds_path_observed_closing_return_schedule_quota_v18"
+    )
+
+    v19_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_"
+                    "raw_nonregression_v19"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v19_command[v19_command.index("--calibrator-strategy") + 1] == (
+        "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19"
+    )
+
+    v20_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_"
+                    "dual_head_v20"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v20_command[v20_command.index("--calibrator-strategy") + 1] == (
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
+    )
+
+    v21_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_"
+                    "triple_head_v21"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v21_command[v21_command.index("--calibrator-strategy") + 1] == (
+        "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+    )
+
+    odds_path_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": "odds_path_return",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert odds_path_command[
+        odds_path_command.index("--scored-cache") + 1
+    ] == str(expected_cache)
+    assert odds_path_command[
+        odds_path_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_return"
+
+    v7_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": (
+                    "odds_path_crossfit_conservative_ev"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v7_command[
+        v7_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_crossfit_conservative_ev"
+    v8_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": (
+                    "odds_path_market_offset_crossfit_conservative_ev"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v8_command[
+        v8_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_market_offset_crossfit_conservative_ev"
+    v10_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": (
+                    "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v10_command[
+        v10_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_market_offset_selection_conformal_discrete_ev_v10"
+    v11_command, v11_output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00002606.joblib"
+                ),
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "daily_budget_yen": 10000,
+                "calibrator_strategy": (
+                    "odds_path_role_integrated_multihorizon_v11"
+                ),
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert v11_command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.market_calibration",
+    ]
+    assert v11_command[
+        v11_command.index("--calibrator-strategy") + 1
+    ] == "odds_path_role_integrated_multihorizon_v11"
+    assert v11_command[v11_command.index("--from-date") + 1] == "2026-07-18"
+    assert v11_command[v11_command.index("--through-date") + 1] == "2026-07-24"
+    assert v11_command[v11_command.index("--daily-budget-yen") + 1] == "10000"
+    assert v11_command[v11_command.index("--output") + 1] == str(v11_output)
+    orthogonal_command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-24",
+                "calibrator_strategy": "orthogonal_residual",
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+    assert orthogonal_command[
+        orthogonal_command.index("--calibrator-strategy") + 1
+    ] == "orthogonal_residual"
+
+    with pytest.raises(ValueError, match="inside data/models"):
+        build_command(
+            _job(
+                "market_residual_walk_forward",
+                {"model_input": "../../outside.joblib", "from_date": "2026-07-18"},
+            ),
+            app_root=root,
+            python=python,
+            db="postgresql://test",
+        )
+    with pytest.raises(ValueError, match="unsupported"):
+        build_command(
+            _job(
+                "market_residual_walk_forward",
+                {
+                    "model_input": "data/models/candidate.joblib",
+                    "from_date": "2026-07-18",
+                    "command": "arbitrary",
+                },
+            ),
+            app_root=root,
+            python=python,
+            db="postgresql://test",
+        )
+
+
+def test_result_summary_preserves_v7_prospective_gate_metrics() -> None:
+    summary = summarize_result({
+        "model": "odds_path_crossfit_conservative_ev_v7",
+        "prospective_crossfit_conservative_ev_v7_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 31,
+            "evaluated_races": 4_100,
+            "tickets": 320,
+            "hit_tickets": 25,
+            "roi": 1.08,
+            "roi_without_largest_hit": 1.02,
+            "daily_cluster_bootstrap_roi_lower_95": 1.01,
+            "effective_hit_count": 22.0,
+            "largest_hit_return_share": 0.12,
+            "calibrated_trifecta_log_loss": 3.70,
+            "closing_q20_pinball_loss": 0.04,
+            "closing_q20_lower_coverage": 0.81,
+            "promotion_eligible": True,
+        },
+    })
+
+    assert summary["prospective_v7_registered_after"] == "2026-07-29"
+    assert summary["prospective_v7_roi"] == 1.08
+    assert summary["prospective_v7_roi_without_largest_hit"] == 1.02
+    assert (
+        summary[
+            "prospective_v7_daily_cluster_bootstrap_roi_lower_95"
+        ]
+        == 1.01
+    )
+    assert summary["prospective_v7_closing_q20_lower_coverage"] == 0.81
+    assert summary["prospective_v7_promotion_eligible"] is True
+
+
+def test_load_result_preserves_purchase_decision_diagnostics(tmp_path) -> None:
+    path = tmp_path / "v8-result.json"
+    diagnostics = {
+        "threshold_pass_candidates": 0,
+        "candidates_after_race_cap": 0,
+        "purchases_after_allocation": 0,
+        "safe_ev_max": 1.041,
+        "safe_ev_p95": 0.982,
+        "safe_ev_p99": 1.012,
+        "safe_ev_at_least": {"1.00": 8, "1.05": 0},
+    }
+    path.write_text(
+        json.dumps({
+            "model": "odds_path_market_offset_crossfit_conservative_ev_v8",
+            "purchase_decision_diagnostics": diagnostics,
+        }),
+        encoding="utf-8",
+    )
+
+    payload, summary = evaluation_queue._load_result(path)
+
+    assert payload["purchase_decision_diagnostics"] == diagnostics
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["threshold_pass_candidates"] == 0
+    assert summary["candidates_after_race_cap"] == 0
+    assert summary["purchases_after_allocation"] == 0
+    assert summary["safe_ev_max"] == 1.041
+    assert summary["safe_ev_p95"] == 0.982
+    assert summary["safe_ev_p99"] == 1.012
+
+
+def test_result_summary_exposes_high_ev_holdout_calibration() -> None:
+    summary = summarize_result({
+        "holdout_top5_flat_diagnostic": {
+            "evaluated_races": 100, "tickets": 500, "hit_races": 30,
+            "hit_rate": 0.3, "stake_yen": 50000,
+            "return_yen": 45000, "profit_yen": -5000, "roi": 0.9,
+            "average_hit_payout_yen": 1500,
+            "breakeven_average_hit_payout_yen": 1666.6667,
+        },
+        "holdout_candidate_ev_calibration": [
+            {
+                "lower_inclusive": 2.0, "upper_exclusive": 2.5,
+                "tickets": 10, "hits": 1, "flat_stake_yen": 1000,
+                "flat_return_yen": 800, "realized_roi": 0.8,
+                "mean_estimated_ev": 2.2,
+            },
+            {
+                "lower_inclusive": 2.5, "upper_exclusive": None,
+                "tickets": 5, "hits": 1, "flat_stake_yen": 500,
+                "flat_return_yen": 1000, "realized_roi": 2.0,
+                "mean_estimated_ev": 2.8,
+            },
+        ],
+    })
+
+    assert summary["top5_flat_tickets"] == 500
+    assert summary["top5_flat_hit_rate"] == 0.3
+    assert summary["top5_flat_roi"] == 0.9
+    assert summary["high_ev_tickets"] == 15
+    assert summary["high_ev_realized_roi"] == 1.2
+    assert len(summary["holdout_candidate_ev_calibration"]) == 2
+
+
+def test_result_summary_exposes_registered_ev_band_separately() -> None:
+    summary = summarize_result({
+        "roi": 0.33,
+        "registered_ev_band_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-25",
+            "evaluation_days": 1,
+            "evaluated_races": 132,
+            "tickets": 4,
+            "hit_tickets": 1,
+            "roi": 1.25,
+            "profit_yen": 100,
+        },
+        "prospective_normalized_ev_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-07-27",
+            "evaluation_days": 0,
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "roi": 0.0,
+            "profit_yen": 0,
+        },
+        "prospective_top5_narrow_ev_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-07-28",
+            "evaluation_days": 0,
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "roi": 0.0,
+            "profit_yen": 0,
+        },
+        "prospective_observed_closing_return_v4_walk_forward": {
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 0,
+            "evaluated_races": 0,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "roi": 0.0,
+            "profit_yen": 0,
+            "roi_without_largest_hit": None,
+        },
+    })
+
+    assert summary["roi"] == 0.33
+    assert summary["registered_ev_band_roi"] == 1.25
+    assert summary["registered_ev_band_evaluation_days"] == 1
+    assert summary["prospective_normalized_ev_status"] == (
+        "waiting_for_first_unseen_day"
+    )
+    assert summary["prospective_normalized_ev_registered_after"] == "2026-07-27"
+    assert summary["prospective_top5_narrow_ev_status"] == (
+        "waiting_for_first_unseen_day"
+    )
+    assert summary["prospective_top5_narrow_ev_registered_after"] == "2026-07-28"
+    assert summary["prospective_observed_closing_v4_status"] == (
+        "waiting_for_first_unseen_day"
+    )
+    assert summary["prospective_observed_closing_v4_registered_after"] == (
+        "2026-07-29"
+    )
+
+
+def test_result_summary_preserves_v9_prospective_and_allocation_diagnostics() -> None:
+    diagnostics = {
+        "threshold_pass_candidates": 40,
+        "candidates_before_allocation": 20,
+        "allocation_candidate_tickets": 12,
+        "purchases_after_allocation": 8,
+        "zero_purchase_days": 2,
+        "zero_reason_counts": {"no_positive_discrete_log_growth": 2},
+    }
+    summary = summarize_result({
+        "model": "odds_path_market_offset_discrete_log_ev_v9",
+        "purchase_decision_diagnostics": diagnostics,
+        "prospective_market_offset_discrete_log_ev_v9_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 31,
+            "evaluated_races": 4_100,
+            "tickets": 320,
+            "roi": 1.08,
+            "roi_without_largest_hit": 1.02,
+            "promotion_eligible": True,
+        },
+    })
+
+    assert summary["model"] == "odds_path_market_offset_discrete_log_ev_v9"
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["candidates_before_allocation"] == 20
+    assert summary["allocation_candidate_tickets"] == 12
+    assert summary["zero_reason_counts"] == {
+        "no_positive_discrete_log_growth": 2
+    }
+    assert summary["prospective_v9_registered_after"] == "2026-07-29"
+    assert summary["prospective_v9_roi"] == 1.08
+    assert summary["prospective_v9_promotion_eligible"] is True
+
+
+def test_result_summary_preserves_v10_selection_conformal_diagnostics() -> None:
+    diagnostics = {
+        "raw_selected_candidates": 9,
+        "guarded_threshold_candidates": 3,
+        "purchases_after_allocation": 2,
+        "zero_purchase_days": 1,
+        "zero_reason_counts": {"no_candidate_after_selection_conformal": 1},
+    }
+    conformal = {
+        "selection_evaluation_candidates": 9,
+        "selection_raw_covered_candidates": 2,
+        "selection_guarded_covered_candidates": 8,
+        "selection_raw_closing_coverage": 2 / 9,
+        "selection_guarded_closing_coverage": 8 / 9,
+        "selection_closing_ratio_mean": 0.72,
+        "selection_closing_ratio_p10": 0.51,
+        "selection_closing_ratio_median": 0.68,
+        "haircut_latest": 0.55,
+        "haircut_min": 0.48,
+        "haircut_max": 0.60,
+        "training_days_latest": 6,
+        "training_candidates_latest": 41,
+        "trained_through_date_latest": "2026-07-29",
+    }
+    summary = summarize_result({
+        "model": "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+        "purchase_decision_diagnostics": diagnostics,
+        "selection_conformal": conformal,
+        "prospective_market_offset_selection_conformal_discrete_ev_v10_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-07-29",
+            "evaluation_days": 31,
+            "evaluated_races": 4_100,
+            "tickets": 301,
+            "roi": 1.06,
+            "roi_without_largest_hit": 1.01,
+            "promotion_eligible": True,
+            "selection_conformal": conformal,
+        },
+    })
+
+    assert summary["purchase_decision_diagnostics"] == diagnostics
+    assert summary["raw_selected_candidates"] == 9
+    assert summary["guarded_threshold_candidates"] == 3
+    assert summary["zero_reason_counts"] == {
+        "no_candidate_after_selection_conformal": 1
+    }
+    assert summary["selection_conformal"] == conformal
+    assert summary["selection_raw_closing_coverage"] == 2 / 9
+    assert summary["selection_guarded_closing_coverage"] == 8 / 9
+    assert summary["haircut_latest"] == 0.55
+    assert summary["training_days_latest"] == 6
+    assert summary["training_candidates_latest"] == 41
+    assert summary["prospective_v10_registered_after"] == "2026-07-29"
+    assert summary["prospective_v10_roi"] == 1.06
+    assert summary["prospective_v10_promotion_eligible"] is True
+    assert summary["prospective_v10_selection_conformal"] == conformal
+
+
+def test_v12_role_stack_build_command_carries_explicit_fallback_contract(
+    tmp_path: Path,
+) -> None:
+    model_input = tmp_path / "data/models/source.joblib"
+    model_input.parent.mkdir(parents=True)
+    model_input.write_bytes(b"artifact")
+    command, _output = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/source.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10_000,
+                "calibrator_strategy": (
+                    "odds_path_role_integrated_t300_nonlinear_v12"
+                ),
+                "v12_closing_fallback_policy": "no_bet",
+            },
+        ),
+        app_root=tmp_path,
+        python=Path("/venv/bin/python"),
+        db="postgresql://test",
+    )
+
+    assert command[
+        command.index("--calibrator-strategy") + 1
+    ] == "odds_path_role_integrated_t300_nonlinear_v12"
+    assert command[
+        command.index("--v12-closing-fallback-policy") + 1
+    ] == "no_bet"
+
+
+def test_v12_result_summary_preserves_closing_model_identity() -> None:
+    identity = {
+        "requested_model": "closing_odds_t300_nonlinear_v12",
+        "fallback_policy": "v11",
+        "selected_model_latest": "closing_odds_multihorizon_v11",
+        "selected_model_fold_counts": {
+            "closing_odds_multihorizon_v11": 2,
+            "closing_odds_t300_nonlinear_v12": 1,
+        },
+        "evaluation_folds": 3,
+        "v12_ready_folds": 3,
+        "v12_adopted_folds": 1,
+        "v11_fallback_folds": 2,
+        "no_bet_folds": 0,
+    }
+    summary = summarize_result({
+        "model": "odds_path_role_integrated_t300_nonlinear_v12",
+        "roi": 1.05,
+        "profit_yen": 500,
+        "calibrated_trifecta_log_loss": 3.7,
+        "closing_q20_lower_coverage": 0.82,
+        "closing_model_identity": identity,
+        "prospective_role_integrated_v12_walk_forward": {
+            "evaluation_days": 3,
+            "evaluated_races": 360,
+            "tickets": 12,
+            "profit_yen": 500,
+            "roi": 1.05,
+            "promotion_eligible": False,
+            "closing_model_identity": identity,
+        },
+    })
+
+    assert summary["roi"] == 1.05
+    assert summary["calibrated_trifecta_log_loss"] == 3.7
+    assert summary["closing_q20_lower_coverage"] == 0.82
+    assert summary["closing_model_identity"] == identity
+    assert summary["closing_model_requested"] == (
+        "closing_odds_t300_nonlinear_v12"
+    )
+    assert summary["closing_model_selected"] == (
+        "closing_odds_multihorizon_v11"
+    )
+    assert summary["closing_fallback_policy"] == "v11"
+    assert summary["closing_v12_adopted_folds"] == 1
+    assert summary["prospective_v12_roi"] == 1.05
+    assert summary["prospective_v12_closing_model_identity"] == identity

@@ -21,6 +21,7 @@ from .parsers import (
     parse_odds3t_html,
     parse_racelist_html,
     parse_result_html,
+    result_page_is_cancelled,
 )
 from ..storage import (
     insert_beforeinfo_rows,
@@ -116,11 +117,37 @@ def collect_beforeinfo(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Pa
     return True
 
 
-def collect_odds(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) -> bool:
+def collect_odds(
+    conn,
+    *,
+    race_date: date,
+    jcd: str,
+    rno: int,
+    raw_dir: Path,
+    cache_bust: bool = False,
+    timeout: float = 30.0,
+    retries: int = 2,
+) -> bool:
     rid = race_id(race_date.isoformat(), jcd, rno)
     url = race_page_url("odds3t", race_date, jcd, rno)
-    html = _fetch_page(conn, page_type="odds3t", race_date=race_date, jcd=jcd, rno=rno, url=url, raw_dir=raw_dir)
+    html = _fetch_page(
+        conn,
+        page_type="odds3t",
+        race_date=race_date,
+        jcd=jcd,
+        rno=rno,
+        url=url,
+        raw_dir=raw_dir,
+        cache_bust=cache_bust,
+        timeout=timeout,
+        retries=retries,
+    )
     if not html:
+        return False
+    if result_page_is_cancelled(html):
+        _persist_cancelled_race(
+            conn, race_date=race_date, jcd=jcd, rno=rno
+        )
         return False
     parsed = parse_odds3t_html(html)
     if (
@@ -162,6 +189,29 @@ def collect_result(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Path) 
     return len(parsed["rows"])
 
 
+def _persist_cancelled_race(
+    conn, *, race_date: date, jcd: str, rno: int
+) -> None:
+    rid = race_id(race_date.isoformat(), jcd, rno)
+    parsed = {
+        "status": "final",
+        "rows": [],
+        "payouts": [],
+        "trifecta_evaluable": False,
+        "result_reason": "race_cancelled",
+        "incidents": [],
+        "refund_lanes": [],
+        "trifecta_payout_state": {
+            "state": "not_evaluable",
+            "reason": "race_cancelled",
+        },
+    }
+    _ensure_minimal_race(
+        conn, race_date=race_date, jcd=jcd, rno=rno, status="final"
+    )
+    upsert_result_status(conn, race_id=rid, row=parsed)
+
+
 def monitor_live(
     conn,
     *,
@@ -196,8 +246,16 @@ def _fetch_page(
     rno: int,
     url: str,
     raw_dir: Path,
+    cache_bust: bool = False,
+    timeout: float = 30.0,
+    retries: int = 2,
 ) -> str | None:
-    status_code, html, payload = fetch_text(url)
+    status_code, html, payload = fetch_text(
+        url,
+        cache_bust=cache_bust,
+        timeout=timeout,
+        retries=retries,
+    )
     if status_code != 200:
         return None
     captured = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

@@ -11,6 +11,28 @@ EPSILON = 1e-12
 DEFAULT_REGULARIZATION = (0.0, 0.001, 0.01, 0.1, 1.0, 10.0)
 
 
+def _raw_identity_calibrator(
+    *,
+    training_races: int,
+    regularization: float,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "model_coefficient": 1.0,
+        "market_coefficient": 0.0,
+        "model_weight": 1.0,
+        "temperature": 1.0,
+        "regularization": float(regularization),
+        "objective": None,
+        "gradient_norm": None,
+        "iterations": 0,
+        "converged": True,
+        "training_races": int(training_races),
+        "identity_fallback": True,
+        "selection_reason": reason,
+    }
+
+
 def log_pool_probabilities(
     model: dict[str, float],
     market: dict[str, float],
@@ -173,10 +195,14 @@ def fit_log_pool_newton(
 
 
 def residual_probability_metrics(
-    races: list[dict[str, Any]], calibrator: dict[str, Any]
+    races: list[dict[str, Any]],
+    calibrator: dict[str, Any],
+    *,
+    include_raw_model: bool = False,
 ) -> dict[str, Any]:
     loss = 0.0
     market_loss = 0.0
+    raw_model_loss = 0.0
     top5_hits = 0
     market_top5_hits = 0
     for race in races:
@@ -190,6 +216,11 @@ def residual_probability_metrics(
         loss -= math.log(max(EPSILON, probabilities.get(actual, 0.0)))
         market = race["market_probabilities"]
         market_loss -= math.log(max(EPSILON, float(market.get(actual, 0.0))))
+        if include_raw_model:
+            raw_model = race["model_probabilities"]
+            raw_model_loss -= math.log(
+                max(EPSILON, float(raw_model.get(actual, 0.0)))
+            )
         top5_hits += int(
             actual in sorted(probabilities, key=probabilities.get, reverse=True)[:5]
         )
@@ -197,19 +228,25 @@ def residual_probability_metrics(
             actual in sorted(market, key=market.get, reverse=True)[:5]
         )
     count = len(races)
-    return {
+    result = {
         "evaluated_races": count,
         "trifecta_log_loss": loss / count if count else None,
         "market_trifecta_log_loss": market_loss / count if count else None,
         "trifecta_top5_hit_rate": top5_hits / count if count else None,
         "market_trifecta_top5_hit_rate": market_top5_hits / count if count else None,
     }
+    if include_raw_model:
+        result["raw_model_trifecta_log_loss"] = (
+            raw_model_loss / count if count else None
+        )
+    return result
 
 
 def select_regularization_prequential(
     races: list[dict[str, Any]],
     *,
     regularizations: Iterable[float] = DEFAULT_REGULARIZATION,
+    enforce_raw_nonregression: bool = False,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -222,6 +259,7 @@ def select_regularization_prequential(
     for regularization in regularizations:
         folds = []
         weighted_loss = 0.0
+        weighted_raw_model_loss = 0.0
         total = 0
         for index in range(1, len(dates)):
             training = [
@@ -231,9 +269,17 @@ def select_regularization_prequential(
             calibrator = fit_log_pool_newton(
                 training, regularization=float(regularization)
             )
-            metrics = residual_probability_metrics(holdout, calibrator)
+            metrics = residual_probability_metrics(
+                holdout,
+                calibrator,
+                include_raw_model=enforce_raw_nonregression,
+            )
             count = int(metrics["evaluated_races"])
             weighted_loss += float(metrics["trifecta_log_loss"]) * count
+            if enforce_raw_nonregression:
+                weighted_raw_model_loss += (
+                    float(metrics["raw_model_trifecta_log_loss"]) * count
+                )
             total += count
             folds.append(
                 {
@@ -243,14 +289,17 @@ def select_regularization_prequential(
                     "metrics": metrics,
                 }
             )
-        candidates.append(
-            {
-                "regularization": float(regularization),
-                "prequential_races": total,
-                "prequential_log_loss": weighted_loss / total,
-                "folds": folds,
-            }
-        )
+        candidate = {
+            "regularization": float(regularization),
+            "prequential_races": total,
+            "prequential_log_loss": weighted_loss / total,
+            "folds": folds,
+        }
+        if enforce_raw_nonregression:
+            candidate["raw_model_prequential_log_loss"] = (
+                weighted_raw_model_loss / total
+            )
+        candidates.append(candidate)
     selected = min(
         candidates,
         key=lambda row: (
@@ -258,27 +307,121 @@ def select_regularization_prequential(
             -row["regularization"],
         ),
     )
-    final_calibrator = fit_log_pool_newton(
+    fitted_calibrator = fit_log_pool_newton(
         races, regularization=float(selected["regularization"])
+    )
+    if not enforce_raw_nonregression:
+        return {
+            "validation_design": (
+                "Regularization is selected on forward-only daily folds; final "
+                "coefficients are refit on all calibration days"
+            ),
+            "dates": dates,
+            "selected_regularization": selected["regularization"],
+            "prequential_log_loss": selected["prequential_log_loss"],
+            "final_calibrator": fitted_calibrator,
+            "candidates": candidates,
+        }
+    fitted_metrics = residual_probability_metrics(
+        races, fitted_calibrator, include_raw_model=True
+    )
+    prequential_regression = (
+        float(selected["prequential_log_loss"])
+        > float(selected["raw_model_prequential_log_loss"])
+    )
+    refit_regression = (
+        float(fitted_metrics["trifecta_log_loss"])
+        > float(fitted_metrics["raw_model_trifecta_log_loss"])
+    )
+    fallback_reason = (
+        "calibrated_prequential_log_loss_worse_than_raw"
+        if prequential_regression
+        else "calibrated_prior_refit_log_loss_worse_than_raw"
+        if refit_regression
+        else None
+    )
+    final_calibrator = (
+        _raw_identity_calibrator(
+            training_races=len(races),
+            regularization=float(selected["regularization"]),
+            reason=str(fallback_reason),
+        )
+        if fallback_reason is not None
+        else fitted_calibrator
     )
     return {
         "validation_design": (
             "Regularization is selected on forward-only daily folds; final coefficients "
-            "are refit on all calibration days"
+            "are refit on all calibration days; raw identity fallback is selected "
+            "without access to the outer holdout"
         ),
         "dates": dates,
         "selected_regularization": selected["regularization"],
-        "prequential_log_loss": selected["prequential_log_loss"],
+        "prequential_log_loss": min(
+            float(selected["prequential_log_loss"]),
+            float(selected["raw_model_prequential_log_loss"]),
+        ),
+        "candidate_prequential_log_loss": selected["prequential_log_loss"],
+        "raw_model_prequential_log_loss": selected[
+            "raw_model_prequential_log_loss"
+        ],
+        "calibration_nonregression": {
+            "selection_data": "strict_prior_prequential_and_prior_refit_only",
+            "outer_holdout_used": False,
+            "candidate_trifecta_log_loss": selected["prequential_log_loss"],
+            "raw_trifecta_log_loss": selected[
+                "raw_model_prequential_log_loss"
+            ],
+            "prior_refit_candidate_trifecta_log_loss": fitted_metrics[
+                "trifecta_log_loss"
+            ],
+            "prior_refit_raw_trifecta_log_loss": fitted_metrics[
+                "raw_model_trifecta_log_loss"
+            ],
+            "identity_fallback_applied": fallback_reason is not None,
+            "reason": fallback_reason,
+        },
         "final_calibrator": final_calibrator,
         "candidates": candidates,
     }
 
 
 def fit_fixed_regularization(
-    races: list[dict[str, Any]], *, regularization: float = 1.0
+    races: list[dict[str, Any]],
+    *,
+    regularization: float = 1.0,
+    enforce_raw_nonregression: bool = False,
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in races})
-    calibrator = fit_log_pool_newton(races, regularization=regularization)
+    fitted_calibrator = fit_log_pool_newton(races, regularization=regularization)
+    if not enforce_raw_nonregression:
+        return {
+            "validation_design": (
+                "Regularization is preregistered because fewer than two calibration "
+                "days are available; no holdout selection is performed"
+            ),
+            "dates": dates,
+            "selected_regularization": float(regularization),
+            "prequential_log_loss": None,
+            "final_calibrator": fitted_calibrator,
+            "candidates": [],
+        }
+    metrics = residual_probability_metrics(
+        races, fitted_calibrator, include_raw_model=True
+    )
+    fallback = (
+        float(metrics["trifecta_log_loss"])
+        > float(metrics["raw_model_trifecta_log_loss"])
+    )
+    calibrator = (
+        _raw_identity_calibrator(
+            training_races=len(races),
+            regularization=regularization,
+            reason="calibrated_training_log_loss_worse_than_raw",
+        )
+        if fallback
+        else fitted_calibrator
+    )
     return {
         "validation_design": (
             "Regularization is preregistered because fewer than two calibration "
@@ -287,6 +430,16 @@ def fit_fixed_regularization(
         "dates": dates,
         "selected_regularization": float(regularization),
         "prequential_log_loss": None,
+        "calibration_nonregression": {
+            "selection_data": "single_prior_training_day_only",
+            "outer_holdout_used": False,
+            "candidate_trifecta_log_loss": metrics["trifecta_log_loss"],
+            "raw_trifecta_log_loss": metrics["raw_model_trifecta_log_loss"],
+            "identity_fallback_applied": fallback,
+            "reason": (
+                "calibrated_training_log_loss_worse_than_raw" if fallback else None
+            ),
+        },
         "final_calibrator": calibrator,
         "candidates": [],
     }

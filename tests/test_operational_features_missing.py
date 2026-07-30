@@ -1,9 +1,13 @@
 from boatrace_ai.cache_entry_series_features import CACHE_FIELDS
+from boatrace_ai import series_features_form
 from boatrace_ai.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     LEGACY_FEATURE_SCHEMA_VERSION,
+    LIGHTGBM_FEATURE_SCHEMA_VERSION,
+    LOW_COVERAGE_FEATURE_SCHEMA_VERSION,
     MISSING_SAFE_FEATURE_SCHEMA_VERSION,
     SPARSE_MISSING_FEATURE_SCHEMA_VERSION,
+    uses_official_series_features,
 )
 from boatrace_ai.operational_features import (
     _ranks,
@@ -17,6 +21,12 @@ def _row(lane: int, **values: float | None) -> dict:
     row.update(values)
     row["lane"] = lane
     return row
+
+
+def test_hashed_v6_disables_untrained_official_series_features() -> None:
+    assert not uses_official_series_features(FEATURE_SCHEMA_VERSION)
+    assert uses_official_series_features(LOW_COVERAGE_FEATURE_SCHEMA_VERSION)
+    assert uses_official_series_features(LIGHTGBM_FEATURE_SCHEMA_VERSION)
 
 
 def test_series_missing_values_are_not_ranked_by_lane() -> None:
@@ -139,3 +149,34 @@ def test_v3_schema_preserves_previous_finish_trend_direction() -> None:
 
     assert features[1]["series_finish_trend_rank"] == 6
     assert features[6]["series_finish_trend_rank"] == 1
+
+
+def test_low_coverage_card_features_cannot_appear_only_at_inference(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        series_features_form,
+        "base_v1",
+        lambda row, relatives: {
+            "avg_st": 0.18,
+            "has_avg_st": 1,
+            "avg_st_rank": 1,
+            "best_count": 6,
+        },
+    )
+    relatives = {
+        "class_rank_rank": 1,
+        "national_win_rate_rank": 1,
+        "local_win_rate_rank": 2,
+        "motor_2_rate_rank": 3,
+        "boat_2_rate_rank": 4,
+        "avg_st_rank": 1,
+    }
+
+    features = series_features_form.base_pastlog_features({}, relatives)
+
+    assert "avg_st" not in features
+    assert "has_avg_st" not in features
+    assert "avg_st_rank" not in features
+    assert features["best_count"] == 2
+    assert features["feature_pruning"] == "drop_low_coverage_card_fields_v2"

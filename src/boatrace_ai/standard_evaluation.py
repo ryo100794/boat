@@ -88,12 +88,6 @@ MODEL_SOURCES = (
         requires_current_feature_schema=True,
     ),
     ModelSource(
-        "calibrated_linear",
-        "calibrated_linear.json",
-        "calibrated_linear.json",
-        requires_current_feature_schema=True,
-    ),
-    ModelSource(
         "calibrated_mlp",
         "calibrated_mlp.json",
         "calibrated_mlp.json",
@@ -138,6 +132,12 @@ MODEL_REGISTRY = (
             "same historical no-odds universe and fixed bankroll policy",
         )
         for source in MODEL_SOURCES
+    ),
+    ModelRegistration(
+        "calibrated_linear",
+        "prediction_model",
+        "retired",
+        "v5 and v6 failed 365-day probability calibration and trifecta top-five gates",
     ),
     ModelRegistration(
         "realtime_odds_shadow",

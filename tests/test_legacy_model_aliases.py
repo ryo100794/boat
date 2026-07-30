@@ -6,6 +6,7 @@ from types import ModuleType
 
 import boatrace_ai.web.postgresql_dashboard as postgresql_dashboard
 from boatrace_ai.historical_model import SparseIndex32
+from boatrace_ai.listwise.model import ListwiseLinearModel
 from boatrace_ai.legacy_model_aliases import (
     install_legacy_model_aliases,
     load_model_bundle,
@@ -19,6 +20,13 @@ def test_current_operational_artifact_loads_after_module_migration() -> None:
     bundle = load_model_bundle(path)
     assert "pipeline" in bundle
     assert "metadata" in bundle
+
+
+def test_installs_legacy_listwise_model_module_alias() -> None:
+    install_legacy_model_aliases()
+
+    legacy = sys.modules["boatrace_ai.modeling_pastlog_v7_stream_hash"]
+    assert legacy.ListwiseLinearModel is ListwiseLinearModel
 
 
 def test_installs_sparse_transformer_on_legacy_dashboard_module() -> None:

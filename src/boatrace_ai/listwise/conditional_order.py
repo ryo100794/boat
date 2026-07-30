@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-import joblib
 import numpy as np
 from scipy.optimize import minimize
 from sklearn.feature_extraction import FeatureHasher
@@ -20,6 +19,7 @@ from ..db import connection, init_db
 from ..feature_schema import FEATURE_SCHEMA_VERSION
 from ..feature_tuning import load_complete_race_ids
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
+from ..legacy_model_aliases import load_model_bundle
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .direct_bankroll import (
     POLICY_SELECTION_DAYS,
@@ -452,11 +452,13 @@ def bankroll_promotion_gate(
         "baseline_profit_yen": float(baseline["profit_yen"]),
         "roi_ci95_lower": float(confidence["roi_ci95_lower"]),
         "roi_delta_ci95_lower": float(confidence["roi_delta_ci95_lower"]),
+        "probability_roi_above_one": float(confidence["probability_roi_above_one"]),
     }
     if not all(math.isfinite(value) for value in values.values()):
         raise ValueError("bankroll promotion metrics must be finite")
     gate = {
         "minimum_roi": 1.0,
+        "minimum_probability_roi_above_one": 0.95,
         **values,
         "roi_pass": values["roi"] > 1.0,
         "profit_pass": values["profit_yen"] > 0.0,
@@ -464,19 +466,24 @@ def bankroll_promotion_gate(
         "roi_ci_lower_above_one": values["roi_ci95_lower"] > 1.0,
         "roi_delta_ci_lower_above_zero": values["roi_delta_ci95_lower"] > 0.0,
     }
+    gate["probability_roi_above_one_pass"] = (
+        values["probability_roi_above_one"]
+        >= gate["minimum_probability_roi_above_one"]
+    )
     gate["pass"] = bool(
         gate["roi_pass"]
         and gate["profit_pass"]
         and gate["baseline_improved"]
         and gate["roi_ci_lower_above_one"]
         and gate["roi_delta_ci_lower_above_zero"]
+        and gate["probability_roi_above_one_pass"]
     )
     return gate
 
 
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
-    baseline_artifact = joblib.load(args.baseline_model)
+    baseline_artifact = load_model_bundle(args.baseline_model)
     baseline_model = baseline_artifact.get("model")
     if not isinstance(baseline_model, ListwiseLinearModel):
         raise ValueError("baseline artifact does not contain a ListwiseLinearModel")

@@ -74,8 +74,8 @@ def test_operational_features_honor_schema_and_dropped_groups(monkeypatch) -> No
 
     assert captured["include_research"] is False
     assert len(features) == 6
-    assert all(row["series_schema"] == FEATURE_SCHEMA_VERSION for row in features)
-    assert all(row["relative_schema"] == FEATURE_SCHEMA_VERSION for row in features)
+    assert all("series_schema" not in row for row in features)
+    assert all("relative_schema" not in row for row in features)
     assert all(not any(key.startswith("research_") for key in row) for row in features)
     with pytest.raises(ValueError, match="unknown feature groups"):
         operational_features.prediction_features(

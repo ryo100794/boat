@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .parsers import _soup, normalize_text, to_float, to_int
+from .parsers import (
+    _soup,
+    normalize_text,
+    result_page_is_cancelled,
+    to_float,
+    to_int,
+)
 
 
 BET_TYPES = ("3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝")
@@ -22,6 +28,20 @@ INCIDENT_DECISIONS = {
 
 
 def parse_result_html_v2(html: str) -> dict[str, Any]:
+    if result_page_is_cancelled(html):
+        return {
+            "status": "final",
+            "rows": [],
+            "payouts": [],
+            "trifecta_evaluable": False,
+            "result_reason": "race_cancelled",
+            "incidents": [],
+            "refund_lanes": [],
+            "trifecta_payout_state": {
+                "state": "not_evaluable",
+                "reason": "race_cancelled",
+            },
+        }
     text = normalize_text(_plain_text(html))
     if "データはありません" in text:
         return {"status": "no_data", "rows": [], "payouts": []}
@@ -200,6 +220,8 @@ def _result_reason(
 ) -> str | None:
     if trifecta_state.get("state") == "not_established":
         return "trifecta_not_established"
+    if trifecta_state.get("state") == "evaluable" and len(rows) < 3:
+        return None
     if len(rows) < 3 and refund_lanes:
         return "refund_with_insufficient_finishers"
     if len(rows) < 3 and incidents:
@@ -215,6 +237,8 @@ def _trifecta_evaluable(
 ) -> bool:
     if trifecta_state.get("state") == "not_established":
         return False
+    if trifecta_state.get("state") == "evaluable":
+        return True
     if len(rows) < 3 and (refund_lanes or incidents):
         return False
     return True

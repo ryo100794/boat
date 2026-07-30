@@ -25,6 +25,7 @@ SYNC_COLUMNS = (
     "github_issue_url",
     "github_issue_updated_at",
     "last_synced_at",
+    "due_at",
 )
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MANAGED_RE = re.compile(
@@ -52,6 +53,7 @@ class Ticket:
     github_issue_url: str = ""
     github_issue_updated_at: Any = None
     last_synced_at: Any = None
+    due_at: Any = None
 
 
 class HttpTransport(Protocol):
@@ -128,6 +130,7 @@ def ensure_sync_schema(conn: Any) -> None:
         "ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_url TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS github_issue_updated_at TIMESTAMPTZ",
         "ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ",
+        "ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ",
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_work_tickets_github_issue
         ON work_tickets(repository_full_name, github_issue_number)
@@ -182,6 +185,7 @@ def _managed_metadata(ticket: Ticket) -> dict[str, Any]:
         "cancellation_confirmed": ticket.status == "cancelled",
         "db_updated_at": _isoformat(ticket.updated_at),
         "terminal": terminal,
+        "due_at": _isoformat(ticket.due_at),
     }
 
 
@@ -201,6 +205,7 @@ def render_managed_block(ticket: Ticket) -> str:
             f"- Owner: `{ticket.owner}`",
             f"- Priority: {ticket.priority}",
             f"- Related job: `{related_job}`",
+            f"- Due at: `{_isoformat(ticket.due_at) or '-'}`",
             "",
             "**Description**",
             "",

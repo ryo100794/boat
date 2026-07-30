@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 from scipy.optimize import minimize
 from sklearn.feature_extraction import FeatureHasher
@@ -24,6 +23,7 @@ from ..feature_tuning import (
     to_hashable,
 )
 from ..hashed_feature_dataset import load_hashed_dataset, promote_legacy_hashed_dataset
+from ..legacy_model_aliases import load_model_bundle
 from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .conditional_order import (
     ConditionalOrderModel,
@@ -495,7 +495,7 @@ def _global_probabilities(
 
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
-    baseline_artifact = joblib.load(args.baseline_model)
+    baseline_artifact = load_model_bundle(args.baseline_model)
     baseline_model = baseline_artifact.get("model")
     if not isinstance(baseline_model, ListwiseLinearModel):
         raise ValueError("baseline artifact does not contain a ListwiseLinearModel")

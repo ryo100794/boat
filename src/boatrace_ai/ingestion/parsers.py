@@ -61,6 +61,13 @@ def compact_text_from_html(html: str) -> str:
     return "\n".join(text_lines_from_html(html))
 
 
+def result_page_is_cancelled(html: str) -> bool:
+    """Recognize the official result page's explicit race-cancellation notice."""
+    lines = text_lines_from_html(html)
+    text = re.sub(r"\s+", "", "\n".join(lines))
+    return "該当レースは中止" in text or "レース中止" in lines
+
+
 def parse_race_meta(
     html: str,
     *,
@@ -508,6 +515,14 @@ def parse_beforeinfo_html(html: str) -> dict[str, Any]:
 
 
 def parse_result_html(html: str) -> dict[str, Any]:
+    if result_page_is_cancelled(html):
+        return {
+            "status": "final",
+            "rows": [],
+            "payouts": [],
+            "trifecta_evaluable": False,
+            "result_reason": "race_cancelled",
+        }
     lines = text_lines_from_html(html)
     text = "\n".join(lines)
     if "データはありません" in text:
@@ -556,6 +571,24 @@ def parse_racer_stats_bytes(payload: bytes, *, year: int, half: int) -> list[dic
         racer_no = to_int(field(0, 4))
         if racer_no is None:
             continue
+        starts = to_int(field(72, 75))
+        first_count = to_int(field(66, 69))
+        second_count = to_int(field(69, 72))
+        course_bases = [198 + course * 34 for course in range(6)]
+        third_count = sum(
+            to_int(field(base + 6, base + 9)) or 0 for base in course_bases
+        )
+        f_count = sum(
+            to_int(field(base + 18, base + 20)) or 0 for base in course_bases
+        )
+        l_count = sum(
+            (to_int(field(base + 20, base + 22)) or 0)
+            + (to_int(field(base + 22, base + 24)) or 0)
+            for base in course_bases
+        )
+        l_count += (to_int(field(402, 404)) or 0) + (
+            to_int(field(404, 406)) or 0
+        )
         row = {
             "year": year,
             "half": half,
@@ -573,12 +606,27 @@ def parse_racer_stats_bytes(payload: bytes, *, year: int, half: int) -> list[dic
             "blood_type": field(56, 58),
             "win_rate": _scaled_int(field(58, 62), 100),
             "place2_rate": _scaled_int(field(62, 66), 10),
-            "first_count": to_int(field(66, 69)),
-            "second_count": to_int(field(69, 72)),
-            "starts": to_int(field(72, 75)),
+            "first_count": first_count,
+            "second_count": second_count,
+            "third_count": third_count,
+            "starts": starts,
             "final_count": to_int(field(75, 77)),
             "champion_count": to_int(field(77, 79)),
             "avg_st": _scaled_int(field(79, 82), 100),
+            "place3_rate": (
+                100.0 * ((first_count or 0) + (second_count or 0) + third_count)
+                / starts
+                if starts
+                else None
+            ),
+            "f_count": f_count,
+            "l_count": l_count,
+            "previous_ability_index": _scaled_int(field(166, 170), 100),
+            "ability_index": _scaled_int(field(170, 174), 100),
+            "calculation_from": field(179, 187),
+            "calculation_to": field(187, 195),
+            "training_term": to_int(field(195, 198)),
+            "origin": field(410, 416).replace("　", "") if len(raw_line) >= 416 else "",
             "class_rank": CLASS_RANK.get(field(39, 41)),
         }
         rows.append(row)

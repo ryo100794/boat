@@ -58,13 +58,15 @@ def test_model_tracks_separate_main_and_realtime_odds_shadow(tmp_path) -> None:
 
 
 def test_web_templates_identify_the_active_model_track() -> None:
-    assert 'id="pastModelTrackRows"' in MODEL_REPORT_HTML
-    assert 'id="marketModelTrackRows"' in MODEL_REPORT_HTML
-    assert 'id="diagnosticModelTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="predictionTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="operationTrackRows"' in MODEL_REPORT_HTML
+    assert 'id="compositeTrackRows"' in MODEL_REPORT_HTML
     assert "統一365日 共通評価" in MODEL_REPORT_HTML
-    assert "研究・運用モデル" in MODEL_REPORT_HTML
+    assert "研究モデル 個別評価" in MODEL_REPORT_HTML
     assert "完全日T-5実odds / 日次前進" in MODEL_REPORT_HTML
-    assert "全レースT-5取得100%の日だけを正式評価" in MODEL_REPORT_HTML
+    assert "確率精度のみを評価" in MODEL_REPORT_HTML
+    assert "購入判断・資金効率のみを評価" in MODEL_REPORT_HTML
+    assert "確率精度と資金成績を同時評価" in MODEL_REPORT_HTML
     assert "主系予測" in HTML
     assert 'bt.model_label || "過去ログ主系"' in HTML
 
@@ -73,10 +75,10 @@ def test_model_report_separates_cross_model_and_selected_model_aggregates() -> N
     header = MODEL_REPORT_HTML.split("</header>", 1)[0]
 
     assert 'id="modelSelect"' not in MODEL_REPORT_HTML
-    assert MODEL_REPORT_HTML.index('id="allModelsGroup"') < MODEL_REPORT_HTML.index('id="summaryRows"')
-    assert MODEL_REPORT_HTML.index('id="summaryRows"') < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
-    assert MODEL_REPORT_HTML.index("統一365日 共通評価") < MODEL_REPORT_HTML.index("研究・運用モデル")
-    assert MODEL_REPORT_HTML.index("研究・運用モデル") < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
+    assert MODEL_REPORT_HTML.index('id="allModelsGroup"') < MODEL_REPORT_HTML.index('id="predictionSummaryRows"')
+    assert MODEL_REPORT_HTML.index('id="compositeSummaryRows"') < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
+    assert MODEL_REPORT_HTML.index("統一365日 共通評価") < MODEL_REPORT_HTML.index("研究モデル 個別評価")
+    assert MODEL_REPORT_HTML.index("研究モデル 個別評価") < MODEL_REPORT_HTML.index('id="selectedModelGroup"')
     assert 'id="selectedModelName"' in MODEL_REPORT_HTML
     assert 'data-model-key=' in MODEL_REPORT_HTML
     assert "艇Entry LL" in MODEL_REPORT_HTML

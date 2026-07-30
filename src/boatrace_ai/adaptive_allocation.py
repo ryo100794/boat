@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
+from .discrete_log_allocation import (
+    SettlementKey,
+    settle_decision_ticket,
+    split_decision_candidates_and_settlements,
+)
 from .roi_attribution import update_roi_attribution
 
 
-PAYOUT_UNIT_YEN = 100
 MIN_STAKE_UNIT_YEN = 100
 
 
@@ -72,9 +77,16 @@ def allocate_adaptive_day(
     stake_granularity_yen: int,
     min_stake_yen: int,
     roi_attribution: dict[str, Any] | None = None,
+    settlements: Mapping[SettlementKey, int] | None = None,
 ) -> dict[str, Any]:
+    decision_candidates, settlement_map = (
+        split_decision_candidates_and_settlements(
+            candidates,
+            settlements=settlements,
+        )
+    )
     prepared = []
-    for item in candidates:
+    for item in decision_candidates:
         estimated_odds = float(item["estimated_odds"])
         edge = float(item["estimated_ev"]) - 1.0
         if estimated_odds <= 1.0 or edge <= 0.0:
@@ -153,29 +165,16 @@ def allocate_adaptive_day(
         ticket_stake = planned_stakes[index]
         if ticket_stake < min_stake_yen:
             continue
-        ticket_return = (
-            int(
-                round(
-                    ticket_stake
-                    * int(item["actual_payout_yen"])
-                    / PAYOUT_UNIT_YEN
-                )
-            )
-            if item["hit"]
-            else 0
+        settled = settle_decision_ticket(
+            item,
+            stake_yen=ticket_stake,
+            settlements=settlement_map,
         )
         stake_yen += ticket_stake
-        return_yen += ticket_return
-        if item["hit"]:
+        return_yen += int(settled["return_yen"])
+        if settled["hit"]:
             hit_tickets += 1
-        selected.append(
-            {
-                **item,
-                "stake_yen": ticket_stake,
-                "return_yen": ticket_return,
-                "profit_yen": ticket_return - ticket_stake,
-            }
-        )
+        selected.append(settled)
 
     if roi_attribution is not None:
         for item in selected:
@@ -184,16 +183,19 @@ def allocate_adaptive_day(
     profit_yen = return_yen - stake_yen
     selected_races = {str(item["race_id"]) for item in selected}
     hit_races = {str(item["race_id"]) for item in selected if item["hit"]}
+    hit_returns = [int(item["return_yen"]) for item in selected if item["hit"]]
     return {
         "race_date": race_date,
         "evaluated_races": len(evaluated_races),
-        "candidate_tickets": len(candidates),
+        "candidate_tickets": len(decision_candidates),
         "positive_edge_tickets": raw_positive_edge_tickets,
         "allocation_candidate_tickets": len(prepared),
         "tickets": len(selected),
         "races_bet": len(selected_races),
         "hit_tickets": hit_tickets,
         "hit_races": len(hit_races),
+        "largest_hit_return_yen": max(hit_returns, default=0),
+        "hit_return_square_sum_yen2": sum(value * value for value in hit_returns),
         "stake_yen": stake_yen,
         "return_yen": return_yen,
         "profit_yen": profit_yen,
@@ -206,6 +208,16 @@ def allocate_adaptive_day(
             (item["stake_yen"] for item in selected),
             default=0,
         ),
+        "_tail_portfolio_rows": [
+            {
+                "date": race_date,
+                "race_id": str(item["race_id"]),
+                "odds": float(item["estimated_odds"]),
+                "stake": int(item["stake_yen"]),
+                "return": int(item["return_yen"]),
+            }
+            for item in selected
+        ],
         "selected_sample": selection_sample(selected),
     }
 

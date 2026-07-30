@@ -24,10 +24,10 @@
 <main>
   <div id="kpis" class="kpis"></div>
   <div class="grid">
-    <div class="panel"><h2><span>DB作業チケット</span><span class="muted">進捗の正本</span></h2><table><thead><tr><th>ID</th><th>優先</th><th>領域</th><th>状態</th><th>進捗</th><th>担当</th><th>作業 / 受入条件</th></tr></thead><tbody id="ticketRows"></tbody></table></div>
+    <div class="panel"><h2><span>DB作業チケット</span><span class="muted">進捗の正本</span></h2><table><thead><tr><th>ID</th><th>優先</th><th>領域</th><th>状態</th><th>進捗</th><th>担当</th><th>作業 / 受入条件</th></tr></thead><tbody id="ticketRows"><tr><td colspan="7" class="muted">読込中</td></tr></tbody></table></div>
     <div class="panel"><h2><span>進行中の懸案</span><span id="meta" class="muted"></span></h2><div id="record" class="record"></div></div>
     <div class="panel"><h2><span>常駐プロセス</span><span class="muted">boatrace_ai</span></h2><table><thead><tr><th>種別</th><th>PID</th><th>cmd</th></tr></thead><tbody id="processRows"></tbody></table></div>
-    <div class="panel"><h2><span>マイルストーン</span><span class="muted">更新対象</span></h2><table><thead><tr><th>ID</th><th>状態</th><th>進捗</th><th>次作業</th></tr></thead><tbody id="milestoneRows"></tbody></table></div>
+    <div class="panel"><h2><span>マイルストーン</span><span class="muted">更新対象</span></h2><table><thead><tr><th>ID</th><th>状態</th><th>進捗</th><th>次作業</th></tr></thead><tbody id="milestoneRows"><tr><td colspan="4" class="muted">読込中</td></tr></tbody></table></div>
     <div class="panel"><h2><span>改善事項</span><span class="muted">要改善を完了扱いしない</span></h2><table><thead><tr><th>ID</th><th>対象</th><th>状態</th><th>進捗</th><th>改善内容/次作業</th></tr></thead><tbody id="improvementRows"></tbody></table></div>
     <div class="panel"><h2><span>完了ゲート</span><span class="muted">動的判定</span></h2><table><thead><tr><th>対象</th><th>判定</th><th>根拠</th><th>次作業</th></tr></thead><tbody id="gateRows"></tbody></table></div>
     <div class="panel"><h2><span>リモート評価</span><span id="remoteEvalMeta" class="muted"></span></h2><table><thead><tr><th>PID</th><th>対象</th><th>状態</th><th>経過</th><th>指標</th></tr></thead><tbody id="remoteEvalRows"></tbody></table></div>
@@ -44,7 +44,8 @@ const pct = v => v == null ? "-" : `${(Number(v)*100).toFixed(1)}%`;
 const bytes = v => { v=Number(v||0); if(v>1048576) return `${(v/1048576).toFixed(1)}MB`; if(v>1024) return `${(v/1024).toFixed(1)}KB`; return `${v}B`; };
 function tag(status){ const s=String(status||""); const c=s.includes("完了")?"ok":s.includes("要")||s.includes("失敗")?"bad":s.includes("進行")||s.includes("調査")?"warn":""; return `<span class="tag ${c}">${esc(s)}</span>`; }
 function ticketStatus(status){ return ({queued:"待機",in_progress:"進行中",blocked:"保留",completed:"完了",cancelled:"中止"})[status]||status||"-"; }
-async function load(){ const res=await fetch('/api/reports/roadmap-status',{cache:'no-store'}); const data=await res.json(); render(data); }
+function showLoadError(error){ const message=`取得失敗: ${error instanceof Error?error.message:String(error)}`; $('meta').textContent=message; $('ticketRows').innerHTML=`<tr><td colspan="7" class="bad">${esc(message)}</td></tr>`; $('milestoneRows').innerHTML=`<tr><td colspan="4" class="bad">${esc(message)}</td></tr>`; }
+async function load(){ try { const res=await fetch('/api/reports/roadmap-status',{cache:'no-store'}); if(!res.ok) throw new Error(`HTTP ${res.status}`); const data=await res.json(); render(data); } catch(error) { showLoadError(error); } }
 function render(data){
   const p=(data.progress||{}), t=(p.today||{}), h=(p.historical||{}), rt=(p.realtime||{}), s=(data.summary||{}), v=(data.v_file_inventory||{});
   $('meta').textContent=`更新 ${String(data.generated_at||'').replace('T',' ').slice(0,19)}`;
@@ -56,14 +57,14 @@ function render(data){
   $('improvementRows').innerHTML=(data.improvements||[]).map(r=>`<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.milestone)}</td><td>${tag(r.status)}</td><td><div class="bar"><i style="width:${Number(r.progress||0)}%"></i></div></td><td title="${esc((r.item||'')+' / '+(r.next||''))}">${esc(r.item)} / ${esc(r.next)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">改善事項なし</td></tr>';
   $('gateRows').innerHTML=(data.quality_gates||[]).map(r=>`<tr><td>${esc(r.target)}</td><td>${tag(r.status)}</td><td title="${esc(r.evidence)}">${esc(r.evidence)}</td><td title="${esc(r.next)}">${esc(r.next)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">ゲート情報なし</td></tr>';
   const re=data.remote_evaluations||{}; $('remoteEvalMeta').textContent=[re.status||'', String(re.generated_at||'').replace('T',' ').slice(0,19)].filter(Boolean).join(' / ');
-  $('remoteEvalRows').innerHTML=(re.jobs||[]).map(r=>`<tr><td class="mono">${esc(r.pid)}</td><td title="${esc(r.name)}">${esc(r.milestone||'')} ${esc(r.kind||'')}</td><td>${tag(r.status)}</td><td class="mono">${esc((r.process&&r.process.elapsed)||'-')}</td><td title="${esc(remoteMetricText(r))}">${esc(remoteMetricText(r))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">リモート評価状態なし</td></tr>';
+  $('remoteEvalRows').innerHTML=(re.jobs||[]).map(r=>`<tr><td class="mono">${esc(r.pid)}</td><td title="${esc(r.name)}">${esc(r.milestone||'')} ${esc(r.kind||'')}</td><td>${tag(r.status)}</td><td class="mono">${esc(r.elapsed||'-')}</td><td title="${esc(remoteMetricText(r))}">${esc(remoteMetricText(r))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">リモート評価状態なし</td></tr>';
   $('agentRows').innerHTML=(data.agents||[]).map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.area)}</td><td>${tag(r.status)}</td><td title="${esc(r.task)}">${esc(r.task)}</td></tr>`).join('');
   $('artifactRows').innerHTML=(data.model_artifacts||[]).map(r=>`<tr><td title="${esc(r.file)}">${esc(r.file)}</td><td>${esc(r.kind)}</td><td class="mono">${bytes(r.size_bytes)}</td><td title="${esc(metricText(r))}">${esc(metricText(r))}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">成果物なし</td></tr>';
   $('vMeta').textContent=`${fmt(v.count)}件 / ${v.note||''}`;
   $('vRows').innerHTML=(v.sample||[]).map(x=>`<tr><td title="${esc(x)}">${esc(x)}</td></tr>`).join('');
 }
 function metricText(r){ return [['ROI',r.roi],['損益',r.profit_yen],['R',r.evaluated_races],['LL',r.entry_log_loss],['1着',r.winner_top1_accuracy],['3T5',r.trifecta_top5_hit_rate]].filter(([,v])=>v!=null).map(([k,v])=>`${k}:${k==='ROI'||k==='1着'||k==='3T5'?Number(v).toFixed(3):fmt(v)}`).join(' / '); }
-function remoteMetricText(r){ const m=(r.result&&r.result.metrics)||{}; const b=(r.result&&r.result.base_metrics)||{}; const x={...b,...m}; return [['ROI',x.roi],['損益',x.profit_yen],['R',x.evaluated_races],['実od',x.real_odds_races],['skip',x.skipped_no_real_odds],['LL',x.entry_log_loss],['1着',x.winner_top1_accuracy],['3T5',x.trifecta_top5_hit_rate]].filter(([,v])=>v!=null).map(([k,v])=>`${k}:${k==='ROI'||k==='LL'||k==='1着'||k==='3T5'?Number(v).toFixed(3):fmt(v)}`).join(' / ') || (r.running?'計算中':'結果未生成'); }
+function remoteMetricText(r){ return [['ROI',r.roi],['損益',r.profit_yen],['R',r.evaluated_races],['実od',r.real_odds_races],['skip',r.skipped_no_real_odds],['LL',r.entry_log_loss],['1着',r.winner_top1_accuracy],['3T5',r.trifecta_top5_hit_rate]].filter(([,v])=>v!=null).map(([k,v])=>`${k}:${k==='ROI'||k==='LL'||k==='1着'||k==='3T5'?Number(v).toFixed(3):fmt(v)}`).join(' / ') || (r.running?'計算中':'結果未生成'); }
 $('reload').onclick=load; load(); setInterval(load,30000);
 </script>
 </body>

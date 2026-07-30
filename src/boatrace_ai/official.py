@@ -48,9 +48,11 @@ def race_index_url(race_date: date) -> str:
 def racer_stats_url(year: int, half: int) -> str:
     if half not in {1, 2}:
         raise ValueError("half must be 1 or 2")
-    # Official links currently use fan{year}{half}.lzh under the extra/data
-    # area. The collector verifies status and stores failures explicitly.
-    return f"{OFFICIAL_BASE_URL}/owpc/pc/extra/data/stadium/fan{year}{half}.lzh"
+    suffix = f"{(year - 1) % 100:02d}10" if half == 1 else f"{year % 100:02d}04"
+    return (
+        f"{OFFICIAL_BASE_URL}/static_extra/pc_static/download/data/"
+        f"kibetsu/fan{suffix}.lzh"
+    )
 
 
 def trifecta_combinations() -> list[str]:

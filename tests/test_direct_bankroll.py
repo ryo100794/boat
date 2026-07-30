@@ -166,10 +166,10 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
     target_index = COMBINATION_LABELS.index("1-2-3")
     calibration_keys = [
         (f"cal-{day}-{race}", f"2026-06-{day:02d}", "01", race % 12 + 1)
-        for day in range(1, 5)
-        for race in range(30)
+        for day in range(1, 21)
+        for race in range(6)
     ]
-    probabilities = np.full((120, 120), 0.9 / 119.0)
+    probabilities = np.full((len(calibration_keys), 120), 0.9 / 119.0)
     probabilities[:, target_index] = 0.1
     payouts = {
         race_key[0]: {"combination": "1-2-3", "payout_yen": 2_000}
@@ -181,7 +181,7 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
         probabilities,
         calibration_keys,
         payouts,
-        selection_days=2,
+        selection_days=10,
         base_policy=standard_direct_policy(),
         fallback_ridge=10.0,
         ridge_candidates=(10.0,),
@@ -204,22 +204,22 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
     } == {0.0, 0.1, 0.2, 0.4}
     assert diagnostics[0]["tickets"] >= 10
     assert diagnostics[0]["roi"] > 1.0
-    assert diagnostics[0]["tail_eligible_candidates"] == 30
-    assert diagnostics[0]["tail_ineligible_candidates"] == 7_170
-    assert diagnostics[0]["tail_eligibility_daily"] == [
-        {
-            "race_date": "2026-06-03",
-            "eligible_candidates": 0,
-            "ineligible_candidates": 3_600,
-        },
-        {
-            "race_date": "2026-06-04",
-            "eligible_candidates": 30,
-            "ineligible_candidates": 3_570,
-        },
-    ]
-    assert period["fit_through"] == "2026-06-02"
-    assert period["selection_from"] == "2026-06-03"
+    assert diagnostics[0]["tail_eligible_candidates"] == 36
+    assert diagnostics[0]["tail_ineligible_candidates"] == 7_164
+    daily = diagnostics[0]["tail_eligibility_daily"]
+    assert len(daily) == 10
+    assert daily[0] == {
+        "race_date": "2026-06-11",
+        "eligible_candidates": 0,
+        "ineligible_candidates": 720,
+    }
+    assert daily[-1] == {
+        "race_date": "2026-06-20",
+        "eligible_candidates": 6,
+        "ineligible_candidates": 714,
+    }
+    assert period["fit_through"] == "2026-06-10"
+    assert period["selection_from"] == "2026-06-11"
 
 
 def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> None:
@@ -277,7 +277,11 @@ def test_conditional_payout_walk_forward_adds_results_only_after_each_day() -> N
     assert [row["payout_training_samples"] for row in result["daily"]] == [60, 61]
     assert result["evaluated_races"] == 2
     assert result["policy"]["market_reference"] == "fixed baseline probability"
-    assert result["policy_selection"]["source"] == "fallback_fixed_policy"
+    assert result["policy_selection"]["source"] == "insufficient_calibration_no_bet"
+    assert result["policy"]["no_bet"] is True
+    assert result["selected_tickets"] == 0
+    assert result["stake_yen"] == 0
+    assert result["profit_yen"] == 0
     diagnostics = result["payout_diagnostics"]
     assert diagnostics["feature_schema"] == "conditional_payout_interactions_v2"
     assert diagnostics["feature_count"] == 382
@@ -445,6 +449,8 @@ def _selection_diagnostic(
         "return_yen": 100 + profit_yen,
         "profit_yen": profit_yen,
         "roi": roi,
+        "selection_roi_ci95_lower": 1.01,
+        "selection_probability_roi_above_one": 0.95,
         "winning_days": 1,
         "losing_days": 0,
         "max_drawdown_yen": 0,
@@ -591,6 +597,68 @@ def test_conditional_policy_prefers_bootstrap_lower_bound_over_raw_roi(
     assert selected[8] == 0.0
 
 
+@pytest.mark.parametrize(
+    ("roi_ci95_lower", "probability", "expected_source"),
+    [
+        (1.0, 0.99, "selection_gate_no_bet"),
+        (1.01, 0.949999, "selection_gate_no_bet"),
+        (1.01, 0.95, "pre_evaluation_adaptive_selection"),
+    ],
+)
+def test_conditional_policy_requires_selection_confidence_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    roi_ci95_lower: float,
+    probability: float,
+    expected_source: str,
+) -> None:
+    candidate = _selection_diagnostic(
+        roi=1.4,
+        profit_yen=400,
+        exposure=0.4,
+        tickets=20,
+    )
+    candidate.update(
+        selection_roi_ci95_lower=roi_ci95_lower,
+        selection_probability_roi_above_one=probability,
+    )
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_selection_walk_forward_for_ridge",
+        lambda *_args, **_kwargs: (
+            [candidate],
+            direct_bankroll.ConditionalPayoutStatistics.empty(),
+            direct_bankroll.ConditionalPayoutTailCalibrator.empty(),
+        ),
+    )
+    race_keys = [
+        (f"cal-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    probabilities = np.full((4, 120), 1.0 / 120.0)
+
+    selected = direct_bankroll._select_conditional_payout_policy_state(
+        probabilities,
+        probabilities,
+        race_keys,
+        {},
+        selection_days=2,
+        base_policy=standard_direct_policy(),
+        fallback_ridge=10.0,
+        ridge_candidates=(10.0,),
+        correction_candidates=(0.0,),
+        threshold_candidates=(1.2,),
+        minimum_tickets=0,
+        minimum_hits=0,
+        minimum_winning_days=0,
+        minimum_roi=0.0,
+    )
+
+    assert selected[3] == expected_source
+    assert selected[8] == (
+        0.4 if expected_source == "pre_evaluation_adaptive_selection" else 0.0
+    )
+
+
 def test_conditional_policy_selects_mean_correction_from_pre_evaluation_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -701,10 +769,12 @@ def _adaptive_selection_with_evaluation_payout(
     target = COMBINATION_LABELS.index("1-2-3")
     calibration_keys = [
         (f"cal-{day}-{race}", f"2026-06-{day:02d}", "01", race % 12 + 1)
-        for day in range(1, 5)
-        for race in range(30)
+        for day in range(1, 21)
+        for race in range(6)
     ]
-    calibration_probabilities = np.full((120, 120), 0.9 / 119.0)
+    calibration_probabilities = np.full(
+        (len(calibration_keys), 120), 0.9 / 119.0
+    )
     calibration_probabilities[:, target] = 0.1
     evaluation_probabilities = calibration_probabilities[:1].copy()
     payouts = {
@@ -724,7 +794,7 @@ def _adaptive_selection_with_evaluation_payout(
         calibration_race_keys=calibration_keys,
         ridge_candidates=(10.0,),
         threshold_candidates=(1.2,),
-        policy_selection_days=2,
+        policy_selection_days=10,
         minimum_selection_tickets=10,
         minimum_selection_hits=5,
         minimum_selection_winning_days=1,
@@ -740,7 +810,7 @@ def test_exposure_selection_uses_only_pre_evaluation_period() -> None:
         "pre_evaluation_adaptive_selection"
     )
     assert low["policy_selection"]["period"]["selection_through"] == (
-        "2026-06-04"
+        "2026-06-20"
     )
     selection_keys = (
         "selected_ridge",
@@ -850,6 +920,18 @@ def _tail_eligibility_walk_forward_case(
 def test_tail_result_changes_eligibility_only_on_following_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original_selection = direct_bankroll._select_conditional_payout_policy_state
+
+    def force_selected_policy(*args: object, **kwargs: object):
+        selected = list(original_selection(*args, **kwargs))
+        selected[3] = "pre_evaluation_adaptive_selection"
+        return tuple(selected)
+
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_select_conditional_payout_policy_state",
+        force_selected_policy,
+    )
     with_result = _tail_eligibility_walk_forward_case(
         monkeypatch,
         selection_samples=19,

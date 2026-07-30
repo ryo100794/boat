@@ -120,6 +120,24 @@ def standardized_payload(
     }
 
 
+def no_eligible_races_payload(
+    *,
+    source_cache: Path,
+    evaluation_date: str | None,
+    disagreement_clip: float,
+) -> dict[str, Any]:
+    return {
+        "status": "skipped_no_eligible_races",
+        "promotion_eligible": False,
+        "source_cache": str(source_cache),
+        "feature": "clipped_log_model_market_disagreement_times_absolute",
+        "disagreement_clip": disagreement_clip,
+        "evaluation_date": evaluation_date,
+        "evaluated_races": 0,
+        "skip_reason": "evaluation date has no eligible momentum races",
+    }
+
+
 def main() -> int:
     args = build_parser().parse_args()
     cached = joblib.load(args.cache)
@@ -130,15 +148,26 @@ def main() -> int:
         races,
         disagreement_clip=args.disagreement_clip,
     )
-    evaluation = evaluate_momentum_candidate(
-        transformed,
-        evaluation_date=args.evaluation_date,
+    has_holdout = any(
+        str(race.get("race_date")) == args.evaluation_date
+        for race in transformed
     )
-    payload = standardized_payload(
-        evaluation,
-        source_cache=args.cache,
-        disagreement_clip=args.disagreement_clip,
-    )
+    if args.evaluation_date and not has_holdout:
+        payload = no_eligible_races_payload(
+            source_cache=args.cache,
+            evaluation_date=args.evaluation_date,
+            disagreement_clip=args.disagreement_clip,
+        )
+    else:
+        evaluation = evaluate_momentum_candidate(
+            transformed,
+            evaluation_date=args.evaluation_date,
+        )
+        payload = standardized_payload(
+            evaluation,
+            source_cache=args.cache,
+            disagreement_clip=args.disagreement_clip,
+        )
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

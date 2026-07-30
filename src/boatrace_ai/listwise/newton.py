@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from scipy import sparse
@@ -27,17 +27,16 @@ def pl_hessian_score_product(
     if not stages:
         raise ValueError(f"unknown target: {target}")
     product = np.zeros_like(values)
-    for race_index in range(values.shape[0]):
-        order = np.argsort(rank_values[race_index])
-        remaining = np.ones(6, dtype=bool)
-        for stage in range(stages):
-            lane_indices = np.flatnonzero(remaining)
-            probabilities = stable_softmax(values[race_index, lane_indices])
-            direction = vector[race_index, lane_indices]
-            product[race_index, lane_indices] += probabilities * (
-                direction - float(probabilities.dot(direction))
-            )
-            remaining[int(order[stage])] = False
+    order = np.argsort(rank_values, axis=1)
+    remaining = np.ones_like(values, dtype=bool)
+    race_indices = np.arange(values.shape[0])
+    for stage in range(stages):
+        probabilities = stable_softmax(np.where(remaining, values, -np.inf))
+        expected_direction = np.sum(
+            probabilities * vector, axis=1, keepdims=True
+        )
+        product += probabilities * (vector - expected_direction)
+        remaining[race_indices, order[:, stage]] = False
     return product / max(1, values.shape[0] * stages)
 
 
@@ -156,6 +155,7 @@ def refine_newton_cg(
     gradient_tolerance: float = 1e-4,
     cg_tolerance: float = 1e-3,
     use_jacobi_preconditioner: bool = True,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[ListwiseLinearModel, dict[str, Any]]:
     weights = np.asarray(initial_model.weights, dtype=np.float64).copy()
     history: list[dict[str, Any]] = []
@@ -177,6 +177,8 @@ def refine_newton_cg(
         if gradient_norm <= gradient_tolerance:
             row.update({"step": 0.0, "cg_info": 0, "converged": True})
             history.append(row)
+            if progress_callback is not None:
+                progress_callback(dict(row))
             converged = True
             break
         operator = LinearOperator(
@@ -263,6 +265,8 @@ def refine_newton_cg(
             "converged": False,
         })
         history.append(row)
+        if progress_callback is not None:
+            progress_callback(dict(row))
         if step == 0.0:
             break
     final_objective, final_gradient = objective_gradient(

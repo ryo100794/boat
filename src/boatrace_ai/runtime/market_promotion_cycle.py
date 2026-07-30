@@ -9,12 +9,31 @@ from typing import Any
 
 from ..listwise.market_calibration import write_json_atomic
 from ..listwise.market_promotion import promote_best_candidate
+from .promotion_candidates import discover_market_evaluation_candidates
+from .prospective_market_promotion import write_prospective_candidate
 
 
 def run_once(args: argparse.Namespace) -> dict[str, Any]:
     try:
+        candidates = list(args.candidate)
+        queue_dir = getattr(args, "evaluation_queue_dir", None)
+        if queue_dir:
+            queued = discover_market_evaluation_candidates(queue_dir)
+            candidates.extend(queued)
+            derived_dir = (
+                Path(args.state).resolve().parent
+                / "market_promotion_candidates"
+            )
+            for source_path in queued:
+                derived = write_prospective_candidate(
+                    source_path,
+                    output_dir=derived_dir,
+                )
+                if derived is not None:
+                    candidates.append(derived)
+        candidates = list(dict.fromkeys(candidates))
         result = promote_best_candidate(
-            args.candidate,
+            candidates,
             output_path=args.output,
         )
         status = "ok"
@@ -35,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Continuously verify market shadow promotion artifacts."
     )
     parser.add_argument("--candidate", action="append", required=True)
+    parser.add_argument("--evaluation-queue-dir")
     parser.add_argument("--output", default="data/models/active_market_model.json")
     parser.add_argument(
         "--state", default="data/models/market_promotion_cycle_state.json"

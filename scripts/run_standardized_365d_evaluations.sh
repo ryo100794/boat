@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-export PYTHONPATH=src
+cd "${BOATRACE_APP_ROOT:-$(dirname "$0")/..}"
+export PYTHONPATH="${BOATRACE_PYTHONPATH:-src}"
+scripts_dir="${BOATRACE_SCRIPTS_DIR:-scripts}"
 
 db="${BOATRACE_DB:-data/boatrace.sqlite}"
 model_dir="${BOATRACE_MODEL_DIR:-data/models}"
@@ -201,7 +202,7 @@ run_job standardized_365d_v2_pastlog_v9_research_bankroll \
 
 fi
 
-for kind in linear mlp; do
+for kind in mlp; do
   if source_needs_run "calibrated_${kind}"; then
   run_job "standardized_365d_v2_calibrated_${kind}" \
     .venv/bin/python -m boatrace_ai.calibrated_shadow_model backtest \
@@ -223,27 +224,28 @@ run_job standardized_365d_v2_listwise_feature_teacher \
   --cache-write-mode never --selected-cache-dir "$transient_cache_dir" \
   --n-features 8192 \
   --variant-workers 1 --candidate-workers 2 \
+  --feature-variants full,drop_base_pastlog,drop_research_correlates,drop_rolling_history,drop_legacy_composites \
   --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
 fi
 
 if source_needs_run listwise_newton; then
+run_job standardized_365d_v2_persist_selected_cache \
+  .venv/bin/python "$scripts_dir/persist_selected_feature_cache.py" \
+  --artifact "$raw_dir/listwise_feature_teacher.json" \
+  --destination-dir "$eval_dir/selected_cache"
+
 run_job standardized_365d_v2_listwise_newton \
   .venv/bin/python -m boatrace_ai.listwise.newton_refine \
   --db "$db" \
   --search-result "$raw_dir/listwise_feature_teacher.json" \
   --output "$raw_dir/listwise_newton.json" \
   --model-output "$eval_dir/listwise_newton.joblib" \
-  --cache-dir "$transient_cache_dir" --cache-write-mode never \
+  --cache-dir "$eval_dir/selected_cache" --cache-write-mode never \
   --daily-budget-yen 10000 --ev-threshold 1.20
 
 fi
-
-run_job standardized_365d_v2_persist_selected_cache \
-  .venv/bin/python scripts/persist_selected_feature_cache.py \
-  --artifact "$raw_dir/listwise_feature_teacher.json" \
-  --destination-dir "$eval_dir/selected_cache"
 
 if source_needs_run listwise_combined_feature_teacher; then
 run_job standardized_365d_v2_listwise_combined_feature_teacher \
@@ -277,7 +279,7 @@ run_job standardized_365d_v2_consolidate \
   --protocol-file "$protocol"
 
 run_job standardized_365d_v2_audit \
-  .venv/bin/python scripts/audit_standardized_evaluation.py "$eval_dir" --db "$db"
+  .venv/bin/python "$scripts_dir/audit_standardized_evaluation.py" "$eval_dir" --db "$db"
 
 cleanup_temporary_files
 printf 'COMPLETE %s standardized_365d_v2\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$queue_log"

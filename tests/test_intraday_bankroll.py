@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 from boatrace_ai.db import connection, init_db, insert_odds_snapshot
 from boatrace_ai.web import intraday_bankroll as module
 from boatrace_ai.web.dashboard import _ODDS_API_CACHE, odds
 from boatrace_ai.web.intraday_bankroll import COMBINATIONS, day_bankroll_simulation
+from boatrace_ai.web.intraday_bankroll import ranked_deployable_models
 
 
 def _seed_race(conn, race_id: str, start_at: str, model: str) -> None:
@@ -72,6 +74,42 @@ def _stub_model(monkeypatch) -> None:
             for combination in COMBINATIONS
         },
     )
+
+
+def test_deployable_model_ranking_uses_unified_metrics_and_generated_time(
+    tmp_path,
+) -> None:
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    for name in (
+        "win_model_no_odds_v8.joblib",
+        "win_model_no_odds_v7.joblib",
+    ):
+        (model_dir / name).write_bytes(b"model")
+    standard = model_dir / "standardized_365d_v2"
+    standard.mkdir()
+    (standard / "manifest.json").write_text(
+        json.dumps({
+            "models": [{
+                "model_id": "no_odds_v8",
+                "roi": 0.80,
+                "profit_yen": -100,
+                "entry_log_loss": 0.35,
+                "winner_top1_accuracy": 0.56,
+                "trifecta_top5_hit_rate": 0.31,
+                "evaluated_races": 1000,
+                "promotion": {"eligible": False},
+            }]
+        }),
+        encoding="utf-8",
+    )
+
+    ranked = ranked_deployable_models(model_dir)
+
+    assert [row["id"] for row in ranked] == ["no_odds_v8", "no_odds_v7"]
+    assert "@" in ranked[0]["label"]
+    assert ranked[0]["evaluation"]["roi"] == 0.80
+    assert ranked[1]["unified_evaluation"] is False
 
 
 def test_simulates_selected_model_from_first_race_with_reinvestment(

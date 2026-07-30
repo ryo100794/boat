@@ -26,9 +26,20 @@ from .cache_entry_series_features import CACHE_FIELDS, ensure_series_cache_table
 from .db import connection, init_db
 from .base_features import RESEARCH_FEATURE_PREFIX, _group_by_race, race_relative_features
 from .contextual_features import RollingState, _race_sort_key
-from .feature_schema import FEATURE_SCHEMA_VERSION
+from .feature_schema import (
+    FEATURE_SCHEMA_VERSION,
+    uses_explicit_card_missing_flags,
+    uses_official_series_features,
+    uses_racer_period_stats,
+)
+from .features import NUMERIC_ENTRY_FIELDS
 from .series_features_form import base_pastlog_features
 from .operational_features import cached_series_features, series_relative_features
+from .racer_period_features import (
+    enrich_racer_period_rows,
+    load_racer_period_lookup,
+    racer_period_feature_values,
+)
 from .modeling import _race_level_metrics
 from .standard_evaluation import race_set_sha256
 
@@ -36,10 +47,107 @@ from .standard_evaluation import race_set_sha256
 FEATURE_SET = "pastlog_v9_research_correlates_stream_hash_sgd"
 FEATURE_GROUPS = (
     "base_pastlog",
+    "card_identity_context",
+    "card_numeric",
+    "card_relative",
+    "raw_equipment_identifiers",
     "research_correlates",
+    "speculative_research",
+    "live_official_context",
     "series_cached",
     "series_relative",
     "rolling_history",
+    "legacy_composites",
+)
+
+# Documented BOAT RACE factors are isolated from higher-variance research
+# interactions so forward evaluation can retain only the official context.
+OFFICIAL_CARD_CONTEXT_FEATURES = {
+    "research_home_branch",
+    "research_home_lane",
+    "research_has_local_rates",
+    "research_local_vs_national_win",
+    "research_local_vs_national_2",
+    "research_home_local_win_delta",
+    "research_home_local_2_delta",
+    "research_racer_strength",
+    "research_racer_strength_rank",
+    "research_equipment_strength",
+}
+OFFICIAL_LIVE_CONTEXT_FEATURES = {
+    "research_has_live_context",
+    "research_has_full_course",
+    "research_waku_nari",
+    "research_course_cat",
+    "research_lane_course",
+    "research_course_changed",
+    "research_course_delta",
+    "research_exhibition_top1",
+    "research_exhibition_top2",
+    "research_exhibition_rank_venue",
+    "research_exhibition_rank_weather",
+    "research_exhibition_rank_distance",
+    "research_exhibition_racer_strength",
+    "research_exhibition_rain",
+    "research_venue_weather",
+    "research_lane_wind_direction",
+    "research_lane_wind_bucket",
+    "research_lane_wave_bucket",
+}
+OFFICIAL_CONTEXT_FEATURES = (
+    OFFICIAL_CARD_CONTEXT_FEATURES | OFFICIAL_LIVE_CONTEXT_FEATURES
+)
+
+DEFAULT_ABLATION_FEATURE_GROUPS = tuple(
+    group
+    for group in FEATURE_GROUPS
+    if group not in {
+        "card_identity_context",
+        "card_numeric",
+        "card_relative",
+        "raw_equipment_identifiers",
+        "speculative_research",
+        "live_official_context",
+    }
+)
+CARD_IDENTITY_CONTEXT_FEATURES = {
+    "lane",
+    "lane_num",
+    "jcd",
+    "rno",
+    "race_type",
+    "distance_m",
+    "racer_class",
+    "class_rank",
+    "branch",
+    "origin",
+    "race_month",
+    "race_weekday",
+    "race_rno_bucket",
+    "distance_bucket",
+    "lane_rno_bucket",
+}
+CARD_NUMERIC_FEATURES = {*NUMERIC_ENTRY_FIELDS, "has_motor_no", "has_boat_no"}
+LEGACY_COMPOSITE_FEATURES = (
+    "ability_score",
+    "ability_lane_score",
+    "best_count",
+)
+EXPLICIT_CARD_MISSING_ROOTS = (
+    "age",
+    "weight_kg",
+    "national_win_rate",
+    "national_2_rate",
+    "local_win_rate",
+    "local_2_rate",
+    "motor_2_rate",
+    "boat_2_rate",
+    "series_starts",
+    "series_avg_finish",
+    "series_latest_finish",
+    "series_win_rate",
+    "series_top2_rate",
+    "series_top3_rate",
 )
 HASH_FEATURES = 1 << 20
 RACE_DATE_CHUNK_SIZE = 31
@@ -408,7 +516,9 @@ def ablation_streaming(
     epochs: int = 1,
 ) -> dict[str, Any]:
     variants: list[tuple[str, tuple[str, ...]]] = [("baseline", ())]
-    variants.extend((f"drop_{group}", (group,)) for group in FEATURE_GROUPS)
+    variants.extend(
+        (f"drop_{group}", (group,)) for group in DEFAULT_ABLATION_FEATURE_GROUPS
+    )
     results: list[dict[str, Any]] = []
     for variant, drop_groups in variants:
         detail_path = _ablation_detail_path(output_path, variant)
@@ -426,7 +536,8 @@ def ablation_streaming(
     summary = {
         "generated_at": _now(),
         "feature_set": FEATURE_SET,
-        "feature_groups": list(FEATURE_GROUPS),
+        "feature_groups": list(DEFAULT_ABLATION_FEATURE_GROUPS),
+        "supported_feature_groups": list(FEATURE_GROUPS),
         "results": results,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -580,7 +691,9 @@ def iter_race_feature_rows(
     state = RollingState()
     current_date: str | None = None
     day_updates: list[list[Any]] = []
-    for race_rows in iter_complete_races(conn):
+    for race_rows in iter_complete_races(
+        conn, feature_schema_version=feature_schema_version
+    ):
         race_id_value = str(race_rows[0]["race_id"])
         race_date_value = str(race_rows[0]["race_date"])
         if current_date is None:
@@ -612,21 +725,29 @@ def build_race_features(
 ) -> list[dict[str, Any]]:
     drop_feature_groups = normalize_drop_feature_groups(drop_feature_groups)
     dropped = set(drop_feature_groups)
+    empty_relatives = {lane: {} for lane in range(1, 7)}
+    needs_card_relatives = (
+        "card_relative" not in dropped
+        or "research_correlates" not in dropped
+    )
     relatives = (
         race_relative_features(
             race_rows,
-            {lane: {} for lane in range(1, 7)},
+            empty_relatives,
             include_research="research_correlates" not in dropped,
         )
-        if "base_pastlog" not in dropped
-        else {}
+        if "base_pastlog" not in dropped and needs_card_relatives
+        else empty_relatives
     )
     series_relatives = (
         series_relative_features(
             race_rows,
             feature_schema_version=feature_schema_version,
         )
-        if "series_relative" not in dropped
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        )
         else {}
     )
     out = []
@@ -635,23 +756,60 @@ def build_race_features(
         item: dict[str, Any] = {}
         if "base_pastlog" not in dropped:
             item.update(base_pastlog_features(row, relatives[lane]))
-        if "series_cached" not in dropped:
+            if "card_identity_context" in dropped:
+                for key in CARD_IDENTITY_CONTEXT_FEATURES:
+                    item.pop(key, None)
+            if "card_numeric" in dropped:
+                for key in CARD_NUMERIC_FEATURES:
+                    item.pop(key, None)
+            if "raw_equipment_identifiers" in dropped:
+                item.pop("motor_no", None)
+                item.pop("boat_no", None)
+            if "card_relative" in dropped:
+                for key in relatives[lane]:
+                    if not key.startswith(RESEARCH_FEATURE_PREFIX):
+                        item.pop(key, None)
+        if uses_racer_period_stats(feature_schema_version):
+            item.update(racer_period_feature_values(row))
+        if (
+            "series_cached" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(
                 cached_series_features(
                     row,
                     feature_schema_version=feature_schema_version,
                 )
             )
-        if "series_relative" not in dropped:
+        if (
+            "series_relative" not in dropped
+            and uses_official_series_features(feature_schema_version)
+        ):
             item.update(series_relatives[lane])
         if "rolling_history" not in dropped:
             item.update(state.features_for(row))
+        if "legacy_composites" in dropped:
+            for key in LEGACY_COMPOSITE_FEATURES:
+                item.pop(key, None)
         if "research_correlates" in dropped:
             item = {
                 key: value
                 for key, value in item.items()
                 if not key.startswith(RESEARCH_FEATURE_PREFIX)
             }
+        elif "speculative_research" in dropped:
+            item = {
+                key: value
+                for key, value in item.items()
+                if not key.startswith(RESEARCH_FEATURE_PREFIX)
+                or key in OFFICIAL_CONTEXT_FEATURES
+            }
+        if "live_official_context" in dropped:
+            for key in OFFICIAL_LIVE_CONTEXT_FEATURES:
+                item.pop(key, None)
+        if uses_explicit_card_missing_flags(feature_schema_version):
+            item.pop("origin", None)
+            _add_explicit_card_missing_flags(item)
         out.append(
             {
                 "features": item,
@@ -669,8 +827,30 @@ def build_race_features(
     return out
 
 
-def iter_complete_races(conn) -> Iterable[list[Any]]:
+def _add_explicit_card_missing_flags(item: dict[str, Any]) -> None:
+    for root in EXPLICIT_CARD_MISSING_ROOTS:
+        if root not in item:
+            continue
+        value = item[root]
+        item[f"has_{root}"] = int(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+        )
+
+
+def iter_complete_races(
+    conn,
+    *,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+) -> Iterable[list[Any]]:
     ensure_series_cache_table(conn)
+    period_lookup = (
+        load_racer_period_lookup(conn)
+        if uses_racer_period_stats(feature_schema_version)
+        else {}
+    )
     max_race_date = os.environ.get("BOATRACE_EVAL_MAX_RACE_DATE")
     date_filter = "WHERE race_date <= ?" if max_race_date else ""
     params = (max_race_date,) if max_race_date else ()
@@ -683,6 +863,7 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
         """,
         params,
     ).fetchall()
+    _finish_postgresql_read(conn)
     race_dates = [str(row["race_date"]) for row in date_rows]
 
     for offset in range(0, len(race_dates), RACE_DATE_CHUNK_SIZE):
@@ -712,8 +893,19 @@ def iter_complete_races(conn) -> Iterable[list[Any]]:
             ORDER BY r.race_date, r.jcd, r.rno, e.lane
             """,
             (date_chunk[0], date_chunk[-1]),
-        )
+        ).fetchall()
+        # CompatRow owns its values, so the PostgreSQL cursor and transaction
+        # are no longer needed while the much heavier Python transforms run.
+        _finish_postgresql_read(conn)
+        if period_lookup:
+            rows = enrich_racer_period_rows(rows, period_lookup)
         yield from _group_complete_rows(rows)
+
+
+def _finish_postgresql_read(conn: Any) -> None:
+    """End a materialized READ COMMITTED query without altering SQLite semantics."""
+    if getattr(conn, "dialect", None) == "postgresql":
+        conn.commit()
 
 
 def _group_complete_rows(rows: Iterable[Any]) -> Iterable[list[Any]]:

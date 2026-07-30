@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy import sparse
 
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
@@ -12,6 +13,7 @@ from boatrace_ai.listwise.newton import (
     refine_newton_cg,
 )
 from boatrace_ai.listwise.model import train_listwise_model
+from boatrace_ai.listwise.newton_refine import evaluation_result_contract
 
 
 def dataset() -> HashedRaceDataset:
@@ -34,6 +36,32 @@ def dataset() -> HashedRaceDataset:
     )
 
 
+def test_newton_evaluation_result_contract_preserves_schema_and_policy() -> None:
+    policy = {"daily_budget_yen": 10_000, "ev_threshold": 1.2}
+
+    contract = evaluation_result_contract(
+        {
+            "feature_schema_version": "schema-v1",
+            "selection_rule_version": "rule-v1",
+            "selection_ranking_loss_relative_tolerance": 0.005,
+        },
+        policy,
+    )
+    policy["ev_threshold"] = 9.9
+
+    assert contract == {
+        "feature_schema_version": "schema-v1",
+        "policy": {"daily_budget_yen": 10_000, "ev_threshold": 1.2},
+        "selection_rule_version": "rule-v1",
+        "selection_ranking_loss_relative_tolerance": 0.005,
+    }
+
+
+def test_newton_evaluation_result_contract_requires_schema() -> None:
+    with pytest.raises(ValueError, match="feature schema"):
+        evaluation_result_contract({}, {"daily_budget_yen": 10_000})
+
+
 def test_score_hessian_product_matches_gradient_difference() -> None:
     scores = np.asarray([[0.2, -0.1, 0.4, 0.0, -0.3, 0.1]])
     ranks = np.asarray([[2, 4, 1, 3, 6, 5]])
@@ -45,6 +73,34 @@ def test_score_hessian_product_matches_gradient_difference() -> None:
     _, plus = pl_loss_and_score_gradient(scores + epsilon * vector, ranks, target="top3_pl")
     _, minus = pl_loss_and_score_gradient(scores - epsilon * vector, ranks, target="top3_pl")
     assert np.allclose(analytic, (plus - minus) / (2 * epsilon), atol=1e-6)
+
+
+@pytest.mark.parametrize("target", ["winner", "top3_pl"])
+def test_vectorized_score_hessian_matches_racewise_reference(target: str) -> None:
+    random = np.random.default_rng(20260725)
+    scores = random.normal(size=(127, 6))
+    vector = random.normal(size=(127, 6))
+    ranks = np.vstack([random.permutation(6) + 1 for _ in range(127)])
+    stages = 1 if target == "winner" else 3
+    reference = np.zeros_like(scores)
+    for race_index in range(scores.shape[0]):
+        order = np.argsort(ranks[race_index])
+        remaining = np.ones(6, dtype=bool)
+        for stage in range(stages):
+            lanes = np.flatnonzero(remaining)
+            lane_scores = scores[race_index, lanes]
+            probabilities = np.exp(lane_scores - lane_scores.max())
+            probabilities /= probabilities.sum()
+            direction = vector[race_index, lanes]
+            reference[race_index, lanes] += probabilities * (
+                direction - probabilities.dot(direction)
+            )
+            remaining[order[stage]] = False
+    reference /= scores.shape[0] * stages
+
+    actual = pl_hessian_score_product(scores, ranks, vector, target=target)
+
+    np.testing.assert_allclose(actual, reference, rtol=1e-13, atol=1e-15)
 
 
 def test_feature_hessian_product_matches_gradient_difference() -> None:
@@ -101,6 +157,24 @@ def test_newton_cg_reduces_regularized_objective() -> None:
     assert report["final_objective"] < report["initial_objective"]
     assert report["final_gradient_l2"] < report["history"][0]["gradient_l2"]
     assert not np.allclose(refined.weights, model.weights)
+
+
+def test_newton_cg_reports_each_completed_iteration() -> None:
+    data = dataset()
+    model, _ = train_listwise_model(
+        data, train_race_end=24, target="top3_pl", alpha=1e-3,
+        epochs=1, batch_races=6,
+    )
+    progress: list[dict] = []
+
+    _refined, report = refine_newton_cg(
+        data, model, train_race_end=24, batch_races=6,
+        max_newton_iterations=3, max_cg_iterations=10,
+        gradient_tolerance=1e-12, progress_callback=progress.append,
+    )
+
+    assert progress == report["history"]
+    assert all("objective" in row and "gradient_l2" in row for row in progress)
 
 
 def test_hessian_diagonal_matches_explicit_hessian_and_batching() -> None:

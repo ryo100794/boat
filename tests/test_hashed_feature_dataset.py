@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+import zipfile
 
 import numpy as np
 import pytest
@@ -85,6 +86,12 @@ def test_hashed_dataset_build_save_and_reload(tmp_path: Path) -> None:
     assert manifest["race_ids_sha256"] == race_ids_sha256(race_keys)
     assert manifest["ranks_sha256"]
     assert manifest["matrix_file_sha256"]
+    with zipfile.ZipFile(tmp_path / "features.matrix.npz") as archive:
+        assert archive.infolist()
+        assert all(
+            member.compress_type == zipfile.ZIP_DEFLATED
+            for member in archive.infolist()
+        )
     assert manifest["hasher"] == {
         "class": "sklearn.feature_extraction.FeatureHasher",
         "n_features": 256,

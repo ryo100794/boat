@@ -73,6 +73,13 @@ def validate_candidate(path: str | Path) -> dict[str, Any]:
             errors.append(f"promotion gate failed: {key}")
     if data.get("promotion_eligible") is not True:
         errors.append("promotion_eligible is not true")
+    if (
+        data.get("model")
+        == "odds_path_role_integrated_edge_conditional_lcb_v13"
+        or data.get("research_invalid") is True
+        or data.get("deprecated") is True
+    ):
+        errors.append("research-invalid or deprecated model cannot be promoted")
 
     evaluated_races = int(data.get("evaluation_races") or 0)
     evaluation_days = int(data.get("evaluation_days") or 0)

@@ -85,6 +85,26 @@ def validate_search_race_universe(
         )
 
 
+def evaluation_result_contract(
+    search_result: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    schema = search_result.get("feature_schema_version")
+    if not isinstance(schema, str) or not schema:
+        raise ValueError("search result lacks a feature schema version")
+    contract = {
+        "feature_schema_version": schema,
+        "policy": dict(policy),
+    }
+    for key in (
+        "selection_rule_version",
+        "selection_ranking_loss_relative_tolerance",
+    ):
+        if search_result.get(key) is not None:
+            contract[key] = search_result[key]
+    return contract
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -356,6 +376,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         max_cg_iterations=args.max_cg_iterations,
         gradient_tolerance=args.gradient_tolerance,
         cg_tolerance=args.cg_tolerance,
+        progress_callback=lambda row: print(
+            "NEWTON_PROGRESS "
+            + json.dumps(row, ensure_ascii=True, sort_keys=True),
+            flush=True,
+        ),
     )
     after_metrics, holdout_rows = evaluate_range(
         dataset,
@@ -392,6 +417,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     after_metrics["evaluation_race_set_sha256"] = evaluation_hash
     result: dict[str, Any] = {
         "model": "pastlog_listwise_newton_cg_v1",
+        **evaluation_result_contract(search_result, policy),
         "comparison_role": "selected_feature_teacher_newton_refinement_holdout",
         "source_search_result": args.search_result,
         "selected": selected,
@@ -438,6 +464,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             "drop_feature_groups": dropped,
             "n_features": int(search_result["n_features"]),
             "feature_schema_version": search_result["feature_schema_version"],
+            "selection_rule_version": search_result.get("selection_rule_version"),
+            "selection_ranking_loss_relative_tolerance": search_result.get(
+                "selection_ranking_loss_relative_tolerance"
+            ),
             "trained_races": selection_end,
             "trained_through": race_keys[selection_end - 1],
             "target": selected["target"],

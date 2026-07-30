@@ -10,6 +10,10 @@ from sklearn.metrics import brier_score_loss
 
 from .bankroll_policy import race_confidence
 from .db import connection, init_db
+from .discrete_log_allocation import (
+    settle_decision_ticket,
+    split_decision_candidates_and_settlements,
+)
 from .features import (
     MODEL_DECISION_LEAD_MINUTES,
     latest_trifecta_odds_before_deadline,
@@ -152,12 +156,12 @@ def bankroll_backtest(
             fold_evaluated += 1
             race_candidates = _candidate_tickets(
                 rows,
-                actual=payout,
                 payout_model=payout_model,
                 ev_threshold=ev_threshold,
                 min_ticket_probability=min_ticket_probability,
                 max_estimated_odds=max_estimated_odds,
                 real_odds_snapshot=real_odds_snapshot,
+                decision_only=True,
             )[:max_tickets_per_race]
             fold_candidates += len(race_candidates)
             candidates.extend(race_candidates)
@@ -174,11 +178,13 @@ def bankroll_backtest(
             }
         )
 
+    settlements = _payout_settlement_map(payouts)
     allocated = _allocate_daily_budget(
         candidates,
         evaluated_races=evaluated_races,
         daily_budget_yen=daily_budget_yen,
         unit_yen=unit_yen,
+        settlements=settlements,
     )
     prediction_metrics = _race_level_metrics(race_predictions)
 
@@ -214,7 +220,11 @@ def bankroll_backtest(
         "real_odds_races": len(real_odds_races),
         "skipped_no_real_odds": skipped_no_real_odds,
         "candidate_tickets": len(candidates),
-        "candidate_hit_tickets": sum(1 for item in candidates if item["hit"]),
+        "candidate_hit_tickets": sum(
+            1
+            for item in candidates
+            if (str(item["race_id"]), str(item["combination"])) in settlements
+        ),
         **allocated,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,21 +239,55 @@ def _load_trifecta_payouts(conn) -> dict[str, dict[str, Any]]:
         FROM payouts p
         JOIN races r ON r.race_id = p.race_id
         WHERE p.bet_type = ? AND p.payout_yen IS NOT NULL
+        ORDER BY r.race_id, p.combination, p.payout_yen, p.popularity
         """,
         (PAYOUT_BET_TYPE,),
     ).fetchall()
-    return {
-        row["race_id"]: {
-            "race_id": row["race_id"],
+    by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_race[str(row["race_id"])].append({
+            "race_id": str(row["race_id"]),
             "race_date": row["race_date"],
             "jcd": row["jcd"],
             "rno": int(row["rno"]),
-            "combination": row["combination"],
+            "combination": str(row["combination"]),
             "payout_yen": int(row["payout_yen"]),
             "popularity": row["popularity"],
+        })
+
+    result: dict[str, dict[str, Any]] = {}
+    for race_id_value, settlements in by_race.items():
+        # Preserve the legacy top-level row while exposing every official
+        # settlement deterministically for dead-heat-aware consumers.
+        result[race_id_value] = {
+            **settlements[0],
+            "settlements": tuple(settlements),
         }
-        for row in rows
-    }
+    return result
+
+
+def _payout_rows(payout: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    rows = payout.get("settlements")
+    if rows:
+        return tuple(dict(row) for row in rows)
+    return (dict(payout),)
+
+
+def _payout_settlement_map(
+    payouts: dict[str, dict[str, Any]],
+) -> dict[tuple[str, str], int]:
+    result: dict[tuple[str, str], int] = {}
+    for payout in payouts.values():
+        for row in _payout_rows(payout):
+            key = str(row["race_id"]), str(row["combination"])
+            value = int(row["payout_yen"])
+            existing = result.get(key)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    f"conflicting payout rows for {key[0]} {key[1]}"
+                )
+            result[key] = value
+    return result
 
 
 def _build_payout_model(
@@ -260,12 +304,13 @@ def _build_payout_model(
         payout = payouts.get(race_id_value)
         if not payout:
             continue
-        combo = str(payout["combination"])
-        yen = float(payout["payout_yen"])
-        sums[combo] += yen
-        counts[combo] += 1
-        global_sum += yen
-        global_count += 1
+        for settlement in _payout_rows(payout):
+            combo = str(settlement["combination"])
+            yen = float(settlement["payout_yen"])
+            sums[combo] += yen
+            counts[combo] += 1
+            global_sum += yen
+            global_count += 1
     global_mean = global_sum / global_count if global_count else 10_000.0
     estimates: dict[str, dict[str, float]] = {}
     for combo in {f"{a}-{b}-{c}" for a in range(1, 7) for b in range(1, 7) for c in range(1, 7) if len({a, b, c}) == 3}:
@@ -285,12 +330,13 @@ def _build_payout_model(
 def _candidate_tickets(
     rows: list[dict[str, Any]],
     *,
-    actual: dict[str, Any],
+    actual: dict[str, Any] | None = None,
     payout_model: dict[str, dict[str, float]],
     ev_threshold: float,
     real_odds_snapshot: dict[str, Any] | None = None,
     min_ticket_probability: float = 0.0,
     max_estimated_odds: float | None = None,
+    decision_only: bool = False,
 ) -> list[dict[str, Any]]:
     lane_probs = _normalize_lane_probs(
         {int(row["lane"]): float(row["probability"]) for row in rows}
@@ -341,9 +387,6 @@ def _candidate_tickets(
             "estimated_ev": estimated_ev,
             "payout_history_count": payout_history_count,
             "odds_source": odds_source,
-            "actual_combination": actual["combination"],
-            "actual_payout_yen": int(actual["payout_yen"]),
-            "hit": combo == actual["combination"],
         }
         feature_context = feature_context_by_combination.get(combo)
         if feature_context is None:
@@ -360,7 +403,21 @@ def _candidate_tickets(
                     "real_odds_combinations": real_odds_snapshot.get("odds_count"),
                 }
             )
-        candidates.append(item)
+        if decision_only:
+            candidates.append(item)
+        else:
+            # Additive migration path for legacy allocators outside this
+            # backtest. New purchase paths must request decision_only.
+            if actual is None:
+                raise ValueError(
+                    "actual settlement is required unless decision_only is true"
+                )
+            candidates.append({
+                **item,
+                "actual_combination": actual["combination"],
+                "actual_payout_yen": int(actual["payout_yen"]),
+                "hit": combo == actual["combination"],
+            })
     return sorted(
         candidates,
         key=lambda item: (item["estimated_ev"], item["probability"]),
@@ -419,10 +476,16 @@ def _allocate_daily_budget(
     evaluated_races: set[str],
     daily_budget_yen: int,
     unit_yen: int,
+    settlements: dict[tuple[str, str], int] | None = None,
 ) -> dict[str, Any]:
+    decision_candidates, settlement_map = (
+        split_decision_candidates_and_settlements(
+            candidates, settlements=settlements
+        )
+    )
     units_per_day = daily_budget_yen // unit_yen
     candidates_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in candidates:
+    for item in decision_candidates:
         candidates_by_day[item["race_date"]].append(item)
 
     evaluated_days = sorted({race_id[:10] for race_id in evaluated_races})
@@ -448,23 +511,16 @@ def _allocate_daily_budget(
             for index, item in enumerate(day_selected):
                 units = base_units + (1 if index < extra_units else 0)
                 ticket_stake = units * unit_yen
-                ticket_return = (
-                    int(round(ticket_stake * item["actual_payout_yen"] / PAYOUT_UNIT_YEN))
-                    if item["hit"]
-                    else 0
+                settled = settle_decision_ticket(
+                    item,
+                    stake_yen=ticket_stake,
+                    settlements=settlement_map,
                 )
                 stake_yen += ticket_stake
-                return_yen += ticket_return
-                if item["hit"]:
+                return_yen += int(settled["return_yen"])
+                if settled["hit"]:
                     hit_tickets += 1
-                selected.append(
-                    {
-                        **item,
-                        "stake_yen": ticket_stake,
-                        "return_yen": ticket_return,
-                        "profit_yen": ticket_return - ticket_stake,
-                    }
-                )
+                selected.append(settled)
         profit_yen = return_yen - stake_yen
         cumulative_profit += profit_yen
         peak_profit = max(peak_profit, cumulative_profit)

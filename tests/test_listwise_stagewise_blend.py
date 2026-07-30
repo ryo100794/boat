@@ -5,6 +5,7 @@ import pytest
 from sklearn.feature_extraction import FeatureHasher
 from sklearn.preprocessing import StandardScaler
 
+from boatrace_ai.listwise.conditional_order import ConditionalOrderModel
 from boatrace_ai.listwise.conditional_stagewise import ConditionalStagewiseModel
 from boatrace_ai.listwise.market_calibration import artifact_model_probabilities
 from boatrace_ai.listwise.model import ListwiseLinearModel
@@ -20,6 +21,14 @@ from boatrace_ai.listwise.stagewise_mlp import (
     COMBINATION_INDEX,
     StagewiseMLPModel,
 )
+
+
+class _StaticWinnerClassifier:
+    classes_ = np.asarray([0, 1])
+
+    def predict_proba(self, matrix):
+        winner = np.asarray([0.55, 0.15, 0.10, 0.08, 0.07, 0.05])[: matrix.shape[0]]
+        return np.column_stack((1.0 - winner, winner))
 
 
 class _StaticRankClassifier:
@@ -80,6 +89,69 @@ def test_metric_update_scores_actual_order_and_first_marginal() -> None:
     assert accumulator["winner_hits"] == 1
     assert accumulator["trifecta_top1_hits"] == 1
     assert accumulator["trifecta_top5_hits"] == 1
+
+
+@pytest.mark.parametrize("model_kind", ["linear", "mlp", "lightgbm"])
+def test_market_scorer_accepts_binary_classifier_artifact(model_kind: str) -> None:
+    hasher = FeatureHasher(
+        n_features=16,
+        input_type="dict",
+        alternate_sign=False,
+    )
+    feature_rows = [
+        {"features": {f"lane_{lane}": 1.0}}
+        for lane in range(1, 7)
+    ]
+    matrix = hasher.transform([row["features"] for row in feature_rows])
+    artifact = {
+        "hasher": hasher,
+        "classifier": _StaticWinnerClassifier(),
+        "model_kind": model_kind,
+        "scaler": (
+            None
+            if model_kind == "lightgbm"
+            else StandardScaler(with_mean=False).fit(matrix)
+        ),
+    }
+
+    probabilities = artifact_model_probabilities(artifact, feature_rows)
+
+    assert len(probabilities) == 120
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+    assert max(probabilities, key=probabilities.get).startswith("1-")
+
+
+def test_classifier_market_scorer_uses_persisted_conditional_order() -> None:
+    hasher = FeatureHasher(
+        n_features=16,
+        input_type="dict",
+        alternate_sign=False,
+    )
+    feature_rows = [
+        {"features": {f"lane_{lane}": 1.0}}
+        for lane in range(1, 7)
+    ]
+    second_bias = np.zeros((6, 6), dtype=np.float64)
+    second_bias[0, 5] = 5.0
+    artifact = {
+        "hasher": hasher,
+        "classifier": _StaticWinnerClassifier(),
+        "model_kind": "lightgbm",
+        "scaler": None,
+        "conditional_order_model": ConditionalOrderModel(
+            scales=np.ones(3, dtype=np.float64),
+            second_bias=second_bias,
+            third_first_bias=np.zeros((6, 6), dtype=np.float64),
+            third_second_bias=np.zeros((6, 6), dtype=np.float64),
+            regularization=0.1,
+        ),
+    }
+
+    probabilities = artifact_model_probabilities(artifact, feature_rows)
+
+    assert len(probabilities) == 120
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+    assert max(probabilities, key=probabilities.get).startswith("1-6-")
 
 
 def test_market_scorer_accepts_stagewise_blend_artifact() -> None:

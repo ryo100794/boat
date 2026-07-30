@@ -3,6 +3,9 @@ from unittest.mock import patch
 import joblib
 import numpy as np
 import pytest
+
+import boatrace_ai.calibrated_shadow_model as calibrated
+from boatrace_ai import feature_tuning
 from scipy import sparse
 
 from boatrace_ai.calibrated_shadow_model import (
@@ -14,6 +17,10 @@ from boatrace_ai.calibrated_shadow_model import (
     train_bundle_from_dataset,
 )
 from boatrace_ai.hashed_feature_dataset import HashedRaceDataset
+
+
+def test_calibrated_feature_source_uses_consolidated_module() -> None:
+    assert calibrated._feature_source is feature_tuning
 
 
 def synthetic_entries(*_args, **_kwargs):

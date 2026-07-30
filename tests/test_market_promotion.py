@@ -114,3 +114,20 @@ def test_rejects_stale_deployment_refit(tmp_path: Path) -> None:
         "deployment configuration is not refit through evaluation end"
         in result["errors"]
     )
+
+
+def test_rejects_research_invalid_v13_even_if_old_payload_claims_eligible(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(tmp_path, "invalid-v13")
+    payload = json.loads(candidate.read_text())
+    payload["model"] = "odds_path_role_integrated_edge_conditional_lcb_v13"
+    candidate.write_text(json.dumps(payload))
+
+    result = validate_candidate(candidate)
+
+    assert result["valid"] is False
+    assert (
+        "research-invalid or deprecated model cannot be promoted"
+        in result["errors"]
+    )

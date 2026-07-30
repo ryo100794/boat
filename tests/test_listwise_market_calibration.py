@@ -2,21 +2,38 @@ from __future__ import annotations
 
 from itertools import permutations
 
+import numpy as np
+import boatrace_ai.listwise.market_calibration as market_calibration
 import pytest
+from scipy import sparse
 
 from boatrace_ai.listwise.market_calibration import (
+    _v6_selection_key,
     artifact_drop_feature_groups,
+    artifact_classifier_probabilities_batch,
+    artifact_model_probabilities,
     blend_probabilities,
+    build_parser,
     filter_clean_market_days,
+    fixed_benchmark_population,
     fit_deployment_configuration,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
+    probability_metrics,
+    prepare_policy_matrix,
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
+    summarize_registered_policy_daily,
     load_scored_cache,
+    odds_path_model_name,
+    score_real_odds_races,
     select_calibrator,
     select_policy,
+    select_policy_v17,
+    select_return_shrinkage_prequential,
+    simulate_policy,
+    v17_policy_ranking_key,
     snapshot_age_seconds,
     write_scored_cache,
     walk_forward_evaluate,
@@ -58,6 +75,66 @@ def test_market_probabilities_remove_overround() -> None:
     probabilities = normalized_market_probabilities({"1-2-3": 2.0, "2-1-3": 4.0})
     assert sum(probabilities.values()) == pytest.approx(1.0)
     assert probabilities["1-2-3"] == pytest.approx(2.0 / 3.0)
+
+
+def test_probability_metrics_include_winner_marginals() -> None:
+    metrics = probability_metrics(
+        [_race("2026-07-18", 1)],
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+    )
+
+    assert metrics["model_winner_log_loss"] is not None
+    assert metrics["market_winner_log_loss"] is not None
+    assert metrics["calibrated_winner_log_loss"] == pytest.approx(
+        metrics["model_winner_log_loss"]
+    )
+    assert metrics["model_winner_top1_accuracy"] == 1.0
+    assert metrics["market_winner_top1_accuracy"] == 1.0
+    assert metrics["calibrated_winner_top1_accuracy"] == 1.0
+
+
+def test_classifier_market_probabilities_batch_matches_single_race_scoring() -> None:
+    class Hasher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def transform(self, rows):
+            self.calls += 1
+            return sparse.csr_matrix(
+                [[float(dict(row)["score"])] for row in rows],
+                dtype=np.float64,
+            )
+
+    class Classifier:
+        classes_ = np.asarray([0, 1])
+
+        def predict_proba(self, matrix):
+            positive = np.clip(matrix.toarray()[:, 0], 0.01, 0.99)
+            return np.column_stack((1.0 - positive, positive))
+
+    feature_races = [
+        [
+            {"features": {"score": 0.1 * lane}}
+            for lane in range(1, 7)
+        ]
+        for _race in range(3)
+    ]
+    artifact = {
+        "model": None,
+        "model_kind": "lightgbm",
+        "hasher": Hasher(),
+        "classifier": Classifier(),
+    }
+
+    batch = artifact_classifier_probabilities_batch(artifact, feature_races)
+    singles = [
+        artifact_model_probabilities(artifact, feature_rows)
+        for feature_rows in feature_races
+    ]
+
+    assert batch == singles
+    assert all(sum(row.values()) == pytest.approx(1.0) for row in batch)
+    assert artifact["hasher"].calls == 4
 
 
 def test_geometric_blend_has_exact_endpoints() -> None:
@@ -104,6 +181,79 @@ def test_policy_falls_back_to_no_bet_when_every_candidate_loses() -> None:
     assert selected == {"name": "no_bet", "no_bet": True}
 
 
+def test_v4_market_policy_adds_chronological_adaptive_metrics_compatibly() -> None:
+    races = [_race("2026-07-18", index) for index in range(1, 4)]
+    result = simulate_policy(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={
+            "name": "v4-compatible-policy",
+            "ev_threshold": 1.0,
+            "max_estimated_ev": None,
+            "max_odds": None,
+            "max_tickets_per_race": 1,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+        daily_budget_yen=10_000,
+        include_chronological=True,
+    )
+
+    legacy = result["daily"][0]
+    chronological = legacy["chronological_bankroll"]
+    aggregate = result["chronological_bankroll"]
+
+    assert result["tickets"] == legacy["tickets"]
+    assert result["stake_yen"] == legacy["stake_yen"]
+    assert result["return_yen"] == legacy["return_yen"]
+    assert chronological["allocation_method"].startswith(
+        "chronological_adaptive_"
+    )
+    assert chronological["profit_reinvestment"] is True
+    assert chronological["stake_granularity_yen"] == 100
+    assert chronological["real_betting_enabled"] is False
+    assert aggregate["daily"] == [chronological]
+    assert aggregate["stake_yen"] == chronological["stake_yen"]
+    assert aggregate["return_yen"] == chronological["return_yen"]
+    decisions = [
+        row for row in chronological["ledger"] if row["event"] == "decision"
+    ]
+    assert [row["race_id"] for row in decisions] == [
+        race["race_id"] for race in races
+    ]
+    assert decisions[1]["outstanding_stake_yen"] >= decisions[0]["stake_yen"]
+
+
+def test_vectorized_policy_candidates_match_reference_simulation() -> None:
+    races = [_race("2026-07-18", index) for index in range(1, 7)]
+    calibrator = {"model_weight": 0.75, "temperature": 1.0}
+    policy = {
+        "name": "equivalence",
+        "ev_threshold": 1.05,
+        "max_odds": 40.0,
+        "max_tickets_per_race": 3,
+        "min_model_market_ratio": 1.0,
+        "staking_mode": "kelly_025",
+        "max_estimated_ev": 1.10,
+    }
+
+    reference = simulate_policy(
+        races,
+        calibrator=calibrator,
+        policy=policy,
+        daily_budget_yen=10_000,
+    )
+    vectorized = simulate_policy(
+        races,
+        calibrator=calibrator,
+        policy=policy,
+        daily_budget_yen=10_000,
+        prepared_policy_matrix=prepare_policy_matrix(races, calibrator),
+    )
+
+    assert vectorized == reference
+
+
 def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     races = [
         _race(race_date, rno)
@@ -113,6 +263,8 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     result = walk_forward_evaluate(races, min_calibration_days=2)
     assert result["evaluation_days"] == 2
     assert result["evaluation_races"] == 24
+    assert result["winner_log_loss"] is not None
+    assert result["winner_top1_accuracy"] == 1.0
     assert [row["evaluation_date"] for row in result["folds"]] == [
         "2026-07-20",
         "2026-07-21",
@@ -131,7 +283,473 @@ def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     assert deployment["training_races"] == 48
     assert deployment["calibrator_strategy"] == "grid"
     assert result["promotion_gate"]["sample_size_pass"] is False
+    assert deployment["walk_forward_gate"]["evaluation_days"] == 2
+    assert deployment["walk_forward_gate"]["days_pass"] is False
+    assert deployment["walk_forward_gate"]["pass"] is False
+    assert deployment["selected_policy"] == {"name": "no_bet", "no_bet": True}
+    assert deployment["candidate_policy"]
+    assert deployment["operational_status"] == "shadow_only_insufficient_evidence"
     assert result["promotion_eligible"] is False
+
+
+def test_closing_return_strategy_uses_prequential_price_teacher() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_closing_return",
+    )
+
+    assert result["model"] == "odds_path_closing_return_v3"
+    assert result["evaluation_days"] == 2
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        assert operational_model["return_price_basis"] == "forecast_closing"
+        assert operational_model["return_multiplier_mode"] == (
+            "historical_forecast_closing_to_payout_bucket"
+        )
+    deployment = result["deployment_configuration"]
+    assert deployment["role"] == "next_day_refit_not_evaluation"
+    assert deployment["trained_through_date"] == "2026-07-21"
+    assert deployment["training_races"] == 48
+    assert deployment["calibrator_strategy"] == "odds_path_closing_return"
+    assert deployment["operational_model"]["return_price_basis"] == "forecast_closing"
+
+
+def test_observed_closing_return_strategy_uses_prior_closing_teachers() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = {
+            combination: odds * 0.9 for combination, odds in race["odds"].items()
+        }
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_observed_closing_return",
+    )
+
+    assert result["model"] == "odds_path_observed_closing_return_v4"
+    assert result["evaluation_days"] == 2
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        chronological = fold["bankroll"]["chronological_bankroll"]
+        assert operational_model["return_price_basis"] == "observed_closing"
+        assert operational_model["return_multiplier_mode"] == (
+            "historical_observed_closing_to_payout_bucket"
+        )
+        assert chronological["race_days"] == 1
+        assert chronological["profit_reinvestment"] is True
+        assert chronological["stake_granularity_yen"] == 100
+        assert chronological["real_betting_enabled"] is False
+    prospective = result[
+        "prospective_observed_closing_return_v4_walk_forward"
+    ]
+    assert prospective["status"] == "waiting_for_first_unseen_day"
+    assert prospective["registered_after"] == "2026-07-29"
+    assert prospective["evaluation_days"] == 0
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+
+
+def test_observed_closing_v4_counts_only_dates_after_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-28",
+            "2026-07-29",
+            "2026-07-30",
+            "2026-07-31",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_observed_closing_return",
+    )
+    prospective = result[
+        "prospective_observed_closing_return_v4_walk_forward"
+    ]
+
+    assert prospective["status"] == "evaluating"
+    assert prospective["evaluation_days"] == 2
+    assert prospective["evaluated_races"] == 24
+    assert [row["race_date"] for row in prospective["daily"]] == [
+        "2026-07-30",
+        "2026-07-31",
+    ]
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+    assert result["deployment_configuration"]["walk_forward_gate"][
+        "prospective_architecture_pass"
+    ] is False
+
+
+def test_non_v4_strategy_does_not_publish_v4_prospective_metrics() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-28",
+            "2026-07-29",
+            "2026-07-30",
+            "2026-07-31",
+        )
+        for rno in range(1, 13)
+    ]
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_probability",
+    )
+
+    assert "prospective_observed_closing_return_v4_walk_forward" not in result
+
+
+def test_hit_shrunk_strategy_applies_conservative_prior_in_every_fold() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 13)
+    ]
+    for race in races:
+        race["closing_odds"] = {
+            combination: odds * 0.9 for combination, odds in race["odds"].items()
+        }
+        race["closing_odds_changed"] = True
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_hit_shrunk_return",
+    )
+
+    assert result["model"] == "odds_path_hit_shrunk_closing_return_v5"
+    for fold in result["folds"]:
+        operational_model = fold["operational_model"]
+        assert operational_model["return_hit_prior"] == 20.0
+        assert operational_model["return_multiplier_bounds"] == [0.5, 1.5]
+        assert max(
+            row["return_multiplier"]
+            for row in operational_model["performance_priors"]["buckets"].values()
+        ) <= 1.5
+
+
+def test_v6_uses_conservative_fallback_when_inner_history_is_short() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in ("2026-07-18", "2026-07-19", "2026-07-20")
+        for rno in range(1, 5)
+    ]
+
+    selection = select_return_shrinkage_prequential(
+        races,
+        daily_budget_yen=10_000,
+    )
+
+    assert selection["status"] == "conservative_fallback"
+    assert selection["fallback_reason"] == "insufficient_history_days"
+    assert selection["selected"] == {
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.75,
+        "max_return_multiplier": 1.25,
+    }
+
+
+def test_v6_selection_rule_prioritizes_largest_hit_excluded_roi() -> None:
+    robust = {
+        "roi_without_largest_hit": 1.01,
+        "profitable_day_fraction": 0.4,
+        "median_profit_per_day_yen": -100.0,
+        "tickets": 20,
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.9,
+        "max_return_multiplier": 1.1,
+    }
+    unstable_high_profit = {
+        **robust,
+        "roi_without_largest_hit": 0.99,
+        "profitable_day_fraction": 1.0,
+        "median_profit_per_day_yen": 10_000.0,
+        "tickets": 200,
+    }
+
+    assert _v6_selection_key(robust) > _v6_selection_key(unstable_high_profit)
+
+
+def test_v6_inner_prequential_grid_selects_robust_candidate(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.market_calibration as module
+    import boatrace_ai.listwise.market_residual as residual
+
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 3)
+    ]
+    fit_calls = []
+
+    def fake_fit(training, **_kwargs):
+        fit_calls.append(sorted({race["race_date"] for race in training}))
+        return {"performance_priors": {"candidate_prior": 0.0}}
+
+    def fake_priors(_training, *, return_hit_prior, **_kwargs):
+        return {"candidate_prior": float(return_hit_prior)}
+
+    def fake_attach(rows, model):
+        prior = float(model["performance_priors"]["candidate_prior"])
+        return [{**race, "candidate_prior": prior} for race in rows]
+
+    def fake_simulate(rows, **_kwargs):
+        prior = rows[0]["candidate_prior"]
+        returned = 700 if prior == 20.0 else 1_000
+        largest = 100 if prior == 20.0 else 900
+        return {
+            "daily": [
+                {
+                    "tickets": 5,
+                    "stake_yen": 500,
+                    "return_yen": returned,
+                    "profit_yen": returned - 500,
+                    "largest_hit_return_yen": largest,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(module, "V6_RETURN_HIT_PRIORS", (0.0, 20.0))
+    monkeypatch.setattr(
+        module,
+        "V6_RETURN_MULTIPLIER_BOUNDS",
+        ((0.75, 1.25),),
+    )
+    monkeypatch.setattr(module, "fit_odds_path_model", fake_fit)
+    monkeypatch.setattr(module, "fit_performance_priors", fake_priors)
+    monkeypatch.setattr(module, "attach_odds_path_model", fake_attach)
+    monkeypatch.setattr(
+        module,
+        "prequential_closing_odds_policy_inputs",
+        lambda _rows: {},
+    )
+    monkeypatch.setattr(
+        module,
+        "apply_prequential_closing_odds_policy_inputs",
+        lambda rows, _inputs: rows,
+    )
+    monkeypatch.setattr(module, "simulate_policy", fake_simulate)
+    monkeypatch.setattr(
+        residual,
+        "select_regularization_prequential",
+        lambda _rows: {
+            "final_calibrator": {"model_weight": 1.0, "temperature": 1.0}
+        },
+    )
+
+    selection = select_return_shrinkage_prequential(
+        races,
+        daily_budget_yen=10_000,
+    )
+
+    assert selection["status"] == "selected"
+    assert selection["selected"] == {
+        "return_hit_prior": 20.0,
+        "min_return_multiplier": 0.75,
+        "max_return_multiplier": 1.25,
+    }
+    assert selection["inner_evaluation_dates"] == [
+        "2026-07-20",
+        "2026-07-21",
+    ]
+    assert fit_calls == [
+        ["2026-07-18", "2026-07-19"],
+        ["2026-07-18", "2026-07-19", "2026-07-20"],
+    ]
+    assert len(selection["candidates"]) == 2
+
+
+def test_v6_outer_folds_never_pass_holdout_to_inner_selection(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.market_calibration as module
+
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-18",
+            "2026-07-19",
+            "2026-07-20",
+            "2026-07-21",
+        )
+        for rno in range(1, 5)
+    ]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+    seen_dates = []
+
+    def fake_selection(training_races, *, daily_budget_yen):
+        assert daily_budget_yen == 10_000
+        seen_dates.append(sorted({race["race_date"] for race in training_races}))
+        return {
+            "version": 1,
+            "status": "conservative_fallback",
+            "selected": {
+                "return_hit_prior": 20.0,
+                "min_return_multiplier": 0.75,
+                "max_return_multiplier": 1.25,
+            },
+        }
+
+    monkeypatch.setattr(
+        module,
+        "select_return_shrinkage_prequential",
+        fake_selection,
+    )
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy="odds_path_prequential_shrinkage_return",
+    )
+
+    assert result["model"] == "odds_path_prequential_shrinkage_return_v6"
+    assert seen_dates[0] == ["2026-07-18", "2026-07-19"]
+    assert seen_dates[1] == ["2026-07-18", "2026-07-19", "2026-07-20"]
+    assert seen_dates[2] == [
+        "2026-07-18",
+        "2026-07-19",
+        "2026-07-20",
+        "2026-07-21",
+    ]
+    assert all(
+        fold["operational_model"]["model_type"]
+        == "odds_path_prequential_shrinkage_return_v6"
+        for fold in result["folds"]
+    )
+    deployment = result["deployment_configuration"]
+    assert deployment["calibrator_strategy"] == (
+        "odds_path_prequential_shrinkage_return"
+    )
+    assert deployment["operational_model"]["adaptive_return_selection"][
+        "status"
+    ] == "conservative_fallback"
+    prospective = result[
+        "prospective_prequential_shrinkage_return_v6_walk_forward"
+    ]
+    assert prospective["registered_after"] == "2026-07-29"
+    assert prospective["status"] == "waiting_for_first_unseen_day"
+    assert prospective["evaluation_days"] == 0
+    assert result["promotion_gate"]["prospective_architecture_pass"] is False
+    assert deployment["walk_forward_gate"][
+        "prospective_architecture_pass"
+    ] is False
+
+
+def test_cli_accepts_v6_calibrator_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_prequential_shrinkage_return",
+        ]
+    )
+
+    assert args.calibrator_strategy == "odds_path_prequential_shrinkage_return"
+
+
+def test_cli_accepts_v7_calibrator_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_crossfit_conservative_ev",
+        ]
+    )
+
+    assert args.calibrator_strategy == "odds_path_crossfit_conservative_ev"
+
+
+def test_cli_accepts_v8_market_offset_strategy() -> None:
+    args = build_parser().parse_args(
+        [
+            "--from-date",
+            "2026-07-18",
+            "--calibrator-strategy",
+            "odds_path_market_offset_crossfit_conservative_ev",
+        ]
+    )
+
+    assert args.calibrator_strategy == (
+        "odds_path_market_offset_crossfit_conservative_ev"
+    )
+
+
+def test_walk_forward_dispatches_v8_market_offset_strategy(monkeypatch) -> None:
+    import boatrace_ai.listwise.odds_path_conservative_v8 as v8
+
+    expected = {"model": v8.MODEL_NAME, "dispatch": "v8"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v8, "walk_forward_evaluate_v8", fake_walk_forward)
+    races = [_race("2026-07-30", 1)]
+
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=3,
+        calibrator_strategy=(
+            "odds_path_market_offset_crossfit_conservative_ev"
+        ),
+        evaluation_dates=("2026-07-30",),
+    )
+
+    assert result is expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 3,
+        "evaluation_dates": ("2026-07-30",),
+    }
 
 
 def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
@@ -147,6 +765,7 @@ def test_walk_forward_reports_clean_evaluation_day_waiting_state() -> None:
     assert result["available_days"] == 2
     assert result["required_additional_days"] == 1
     assert result["evaluation_races"] == 0
+    assert result["registered_ev_band_walk_forward"]["evaluation_days"] == 0
     assert result["promotion_eligible"] is False
     assert result["promotion_gate"]["no_lookahead_pass"] is True
     assert all(
@@ -279,6 +898,40 @@ def test_market_scoring_uses_artifact_feature_exclusions(monkeypatch) -> None:
     assert artifact_drop_feature_groups({}) == ()
 
 
+@pytest.mark.parametrize("model_kind", ["linear", "mlp", "lightgbm"])
+def test_real_odds_scoring_accepts_classifier_artifact(
+    monkeypatch, model_kind: str
+) -> None:
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration.load_complete_race_ids",
+        lambda _conn: [],
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration._load_trifecta_payouts",
+        lambda _conn: {},
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.market_calibration.iter_artifact_feature_rows",
+        lambda *_args, **_kwargs: iter(()),
+    )
+
+    races, dataset = score_real_odds_races(
+        "connection",
+        artifact={
+            "classifier": object(),
+            "hasher": object(),
+            "model_kind": model_kind,
+            "trained_through": ("race-id", "2026-07-17", "24", 12),
+        },
+        from_date="2026-07-18",
+        through_date="2026-07-24",
+    )
+
+    assert races == []
+    assert dataset["target_complete_races"] == 0
+    assert dataset["eligible_real_odds_races"] == 0
+
+
 def test_clean_day_gate_excludes_partial_t5_and_missing_payout_days() -> None:
     races = [
         {"race_date": "2026-07-20", "race_id": "a"},
@@ -343,12 +996,48 @@ def test_partial_t5_days_calibrate_only_clean_evaluation_day() -> None:
     assert result["folds"][0]["evaluation_date"] == "2026-07-22"
     assert result["deployment_configuration"]["training_races"] == 9
     assert max(result["folds"][0]["calibration_dates"]) < "2026-07-22"
+def test_fixed_benchmark_population_is_provisional_until_seven_days() -> None:
 
 
-def test_formal_evaluation_dates_exclude_pre_registration_days() -> None:
+    targets = {
+        f"2026-07-{day:02d}": {
+            "complete_race_count": 100,
+            "payout_race_count": 100,
+        }
+        for day in range(22, 29)
+    }
+    races = [
+        {"race_date": f"2026-07-{day:02d}"}
+        for day in range(22, 29)
+        for _ in range(10)
+    ]
+
+    provisional = fixed_benchmark_population(
+        races,
+        day_targets=targets,
+        evaluation_dates=[f"2026-07-{day:02d}" for day in range(22, 26)],
+    )
+    final = fixed_benchmark_population(
+        races,
+        day_targets=targets,
+        evaluation_dates=[f"2026-07-{day:02d}" for day in range(22, 29)],
+    )
+
+    assert provisional["benchmark_status"] == "provisional"
+    assert provisional["benchmark_days"] == 4
+    assert provisional["benchmark_population_races"] == 400
+    assert provisional["benchmark_odds_eligible_races"] == 40
+    assert final["benchmark_status"] == "final"
+    assert final["benchmark_days"] == 7
+    assert final["benchmark_population_races"] == 700
+
+
+
+
+def test_provisional_evaluation_starts_with_first_four_clean_days() -> None:
     assert registered_evaluation_dates(
         ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
-    ) == ["2026-07-24", "2026-07-25"]
+    ) == ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         registered_evaluation_dates(["2026-07-24"], valid_from="bad")
 
@@ -360,3 +1049,310 @@ def test_clean_day_gate_validates_coverage_threshold() -> None:
             day_targets={},
             minimum_day_coverage=0.0,
         )
+
+
+def test_empty_registered_policy_summary_waits_for_unseen_day() -> None:
+    result = summarize_registered_policy_daily([], evaluated_races=0)
+
+    assert result["status"] == "waiting_for_first_unseen_day"
+    assert result["evaluation_days"] == 0
+    assert result["evaluated_races"] == 0
+
+
+def test_registered_ev_band_uses_only_days_after_hypothesis_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-23",
+            "2026-07-24",
+            "2026-07-25",
+            "2026-07-26",
+        )
+        for rno in range(1, 4)
+    ]
+
+    result = walk_forward_evaluate(races, min_calibration_days=2)
+    registered = result["registered_ev_band_walk_forward"]
+
+    assert registered["registered_after"] == "2026-07-25"
+    assert registered["status"] == "evaluating"
+    assert registered["evaluation_days"] == 1
+    assert registered["evaluated_races"] == 3
+    assert [row["race_date"] for row in registered["daily"]] == ["2026-07-26"]
+    assert result["folds"][0]["registered_ev_band_bankroll"] is None
+    assert result["folds"][1]["registered_ev_band_bankroll"] is not None
+
+
+def test_prospective_normalized_ev_uses_only_unseen_days_after_registration() -> None:
+    races = [
+        _race(race_date, rno)
+        for race_date in (
+            "2026-07-24",
+            "2026-07-25",
+            "2026-07-26",
+            "2026-07-27",
+            "2026-07-28",
+            "2026-07-29",
+        )
+        for rno in range(1, 4)
+    ]
+
+    result = walk_forward_evaluate(races, min_calibration_days=2)
+    prospective = result["prospective_normalized_ev_walk_forward"]
+
+    assert prospective["registered_after"] == "2026-07-27"
+    assert prospective["status"] == "evaluating"
+    assert prospective["evaluation_days"] == 2
+    assert prospective["evaluated_races"] == 6
+    assert [row["race_date"] for row in prospective["daily"]] == [
+        "2026-07-28",
+        "2026-07-29",
+    ]
+    folds = {row["evaluation_date"]: row for row in result["folds"]}
+    assert folds["2026-07-27"]["prospective_normalized_ev_bankroll"] is None
+    assert folds["2026-07-28"]["prospective_normalized_ev_bankroll"] is not None
+    top5 = result["prospective_top5_narrow_ev_walk_forward"]
+    assert top5["registered_after"] == "2026-07-28"
+    assert top5["evaluation_days"] == 1
+    assert top5["evaluated_races"] == 3
+    assert [row["race_date"] for row in top5["daily"]] == ["2026-07-29"]
+    assert folds["2026-07-28"]["prospective_top5_narrow_ev_bankroll"] is None
+    assert folds["2026-07-29"]["prospective_top5_narrow_ev_bankroll"] is not None
+
+
+def test_cli_accepts_and_dispatches_v9_discrete_strategy(monkeypatch) -> None:
+    import boatrace_ai.listwise.odds_path_discrete_v9 as v9
+
+    args = build_parser().parse_args([
+        "--from-date",
+        "2026-07-22",
+        "--calibrator-strategy",
+        "odds_path_market_offset_discrete_log_ev_v9",
+    ])
+    assert args.calibrator_strategy == v9.STRATEGY_NAME
+
+    expected = {"model": v9.MODEL_NAME, "dispatch": "v9"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v9, "walk_forward_evaluate_v9", fake_walk_forward)
+    races = [{"race_id": "v9-race"}]
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=7,
+        calibrator_strategy=v9.STRATEGY_NAME,
+        evaluation_dates=("2026-07-29",),
+    )
+
+    assert result == expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 7,
+        "evaluation_dates": ("2026-07-29",),
+    }
+
+
+def test_cli_accepts_and_dispatches_v10_selection_conformal_strategy(
+    monkeypatch,
+) -> None:
+    import boatrace_ai.listwise.odds_path_selection_conformal_v10 as v10
+
+    args = build_parser().parse_args([
+        "--from-date",
+        "2026-07-22",
+        "--calibrator-strategy",
+        "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+    ])
+    assert args.calibrator_strategy == v10.STRATEGY_NAME
+    assert odds_path_model_name(args.calibrator_strategy) == v10.MODEL_NAME
+
+    expected = {"model": v10.MODEL_NAME, "dispatch": "v10"}
+    seen = {}
+
+    def fake_walk_forward(races, **kwargs):
+        seen["races"] = races
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(v10, "walk_forward_evaluate_v10", fake_walk_forward)
+    races = [{"race_id": "v10-race"}]
+    result = walk_forward_evaluate(
+        races,
+        daily_budget_yen=10_000,
+        min_calibration_days=7,
+        calibrator_strategy=v10.STRATEGY_NAME,
+        evaluation_dates=("2026-07-30",),
+    )
+
+    assert result == expected
+    assert seen == {
+        "races": races,
+        "daily_budget_yen": 10_000,
+        "min_calibration_days": 7,
+        "evaluation_dates": ("2026-07-30",),
+    }
+
+
+@pytest.mark.parametrize(
+    ("metric", "better", "worse"),
+    [
+        ("daily_cluster_bootstrap_roi_lower_95", 1.2, 1.1),
+        ("roi_without_largest_hit", 1.2, 1.1),
+        ("profitable_day_fraction", 0.7, 0.6),
+        ("effective_hit_count", 8.0, 7.0),
+        ("largest_hit_return_share", 0.2, 0.3),
+        ("normalized_drawdown", 0.2, 0.3),
+        ("roi", 1.2, 1.1),
+    ],
+)
+def test_v17_policy_ranking_uses_fixed_robust_lexicographic_order(
+    metric: str, better: float, worse: float
+) -> None:
+    base = {
+        "daily_cluster_bootstrap_roi_lower_95": 1.1,
+        "roi_without_largest_hit": 1.1,
+        "profitable_day_fraction": 0.6,
+        "effective_hit_count": 7.0,
+        "largest_hit_return_share": 0.3,
+        "normalized_drawdown": 0.3,
+        "roi": 1.1,
+    }
+    preferred = {**base, metric: better, "policy": {"name": "z-policy"}}
+    rejected = {**base, metric: worse, "policy": {"name": "a-policy"}}
+
+    assert min([rejected, preferred], key=v17_policy_ranking_key) is preferred
+
+
+def test_v17_policy_ranking_tie_breaks_by_policy_name_and_none_is_worst() -> None:
+    metrics = {
+        "daily_cluster_bootstrap_roi_lower_95": 1.1,
+        "roi_without_largest_hit": 1.1,
+        "profitable_day_fraction": 0.6,
+        "effective_hit_count": 7.0,
+        "largest_hit_return_share": 0.3,
+        "normalized_drawdown": 0.3,
+        "roi": 1.1,
+    }
+    a = {**metrics, "policy": {"name": "a-policy"}}
+    z = {**metrics, "policy": {"name": "z-policy"}}
+    missing = {**metrics, "daily_cluster_bootstrap_roi_lower_95": None,
+               "policy": {"name": "missing"}}
+
+    assert min([z, missing, a], key=v17_policy_ranking_key) is a
+
+
+def test_v17_inner_policy_grid_never_calls_chronological_allocator(
+    monkeypatch,
+) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("inner grid must not build chronological ledgers")
+
+    monkeypatch.setattr(
+        market_calibration, "simulate_chronological_bankroll_day", fail_if_called
+    )
+    races = [_race("2026-07-18", rno) for rno in range(1, 13)]
+    selected, rows = select_policy_v17(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        daily_budget_yen=10_000,
+        policies=[
+            {"name": "no_bet", "no_bet": True},
+            {
+                "name": "candidate",
+                "ev_threshold": 1.0,
+                "max_estimated_ev": None,
+                "max_odds": None,
+                "max_tickets_per_race": 1,
+                "min_model_market_ratio": 1.0,
+                "staking_mode": "kelly_025",
+            },
+        ],
+    )
+
+    assert selected["name"] in {"no_bet", "candidate"}
+    assert all("chronological_bankroll" not in row for row in rows)
+
+
+def test_v17_is_strict_prior_result_invariant_and_chronological_primary(
+    monkeypatch,
+) -> None:
+    policies = [
+        {"name": "no_bet", "no_bet": True},
+        {
+            "name": "robust-a",
+            "ev_threshold": 1.0,
+            "max_estimated_ev": None,
+            "max_odds": None,
+            "max_tickets_per_race": 1,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+        {
+            "name": "robust-b",
+            "ev_threshold": 1.05,
+            "max_estimated_ev": None,
+            "max_odds": 40.0,
+            "max_tickets_per_race": 2,
+            "min_model_market_ratio": 1.0,
+            "staking_mode": "kelly_025",
+        },
+    ]
+    monkeypatch.setattr(market_calibration, "default_policy_grid", lambda: policies)
+    dates = ["2026-07-18", "2026-07-19", "2026-07-20", "2026-07-21"]
+    races = [_race(day, rno) for day in dates for rno in range(1, 13)]
+    for race in races:
+        race["closing_odds"] = dict(race["odds"])
+        race["closing_odds_changed"] = True
+    contaminated = [dict(race) for race in races]
+    for race in contaminated:
+        if race["race_date"] == dates[-1]:
+            race["actual_combination"] = "6-5-4"
+            race["actual_payout_yen"] = 99_990
+
+    kwargs = {
+        "min_calibration_days": 2,
+        "calibrator_strategy": market_calibration.V17_STRATEGY_NAME,
+        "evaluation_dates": [dates[-1]],
+    }
+    clean = walk_forward_evaluate(races, **kwargs)
+    changed = walk_forward_evaluate(contaminated, **kwargs)
+
+    clean_fold = clean["folds"][0]
+    changed_fold = changed["folds"][0]
+    assert clean_fold["calibration_dates"] == dates[:-1]
+    assert all(day < dates[-1] for day in clean_fold["calibration_dates"])
+    assert clean_fold["selected_policy"] == changed_fold["selected_policy"]
+    assert clean_fold["operational_model"]["return_price_basis"] == "observed_closing"
+    assert clean["model"] == market_calibration.V17_MODEL_NAME
+    assert clean["comparison_role"] == market_calibration.V17_COMPARISON_ROLE
+    assert clean["real_betting_enabled"] is False
+    assert clean["deployment_configuration"]["deployment_mode"] == "shadow_only"
+    assert clean["deployment_configuration"]["real_betting_enabled"] is False
+    assert clean["promotion_gate"]["primary_bankroll"] == "chronological_bankroll"
+    assert clean["deployment_configuration"]["walk_forward_gate"][
+        "primary_bankroll"
+    ] == "chronological_bankroll"
+    chronological = clean["chronological_bankroll"]
+    assert chronological["primary_promotion_bankroll"] is True
+    assert chronological["daily_stake_limit_fraction"] == 1.0
+    assert chronological["real_betting_enabled"] is False
+    assert chronological["daily"][0]["gross_stake_yen"] <= (
+        chronological["daily"][0]["initial_gross_stake_allowance_yen"]
+        + max(0, chronological["daily"][0]["realized_cumulative_profit_yen"])
+    )
+
+
+def test_v17_parser_and_model_identity_are_exact() -> None:
+    strategy = market_calibration.V17_STRATEGY_NAME
+    args = build_parser().parse_args([
+        "--from-date", "2026-07-18",
+        "--calibrator-strategy", strategy,
+    ])
+    assert args.calibrator_strategy == strategy
+    assert odds_path_model_name(strategy) == strategy

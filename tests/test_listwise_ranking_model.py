@@ -154,6 +154,67 @@ def test_pl_gradient_matches_finite_difference() -> None:
     assert np.allclose(gradient[0], numerical, atol=1e-6)
 
 
+def test_blended_loss_and_gradient_are_exact_convex_combination() -> None:
+    scores = np.asarray([[0.4, -0.1, 0.2, 0.0, -0.3, 0.1]], dtype=np.float64)
+    ranks = np.asarray([[2, 4, 1, 3, 6, 5]], dtype=np.int8)
+    blend = 0.37
+    winner_loss, winner_gradient = pl_loss_and_score_gradient(
+        scores, ranks, target="winner"
+    )
+    top3_loss, top3_gradient = pl_loss_and_score_gradient(
+        scores, ranks, target="top3_pl"
+    )
+    loss, gradient = pl_loss_and_score_gradient(
+        scores, ranks, target="blended", loss_blend=blend
+    )
+
+    assert loss == pytest.approx((1.0 - blend) * winner_loss + blend * top3_loss)
+    np.testing.assert_allclose(
+        gradient,
+        (1.0 - blend) * winner_gradient + blend * top3_gradient,
+        rtol=1e-14,
+        atol=1e-14,
+    )
+    epsilon = 1e-6
+    numerical = np.zeros(6)
+    for lane in range(6):
+        plus = scores.copy()
+        minus = scores.copy()
+        plus[0, lane] += epsilon
+        minus[0, lane] -= epsilon
+        plus_loss, _ = pl_loss_and_score_gradient(
+            plus, ranks, target="blended", loss_blend=blend
+        )
+        minus_loss, _ = pl_loss_and_score_gradient(
+            minus, ranks, target="blended", loss_blend=blend
+        )
+        numerical[lane] = (plus_loss - minus_loss) / (2 * epsilon)
+    np.testing.assert_allclose(gradient[0], numerical, atol=1e-6)
+
+
+def test_blended_training_is_deterministic_and_stops_without_validation_data() -> None:
+    dataset = synthetic_dataset()
+    arguments = dict(
+        train_race_end=60,
+        target="blended",
+        loss_blend=0.4,
+        alpha=1e-5,
+        learning_rate=0.03,
+        epochs=6,
+        batch_races=12,
+        early_stopping_patience=1,
+        early_stopping_min_delta=1e9,
+    )
+    first, first_history = train_listwise_model(dataset, **arguments)
+    second, second_history = train_listwise_model(dataset, **arguments)
+
+    assert len(first_history) == len(second_history) == 2
+    assert first.epochs == second.epochs == 1
+    assert first.loss_blend == second.loss_blend == 0.4
+    np.testing.assert_array_equal(first.weights, second.weights)
+    assert first_history == second_history
+
+
 def test_listwise_training_learns_race_relative_order() -> None:
     dataset = synthetic_dataset()
     model, history = train_listwise_model(

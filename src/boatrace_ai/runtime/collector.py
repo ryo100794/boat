@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from ..db import connection, init_db
 from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..operational_model import predict_open_races
 from .result_polling import due_result_rows, result_interval
+from .t5_spool import DEFAULT_MAX_BYTES, T5DurabilityWorker, T5Spool, replay_spool
 from .time_semantics import JST, estimated_deadline_from_start, now_jst, operational_race_date, stored_start_time
 
 from ..ingestion.live import (
@@ -24,11 +26,51 @@ from ..ingestion.live import (
 )
 
 
+PRIORITY_ODDS_TIMEOUT_SECONDS = 5.0
+PRIORITY_ODDS_RETRIES = 0
+SCHEDULE_REFRESH_GUARD_SECONDS = 20 * 60.0
+
+
+def start_t5_worker_before_storage_init(
+    worker: T5DurabilityWorker,
+    db: str,
+    *,
+    retry_seconds: float = 5.0,
+) -> None:
+    """Keep durable T300 capture alive while storage initialization recovers."""
+    worker.start()
+    while True:
+        try:
+            init_db(db)
+            return
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {
+                        "event": "storage_init_retry",
+                        "error": type(exc).__name__,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            time.sleep(retry_seconds)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Adaptive odds/results loop using stored race-start times and no-odds v8.")
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--model", default="data/models/win_model_no_odds_v8.joblib")
     parser.add_argument("--raw-dir", default="data/raw")
+    parser.add_argument(
+        "--t5-spool-dir",
+        default=os.environ.get("BOATRACE_T5_SPOOL_DIR", "data/runtime_spool/t5"),
+    )
+    parser.add_argument(
+        "--t5-spool-max-bytes",
+        type=int,
+        default=int(os.environ.get("BOATRACE_T5_SPOOL_MAX_BYTES", DEFAULT_MAX_BYTES)),
+    )
     parser.add_argument("--date", help="Fix one race date; omit to follow the current JST date automatically.")
     parser.add_argument("--sleep-loop", type=float, default=10.0)
     parser.add_argument("--sleep-page", type=float, default=0.4)
@@ -37,10 +79,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--collect-results", action="store_true")
     args = parser.parse_args(argv)
 
-    init_db(args.db)
     fixed_date = date.fromisoformat(args.date) if args.date else None
     raw_dir = Path(args.raw_dir)
     model_path = Path(args.model)
+    t5_spool = T5Spool(
+        args.t5_spool_dir,
+        max_bytes=args.t5_spool_max_bytes,
+        archive_raw_dir=raw_dir,
+    )
+    t5_worker = T5DurabilityWorker(
+        t5_spool,
+        date_provider=lambda: operational_race_date(fixed_date, at=now_jst()),
+    )
+    start_t5_worker_before_storage_init(t5_worker, args.db)
     loop = 0
     schedule_date: date | None = None
     next_schedule_refresh = 0.0
@@ -58,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
             "t5_priority_failed": 0,
             "t5_guard_targets": 0,
             "t5_guard_until_seconds": None,
+            "closing_priority_targets": 0,
+            "closing_priority_ok": 0,
+            "closing_priority_failed": 0,
+            "closing_guard_targets": 0,
+            "closing_guard_until_seconds": None,
             "beforeinfo_targets": 0,
             "beforeinfo_ok": 0,
             "beforeinfo_failed": 0,
@@ -77,10 +133,22 @@ def main(argv: list[str] | None = None) -> int:
             "program_entries": 0,
         }
         with connection(args.db) as conn:
+            counters["t5_spool_replay"] = replay_spool(t5_spool, conn)
+            rows = scheduled_races(conn, target_date)
+            t5_spool.save_schedule(target_date, rows)
+            counters["t5_spool_sync_captures"] = t5_worker.capture_due_once(now=now)
+            synchronous_replay = replay_spool(t5_spool, conn)
+            for key in ("replayed", "failed", "corrupt_tail_records"):
+                counters["t5_spool_replay"][key] += synchronous_replay[key]
+            if synchronous_replay["replayed"]:
+                rows = scheduled_races(conn, target_date)
+                t5_spool.save_schedule(target_date, rows)
             refresh_due = fixed_date is None and (
                 schedule_date != target_date or time.monotonic() >= next_schedule_refresh
             )
-            if refresh_due:
+            if refresh_due and schedule_refresh_blocked(rows, now=now):
+                counters["program_status"] = "deferred_priority_window"
+            elif refresh_due:
                 try:
                     counters.update(load_daily_program(conn, race_date=target_date, raw_dir=raw_dir))
                 except Exception as exc:
@@ -94,17 +162,17 @@ def main(argv: list[str] | None = None) -> int:
                 counters.update(schedule)
                 schedule_date = target_date
                 next_schedule_refresh = time.monotonic() + 15 * 60
-            rows = scheduled_races(conn, target_date)
+                rows = scheduled_races(conn, target_date)
+                t5_spool.save_schedule(target_date, rows)
             priority_odds_ids: set[str] = set()
             for priority_row in t5_priority_rows(rows, now=now):
                 race_id = str(priority_row["race_id"])
                 counters["t5_priority_targets"] += 1
                 counters["odds_targets"] += 1
-                ok = collect_odds(
+                ok = collect_priority_odds(
                     conn,
                     race_date=target_date,
-                    jcd=priority_row["jcd"],
-                    rno=int(priority_row["rno"]),
+                    row=priority_row,
                     raw_dir=raw_dir,
                 )
                 conn.commit()
@@ -125,23 +193,62 @@ def main(argv: list[str] | None = None) -> int:
                     counters=counters,
                 )
                 time.sleep(args.sleep_page)
+            closing_odds_ids: set[str] = set()
+            for closing_seconds, closing_row in closing_priority_rows(rows, now=now_jst()):
+                race_id = str(closing_row["race_id"])
+                counters["closing_priority_targets"] += 1
+                counters["odds_targets"] += 1
+                ok = collect_priority_odds(
+                    conn,
+                    race_date=target_date,
+                    row=closing_row,
+                    raw_dir=raw_dir,
+                    cache_bust=True,
+                )
+                conn.commit()
+                if ok:
+                    closing_odds_ids.add(race_id)
+                    counters["closing_priority_ok"] += 1
+                    counters["odds_ok"] += 1
+                else:
+                    counters["closing_priority_failed"] += 1
+                    counters["odds_failed"] += 1
+                refresh_prediction(
+                    conn,
+                    enabled=args.predict,
+                    model_path=model_path,
+                    race_date=target_date,
+                    row=closing_row,
+                    odds_collected=bool(ok),
+                    counters=counters,
+                )
+                time.sleep(args.sleep_page)
             guard_now = now_jst()
             guarded_rows = t5_guard_rows(
                 rows,
                 now=guard_now,
                 satisfied_race_ids=priority_odds_ids,
             )
-            if guarded_rows:
+            closing_guarded_rows = closing_guard_rows(rows, now=guard_now)
+            if guarded_rows or closing_guarded_rows:
                 counters["t5_guard_targets"] = len(guarded_rows)
-                counters["t5_guard_until_seconds"] = round(
-                    guarded_rows[0][0], 1
+                counters["t5_guard_until_seconds"] = (
+                    round(guarded_rows[0][0], 1) if guarded_rows else None
+                )
+                counters["closing_guard_targets"] = len(closing_guarded_rows)
+                counters["closing_guard_until_seconds"] = (
+                    round(closing_guarded_rows[0][0], 1)
+                    if closing_guarded_rows
+                    else None
                 )
                 counters["now_jst"] = guard_now.isoformat(timespec="seconds")
+                counters["t5_spool"] = t5_worker.status()
                 print(json.dumps(counters, ensure_ascii=False), flush=True)
                 loop += 1
                 if args.max_loops is not None and loop >= args.max_loops:
+                    t5_worker.stop()
                     return 0
-                time.sleep(min(args.sleep_loop, 5.0))
+                time.sleep(min(args.sleep_loop, 2.0 if closing_guarded_rows else 5.0))
                 continue
             if args.collect_results:
                 for result_row in due_result_rows(rows, now=now):
@@ -198,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         counters["beforeinfo_failed"] += 1
                     time.sleep(args.sleep_page)
-                if str(row["race_id"]) in priority_odds_ids:
+                if str(row["race_id"]) in priority_odds_ids or str(row["race_id"]) in closing_odds_ids:
                     continue
 
                 interval = odds_interval(seconds_to_cutoff)
@@ -232,9 +339,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 time.sleep(args.sleep_page)
         counters["now_jst"] = now.isoformat(timespec="seconds")
+        counters["t5_spool"] = t5_worker.status()
         print(json.dumps(counters, ensure_ascii=False), flush=True)
         loop += 1
         if args.max_loops is not None and loop >= args.max_loops:
+            t5_worker.stop()
             return 0
         time.sleep(args.sleep_loop)
 
@@ -467,7 +576,7 @@ def t5_guard_rows(
     *,
     now: datetime,
     satisfied_race_ids: set[str] | None = None,
-    guard_seconds: float = 90.0,
+    guard_seconds: float = 300.0,
 ) -> list[tuple[float, Any]]:
     """Reserve the collector for an imminent T-5 capture window."""
     satisfied = satisfied_race_ids or set()
@@ -495,6 +604,49 @@ def t5_guard_rows(
             continue
         candidates.append((seconds, row))
     return sorted(candidates, key=lambda item: item[0])
+
+
+def schedule_refresh_blocked(
+    rows: list[Any],
+    *,
+    now: datetime,
+    guard_seconds: float = SCHEDULE_REFRESH_GUARD_SECONDS,
+) -> bool:
+    """Defer serial program requests while any betting cutoff is imminent."""
+    for row in rows:
+        start_at = stored_start_time(row["deadline_at"])
+        cutoff_at = estimated_deadline_from_start(start_at)
+        if cutoff_at is None:
+            continue
+        seconds = (cutoff_at - now).total_seconds()
+        if 0.0 <= seconds <= guard_seconds:
+            return True
+    return False
+
+
+def collect_priority_odds(
+    conn,
+    *,
+    race_date: date,
+    row: Any,
+    raw_dir: Path,
+    cache_bust: bool = False,
+) -> bool:
+    """Keep one slow venue from starving other time-critical captures."""
+    try:
+        return collect_odds(
+            conn,
+            race_date=race_date,
+            jcd=row["jcd"],
+            rno=int(row["rno"]),
+            raw_dir=raw_dir,
+            cache_bust=cache_bust,
+            timeout=PRIORITY_ODDS_TIMEOUT_SECONDS,
+            retries=PRIORITY_ODDS_RETRIES,
+        )
+    except Exception:
+        conn.rollback()
+        return False
 
 
 def t5_priority_rows(rows: list[Any], *, now: datetime) -> list[Any]:
@@ -527,13 +679,50 @@ def beforeinfo_interval(seconds_to_start: float, *, has_rows: bool) -> float | N
     return 90.0
 
 
+def closing_snapshot_is_fresh(*, now: datetime, latest_odds: datetime | None) -> bool:
+    return bool(
+        latest_odds is not None
+        and 0.0 <= (now - latest_odds).total_seconds() <= 12.0
+    )
+
+
+def closing_priority_rows(
+    rows: list[Any], *, now: datetime, window_seconds: float = 75.0
+) -> list[tuple[float, Any]]:
+    candidates: list[tuple[float, Any]] = []
+    for row in rows:
+        cutoff_at = estimated_deadline_from_start(
+            stored_start_time(row["deadline_at"])
+        )
+        if cutoff_at is None:
+            continue
+        seconds = (cutoff_at - now).total_seconds()
+        if not 0.0 <= seconds <= window_seconds:
+            continue
+        latest_odds = parse_time(
+            row["latest_odds_at"], default_tz=timezone.utc
+        )
+        if closing_snapshot_is_fresh(now=now, latest_odds=latest_odds):
+            continue
+        candidates.append((seconds, row))
+    return sorted(candidates, key=lambda item: item[0])
+
+
+def closing_guard_rows(
+    rows: list[Any], *, now: datetime, window_seconds: float = 75.0
+) -> list[tuple[float, Any]]:
+    return closing_priority_rows(rows, now=now, window_seconds=window_seconds)
+
+
 def odds_interval(seconds_to_cutoff: float) -> float | None:
     if seconds_to_cutoff < 0:
         return None
-    if seconds_to_cutoff <= 90:
+    if seconds_to_cutoff <= 75:
+        return 5.0
+    if seconds_to_cutoff <= 3 * 60:
         return 10.0
     if seconds_to_cutoff <= 5 * 60:
-        return 20.0
+        return 15.0
     if seconds_to_cutoff <= 15 * 60:
         return 45.0
     if seconds_to_cutoff <= 60 * 60:

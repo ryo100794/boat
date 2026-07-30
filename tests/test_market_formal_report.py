@@ -30,6 +30,8 @@ def test_model_report_prefers_formal_fold_confidence_over_intraday_probe(
             {
                 "evaluated_races": 120,
                 "calibrated_trifecta_log_loss": 3.70,
+                "winner_log_loss": 1.10,
+                "winner_top1_accuracy": 0.58,
                 "trifecta_top5_hit_rate": 0.33,
                 "market_comparison": _comparison(
                     observations=120,
@@ -62,6 +64,8 @@ def test_model_report_prefers_formal_fold_confidence_over_intraday_probe(
     residual = tracks["market_residual_shadow"]
 
     assert residual["entry_log_loss"] is None
+    assert residual["winner_log_loss"] == 1.10
+    assert residual["winner_top1_accuracy"] == 0.58
     assert residual["trifecta_log_loss"] == 3.70
     assert residual["trifecta_top5_hit_rate"] == 0.33
     assert residual["market_comparison_races"] == 120

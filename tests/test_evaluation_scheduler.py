@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import errno
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 from boatrace_ai.evaluation_queue import (
     ResourceSnapshot,
     SCHEMA,
     build_command,
+    job_workspace_reservation_mb,
     resources_allow,
     seed_periodic_jobs,
+    workspace_quota_allows,
 )
 
 
@@ -60,6 +64,85 @@ def test_resource_gate_requires_memory_disk_and_idle_cpu() -> None:
     )
 
 
+def test_workspace_quota_probe_reserves_target_and_removes_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def fake_fallocate(descriptor: int, offset: int, length: int) -> None:
+        assert os.fstat(descriptor).st_size == 0
+        calls.append((offset, length))
+
+    monkeypatch.setattr(os, "posix_fallocate", fake_fallocate)
+
+    assert workspace_quota_allows(tmp_path, required_mb=12) is True
+    assert calls == [(0, 12 * 1024**2)]
+    assert not list((tmp_path / "data" / "archive-staging").iterdir())
+
+
+def test_workspace_quota_probe_rejects_quota_and_removes_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    real_close = os.close
+
+    def fail_fallocate(_descriptor: int, _offset: int, _length: int) -> None:
+        raise OSError(errno.EDQUOT, "quota")
+
+    def close_then_report_quota(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError(errno.EDQUOT, "quota on close")
+
+    monkeypatch.setattr(os, "posix_fallocate", fail_fallocate)
+    monkeypatch.setattr(os, "close", close_then_report_quota)
+
+    assert workspace_quota_allows(tmp_path, required_mb=12) is False
+    monkeypatch.setattr(os, "close", real_close)
+    assert not list((tmp_path / "data" / "archive-staging").iterdir())
+
+
+def test_mlp_workspace_reservation_drops_after_complete_cache(
+    tmp_path: Path,
+) -> None:
+    job = {
+        "task_type": "calibrated_mlp_recency_search",
+        "min_free_disk_mb": 12288,
+        "parameters": {
+            "drop_feature_groups": (
+                "raw_equipment_identifiers,speculative_research,"
+                "live_official_context"
+            )
+        },
+    }
+
+    assert job_workspace_reservation_mb(job, tmp_path) == 1024
+
+    prefix = (
+        tmp_path
+        / "data/models/"
+        "calibrated_shadow_features_16384__drop_"
+        "raw_equipment_identifiers_speculative_research_live_official_context"
+    )
+    prefix.parent.mkdir(parents=True)
+    for suffix in ("matrix.npz", "ranks.npy", "manifest.json"):
+        Path(f"{prefix}.{suffix}").write_bytes(b"complete")
+
+    assert job_workspace_reservation_mb(job, tmp_path) == 256
+
+
+def test_non_mlp_workspace_reservation_uses_profile_requirement(
+    tmp_path: Path,
+) -> None:
+    assert job_workspace_reservation_mb(
+        {
+            "task_type": "bankroll_policy_nested_annual",
+            "min_free_disk_mb": 4096,
+        },
+        tmp_path,
+    ) == 256
+
+
 def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch) -> None:
     calls = []
 
@@ -73,11 +156,12 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
         _IdleQueue(), now=datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc)
     )
 
-    assert inserted == [1, 2, 3, 4]
+    assert inserted == [1, 2, 3, 4, 5]
     assert [row["task_type"] for row in calls] == [
         "gdrive_raw_archive",
         "evaluation_aggregate",
         "series_feature_cache",
+        "repository_sync",
         "repository_hygiene",
     ]
     assert all("schedule_bucket" in row["parameters"] for row in calls)
@@ -85,6 +169,9 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
     assert hygiene["model_key"] == "repository"
     assert hygiene["parameters"]["timeout_seconds"] == 300
     assert hygiene["priority"] == 20
+    sync = next(row for row in calls if row["task_type"] == "repository_sync")
+    assert sync["parameters"]["timeout_seconds"] == 300
+    assert sync["priority"] == 25
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
@@ -132,9 +219,32 @@ def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
         "--output",
         str(root / "data/models/evaluation_queue/job-00000014.json"),
     ]
+    sync, sync_output = build_command(
+        {
+            "job_id": 15,
+            "task_type": "repository_sync",
+            "parameters": {},
+        },
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
     assert aggregate_output.name == "job-00000012.json"
     assert backup_output.name == "job-00000013.json"
     assert hygiene_output.name == "job-00000014.json"
+    assert sync == [
+        str(root / ".venv/bin/python"),
+        "-m",
+        "boatrace_ai.maintenance_tasks",
+        "repository-sync",
+        "--db",
+        "postgresql://test",
+        "--app-root",
+        str(root),
+        "--output",
+        str(root / "data/models/evaluation_queue/job-00000015.json"),
+    ]
+    assert sync_output.name == "job-00000015.json"
 
 
 def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
@@ -149,15 +259,21 @@ def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
         "github_issue_url",
         "github_issue_updated_at",
         "last_synced_at",
+        "due_at",
     ):
         assert f"ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS {column}" in SCHEMA
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_tickets_github_issue" in SCHEMA
     assert "WHERE github_issue_number IS NOT NULL" in SCHEMA
 
 
-def test_supervisor_enables_periodic_scheduler() -> None:
-    config = Path(
+def test_supervisor_separates_periodic_scheduler_from_workers() -> None:
+    runner = Path(
         "scripts/deployment/supervisor-boatrace-evaluation-runner.ini"
     ).read_text(encoding="utf-8")
+    scheduler = Path(
+        "scripts/deployment/supervisor-boatrace-evaluation-scheduler.ini"
+    ).read_text(encoding="utf-8")
 
-    assert "--schedule-periodic" in config
+    assert "--schedule-periodic" not in runner
+    assert "boatrace_ai.evaluation_queue schedule" in scheduler
+    assert "--seed-defaults" in scheduler

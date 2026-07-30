@@ -20,6 +20,12 @@
     .bankroll-head select { width:min(250px,32vw); height:19px; font-size:9px; }
     .bankroll-head .muted { overflow:hidden; text-overflow:ellipsis; }
     .bankroll-stats { display:grid; grid-template-columns:repeat(9,minmax(62px,1fr)); gap:1px; margin-top:2px; border:1px solid var(--line); background:var(--line); }
+    .bankroll-top-models { margin-top:2px; max-height:106px; overflow:auto; border:1px solid var(--line); background:#fff; }
+    .bankroll-top-models table { width:100%; table-layout:fixed; font-size:8px; line-height:1.05; }
+    .bankroll-top-models th,.bankroll-top-models td { padding:1px 3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .bankroll-top-models th:nth-child(1),.bankroll-top-models td:nth-child(1) { width:25px; text-align:right; }
+    .bankroll-top-models th:nth-child(2),.bankroll-top-models td:nth-child(2) { width:33%; }
+    .bankroll-top-models th:nth-child(n+3),.bankroll-top-models td:nth-child(n+3) { text-align:right; }
     .bankroll-kpi { min-width:0; padding:2px 4px; background:#fff; }
     .bankroll-kpi b { display:block; font-size:11px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .bankroll-kpi span { display:block; color:var(--muted); font-size:7.5px; line-height:1; }
@@ -192,6 +198,7 @@
   <div class="bankroll-band">
     <div class="bankroll-head"><strong>当日資金運用 10,000円</strong><select id="bankrollModel" title="評価モデル"></select><span id="bankrollMeta" class="muted">集計中</span></div>
     <div id="bankrollStats" class="bankroll-stats"></div>
+    <div class="bankroll-top-models"><table><thead><tr><th>#</th><th>統一評価済み推論モデル / 生成日時</th><th>残高</th><th>損益</th><th>当日ROI</th><th>購入R</th><th>最大DD</th><th>365d ROI</th></tr></thead><tbody id="bankrollTopModels"><tr><td colspan="8" class="muted">上位10モデル集計中</td></tr></tbody></table></div>
     <div class="bankroll-charts">
       <div class="bankroll-chart"><b>開催タイムライン / 資金トレンド / レース別購入・払戻</b><canvas id="bankrollProfitChart" width="1200" height="340"></canvas></div>
     </div>
@@ -357,9 +364,24 @@ async function loadDayBankroll(d, loadId=null){
     const data = await getJson(`/api/day-bankroll?date=${encodeURIComponent(d)}${model}`);
     if(loadId !== null && loadId !== state.loadId) return;
     renderDayBankroll(data);
+    loadTopModelBankroll(d, loadId);
   } catch(err) {
     console.error(err);
     $("bankrollMeta").textContent = `資金運用エラー: ${err.message || err}`;
+  }
+}
+async function loadTopModelBankroll(d, loadId=null){
+  try {
+    const data = await getJson(`/api/day-bankroll-top-models?date=${encodeURIComponent(d)}`);
+    if(loadId !== null && loadId !== state.loadId) return;
+    const rows = data.simulations || [];
+    $("bankrollTopModels").innerHTML = rows.length ? rows.map(row => {
+      const model=row.model||{}, s=row.stats||{}, evaluation=model.evaluation||{}, profit=Number(s.profit_yen||0);
+      return `<tr title="${escapeHtml(data.ranking_basis||"")}"><td>${row.rank}</td><td>${escapeHtml(model.label||model.id||"-")}</td><td>${yen(s.current_bankroll_yen)}</td><td class="${profit>=0?"bankroll-profit":"bankroll-loss"}">${profit>=0?"+":""}${yen(profit)}</td><td>${pct(s.roi)}</td><td>${s.selected_races||0}/${s.evaluated_races||0}</td><td>${yen(s.max_drawdown_yen)}</td><td>${pct(evaluation.roi)}</td></tr>`;
+    }).join("") : `<tr><td colspan="8" class="muted">統一評価済みかつ推論可能なモデルがありません</td></tr>`;
+  } catch(err) {
+    console.error(err);
+    $("bankrollTopModels").innerHTML = `<tr><td colspan="8" class="bad">上位モデル集計エラー: ${escapeHtml(err.message||err)}</td></tr>`;
   }
 }
 function renderDayBankroll(data){

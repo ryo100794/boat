@@ -324,6 +324,8 @@ def latest_trifecta_odds_before_deadline(
     *,
     min_combinations: int = 120,
     decision_lead_minutes: int = 0,
+    target_offset_seconds: int | None = None,
+    max_snapshot_age_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     race = conn.execute(
         """
@@ -342,8 +344,12 @@ def latest_trifecta_odds_before_deadline(
     betting_deadline_at = start_at - timedelta(
         minutes=STORED_START_TO_BETTING_DEADLINE_MINUTES
     )
+    if target_offset_seconds is None:
+        requested_offset_seconds = max(0, int(decision_lead_minutes)) * 60
+    else:
+        requested_offset_seconds = max(0, int(target_offset_seconds))
     odds_deadline_at = betting_deadline_at - timedelta(
-        minutes=max(0, int(decision_lead_minutes))
+        seconds=requested_offset_seconds
     )
 
     snapshots = conn.execute(
@@ -352,6 +358,7 @@ def latest_trifecta_odds_before_deadline(
           os.snapshot_id,
           os.captured_at,
           os.source_update_time,
+          os.raw_json,
           COUNT(ot.odds) AS odds_count
         FROM odds_snapshots os
         JOIN odds_trifecta ot ON ot.snapshot_id = os.snapshot_id
@@ -360,7 +367,8 @@ def latest_trifecta_odds_before_deadline(
           AND os.parser_version = ?
           AND ot.odds IS NOT NULL
           AND ot.odds > 0
-        GROUP BY os.snapshot_id, os.captured_at, os.source_update_time
+        GROUP BY os.snapshot_id, os.captured_at,
+                 os.source_update_time, os.raw_json
         HAVING COUNT(ot.odds) >= ?
         """,
         (race_id, TRIFECTA_PARSER_VERSION, min_combinations),
@@ -368,11 +376,23 @@ def latest_trifecta_odds_before_deadline(
 
     eligible = []
     for snapshot in snapshots:
-        captured_at = _parse_snapshot_time(str(snapshot["captured_at"]), default_tz=odds_deadline_at.tzinfo)
+        captured_at = _parse_snapshot_time(
+            str(snapshot["captured_at"]),
+            default_tz=odds_deadline_at.tzinfo,
+        )
         if captured_at is None:
             continue
-        if captured_at <= odds_deadline_at:
-            eligible.append((captured_at, int(snapshot["snapshot_id"]), snapshot))
+        age_seconds = (odds_deadline_at - captured_at).total_seconds()
+        if (
+            age_seconds >= 0.0
+            and (
+                max_snapshot_age_seconds is None
+                or age_seconds <= float(max_snapshot_age_seconds)
+            )
+        ):
+            eligible.append(
+                (captured_at, int(snapshot["snapshot_id"]), snapshot)
+            )
     if not eligible:
         return None
 
@@ -396,9 +416,13 @@ def latest_trifecta_odds_before_deadline(
             "snapshot_id": snapshot_id,
             "captured_at": snapshot["captured_at"],
             "source_update_time": snapshot["source_update_time"],
+            "raw_json": snapshot["raw_json"],
             "odds_deadline_at": odds_deadline_at.isoformat(timespec="seconds"),
-            "betting_deadline_at": betting_deadline_at.isoformat(timespec="seconds"),
+            "betting_deadline_at": betting_deadline_at.isoformat(
+                timespec="seconds"
+            ),
             "decision_lead_minutes": max(0, int(decision_lead_minutes)),
+            "target_offset_seconds": requested_offset_seconds,
             "odds_count": len(odds),
             "odds": odds,
         }

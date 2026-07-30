@@ -22,7 +22,7 @@ exec 9>"$lock_dir/raw-archive.lock"
 
 upload_archive() {
   local archive="$1"
-  local checksum="${archive}.sha256"
+  local checksum="${archive}.sha256" local_md5 remote_md5
 
   "$rclone_bin" mkdir "$remote" --config "$config"
   "$rclone_bin" copyto "$archive" "$remote/$(basename "$archive")" \
@@ -31,6 +31,14 @@ upload_archive() {
   "$rclone_bin" copyto "$checksum" "$remote/$(basename "$checksum")" \
     --config "$config" --retries 5 --low-level-retries 10 \
     --contimeout 30s --timeout 5m
+  local_md5="$("$rclone_bin" md5sum "$archive" --config "$config" | awk 'NR == 1 {print $1}')"
+  remote_md5="$("$rclone_bin" md5sum "$remote/$(basename "$archive")" \
+    --config "$config" | awk 'NR == 1 {print $1}')"
+  if [[ -z "$local_md5" || "$local_md5" != "$remote_md5" ]]; then
+    echo "remote archive verification failed: $(basename "$archive")" >&2
+    return 1
+  fi
+  echo "verified remote md5 $remote_md5 for $(basename "$archive")"
 }
 
 finish_archive() {

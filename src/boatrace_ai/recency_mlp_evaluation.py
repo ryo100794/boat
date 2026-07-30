@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
 from sklearn.feature_extraction import FeatureHasher
@@ -29,6 +29,7 @@ from .calibrated_shadow_model import (
 from .db import connection
 from .hashed_feature_dataset import HashedRaceDataset, load_or_build_hashed_dataset
 from .fast_math import plackett_luce_probabilities
+from .feature_schema import FEATURE_SCHEMA_VERSION
 from .feature_tuning import normalize_drop_feature_groups
 from .listwise.conditional_order import (
     DEFAULT_REGULARIZATIONS,
@@ -45,6 +46,13 @@ from .listwise.direct_bankroll import (
 from .listwise.newton_refine import dump_joblib_atomic
 from .listwise.validation import default_policy, evaluate_bankroll_fold
 from .modeling import _race_level_metrics
+from .protected_historical_blend import (
+    blend_predictions,
+    prediction_metrics as protected_prediction_metrics,
+    select_protected_blend,
+)
+from .protected_historical_evaluation import file_sha256
+from .protected_prediction_cache import cached_historical_baseline_range
 from .standard_evaluation import (
     POLICY as STANDARD_POLICY,
     build_protocol,
@@ -64,6 +72,7 @@ BATCH_SIZE = 12_000
 EPOCHS = 2
 ALPHA = 0.0001
 ORDER_VALIDATION_DAYS = 60
+SELECTION_ENTRY_LOG_LOSS_TOLERANCE = 0.0005
 
 
 def parse_evaluation_date(value: str) -> date:
@@ -242,10 +251,16 @@ def score_range(
         raise ValueError("scored entry count does not match the requested range")
     if any(len(rows) != 6 for rows in predictions.values()):
         raise ValueError("scored range contains incomplete races")
+    race_keys = dataset.race_keys[race_start:race_end]
+    trifecta_metrics = evaluate_probabilities(
+        trifecta_probability_matrix(dict(predictions), race_keys),
+        dataset.ranks[race_start:race_end],
+    )
     metrics = {
         "entry_log_loss": safe_log_loss(labels, probabilities),
         "entry_brier": float(brier_score_loss(labels, probabilities)),
         **_race_level_metrics(predictions),
+        "trifecta_log_loss": float(trifecta_metrics["trifecta_log_loss"]),
     }
     return metrics, dict(predictions)
 
@@ -260,62 +275,151 @@ def select_recency_half_life(
     epochs: int = EPOCHS,
     alpha: float = ALPHA,
     prediction_output: dict[str, list[dict[str, Any]]] | None = None,
+    bundle_trainer: Callable[..., dict[str, Any]] | None = None,
+    model_kind: str = "mlp",
+    trainer_kwargs: dict[str, Any] | None = None,
+    trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
+    selection_entry_log_loss_tolerance: float = SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
 ) -> tuple[float | None, list[dict[str, Any]], dict[str, Any]]:
     if not half_lives:
         raise ValueError("at least one half-life candidate is required")
+    if (
+        not np.isfinite(selection_entry_log_loss_tolerance)
+        or not 0.0 <= selection_entry_log_loss_tolerance <= 0.05
+    ):
+        raise ValueError(
+            "selection entry log loss tolerance must be between 0 and 0.05"
+        )
     inner_train_end, calibration_start, calibration_end = inner_calibration_boundary(
         dataset.race_keys,
         outer_train_end=outer_train_end,
         calibration_days=calibration_days,
     )
     candidates: list[dict[str, Any]] = []
-    selected_key: tuple[float, int, float] | None = None
+    selected_key: tuple[float, int, float, int] | None = None
     selected_predictions: dict[str, list[dict[str, Any]]] = {}
-    for half_life in half_lives:
-        bundle = train_bundle_from_dataset(
-            dataset,
-            train_race_count=inner_train_end,
-            model_kind="mlp",
-            batch_size=batch_size,
-            epochs=epochs,
-            alpha=alpha,
-            recency_half_life_days=half_life,
-        )
-        metrics, candidate_predictions = score_range(
-            dataset,
-            bundle=bundle,
-            race_start=inner_train_end,
-            race_end=outer_train_end,
-            batch_size=batch_size,
-        )
-        if not np.isfinite(float(metrics["entry_log_loss"])):
-            raise ValueError("candidate calibration log loss is not finite")
-        candidate = {
-            "recency_half_life_days": half_life,
-            "inner_train_races": inner_train_end,
-            "calibration_races": outer_train_end - inner_train_end,
-            "calibration_start": calibration_start,
-            "calibration_end": calibration_end,
-            **metrics,
-        }
-        candidates.append(candidate)
-        candidate_key = (
-            float(candidate["entry_log_loss"]),
-            0 if half_life is None else 1,
-            -float(half_life or 0.0),
-        )
-        if selected_key is None or candidate_key < selected_key:
-            selected_key = candidate_key
-            selected_predictions = candidate_predictions
+    trainer = bundle_trainer or train_bundle_from_dataset
+    default_trainer_kwargs = dict(trainer_kwargs or {})
+    parameter_candidates = (
+        [dict(row) for row in trainer_parameter_candidates]
+        if trainer_parameter_candidates is not None
+        else [default_trainer_kwargs]
+    )
+    if not parameter_candidates:
+        raise ValueError("at least one trainer parameter candidate is required")
+    for parameter_index, candidate_trainer_kwargs in enumerate(parameter_candidates):
+        for half_life in half_lives:
+            bundle = trainer(
+                dataset,
+                train_race_count=inner_train_end,
+                model_kind=model_kind,
+                batch_size=batch_size,
+                epochs=epochs,
+                alpha=alpha,
+                recency_half_life_days=half_life,
+                **candidate_trainer_kwargs,
+            )
+            metrics, candidate_predictions = score_range(
+                dataset,
+                bundle=bundle,
+                race_start=inner_train_end,
+                race_end=outer_train_end,
+                batch_size=batch_size,
+            )
+            if not np.isfinite(float(metrics["entry_log_loss"])):
+                raise ValueError("candidate calibration log loss is not finite")
+            candidate = {
+                "recency_half_life_days": half_life,
+                "trainer_parameters": dict(candidate_trainer_kwargs),
+                "trainer_parameter_index": parameter_index,
+                "inner_train_races": inner_train_end,
+                "calibration_races": outer_train_end - inner_train_end,
+                "calibration_start": calibration_start,
+                "calibration_end": calibration_end,
+                **metrics,
+            }
+            candidates.append(candidate)
+            candidate_key = (
+                float(candidate["entry_log_loss"]),
+                0 if half_life is None else 1,
+                -float(half_life or 0.0),
+                parameter_index,
+            )
+            if selected_key is None or candidate_key < selected_key:
+                selected_key = candidate_key
+                selected_predictions = candidate_predictions
 
-    selected = min(
+    if selection_entry_log_loss_tolerance > 0.0:
+        best_loss = min(float(row["entry_log_loss"]) for row in candidates)
+        eligible = [
+            row
+            for row in candidates
+            if float(row["entry_log_loss"])
+            <= best_loss + selection_entry_log_loss_tolerance
+        ]
+        selected = min(
+            eligible,
+            key=lambda row: (
+                float(row["trifecta_log_loss"]),
+                -float(row["trifecta_top5_hit_rate"]),
+                -float(row["winner_top1_accuracy"]),
+                float(row["entry_log_loss"]),
+                0 if row["recency_half_life_days"] is None else 1,
+                -float(row["recency_half_life_days"] or 0.0),
+                int(row["trainer_parameter_index"]),
+            ),
+        )
+        selection_criterion = (
+            "minimum calibration trifecta_log_loss among candidates within "
+            f"{selection_entry_log_loss_tolerance:g} of best entry_log_loss; "
+            "trifecta_top5_hit_rate and winner_top1_accuracy tie-breaks"
+        )
+    else:
+        selected = min(
+            candidates,
+            key=lambda row: (
+                float(row["entry_log_loss"]),
+                0 if row["recency_half_life_days"] is None else 1,
+                -float(row["recency_half_life_days"] or 0.0),
+                int(row["trainer_parameter_index"]),
+            ),
+        )
+        selection_criterion = "minimum calibration entry_log_loss"
+    selected_signature = (
+        selected["recency_half_life_days"],
+        int(selected["trainer_parameter_index"]),
+    )
+    provisional = min(
         candidates,
         key=lambda row: (
             float(row["entry_log_loss"]),
             0 if row["recency_half_life_days"] is None else 1,
             -float(row["recency_half_life_days"] or 0.0),
+            int(row["trainer_parameter_index"]),
         ),
     )
+    provisional_signature = (
+        provisional["recency_half_life_days"],
+        int(provisional["trainer_parameter_index"]),
+    )
+    if prediction_output is not None and selected_signature != provisional_signature:
+        selected_bundle = trainer(
+            dataset,
+            train_race_count=inner_train_end,
+            model_kind=model_kind,
+            batch_size=batch_size,
+            epochs=epochs,
+            alpha=alpha,
+            recency_half_life_days=selected["recency_half_life_days"],
+            **dict(selected["trainer_parameters"]),
+        )
+        _, selected_predictions = score_range(
+            dataset,
+            bundle=selected_bundle,
+            race_start=inner_train_end,
+            race_end=outer_train_end,
+            batch_size=batch_size,
+        )
     if prediction_output is not None:
         prediction_output.clear()
         prediction_output.update(selected_predictions)
@@ -324,6 +428,12 @@ def select_recency_half_life(
         "calibration_races": outer_train_end - inner_train_end,
         "calibration_start": calibration_start,
         "calibration_end": calibration_end,
+        "selected_trainer_parameters": dict(selected["trainer_parameters"]),
+        "trainer_parameter_candidate_count": len(parameter_candidates),
+        "selection_criterion": selection_criterion,
+        "selection_entry_log_loss_tolerance": float(
+            selection_entry_log_loss_tolerance
+        ),
     }
     return selected["recency_half_life_days"], candidates, split
 
@@ -335,6 +445,8 @@ def bankroll_summary(
     training_races: set[str],
     test_dates: set[str],
     protocol: dict[str, Any],
+    model_name: str = MODEL_NAME,
+    feature_set: str = FEATURE_SET,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     policy = default_policy(
         daily_budget_yen=DAILY_BUDGET_YEN,
@@ -344,7 +456,7 @@ def bankroll_summary(
     for key, expected in STANDARD_POLICY.items():
         if policy.get(key) != expected:
             raise ValueError(f"fixed policy mismatch: {key}")
-    policy.update({"model": MODEL_NAME, "feature_set": FEATURE_SET})
+    policy.update({"model": model_name, "feature_set": feature_set})
     totals = zero_totals()
     daily: list[dict[str, Any]] = []
     bankroll, profit_state = evaluate_bankroll_fold(
@@ -629,6 +741,34 @@ def load_incumbent_evaluation(
     return prediction, bankroll
 
 
+def load_compatible_incumbent_evaluation(
+    prediction_path: Path,
+    bankroll_path: Path,
+    *,
+    protocol: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
+    """Load an optional incumbent without blocking absolute candidate evaluation."""
+    try:
+        prediction, bankroll = load_incumbent_evaluation(
+            prediction_path,
+            bankroll_path,
+            protocol=protocol,
+        )
+    except ValueError as exc:
+        return None, None, {
+            "available": False,
+            "reason": str(exc),
+            "prediction_path": str(prediction_path),
+            "bankroll_path": str(bankroll_path),
+        }
+    return prediction, bankroll, {
+        "available": True,
+        "reason": None,
+        "prediction_path": str(prediction_path),
+        "bankroll_path": str(bankroll_path),
+    }
+
+
 def prediction_promotion_gate(
     candidate: dict[str, Any],
     incumbent: dict[str, Any] | None,
@@ -745,12 +885,70 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def protected_runtime_supported(protected_blend: dict[str, Any] | None) -> bool:
+    if protected_blend is None:
+        return True
+    return float(protected_blend["candidate_weight"]) == 1.0
+
+
+def build_prediction_deployment_gate(
+    prediction_gate: dict[str, Any],
+    conditional_order_selection: dict[str, Any],
+    protected_blend: dict[str, Any] | None,
+    *,
+    protected_model_requested: bool,
+) -> dict[str, bool]:
+    gate = {
+        "prediction_pass": bool(prediction_gate["pass"]),
+        "conditional_order_converged": bool(
+            (conditional_order_selection.get("final_fit") or {}).get("success")
+        ),
+    }
+    if protected_model_requested:
+        gate["protected_runtime_supported"] = protected_runtime_supported(
+            protected_blend
+        )
+    gate["pass"] = bool(all(gate.values()))
+    return gate
+
+
+def protected_holdout_predictions(
+    conn: Any,
+    race_keys: Sequence[tuple[str, str, str, int]],
+    *,
+    training_count: int,
+    candidate_predictions: dict[str, list[dict[str, Any]]],
+    candidate_metrics: dict[str, Any],
+    candidate_weight: float,
+    cache_dir: Path,
+    baseline_model_path: Path,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    if float(candidate_weight) == 1.0:
+        return candidate_metrics, candidate_predictions
+    _, baseline_predictions = cached_historical_baseline_range(
+        conn,
+        race_keys,
+        train_end=training_count,
+        score_start=training_count,
+        score_end=len(race_keys),
+        cache_dir=cache_dir,
+        model_path=baseline_model_path,
+    )
+    blended = blend_predictions(
+        baseline_predictions,
+        candidate_predictions,
+        candidate_weight=float(candidate_weight),
+    )
+    return protected_prediction_metrics(blended), blended
+
+
 def evaluate_recency_mlp(
     conn: Any,
     *,
     output_path: Path,
     evaluation_date: date,
     feature_cache: Path | None = DEFAULT_FEATURE_CACHE,
+    write_feature_cache: bool = True,
     half_lives: Sequence[float | None] = DEFAULT_HALF_LIVES,
     calibration_days: int = 180,
     batch_size: int = BATCH_SIZE,
@@ -761,8 +959,30 @@ def evaluate_recency_mlp(
     deployment_model_output_path: Path | None = None,
     incumbent_prediction_path: Path | None = None,
     incumbent_bankroll_path: Path | None = None,
+    model_name: str = MODEL_NAME,
+    model_kind: str = "mlp",
+    feature_set: str = FEATURE_SET,
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION,
+    bundle_trainer: Callable[..., dict[str, Any]] | None = None,
+    trainer_kwargs: dict[str, Any] | None = None,
+    trainer_parameter_candidates: Sequence[dict[str, Any]] | None = None,
+    selection_entry_log_loss_tolerance: float = SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
+    protected_baseline_model_path: Path | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+
+    def report_progress(stage: str, **details: Any) -> None:
+        if progress_callback is None:
+            return
+        progress_callback({
+            "stage": stage,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            **details,
+        })
+
+    trainer = bundle_trainer or train_bundle_from_dataset
+    extra_trainer_kwargs = dict(trainer_kwargs or {})
     resolved_drop_feature_groups = normalize_drop_feature_groups(
         drop_feature_groups
     )
@@ -778,12 +998,27 @@ def evaluate_recency_mlp(
         verify_protocol_against_database(conn, protocol)
         race_keys, training_hash = validated_protocol_race_keys(conn, protocol)
         training_count = int(protocol["training_races"])
+        report_progress(
+            "protocol_validated",
+            training_races=training_count,
+            holdout_races=int(protocol["prediction_races"]),
+        )
         if (incumbent_prediction_path is None) != (incumbent_bankroll_path is None):
             raise ValueError("both incumbent evaluation paths are required")
         incumbent_prediction: dict[str, Any] | None = None
         incumbent_bankroll: dict[str, Any] | None = None
+        incumbent_comparison = {
+            "available": False,
+            "reason": "incumbent evaluation paths were not provided",
+            "prediction_path": None,
+            "bankroll_path": None,
+        }
         if incumbent_prediction_path is not None and incumbent_bankroll_path is not None:
-            incumbent_prediction, incumbent_bankroll = load_incumbent_evaluation(
+            (
+                incumbent_prediction,
+                incumbent_bankroll,
+                incumbent_comparison,
+            ) = load_compatible_incumbent_evaluation(
                 incumbent_prediction_path,
                 incumbent_bankroll_path,
                 protocol=protocol,
@@ -801,18 +1036,27 @@ def evaluate_recency_mlp(
                 conn,
                 include_races={str(row[0]) for row in race_keys},
                 drop_feature_groups=resolved_drop_feature_groups,
+                feature_schema_version=feature_schema_version,
             ),
             hasher=hasher,
             to_hashable=to_hashable,
             ensure_sparse_index32=_ensure_sparse_index32,
             drop_feature_groups=resolved_drop_feature_groups,
+            feature_schema_version=feature_schema_version,
             batch_size=batch_size,
+            write_cache=write_feature_cache,
         )
         validate_dataset_races(
             dataset,
             race_keys=race_keys,
             protocol=protocol,
             training_hash=training_hash,
+        )
+        report_progress(
+            "dataset_ready",
+            cache_source=cache_source,
+            races=dataset.race_count,
+            examples=dataset.example_count,
         )
 
         calibration_predictions: dict[str, list[dict[str, Any]]] = {}
@@ -825,15 +1069,61 @@ def evaluate_recency_mlp(
             epochs=epochs,
             alpha=alpha,
             prediction_output=calibration_predictions,
+            bundle_trainer=trainer,
+            model_kind=model_kind,
+            trainer_kwargs=extra_trainer_kwargs,
+            trainer_parameter_candidates=trainer_parameter_candidates,
+            selection_entry_log_loss_tolerance=(
+                selection_entry_log_loss_tolerance
+            ),
         )
-        final_bundle = train_bundle_from_dataset(
+        report_progress(
+            "recency_selected",
+            candidates=len(candidates),
+            selected_half_life_days=selected_half_life,
+        )
+        protected_blend = None
+        protected_baseline_sha256 = (
+            file_sha256(protected_baseline_model_path)
+            if protected_baseline_model_path is not None
+            else None
+        )
+        if protected_baseline_model_path is not None:
+            calibration_start = int(split["inner_train_races"])
+            _, baseline_calibration_predictions = cached_historical_baseline_range(
+                conn,
+                race_keys,
+                train_end=calibration_start,
+                score_start=calibration_start,
+                score_end=training_count,
+                cache_dir=output_path.parent / "protected_baseline_cache",
+            )
+            protected_blend = select_protected_blend(
+                baseline_calibration_predictions,
+                calibration_predictions,
+            )
+            calibration_predictions = blend_predictions(
+                baseline_calibration_predictions,
+                calibration_predictions,
+                candidate_weight=float(protected_blend["candidate_weight"]),
+            )
+            report_progress(
+                "protected_blend_selected",
+                candidate_weight=protected_blend["candidate_weight"],
+                protected_candidates=protected_blend["protected_candidate_count"],
+            )
+        selected_trainer_kwargs = dict(
+            split.get("selected_trainer_parameters", extra_trainer_kwargs)
+        )
+        final_bundle = trainer(
             dataset,
             train_race_count=training_count,
-            model_kind="mlp",
+            model_kind=model_kind,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
+            **selected_trainer_kwargs,
         )
         prediction_metrics, predictions = score_range(
             dataset,
@@ -842,6 +1132,21 @@ def evaluate_recency_mlp(
             race_end=dataset.race_count,
             batch_size=batch_size,
         )
+        if protected_baseline_model_path is not None:
+            prediction_metrics, predictions = protected_holdout_predictions(
+                conn,
+                race_keys,
+                training_count=training_count,
+                candidate_predictions=predictions,
+                candidate_metrics=prediction_metrics,
+                candidate_weight=float(protected_blend["candidate_weight"]),
+                cache_dir=output_path.parent / "protected_baseline_cache",
+                baseline_model_path=protected_baseline_model_path,
+            )
+        report_progress(
+            "holdout_scored",
+            evaluated_races=int(prediction_metrics["evaluated_races"]),
+        )
         calibration_start = int(split["inner_train_races"])
         conditional_order_model, conditional_order_selection = (
             fit_conditional_order_layer(
@@ -849,6 +1154,10 @@ def evaluate_recency_mlp(
                 race_keys[calibration_start:training_count],
                 dataset.ranks[calibration_start:training_count],
             )
+        )
+        report_progress(
+            "conditional_order_fitted",
+            regularization=conditional_order_selection["selected_regularization"],
         )
         holdout_trifecta_probabilities = trifecta_probability_matrix(
             predictions,
@@ -880,6 +1189,14 @@ def evaluate_recency_mlp(
             training_races=training_races,
             test_dates=test_dates,
             protocol=protocol,
+            model_name=model_name,
+            feature_set=feature_set,
+        )
+        report_progress(
+            "bankroll_evaluated",
+            stake_yen=bankroll["stake_yen"],
+            profit_yen=bankroll["profit_yen"],
+            roi=bankroll["roi"],
         )
         conditional_payout = conditional_payout_summary(
             conn,
@@ -892,6 +1209,10 @@ def evaluate_recency_mlp(
             baseline_daily=(incumbent_bankroll or {}).get("daily") or daily,
             protocol=protocol,
             conditional_order_model=conditional_order_model,
+        )
+        report_progress(
+            "conditional_payout_evaluated",
+            promotion_eligible=conditional_payout["promotion_eligible"],
         )
         prediction_gate = prediction_promotion_gate(
             prediction_metrics,
@@ -906,7 +1227,17 @@ def evaluate_recency_mlp(
                 (conditional_order_selection.get("final_fit") or {}).get("success")
             ),
         }
+        if protected_baseline_model_path is not None:
+            performance_gate["protected_runtime_supported"] = protected_runtime_supported(
+                protected_blend
+            )
         performance_gate["pass"] = bool(all(performance_gate.values()))
+        prediction_deployment_gate = build_prediction_deployment_gate(
+            prediction_gate,
+            conditional_order_selection,
+            protected_blend,
+            protected_model_requested=protected_baseline_model_path is not None,
+        )
         promotion_gate = {
             **performance_gate,
             "performance_pass": bool(performance_gate["pass"]),
@@ -917,18 +1248,27 @@ def evaluate_recency_mlp(
     bankroll_flat = {
         key: value for key, value in bankroll.items() if key != "evaluated_races"
     }
+    generated_at = datetime.now(timezone.utc).isoformat()
+    model_instance = (
+        f"{model_name}_{datetime.fromisoformat(generated_at).strftime('%Y%m%dT%H%M%SZ')}"
+    )
     result = {
         "status": "completed",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": generated_at,
         "evaluation_date": evaluation_date.isoformat(),
-        "model": MODEL_NAME,
-        "model_kind": "mlp",
+        "model": model_name,
+        "model_instance": model_instance,
+        "model_kind": model_kind,
         "role": "shadow",
-        "feature_set": FEATURE_SET,
+        "feature_set": feature_set,
         "feature_schema_version": dataset.feature_schema_version,
         "drop_feature_groups": list(resolved_drop_feature_groups),
         "include_odds": False,
         "performance_eligible": bool(performance_gate["pass"]),
+        "prediction_deployment_eligible": bool(
+            prediction_deployment_gate["pass"]
+        ),
+        "prediction_deployment_gate": prediction_deployment_gate,
         "promotion_eligible": False,
         "promotion_note": (
             "performance gates passed; deployable full-data artifact is pending"
@@ -937,6 +1277,7 @@ def evaluate_recency_mlp(
         ),
         "promotion_gate": promotion_gate,
         "prediction_promotion_gate": prediction_gate,
+        "incumbent_comparison": incumbent_comparison,
         "protocol": protocol,
         "training_races": training_count,
         "training_race_set_sha256": training_hash,
@@ -949,8 +1290,15 @@ def evaluate_recency_mlp(
         "n_features": N_FEATURES,
         "epochs": max(1, int(epochs)),
         "alpha": float(alpha),
+        "training_diagnostics": final_bundle.get("training_diagnostics"),
+        "trainer_parameters": selected_trainer_kwargs,
+        "trainer_parameter_candidates": [
+            dict(row) for row in (trainer_parameter_candidates or [extra_trainer_kwargs])
+        ],
         "selection": {
-            "criterion": "inner calibration entry_log_loss",
+            "criterion": split.get(
+                "selection_criterion", "minimum calibration entry_log_loss"
+            ),
             "tie_break": "None first, otherwise longer half-life",
             "scope": "outer training only; final 365-day holdout untouched",
             "calibration_days": int(calibration_days),
@@ -959,6 +1307,13 @@ def evaluate_recency_mlp(
             "selected_recency_half_life_days": selected_half_life,
         },
         "selection_candidates": candidates,
+        "protected_historical_blend": protected_blend,
+        "protected_baseline_model": (
+            str(protected_baseline_model_path)
+            if protected_baseline_model_path is not None
+            else None
+        ),
+        "protected_baseline_sha256": protected_baseline_sha256,
         "selected_recency_half_life_days": selected_half_life,
         "conditional_order": conditional_order_selection,
         "evaluated_races": int(prediction_metrics["evaluated_races"]),
@@ -978,6 +1333,13 @@ def evaluate_recency_mlp(
             **final_bundle,
             "hasher": hasher,
             "conditional_order_model": conditional_order_model,
+            "protected_historical_blend": protected_blend,
+            "protected_baseline_model": (
+                str(protected_baseline_model_path)
+                if protected_baseline_model_path is not None
+                else None
+            ),
+            "protected_baseline_sha256": protected_baseline_sha256,
             "feature_schema_version": dataset.feature_schema_version,
             "drop_feature_groups": list(resolved_drop_feature_groups),
             "trained_through": trained_through,
@@ -985,9 +1347,10 @@ def evaluate_recency_mlp(
             "training_race_set_sha256": training_hash,
             "metadata": {
                 "trained_at": result["generated_at"],
-                "model": MODEL_NAME,
+                "model": model_name,
+                "model_instance": model_instance,
                 "role": "shadow",
-                "feature_set": FEATURE_SET,
+                "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
                 "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(trained_through),
@@ -996,10 +1359,20 @@ def evaluate_recency_mlp(
                 "evaluation_races": int(protocol["prediction_races"]),
                 "evaluation_race_set_sha256": evaluation_hash,
                 "recency_half_life_days": selected_half_life,
+                "selection_criterion": result["selection"]["criterion"],
+                "selection_entry_log_loss_tolerance": float(
+                    selection_entry_log_loss_tolerance
+                ),
                 "conditional_order_regularization": (
                     conditional_order_selection["selected_regularization"]
                 ),
                 "include_odds": False,
+                "protected_baseline_sha256": protected_baseline_sha256,
+                "protected_candidate_weight": (
+                    float(protected_blend["candidate_weight"])
+                    if protected_blend is not None
+                    else None
+                ),
             },
         }
         dump_joblib_atomic(model_output_path, artifact)
@@ -1009,7 +1382,7 @@ def evaluate_recency_mlp(
         )
 
     deployment_saved = False
-    if performance_gate["pass"] and deployment_model_output_path is not None:
+    if prediction_deployment_gate["pass"] and deployment_model_output_path is not None:
         deployment_order_model, deployment_order_fit = (
             fit_deployment_conditional_order_layer(
                 predictions,
@@ -1020,14 +1393,15 @@ def evaluate_recency_mlp(
                 ),
             )
         )
-        deployment_bundle = train_bundle_from_dataset(
+        deployment_bundle = trainer(
             dataset,
             train_race_count=dataset.race_count,
-            model_kind="mlp",
+            model_kind=model_kind,
             batch_size=batch_size,
             epochs=epochs,
             alpha=alpha,
             recency_half_life_days=selected_half_life,
+            **selected_trainer_kwargs,
         )
         deployment_training_hash = race_set_sha256(
             row[0] for row in race_keys
@@ -1044,9 +1418,14 @@ def evaluate_recency_mlp(
             "training_race_set_sha256": deployment_training_hash,
             "metadata": {
                 "trained_at": datetime.now(timezone.utc).isoformat(),
-                "model": MODEL_NAME,
-                "role": "production_candidate",
-                "feature_set": FEATURE_SET,
+                "model": model_name,
+                "model_instance": model_instance,
+                "role": (
+                    "production_candidate"
+                    if performance_gate["pass"]
+                    else "prediction_production_candidate"
+                ),
+                "feature_set": feature_set,
                 "feature_schema_version": dataset.feature_schema_version,
                 "drop_feature_groups": list(resolved_drop_feature_groups),
                 "trained_through": list(deployment_trained_through),
@@ -1056,6 +1435,10 @@ def evaluate_recency_mlp(
                 "evaluation_races": int(protocol["prediction_races"]),
                 "evaluation_race_set_sha256": evaluation_hash,
                 "recency_half_life_days": selected_half_life,
+                "selection_criterion": result["selection"]["criterion"],
+                "selection_entry_log_loss_tolerance": float(
+                    selection_entry_log_loss_tolerance
+                ),
                 "conditional_order_regularization": (
                     conditional_order_selection["selected_regularization"]
                 ),
@@ -1074,6 +1457,7 @@ def evaluate_recency_mlp(
             "training_races": dataset.race_count,
             "training_race_set_sha256": deployment_training_hash,
             "conditional_order": deployment_order_fit,
+            "training_diagnostics": deployment_bundle.get("training_diagnostics"),
         }
     elif deployment_model_output_path is not None:
         result["deployment_model_artifact"] = str(deployment_model_output_path)
@@ -1101,12 +1485,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deployment-model-output", type=Path)
     parser.add_argument("--incumbent-prediction", type=Path)
     parser.add_argument("--incumbent-bankroll", type=Path)
+    parser.add_argument("--protected-baseline-model", type=Path)
     parser.add_argument(
         "--evaluation-date",
         type=parse_evaluation_date,
         required=True,
     )
     parser.add_argument("--feature-cache", type=Path, default=DEFAULT_FEATURE_CACHE)
+    parser.add_argument("--no-write-feature-cache", dest="write_feature_cache", action="store_false")
     parser.add_argument(
         "--drop-feature-groups",
         type=parse_drop_feature_groups,
@@ -1119,6 +1505,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated values such as none,180,365,730",
     )
     parser.add_argument("--calibration-days", type=int, default=180)
+    parser.add_argument(
+        "--selection-entry-log-loss-tolerance",
+        type=float,
+        default=SELECTION_ENTRY_LOG_LOSS_TOLERANCE,
+    )
     return parser
 
 
@@ -1130,13 +1521,23 @@ def main(argv: list[str] | None = None) -> int:
             output_path=args.output,
             evaluation_date=args.evaluation_date,
             feature_cache=args.feature_cache,
+            write_feature_cache=args.write_feature_cache,
             half_lives=args.half_lives,
             calibration_days=args.calibration_days,
+            selection_entry_log_loss_tolerance=(
+                args.selection_entry_log_loss_tolerance
+            ),
             drop_feature_groups=args.drop_feature_groups,
             model_output_path=args.model_output,
             deployment_model_output_path=args.deployment_model_output,
             incumbent_prediction_path=args.incumbent_prediction,
             incumbent_bankroll_path=args.incumbent_bankroll,
+            protected_baseline_model_path=args.protected_baseline_model,
+            progress_callback=lambda row: print(
+                "RECENCY_PROGRESS "
+                + json.dumps(row, ensure_ascii=True, sort_keys=True),
+                flush=True,
+            ),
         )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
