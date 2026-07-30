@@ -23,6 +23,8 @@ from .odds_quality import (
 SOURCE_KEY = "kyotei_club_official_mirror_closing_v1"
 PARSER_VERSION = "archive_closing_odds_dom_v3"
 DEFAULT_BASE_URL = "https://odds.kyotei24.jp"
+OFFICIAL_SOURCE_KEY = "boatrace_official_historical_closing_v1"
+OFFICIAL_PARSER_VERSION = "odds3t_dom_v2"
 MAX_INVALID_ATTEMPTS = 3
 
 
@@ -196,6 +198,9 @@ def store_archive_closing_odds(
     parsed: Mapping[str, Any],
     verification: Mapping[str, Any],
     fetched_at: str | None = None,
+    source_key: str = SOURCE_KEY,
+    parser_version: str = PARSER_VERSION,
+    source_kind: str = "secondary_archive_of_official_closing_display",
 ) -> None:
     odds = {str(key): float(value) for key, value in parsed["odds"].items()}
     unavailable = {str(value) for value in parsed.get("unavailable_combinations", [])}
@@ -212,7 +217,7 @@ def store_archive_closing_odds(
     ensure_archive_schema(conn)
     fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     raw = {
-        "source_kind": "secondary_archive_of_official_closing_display",
+        "source_kind": source_kind,
         "market_time": "closing",
         "total_combination_count": len(expected),
         "unavailable_combinations": sorted(unavailable),
@@ -235,11 +240,11 @@ def store_archive_closing_odds(
         """,
         (
             race_id,
-            SOURCE_KEY,
+            source_key,
             fetched,
             source_url,
             hashlib.sha256(payload).hexdigest(),
-            PARSER_VERSION,
+            parser_version,
             len(odds),
             str(verification["status"]),
             json.dumps(raw, ensure_ascii=False, sort_keys=True),
@@ -247,14 +252,14 @@ def store_archive_closing_odds(
     )
     conn.execute(
         "DELETE FROM archive_closing_odds WHERE race_id = ? AND source_key = ?",
-        (race_id, SOURCE_KEY),
+        (race_id, source_key),
     )
     conn.executemany(
         """
         INSERT INTO archive_closing_odds(race_id, source_key, combination, odds)
         VALUES (?, ?, ?, ?)
         """,
-        [(race_id, SOURCE_KEY, key, value) for key, value in sorted(odds.items())],
+        [(race_id, source_key, key, value) for key, value in sorted(odds.items())],
     )
 
 
@@ -265,6 +270,7 @@ def record_attempt(
     status: str,
     http_status: int | None = None,
     error: str | None = None,
+    source_key: str = SOURCE_KEY,
 ) -> None:
     ensure_archive_schema(conn)
     conn.execute(
@@ -280,12 +286,12 @@ def record_attempt(
           http_status = excluded.http_status,
           error = excluded.error
         """,
-        (race_id, SOURCE_KEY, status, http_status, error),
+        (race_id, source_key, status, http_status, error),
     )
 
 
 def pending_races(
-    conn: Any, *, from_date: str, through_date: str
+    conn: Any, *, from_date: str, through_date: str, source_key: str = SOURCE_KEY
 ) -> list[dict[str, Any]]:
     ensure_archive_schema(conn)
     rows = conn.execute(
@@ -317,8 +323,8 @@ def pending_races(
         (
             from_date,
             through_date,
-            SOURCE_KEY,
-            SOURCE_KEY,
+            source_key,
+            source_key,
             MAX_INVALID_ATTEMPTS,
         ),
     ).fetchall()

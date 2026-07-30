@@ -2635,7 +2635,7 @@ def build_command(
     if task_type == "archive_closing_backfill":
         allowed = {
             "from_date", "through_date", "sleep_seconds", "max_pages",
-            "timeout_seconds",
+            "timeout_seconds", "source",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -2649,8 +2649,16 @@ def build_command(
             raise ValueError("archive closing from_date must not exceed through_date")
         sleep_seconds = _number(params, "sleep_seconds", 1.0, 0.5, 60.0)
         _integer(params, "timeout_seconds", 86400, 600, 172800)
+        source = str(params.get("source") or "mirror")
+        if source not in {"mirror", "official"}:
+            raise ValueError("archive closing source must be mirror or official")
+        module = (
+            "boatrace_ai.official_closing_odds"
+            if source == "official"
+            else "boatrace_ai.archive_closing_odds"
+        )
         command = [
-            str(python), "-m", "boatrace_ai.archive_closing_odds",
+            str(python), "-m", module,
             "--db", db,
             "--from-date", from_date,
             "--through-date", through_date,
