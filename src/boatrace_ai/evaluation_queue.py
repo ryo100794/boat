@@ -21,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .db import connection
+from .evaluation_result_summary import canonicalize_primary_bankroll
 from .feature_schema import FEATURE_SCHEMA_VERSION
 from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 
@@ -2375,7 +2376,7 @@ METRIC_KEYS = (
     "benchmark_evaluation_coverage", "population_race_selection_rate",
     "race_hit_rate", "race_hit_rate_ci95_lower", "race_hit_rate_ci95_upper",
     "largest_hit_return_share", "effective_hit_count", "roi_without_largest_hit",
-    "profit_without_largest_hit_yen",
+    "profit_without_largest_hit_yen", "largest_hit_excluded_roi",
     "closing_odds_log_mae", "baseline_closing_odds_log_mae",
     "closing_odds_rank_correlation", "closing_odds_interval_coverage",
     "closing_snapshot_age_seconds", "closing_snapshot_age_seconds_p90",
@@ -3114,7 +3115,20 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "deprecated": True,
             "promotion_eligible": False,
         })
-    return {key: value for key, value in summary.items() if value is not None}
+    gate = payload.get("promotion_gate")
+    gate_primary = (
+        gate.get("primary_bankroll") if isinstance(gate, dict) else None
+    )
+    canonical = canonicalize_primary_bankroll(
+        summary,
+        chronological_bankroll=(
+            payload.get("chronological_bankroll")
+            if isinstance(payload.get("chronological_bankroll"), dict)
+            else None
+        ),
+        primary_bankroll=payload.get("primary_bankroll") or gate_primary,
+    )
+    return {key: value for key, value in canonical.items() if value is not None}
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:

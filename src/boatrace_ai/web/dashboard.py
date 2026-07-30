@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..constants import RACES_PER_DAY, VENUES
 from ..db import connect, init_db
+from ..evaluation_result_summary import canonicalize_primary_bankroll
 from ..official import race_page_url, ymd
 from ..odds_quality import TRIFECTA_PARSER_VERSION
 from ..standard_evaluation import (
@@ -2676,7 +2677,9 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
     jobs = remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []
     for job in jobs or []:
         result = job.get("result") or {}
-        metrics = {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
+        metrics = canonicalize_primary_bankroll(
+            {**(result.get("base_metrics") or {}), **(result.get("metrics") or {})}
+        )
         completed_folds, expected_folds = _remote_job_fold_progress(job)
         rows.append({
             "name": job.get("name"),
@@ -2687,8 +2690,20 @@ def _remote_evaluation_job_summaries(remote_evaluations: dict[str, Any]) -> list
             "elapsed": (job.get("process") or {}).get("elapsed"),
             "completed_folds": completed_folds or None,
             "expected_folds": expected_folds,
+            "primary_bankroll": metrics.get("primary_bankroll"),
+            "legacy_batch_bankroll": metrics.get("legacy_batch_bankroll"),
+            "legacy_batch_roi": _float_or_none(metrics.get("legacy_batch_roi")),
+            "legacy_batch_stake_yen": metrics.get("legacy_batch_stake_yen"),
+            "legacy_batch_return_yen": metrics.get("legacy_batch_return_yen"),
+            "legacy_batch_profit_yen": metrics.get("legacy_batch_profit_yen"),
+            "legacy_batch_max_drawdown_yen": metrics.get(
+                "legacy_batch_max_drawdown_yen"
+            ),
             "roi": _float_or_none(metrics.get("roi")),
             "profit_yen": metrics.get("profit_yen"),
+            "stake_yen": metrics.get("stake_yen"),
+            "return_yen": metrics.get("return_yen"),
+            "max_drawdown_yen": metrics.get("max_drawdown_yen"),
             "evaluated_races": metrics.get("evaluated_races"),
             "entry_log_loss": _float_or_none(metrics.get("entry_log_loss")),
             "winner_top1_accuracy": _float_or_none(metrics.get("winner_top1_accuracy")),
@@ -2792,7 +2807,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
     }
     for source in rows:
         row = {key: source[key] for key in source.keys()}
-        metrics = _json_mapping(row.get("result_summary"))
+        metrics = canonicalize_primary_bankroll(
+            _json_mapping(row.get("result_summary"))
+        )
         parameters = _json_mapping(row.get("parameters"))
         status = str(row.get("status") or "")
         invalid_data_source = bool(
@@ -2903,6 +2920,17 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "completed_folds": nested_completed_folds,
                 "expected_folds": nested_expected_folds,
+                "primary_bankroll": metrics.get("primary_bankroll"),
+                "legacy_batch_bankroll": metrics.get("legacy_batch_bankroll"),
+                "legacy_batch_roi": _float_or_none(
+                    metrics.get("legacy_batch_roi")
+                ),
+                "legacy_batch_stake_yen": metrics.get("legacy_batch_stake_yen"),
+                "legacy_batch_return_yen": metrics.get("legacy_batch_return_yen"),
+                "legacy_batch_profit_yen": metrics.get("legacy_batch_profit_yen"),
+                "legacy_batch_max_drawdown_yen": metrics.get(
+                    "legacy_batch_max_drawdown_yen"
+                ),
                 "roi": _float_or_none(metrics.get("roi")),
                 "profit_yen": metrics.get("profit_yen"),
                 "stake_yen": metrics.get("stake_yen"),
@@ -3123,7 +3151,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "error": row.get("error") if status == "failed" else None,
             }
         )
-        candidate_metrics = _json_mapping(row.get("candidate_metrics"))
+        candidate_metrics = canonicalize_primary_bankroll(
+            _json_mapping(row.get("candidate_metrics"))
+        )
         if invalid_data_source or not candidate_metrics:
             continue
         candidates.append(
@@ -3611,6 +3641,7 @@ def _latest_named_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
+    data = canonicalize_primary_bankroll(data)
     policy = data.get("policy") or {}
     policy_selection = data.get("policy_selection") or {}
     tickets = data.get("tickets")
@@ -3641,6 +3672,8 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         "no_bet": bool(policy.get("no_bet")),
         "no_bet_reason": policy.get("no_bet_reason") or policy_selection.get("source"),
         "policy_selection_source": policy_selection.get("source"),
+        "primary_bankroll": data.get("primary_bankroll"),
+        "legacy_batch_bankroll": data.get("legacy_batch_bankroll"),
         "evaluated_races": data.get("bankroll_evaluated_races") or data.get("evaluated_races"),
         "entry_log_loss": _float_or_none(data.get("entry_log_loss")),
         "winner_top1_accuracy": _float_or_none(data.get("winner_top1_accuracy")),
@@ -3695,7 +3728,7 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
         result = job.get("result") or {}
-        metrics = result.get("metrics") or {}
+        metrics = canonicalize_primary_bankroll(result.get("metrics") or {})
         if metrics.get("roi") is None:
             continue
         attribution = result.get("ticket_roi_attribution")
@@ -5947,6 +5980,7 @@ def _local_evaluation_result(path: Path | None) -> dict[str, Any] | None:
                     if key in bankroll
                 }
             )
+    metrics = canonicalize_primary_bankroll({**data, **metrics})
     result["metrics"] = metrics
     result["model"] = data.get("model")
     result["status"] = data.get("status")
@@ -6131,7 +6165,7 @@ def _remote_bankroll_gate_records(remote_evaluations: dict[str, Any]) -> list[di
     rows: list[dict[str, Any]] = []
     for job in (remote_evaluations.get("jobs") if isinstance(remote_evaluations, dict) else []) or []:
         result = (job or {}).get("result") or {}
-        metrics = result.get("metrics") or {}
+        metrics = canonicalize_primary_bankroll(result.get("metrics") or {})
         attribution = result.get("ticket_roi_attribution") or {}
         stability = attribution.get("fold_stability") or {}
         if metrics.get("roi") is None and not stability:
@@ -6170,6 +6204,7 @@ def _bankroll_gate_records(model_dir: Path) -> list[dict[str, Any]]:
             continue
         if not _is_bankroll_result(data):
             continue
+        data = canonicalize_primary_bankroll(data)
         rows.append(
             {
                 "file": path.name,
