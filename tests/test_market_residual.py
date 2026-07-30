@@ -81,7 +81,7 @@ def _market_identity_fit(races, *, regularization):
     }
 
 
-def test_prequential_calibration_falls_back_to_raw_without_outer_holdout(
+def test_prequential_calibration_preserves_fitted_calibrator_by_default(
     monkeypatch,
 ) -> None:
     prior_races = [
@@ -96,6 +96,32 @@ def test_prequential_calibration_falls_back_to_raw_without_outer_holdout(
         prior_races, regularizations=(1.0,)
     )
 
+    assert result["final_calibrator"]["model_weight"] == 0.0
+    assert result["final_calibrator"]["temperature"] == 1.0
+    assert "calibration_nonregression" not in result
+    assert "raw_model_prequential_log_loss" not in result["candidates"][0]
+    assert "raw_model_trifecta_log_loss" not in (
+        result["candidates"][0]["folds"][0]["metrics"]
+    )
+
+
+def test_prequential_calibration_falls_back_to_raw_without_outer_holdout(
+    monkeypatch,
+) -> None:
+    prior_races = [
+        _race("2026-07-20", "1-2-3", 0.9, 0.5),
+        _race("2026-07-21", "1-2-3", 0.9, 0.5),
+    ]
+    monkeypatch.setattr(
+        market_residual, "fit_log_pool_newton", _market_identity_fit
+    )
+
+    result = select_regularization_prequential(
+        prior_races,
+        regularizations=(1.0,),
+        enforce_raw_nonregression=True,
+    )
+
     audit = result["calibration_nonregression"]
     calibrator = result["final_calibrator"]
     assert audit["selection_data"] == "strict_prior_prequential_and_prior_refit_only"
@@ -104,7 +130,9 @@ def test_prequential_calibration_falls_back_to_raw_without_outer_holdout(
     assert audit["reason"] == "calibrated_prequential_log_loss_worse_than_raw"
     assert calibrator["model_weight"] == 1.0
     assert calibrator["temperature"] == 1.0
-    metrics = residual_probability_metrics(prior_races, calibrator)
+    metrics = residual_probability_metrics(
+        prior_races, calibrator, include_raw_model=True
+    )
     assert metrics["trifecta_log_loss"] == pytest.approx(
         metrics["raw_model_trifecta_log_loss"]
     )
@@ -122,7 +150,9 @@ def test_single_prior_day_calibration_falls_back_using_training_only(
         market_residual, "fit_log_pool_newton", _market_identity_fit
     )
 
-    result = fit_fixed_regularization(prior_races)
+    result = fit_fixed_regularization(
+        prior_races, enforce_raw_nonregression=True
+    )
 
     audit = result["calibration_nonregression"]
     assert audit["selection_data"] == "single_prior_training_day_only"

@@ -169,7 +169,10 @@ def fit_orthogonal_residual(
 
 
 def probability_metrics(
-    races: list[dict[str, Any]], calibrator: dict[str, Any]
+    races: list[dict[str, Any]],
+    calibrator: dict[str, Any],
+    *,
+    include_raw_model: bool = False,
 ) -> dict[str, Any]:
     loss = 0.0
     market_loss = 0.0
@@ -187,26 +190,32 @@ def probability_metrics(
         market_loss -= math.log(
             max(EPSILON, float(race["market_probabilities"].get(actual, 0.0)))
         )
-        raw_model_loss -= math.log(
-            max(EPSILON, float(race["model_probabilities"].get(actual, 0.0)))
-        )
+        if include_raw_model:
+            raw_model_loss -= math.log(
+                max(EPSILON, float(race["model_probabilities"].get(actual, 0.0)))
+            )
         top5_hits += int(
             actual in sorted(probabilities, key=probabilities.get, reverse=True)[:5]
         )
     count = len(races)
-    return {
+    result = {
         "evaluated_races": count,
         "trifecta_log_loss": loss / count if count else None,
-        "raw_model_trifecta_log_loss": raw_model_loss / count if count else None,
         "market_trifecta_log_loss": market_loss / count if count else None,
         "trifecta_top5_hit_rate": top5_hits / count if count else None,
     }
+    if include_raw_model:
+        result["raw_model_trifecta_log_loss"] = (
+            raw_model_loss / count if count else None
+        )
+    return result
 
 
 def select_regularization_prequential(
     races: list[dict[str, Any]],
     *,
     regularizations: Iterable[float] = DEFAULT_REGULARIZATION,
+    enforce_raw_nonregression: bool = False,
 ) -> dict[str, Any]:
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -226,12 +235,17 @@ def select_regularization_prequential(
             calibrator = fit_orthogonal_residual(
                 training, regularization=float(regularization)
             )
-            metrics = probability_metrics(holdout, calibrator)
+            metrics = probability_metrics(
+                holdout,
+                calibrator,
+                include_raw_model=enforce_raw_nonregression,
+            )
             count = int(metrics["evaluated_races"])
             weighted_loss += float(metrics["trifecta_log_loss"]) * count
-            weighted_raw_model_loss += (
-                float(metrics["raw_model_trifecta_log_loss"]) * count
-            )
+            if enforce_raw_nonregression:
+                weighted_raw_model_loss += (
+                    float(metrics["raw_model_trifecta_log_loss"]) * count
+                )
             total += count
             folds.append(
                 {
@@ -241,17 +255,17 @@ def select_regularization_prequential(
                     "metrics": metrics,
                 }
             )
-        candidates.append(
-            {
-                "regularization": float(regularization),
-                "prequential_races": total,
-                "prequential_log_loss": weighted_loss / total,
-                "raw_model_prequential_log_loss": (
-                    weighted_raw_model_loss / total
-                ),
-                "folds": folds,
-            }
-        )
+        candidate = {
+            "regularization": float(regularization),
+            "prequential_races": total,
+            "prequential_log_loss": weighted_loss / total,
+            "folds": folds,
+        }
+        if enforce_raw_nonregression:
+            candidate["raw_model_prequential_log_loss"] = (
+                weighted_raw_model_loss / total
+            )
+        candidates.append(candidate)
     selected = min(
         candidates,
         key=lambda row: (row["prequential_log_loss"], -row["regularization"]),
@@ -259,7 +273,21 @@ def select_regularization_prequential(
     fitted_calibrator = fit_orthogonal_residual(
         races, regularization=float(selected["regularization"])
     )
-    fitted_metrics = probability_metrics(races, fitted_calibrator)
+    if not enforce_raw_nonregression:
+        return {
+            "validation_design": (
+                "Market projection is label-free; residual shrinkage is selected on "
+                "forward-only full-day folds"
+            ),
+            "dates": dates,
+            "selected_regularization": selected["regularization"],
+            "prequential_log_loss": selected["prequential_log_loss"],
+            "final_calibrator": fitted_calibrator,
+            "candidates": candidates,
+        }
+    fitted_metrics = probability_metrics(
+        races, fitted_calibrator, include_raw_model=True
+    )
     prequential_regression = (
         float(selected["prequential_log_loss"])
         > float(selected["raw_model_prequential_log_loss"])
@@ -322,12 +350,25 @@ def select_regularization_prequential(
 
 
 def fit_fixed_regularization(
-    races: list[dict[str, Any]], *, regularization: float = 1.0
+    races: list[dict[str, Any]],
+    *,
+    regularization: float = 1.0,
+    enforce_raw_nonregression: bool = False,
 ) -> dict[str, Any]:
     fitted_calibrator = fit_orthogonal_residual(
         races, regularization=float(regularization)
     )
-    metrics = probability_metrics(races, fitted_calibrator)
+    if not enforce_raw_nonregression:
+        return {
+            "validation_design": "Fixed residual shrinkage for a single calibration day",
+            "dates": sorted({str(race["race_date"]) for race in races}),
+            "selected_regularization": float(regularization),
+            "final_calibrator": fitted_calibrator,
+            "candidates": [],
+        }
+    metrics = probability_metrics(
+        races, fitted_calibrator, include_raw_model=True
+    )
     fallback = (
         float(metrics["trifecta_log_loss"])
         > float(metrics["raw_model_trifecta_log_loss"])
