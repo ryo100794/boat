@@ -172,11 +172,20 @@ V18_MODEL_NAME = V18_STRATEGY_NAME
 V18_COMPARISON_ROLE = (
     "strict_prior_observed_closing_schedule_quota_chronological_shadow"
 )
+V19_STRATEGY_NAME = (
+    "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19"
+)
+V19_MODEL_NAME = V19_STRATEGY_NAME
+V19_COMPARISON_ROLE = (
+    "strict_prior_observed_closing_schedule_quota_raw_nonregression_challenger"
+)
 V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
+SCHEDULE_QUOTA_STRATEGIES = frozenset({V18_STRATEGY_NAME, V19_STRATEGY_NAME})
 ROBUST_POLICY_STRATEGIES = frozenset({
-    V17_STRATEGY_NAME, V18_STRATEGY_NAME,
+    V17_STRATEGY_NAME,
+    *SCHEDULE_QUOTA_STRATEGIES,
 })
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
@@ -206,9 +215,33 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 
 
 def robust_policy_comparison_role(calibrator_strategy: str) -> str:
-    if calibrator_strategy == V18_STRATEGY_NAME:
+    if calibrator_strategy == V19_STRATEGY_NAME:
+        return V19_COMPARISON_ROLE
+    if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES:
         return V18_COMPARISON_ROLE
     return V17_COMPARISON_ROLE
+
+
+def fit_market_residual_calibrator(
+    races: list[dict[str, Any]],
+    *,
+    calibrator_strategy: str,
+) -> dict[str, Any]:
+    from .market_residual import (
+        fit_fixed_regularization,
+        select_regularization_prequential,
+    )
+
+    enforce_raw_nonregression = calibrator_strategy == V19_STRATEGY_NAME
+    if len({str(race["race_date"]) for race in races}) >= 2:
+        return select_regularization_prequential(
+            races,
+            enforce_raw_nonregression=enforce_raw_nonregression,
+        )
+    return fit_fixed_regularization(
+        races,
+        enforce_raw_nonregression=enforce_raw_nonregression,
+    )
 
 
 def odds_path_model_name(calibrator_strategy: str) -> str:
@@ -220,7 +253,9 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
-    if calibrator_strategy == V18_STRATEGY_NAME:
+    if calibrator_strategy == V19_STRATEGY_NAME:
+        return V19_MODEL_NAME
+    if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES:
         return V18_MODEL_NAME
     if calibrator_strategy == V17_STRATEGY_NAME:
         return V17_MODEL_NAME
@@ -2430,6 +2465,7 @@ def fit_deployment_configuration(
         "odds_path_observed_closing_return",
         V17_STRATEGY_NAME,
         V18_STRATEGY_NAME,
+        V19_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -2450,6 +2486,7 @@ def fit_deployment_configuration(
                         "odds_path_observed_closing_return",
                         V17_STRATEGY_NAME,
                         V18_STRATEGY_NAME,
+                        V19_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -2471,15 +2508,9 @@ def fit_deployment_configuration(
                 ),
             )
         races = attach_odds_path_model(races, operational_model)
-        from .market_residual import (
-            fit_fixed_regularization,
-            select_regularization_prequential,
-        )
-
-        calibrator_selection = (
-            select_regularization_prequential(races)
-            if len({str(race["race_date"]) for race in races}) >= 2
-            else fit_fixed_regularization(races)
+        calibrator_selection = fit_market_residual_calibrator(
+            races,
+            calibrator_strategy=calibrator_strategy,
         )
         calibrator = dict(calibrator_selection["final_calibrator"])
     elif calibrator_strategy == "newton_residual":
@@ -2531,7 +2562,7 @@ def fit_deployment_configuration(
     )
     policy_selector = (
         select_policy_v18
-        if calibrator_strategy == V18_STRATEGY_NAME
+        if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES
         else select_policy_v17
         if calibrator_strategy == V17_STRATEGY_NAME
         else select_policy
@@ -2871,6 +2902,7 @@ def walk_forward_evaluate(
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
+            V19_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -2888,6 +2920,7 @@ def walk_forward_evaluate(
                 "odds_path_observed_closing_return",
                 V17_STRATEGY_NAME,
                 V18_STRATEGY_NAME,
+                V19_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -2907,6 +2940,7 @@ def walk_forward_evaluate(
                             "odds_path_observed_closing_return",
                             V17_STRATEGY_NAME,
                             V18_STRATEGY_NAME,
+                            V19_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -2931,15 +2965,9 @@ def walk_forward_evaluate(
                 calibration_races, operational_model
             )
             holdout = attach_odds_path_model(holdout, operational_model)
-            from .market_residual import (
-                fit_fixed_regularization,
-                select_regularization_prequential,
-            )
-
-            calibrator_selection = (
-                select_regularization_prequential(calibration_races)
-                if len(calibration_dates) >= 2
-                else fit_fixed_regularization(calibration_races)
+            calibrator_selection = fit_market_residual_calibrator(
+                calibration_races,
+                calibrator_strategy=calibrator_strategy,
             )
             calibrator = dict(calibrator_selection["final_calibrator"])
             calibrator_grid = []
@@ -2993,7 +3021,7 @@ def walk_forward_evaluate(
         closing_odds_evaluation = closing_policy_fold["evaluation"]
         policy_selector = (
             select_policy_v18
-            if calibrator_strategy == V18_STRATEGY_NAME
+            if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES
             else select_policy_v17
             if calibrator_strategy == V17_STRATEGY_NAME
             else select_policy
@@ -3541,6 +3569,7 @@ def walk_forward_evaluate(
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
+            V19_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -3627,7 +3656,7 @@ def walk_forward_evaluate(
             "primary_promotion_bankroll": "chronological_bankroll",
             "policy_selection": (
                 "strict_prior_lexicographic_robust_v17_schedule_quota_v18"
-                if calibrator_strategy == V18_STRATEGY_NAME
+                if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES
                 else "strict_prior_lexicographic_robust_v17"
             ),
         })
@@ -5236,6 +5265,7 @@ def build_parser() -> argparse.ArgumentParser:
             "odds_path_observed_closing_return",
             V17_STRATEGY_NAME,
             V18_STRATEGY_NAME,
+            V19_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",

@@ -90,7 +90,9 @@ def test_orthogonal_prequential_falls_back_to_exact_raw_identity(
         orthogonal_residual, "fit_orthogonal_residual", market_only
     )
 
-    result = select_regularization_prequential(races, regularizations=(1.0,))
+    result = select_regularization_prequential(
+        races, regularizations=(1.0,), enforce_raw_nonregression=True
+    )
 
     assert result["calibration_nonregression"]["outer_holdout_used"] is False
     assert result["calibration_nonregression"]["identity_fallback_applied"] is True

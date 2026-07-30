@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from boatrace_ai.chronological_bankroll import simulate_chronological_bankroll_day
-from boatrace_ai.listwise import market_calibration
+from boatrace_ai.listwise import market_calibration, market_residual
 
 
 DATE = "2026-07-30"
@@ -163,6 +163,59 @@ def test_v18_selector_attaches_control_without_changing_v17_policy(
     assert {key: v18[key] for key in selected} == selected
     assert v18["v18_ticket_control"]["learned_daily_ticket_limit"] == 14
     assert rows == [{"policy": selected}]
+
+
+def test_v18_keeps_original_calibrator_and_v19_opts_in(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def selected(races, *, enforce_raw_nonregression=False):
+        calls.append(enforce_raw_nonregression)
+        return {
+            "final_calibrator": {"model_weight": 0.25, "temperature": 0.9},
+            "candidates": [],
+        }
+
+    monkeypatch.setattr(
+        market_residual, "select_regularization_prequential", selected
+    )
+    races = [
+        {"race_date": "2026-07-28"},
+        {"race_date": "2026-07-29"},
+    ]
+
+    v18 = market_calibration.fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=market_calibration.V18_STRATEGY_NAME,
+    )
+    v19 = market_calibration.fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=market_calibration.V19_STRATEGY_NAME,
+    )
+
+    assert calls == [False, True]
+    assert v18["final_calibrator"] == {
+        "model_weight": 0.25,
+        "temperature": 0.9,
+    }
+    assert v19["final_calibrator"] == v18["final_calibrator"]
+    assert market_calibration.V19_STRATEGY_NAME in (
+        market_calibration.SCHEDULE_QUOTA_STRATEGIES
+    )
+
+
+def test_v19_has_distinct_parser_and_model_identity() -> None:
+    strategy = market_calibration.V19_STRATEGY_NAME
+    args = market_calibration.build_parser().parse_args([
+        "--from-date", "2026-07-18",
+        "--calibrator-strategy", strategy,
+    ])
+
+    assert args.calibrator_strategy == strategy
+    assert market_calibration.odds_path_model_name(strategy) == strategy
+    assert strategy != market_calibration.V18_STRATEGY_NAME
+    assert strategy in market_calibration.ROBUST_POLICY_STRATEGIES
 
 
 def test_v18_identity_parser_and_primary_mode() -> None:
