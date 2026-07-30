@@ -129,10 +129,18 @@ def feature_variants() -> list[tuple[str, tuple[str, ...]]]:
     ]
 
 
+def _feature_variant_catalog() -> dict[str, tuple[str, ...]]:
+    return dict(feature_variants()) | {
+        "drop_card_numeric": ("card_numeric",),
+        "drop_card_relative": ("card_relative",),
+        "drop_card_numeric_card_relative": ("card_numeric", "card_relative"),
+    }
+
+
 def parse_feature_variants(value: str | None) -> FeatureVariants | None:
     if not value:
         return None
-    available = dict(feature_variants())
+    available = _feature_variant_catalog()
     names = tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
     unknown = tuple(name for name in names if name not in available)
     if not names or unknown:

@@ -68,6 +68,17 @@ def test_feature_variant_selection_is_explicit_and_ordered() -> None:
         ("drop_research_correlates", ("research_correlates",)),
         ("full", ()),
     )
+    assert parse_feature_variants(
+        "drop_card_numeric,drop_card_relative,"
+        "drop_card_numeric_card_relative"
+    ) == (
+        ("drop_card_numeric", ("card_numeric",)),
+        ("drop_card_relative", ("card_relative",)),
+        (
+            "drop_card_numeric_card_relative",
+            ("card_numeric", "card_relative"),
+        ),
+    )
     with pytest.raises(argparse.ArgumentTypeError, match="feature variants"):
         parse_feature_variants("unknown")
 
