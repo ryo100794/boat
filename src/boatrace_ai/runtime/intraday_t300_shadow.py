@@ -1699,11 +1699,16 @@ def run_cycle(
         raise ValueError("now must be timezone-aware")
     if max_checkpoint_age_seconds <= 0 or max_source_update_staleness_seconds <= 0:
         raise ValueError("snapshot staleness limits must be positive")
+    cycle_started = time.perf_counter()
     race_date = resolve_race_date(now, configured_date)
     store.ensure_schema()
     settlements = store.append_available_settlements(race_date=race_date, now=now)
     inserted = duplicate = model_errors = no_bets = selected = 0
-    for race in store.due_races(race_date=race_date, now=now):
+    due_races = store.due_races(race_date=race_date, now=now)
+    pending_backlog_max_seconds = 0.0
+    pending_decisions = 0
+    model_decide_timing: dict[str, dict[str, float | int]] = {}
+    for race in due_races:
         snapshot_loaded = False
         snapshot: T300Snapshot | None = None
         check = SnapshotCheck(None, None, "missing_complete_t300_snapshot")
@@ -1715,6 +1720,11 @@ def run_cycle(
                     raise ValueError(f"model identity conflict for {race.race_id} {identity.model_key}")
                 duplicate += 1
                 continue
+            pending_decisions += 1
+            pending_backlog_max_seconds = max(
+                pending_backlog_max_seconds,
+                (now - race.target_t300_at.astimezone(now.tzinfo)).total_seconds(),
+            )
             if not snapshot_loaded:
                 snapshot = store.latest_complete_snapshot(race)
                 snapshot_loaded = True
@@ -1731,10 +1741,19 @@ def run_cycle(
                 decision = _no_bet(check.reason or "missing_complete_t300_snapshot")
             else:
                 try:
+                    decision_started = time.perf_counter()
                     decision = adapter.decide(store.conn, race, snapshot, bankroll_yen=bankroll)
                 except Exception as exc:
                     model_errors += 1
                     decision = _no_bet(f"model_error:{type(exc).__name__}")
+                decision_elapsed = time.perf_counter() - decision_started
+                timing = model_decide_timing.setdefault(
+                    identity.model_key,
+                    {"calls": 0, "total_seconds": 0.0, "max_seconds": 0.0},
+                )
+                timing["calls"] = int(timing["calls"]) + 1
+                timing["total_seconds"] = float(timing["total_seconds"]) + decision_elapsed
+                timing["max_seconds"] = max(float(timing["max_seconds"]), decision_elapsed)
             created = store.insert_decision(
                 race=race, identity=identity, decision_at=now, snapshot=snapshot,
                 snapshot_check=check, bankroll_before_yen=bankroll, decision=decision,
@@ -1744,11 +1763,29 @@ def run_cycle(
             no_bets += int(created and decision.status == "no_bet")
             selected += int(created and decision.status == "selected")
     settlements += store.append_available_settlements(race_date=race_date, now=now)
+    cycle_elapsed = time.perf_counter() - cycle_started
+    timing_diagnostics = {
+        key: {
+            "calls": int(value["calls"]),
+            "total_seconds": round(float(value["total_seconds"]), 6),
+            "max_seconds": round(float(value["max_seconds"]), 6),
+        }
+        for key, value in model_decide_timing.items()
+    }
     return {"race_date": race_date, "observed_at": now.isoformat(),
             "models": [adapter.identity.model_key for adapter in adapters],
             "decisions_inserted": inserted, "selected_decisions": selected,
             "no_bet_decisions": no_bets, "existing_decisions": duplicate,
             "model_errors": model_errors, "settlements_inserted": settlements,
+            "timing": {
+                "cycle_elapsed_seconds": round(cycle_elapsed, 6),
+                "due_races_scanned": len(due_races),
+                "pending_decisions": pending_decisions,
+                "initial_pending_backlog_max_seconds": round(
+                    pending_backlog_max_seconds, 6
+                ),
+                "model_decide": timing_diagnostics,
+            },
             "real_betting": False}
 
 
