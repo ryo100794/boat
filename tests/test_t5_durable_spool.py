@@ -384,3 +384,22 @@ def test_monitor_status_is_json_serializable(tmp_path) -> None:
     assert status["used_bytes"] > 0
     assert status["oldest_captured_at"] == event["captured_at"]
     assert json.loads(json.dumps(status))["max_bytes"] == 1024 * 1024
+
+
+def test_default_worker_uses_full_strict_t300_capture_window(tmp_path) -> None:
+    spool = T5Spool(tmp_path / "spool")
+    t5_at = datetime(2026, 7, 29, 5, 31, tzinfo=timezone.utc)
+    spool.save_schedule(
+        RACE_DATE,
+        _schedule(t5_at.astimezone(JST) + timedelta(minutes=10), count=1),
+    )
+    worker = T5DurabilityWorker(
+        spool,
+        date_provider=lambda: RACE_DATE,
+        fetch=lambda **_kwargs: _capture(1, t5_at - timedelta(seconds=55)),
+    )
+
+    assert worker.capture_lead_seconds == 60.0
+    assert worker.capture_due_once(now=t5_at - timedelta(seconds=55)) == 1
+    pending, _ = spool._read_pending_locked(repair_tail=True)
+    assert pending[0]["checkpoint_age_before_target_seconds"] == 55.0

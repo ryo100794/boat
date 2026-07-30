@@ -21,7 +21,7 @@ from .time_semantics import estimated_deadline_from_start, stored_start_time
 
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 SCHEMA_VERSION = 1
-DEFAULT_CAPTURE_LEAD_SECONDS = 15.0
+DEFAULT_CAPTURE_LEAD_SECONDS = 60.0
 
 
 class SpoolCapacityError(RuntimeError):
