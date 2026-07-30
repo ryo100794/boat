@@ -4311,6 +4311,12 @@ def genetic_cache_evaluation_date(app_root: Path) -> str | None:
 
 
 MARKET_FORMAL_FROM_DATE = "2026-07-18"
+DEPLOYMENT_DAILY_MARKET_PRIORITIES = {
+    "odds_path_role_integrated_t300_nonlinear_v12": 104,
+    "odds_path_role_integrated_registered_band_lcb_v14": 103,
+    "odds_path_role_integrated_fixed_band_passthrough_v16": 102,
+    "odds_path_observed_closing_return_schedule_quota_v18": 101,
+}
 MARKET_EVALUATION_SOURCES = (
     (
         "protected_mlp_prediction",
@@ -4541,9 +4547,8 @@ def seed_daily_market_jobs(
             model_key=f"{label}:market_residual:{range_key}",
             parameters=parameters,
             priority=(
-                100
-                if calibrator_strategy
-                == "odds_path_role_integrated_fixed_band_passthrough_v16"
+                DEPLOYMENT_DAILY_MARKET_PRIORITIES[calibrator_strategy]
+                if calibrator_strategy in DEPLOYMENT_DAILY_MARKET_PRIORITIES
                 else 99
                 if calibrator_strategy
                 == "odds_path_role_integrated_selection_free_envelope_v15"

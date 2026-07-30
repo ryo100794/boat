@@ -172,7 +172,25 @@ def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
         "odds_path_role_integrated_selection_free_envelope_v15"
     ]
     assert v16["priority"] > v15["priority"]
-    assert v16["priority"] == 100
+    deployment_priorities = {
+        strategy: by_strategy[strategy]["priority"]
+        for strategy in evaluation_queue.DEPLOYMENT_DAILY_MARKET_PRIORITIES
+    }
+    assert sum(
+        row["parameters"]["calibrator_strategy"] in deployment_priorities
+        for row in calls
+    ) == len(deployment_priorities)
+    assert deployment_priorities == {
+        "odds_path_role_integrated_t300_nonlinear_v12": 104,
+        "odds_path_role_integrated_registered_band_lcb_v14": 103,
+        "odds_path_role_integrated_fixed_band_passthrough_v16": 102,
+        "odds_path_observed_closing_return_schedule_quota_v18": 101,
+    }
+    assert min(deployment_priorities.values()) > max(
+        row["priority"]
+        for strategy, row in by_strategy.items()
+        if strategy not in deployment_priorities
+    )
     assert v16["parameters"]["timeout_seconds"] == 14_400
     assert v16["parameters"]["min_calibration_days"] == 5
     assert v16["parameters"]["v12_closing_fallback_policy"] == "no_bet"

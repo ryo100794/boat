@@ -1724,7 +1724,7 @@ def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -
         if row["parameters"]["calibrator_strategy"]
         == "odds_path_role_integrated_t300_nonlinear_v12"
     )
-    assert role_integrated_v12["priority"] == 89
+    assert role_integrated_v12["priority"] == 104
     assert role_integrated_v12["parameters"] == {
         "model_input": discrete_v9["parameters"]["model_input"],
         "from_date": "2026-07-18",
