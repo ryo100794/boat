@@ -462,6 +462,8 @@ def test_race_contract_keeps_local_and_official_closing_separate(
     assert race["official_closing_provenance"]["payload_sha256"] == "a" * 64
     assert len(race["odds_checkpoints"]) == 5
     assert dataset["official_closing_odds_races"] == 1
+    assert dataset["primary_official_closing_odds_races"] == 0
+    assert dataset["fallback_mirror_closing_odds_races"] == 1
     assert dataset["odds_checkpoint_metadata_conflicts"] == 0
 
 
