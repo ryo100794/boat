@@ -1908,6 +1908,7 @@ def build_command(
             "alphas",
             "feature_variants",
             "reuse_search_job_id",
+            "include_decayed_history",
             "ev_threshold",
             "ev_thresholds",
             "timeout_seconds",
@@ -1930,6 +1931,13 @@ def build_command(
         )
         if task_type == "combined_feature_search" and loss_blend is not None:
             raise ValueError("combined_feature_search does not support loss_blend")
+        include_decayed_history = params.get("include_decayed_history", False)
+        if not isinstance(include_decayed_history, bool):
+            raise ValueError("include_decayed_history must be a boolean")
+        if task_type == "combined_feature_search" and include_decayed_history:
+            raise ValueError(
+                "include_decayed_history is supported only for listwise_feature_search"
+            )
         targets = str(params.get("targets", "winner,top3_pl"))
         if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
             raise ValueError("unsupported targets")
@@ -2022,6 +2030,8 @@ def build_command(
             "--alphas", alphas,
             "--daily-budget-yen", "10000",
         ]
+        if include_decayed_history:
+            command.append("--include-decayed-history")
         if reuse_search_job_id is not None:
             reuse_output = (
                 app_root / "data" / "models" / "evaluation_queue"
