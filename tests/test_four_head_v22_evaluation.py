@@ -94,6 +94,25 @@ def _install_sources(monkeypatch, dates: list[str], *, missing_odds: set[str] = 
                 yield _feature_rows(race_id, date), _probabilities()
 
     monkeypatch.setattr(evaluation, "iter_scored_artifact_feature_rows", scored)
+    monkeypatch.setattr(
+        evaluation,
+        "_load_target_trifecta_payouts",
+        lambda conn, target_ids: {
+            race_id: {
+                "rows": (
+                    {"combination": "1-2-3", "payout_yen": 2_000},
+                )
+            }["rows"]
+            for race_id in target_ids
+        },
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_load_result_available_at",
+        lambda conn, target_ids: {
+            race_id: "2026-07-10T06:00:00+00:00" for race_id in target_ids
+        },
+    )
     return race_ids, snapshots
 
 
@@ -240,3 +259,102 @@ def test_db_backed_smoke_entrypoint_fits_then_evaluates_outer_only(monkeypatch):
     assert result["evaluation"]["outer_outcomes_used_for_fit_or_selection"] is False
     assert result["evaluation"]["production_bankroll_evaluated"] is False
     assert race_ids[-1] == result["decision_audit"][-1]["race_id"]
+    assert result["formal_bankroll"]["evaluation_role"].startswith("formal_")
+    assert result["formal_bankroll"][
+        "outer_outcomes_used_for_fit_selection_or_threshold"
+    ] is False
+    assert result["trifecta_top5_hit_rate"] >= 0.0
+    assert result["roi"] == result["formal_bankroll"]["roi"]
+    assert result["formal_bankroll"]["policy"]["result_available_at_source"] == (
+        "race_results.updated_at:max_complete_six_lane_result_conservative"
+    )
+
+
+def test_target_payout_query_reads_only_requested_outer_ids_in_chunks():
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params):
+            self.calls.append((sql, list(params)))
+            race_id = params[1]
+            return Result(
+                [
+                    {
+                        "race_id": race_id,
+                        "combination": "1-2-3",
+                        "payout_yen": 1_230,
+                        "popularity": 1,
+                    }
+                ]
+            )
+
+    conn = Connection()
+    target_ids = {f"outer-{index:03d}" for index in range(501)}
+    payouts = evaluation._load_target_trifecta_payouts(conn, target_ids)
+
+    assert len(conn.calls) == 2
+    assert all("race_id IN (" in sql for sql, _params in conn.calls)
+    assert all("bet_type = ?" in sql for sql, _params in conn.calls)
+    assert max(len(params) - 1 for _sql, params in conn.calls) == 500
+    queried_ids = {
+        race_id for _sql, params in conn.calls for race_id in params[1:]
+    }
+    assert queried_ids == target_ids
+    assert set(payouts).issubset(target_ids)
+
+
+@pytest.mark.parametrize(
+    "failure, message",
+    [
+        ("missing_payout", "ambiguous or missing official payout"),
+        ("multiple_payouts", "ambiguous or missing official payout"),
+        ("missing_result_time", "missing result_available_at"),
+    ],
+)
+def test_outer_settlement_fails_closed_on_incomplete_official_data(
+    monkeypatch, failure, message
+):
+    race_ids, _snapshots = _install_sources(
+        monkeypatch, ["2026-07-01", "2026-07-02"]
+    )
+    loaded = evaluation.load_v22_evaluation_data(
+        object(),
+        source_artifact=_artifact(),
+        training_from_date="2026-07-01",
+        training_through_date="2026-07-01",
+        outer_from_date="2026-07-02",
+        outer_through_date="2026-07-02",
+    )
+    outer_id = race_ids[-1]
+    if failure == "missing_payout":
+        monkeypatch.setattr(
+            evaluation, "_load_target_trifecta_payouts", lambda conn, ids: {}
+        )
+    elif failure == "multiple_payouts":
+        monkeypatch.setattr(
+            evaluation,
+            "_load_target_trifecta_payouts",
+            lambda conn, ids: {
+                outer_id: (
+                    {"combination": "1-2-3", "payout_yen": 2_000},
+                    {"combination": "1-3-2", "payout_yen": 2_100},
+                )
+            },
+        )
+    else:
+        monkeypatch.setattr(
+            evaluation, "_load_result_available_at", lambda conn, ids: {}
+        )
+
+    with pytest.raises(ValueError, match=message):
+        evaluation._build_outer_settlements(
+            object(), loaded.outer_races, loaded.decision_audit
+        )

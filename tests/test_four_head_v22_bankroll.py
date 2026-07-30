@@ -68,7 +68,7 @@ def _settlement(race: LabeledRace, *, payout: int = 700) -> V22BankrollSettlemen
     number = int(race.decision.race_id[-1])
     return V22BankrollSettlement(
         race_id=race.decision.race_id,
-        deadline_at=f"2026-07-29T0{number}:10:00+00:00",
+        decision_target_at=f"2026-07-29T0{number}:05:00+00:00",
         odds_captured_at=f"2026-07-29T0{number}:04:30+00:00",
         result_available_at=f"2026-07-29T0{number}:08:00+00:00",
         official_winner_index=race.outcome.winner_index,

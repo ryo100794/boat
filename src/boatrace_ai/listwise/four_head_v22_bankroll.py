@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -25,9 +25,11 @@ from .four_head_nested_v22 import (
 
 
 COMBINATIONS = tuple("-".join(map(str, value)) for value in TRIFECTA_COMBINATIONS)
-T5_LEAD_MINUTES = 5
 INITIAL_BANKROLL_YEN = 10_000
 STAKE_UNIT_YEN = 100
+RESULT_AVAILABLE_AT_PROVENANCE = (
+    "race_results.updated_at:max_complete_six_lane_result_conservative"
+)
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,13 @@ class V22BankrollSettlement:
     """Post-decision official data plus the audit trail for the real T-5 input."""
 
     race_id: str
-    deadline_at: str
+    decision_target_at: str
     odds_captured_at: str
     result_available_at: str
     official_winner_index: int
     official_closing_odds: tuple[float, ...]
     official_payout_yen: int
+    result_available_at_source: str = RESULT_AVAILABLE_AT_PROVENANCE
     snapshot_id: int | None = None
 
 
@@ -100,8 +103,7 @@ def _settlement_map(
     for item in settlements:
         if item.race_id in by_id:
             raise ValueError(f"duplicate settlement: {item.race_id}")
-        deadline = _timestamp(item.deadline_at, field="deadline_at")
-        target = deadline - timedelta(minutes=T5_LEAD_MINUTES)
+        target = _timestamp(item.decision_target_at, field="decision_target_at")
         captured = _timestamp(item.odds_captured_at, field="odds_captured_at")
         result_at = _timestamp(
             item.result_available_at, field="result_available_at"
@@ -111,6 +113,8 @@ def _settlement_map(
             raise ValueError(f"unsafe T-5 odds snapshot: {item.race_id}")
         if result_at <= target:
             raise ValueError(f"settlement precedes the decision: {item.race_id}")
+        if item.result_available_at_source != RESULT_AVAILABLE_AT_PROVENANCE:
+            raise ValueError(f"unsafe result time provenance: {item.race_id}")
         if item.snapshot_id is not None and int(item.snapshot_id) < 1:
             raise ValueError("snapshot_id must be positive when provided")
         by_id[item.race_id] = item
@@ -234,7 +238,7 @@ def evaluate_four_head_v22_bankroll(
                 {
                     "race_id": race_id,
                     "result_available_at": settlement.result_available_at,
-                    "result_available_at_source": "official_result_available_at",
+                    "result_available_at_source": settlement.result_available_at_source,
                     "payouts": {
                         COMBINATIONS[settlement.official_winner_index]: int(
                             settlement.official_payout_yen
@@ -258,7 +262,11 @@ def evaluate_four_head_v22_bankroll(
                         "odds_source": "official_trifecta_t5_snapshot",
                         "real_odds_snapshot_id": settlement.snapshot_id,
                         "real_odds_captured_at": settlement.odds_captured_at,
-                        "real_odds_deadline_at": settlement.deadline_at,
+                        # Legacy allocator field; this is the exact T-5 target.
+                        "real_odds_deadline_at": settlement.decision_target_at,
+                        "real_odds_decision_target_at": (
+                            settlement.decision_target_at
+                        ),
                         "real_odds_combinations": 120,
                     }
                 )
@@ -310,6 +318,7 @@ def evaluate_four_head_v22_bankroll(
             "decision_odds": "complete_official_trifecta_snapshot_at_T-5",
             "official_closing_odds_role": "settlement_metrics_only",
             "official_payout_role": "post_allocation_settlement_only",
+            "result_available_at_source": RESULT_AVAILABLE_AT_PROVENANCE,
             "allocation_api": (
                 "simulate_chronological_bankroll_day+allocate_adaptive_day"
             ),

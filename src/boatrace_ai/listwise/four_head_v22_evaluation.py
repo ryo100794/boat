@@ -25,6 +25,10 @@ from .four_head_nested_v22 import (
     evaluate_outer_outcomes,
     fit_four_head_nested_v22,
 )
+from .four_head_v22_bankroll import (
+    V22BankrollSettlement,
+    evaluate_four_head_v22_bankroll,
+)
 from .market_calibration import (
     MARKET_MAX_SNAPSHOT_AGE_SECONDS,
     iter_scored_artifact_feature_rows,
@@ -37,6 +41,7 @@ from .market_calibration import (
 COMBINATIONS = tuple("-".join(map(str, value)) for value in TRIFECTA_COMBINATIONS)
 COMBINATION_INDEX = {value: index for index, value in enumerate(COMBINATIONS)}
 DEFAULT_PROJECTION_DIMENSIONS = 8
+PAYOUT_BET_TYPE = "3連単"
 
 
 @dataclass(frozen=True)
@@ -258,6 +263,124 @@ def _load_target_complete_race_ids(
         (str(row["race_id"]), str(row["race_date"]), str(row["jcd"]), int(row["rno"]))
         for row in rows
     ]
+
+
+def _load_result_available_at(
+    conn: Any, target_ids: set[str]
+) -> dict[str, str]:
+    """Return when each targeted six-lane result became complete."""
+
+    result: dict[str, str] = {}
+    race_ids = sorted(target_ids)
+    for chunk_start in range(0, len(race_ids), 500):
+        chunk = race_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _race_id in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT race_id, COUNT(*) AS result_rows,
+                   COUNT(updated_at) AS timestamp_rows,
+                   MAX(updated_at) AS result_available_at
+            FROM race_results
+            WHERE race_id IN ({placeholders})
+              AND rank IS NOT NULL
+            GROUP BY race_id
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            if (
+                int(row["result_rows"]) == 6
+                and int(row["timestamp_rows"]) == 6
+                and row["result_available_at"] is not None
+            ):
+                result[str(row["race_id"])] = str(row["result_available_at"])
+    return result
+
+
+def _load_target_trifecta_payouts(
+    conn: Any, target_ids: set[str]
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Load only targeted official trifecta payouts in bounded chunks."""
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    race_ids = sorted(target_ids)
+    for chunk_start in range(0, len(race_ids), 500):
+        chunk = race_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _race_id in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT race_id, combination, payout_yen, popularity
+            FROM payouts
+            WHERE bet_type = ?
+              AND payout_yen IS NOT NULL
+              AND race_id IN ({placeholders})
+            ORDER BY race_id, combination, payout_yen, popularity
+            """,
+            [PAYOUT_BET_TYPE, *chunk],
+        ).fetchall()
+        for row in rows:
+            grouped[str(row["race_id"])].append(
+                {
+                    "combination": str(row["combination"]),
+                    "payout_yen": int(row["payout_yen"]),
+                    "popularity": row["popularity"],
+                }
+            )
+    return {
+        race_id: tuple(rows) for race_id, rows in sorted(grouped.items())
+    }
+
+
+def _build_outer_settlements(
+    conn: Any,
+    outer_races: Sequence[LabeledRace],
+    decision_audit: Sequence[DecisionAudit],
+) -> tuple[V22BankrollSettlement, ...]:
+    """Load strict post-decision settlement data for the frozen outer universe."""
+
+    race_ids = {race.decision.race_id for race in outer_races}
+    audits = {
+        audit.race_id: audit
+        for audit in decision_audit
+        if audit.race_id in race_ids
+    }
+    if set(audits) != race_ids:
+        raise ValueError("outer decision audit universe is incomplete")
+    payouts = _load_target_trifecta_payouts(conn, race_ids)
+    available_at = _load_result_available_at(conn, race_ids)
+    settlements: list[V22BankrollSettlement] = []
+    for race in outer_races:
+        race_id = race.decision.race_id
+        rows = payouts.get(race_id)
+        if not isinstance(rows, (tuple, list)) or len(rows) != 1:
+            raise ValueError(f"ambiguous or missing official payout: {race_id}")
+        winner_index = int(race.outcome.winner_index)
+        winner = COMBINATIONS[winner_index]
+        row = rows[0]
+        try:
+            payout_winner = str(row["combination"])
+            payout_yen = int(row["payout_yen"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid official payout: {race_id}") from exc
+        if payout_winner != winner or payout_yen < 100:
+            raise ValueError(f"official payout winner mismatch: {race_id}")
+        result_at = available_at.get(race_id)
+        if result_at is None:
+            raise ValueError(f"missing result_available_at: {race_id}")
+        audit = audits[race_id]
+        settlements.append(
+            V22BankrollSettlement(
+                race_id=race_id,
+                decision_target_at=audit.target_at,
+                odds_captured_at=audit.captured_at,
+                result_available_at=result_at,
+                official_winner_index=winner_index,
+                official_closing_odds=race.outcome.closing_odds,
+                official_payout_yen=payout_yen,
+                snapshot_id=audit.snapshot_id,
+            )
+        )
+    return tuple(settlements)
 
 
 def load_v22_evaluation_data(
@@ -497,6 +620,13 @@ def run_v22_smoke_evaluation(
         minimum_purchase_training_dates=minimum_purchase_training_dates,
         alpha=alpha,
     )
+    settlements = _build_outer_settlements(
+        conn, loaded.outer_races, loaded.decision_audit
+    )
+    formal_bankroll = evaluate_four_head_v22_bankroll(
+        artifact, loaded.outer_races, settlements,
+        max_t5_snapshot_age_seconds=max_snapshot_age_seconds,
+    )
     return {
         "model_key": artifact.model_key,
         "artifact_sha256": artifact_fingerprint(artifact),
@@ -509,6 +639,18 @@ def run_v22_smoke_evaluation(
         "coverage": dict(loaded.diagnostics),
         "decision_audit": [audit.__dict__ for audit in loaded.decision_audit],
         "evaluation": evaluate_outer_outcomes(artifact, loaded.outer_races),
+        "formal_bankroll": formal_bankroll,
+        "roi": formal_bankroll["roi"],
+        "stake_yen": formal_bankroll["stake_yen"],
+        "return_yen": formal_bankroll["return_yen"],
+        "profit_yen": formal_bankroll["profit_yen"],
+        "max_drawdown_yen": formal_bankroll["max_drawdown_yen"],
+        "daily": formal_bankroll["daily"],
+        "winner_log_loss": formal_bankroll["winner_log_loss"],
+        "winner_top1_accuracy": formal_bankroll["winner_top1_accuracy"],
+        "trifecta_log_loss": formal_bankroll["trifecta_log_loss"],
+        "trifecta_top5_hit_rate": formal_bankroll["trifecta_top5_hit_rate"],
+        "outer_outcomes_used_for_fit_selection_or_threshold": False,
     }
 
 
