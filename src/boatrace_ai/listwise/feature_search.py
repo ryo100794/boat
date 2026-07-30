@@ -163,6 +163,10 @@ def _feature_variant_catalog() -> dict[str, tuple[str, ...]]:
         for group in DEFAULT_ABLATION_FEATURE_GROUPS
     }
     return dict(feature_variants()) | backward_compatible_groups | {
+        "drop_base_pastlog_rolling_history": (
+            "base_pastlog",
+            "rolling_history",
+        ),
         "drop_card_numeric": ("card_numeric",),
         "drop_card_relative": ("card_relative",),
         "drop_card_numeric_card_relative": ("card_numeric", "card_relative"),
