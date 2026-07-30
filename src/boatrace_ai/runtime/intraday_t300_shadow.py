@@ -1210,6 +1210,9 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
     """Run the fixed job-8191 V18 policy prospectively at T300."""
 
     strategy_name = "v18_schedule_quota_t300"
+    expected_calibrator_strategy = "odds_path_observed_closing_return_schedule_quota_v18"
+    allowed_deployment_modes = ("shadow_only",)
+    artifact_label = "V18"
 
     def __init__(
         self,
@@ -1223,16 +1226,18 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             bundle_path=bundle_path,
             base_model_path=base_model_path,
         )
-        if self._bundle.get("calibrator_strategy") != (
-            "odds_path_observed_closing_return_schedule_quota_v18"
-        ):
-            raise ValueError("V18 deployment has an unexpected calibrator strategy")
+        if self._bundle.get("calibrator_strategy") != self.expected_calibrator_strategy:
+            raise ValueError(
+                f"{self.artifact_label} deployment has an unexpected calibrator strategy"
+            )
         if (
-            self._bundle.get("deployment_mode") != "shadow_only"
+            self._bundle.get("deployment_mode") not in self.allowed_deployment_modes
             or self._bundle.get("real_betting_enabled") is not False
             or float(self._bundle.get("daily_stake_limit_fraction", 0.0)) != 1.0
         ):
-            raise ValueError("V18 deployment must remain 10000-yen shadow-only")
+            raise ValueError(
+                f"{self.artifact_label} deployment must remain 10000-yen shadow-only"
+            )
         self._calibrator = self._component("calibrator")
         self._operational_model = self._component("operational_model")
         self._policy = self._component("candidate_policy")
@@ -1311,7 +1316,9 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
     ) -> ShadowDecision:
         trained = str(self._bundle.get("trained_through_date") or "")
         if trained and trained >= race.race_date:
-            raise ValueError("V18 artifacts are not strictly prior to race date")
+            raise ValueError(
+                f"{self.artifact_label} artifacts are not strictly prior to race date"
+            )
         limits = self._runtime_limits(conn, race, bankroll_yen=bankroll_yen)
         if limits["remaining_ticket_quota"] <= 0:
             return _no_bet(
@@ -1462,6 +1469,177 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
         )
 
 
+class V20DualHeadModelAdapter(V18ScheduleQuotaModelAdapter):
+    """Report V20 probabilities while retaining the V18 purchase pipeline."""
+
+    strategy_name = "v20_dual_head_t300"
+    expected_calibrator_strategy = (
+        "odds_path_observed_closing_return_schedule_quota_dual_head_v20"
+    )
+    allowed_deployment_modes = ("evaluation_only",)
+    artifact_label = "V20"
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        bundle_path: Path,
+        base_model_path: Path,
+    ) -> None:
+        super().__init__(
+            model_key=model_key,
+            bundle_path=bundle_path,
+            base_model_path=base_model_path,
+        )
+        self._probability_calibrator = self._component("probability_calibrator")
+        self._purchase_calibrator = self._component("purchase_calibrator")
+        dual = self._component("dual_head_calibration")
+        probability_head = dual.get("probability_head")
+        purchase_head = dual.get("purchase_head")
+        if (
+            self._bundle.get("source_evaluation_job_id") != 8458
+            or self._bundle.get("probability_metrics_head") != "probability_head"
+            or self._bundle.get("chronological_bankroll_head") != "purchase_head"
+            or self._bundle.get("outer_result_or_payout_used") is not False
+            or dual.get("architecture") != "strict_prior_dual_calibrator_heads_v20"
+            or dual.get("outer_holdout_used") is not False
+            or not isinstance(probability_head, Mapping)
+            or not isinstance(purchase_head, Mapping)
+            or probability_head.get("role")
+            != "probability_reporting_and_promotion_calibration"
+            or purchase_head.get("role")
+            != "purchase_policy_and_chronological_bankroll"
+            or probability_head.get("calibrator") != self._probability_calibrator
+            or purchase_head.get("calibrator") != self._purchase_calibrator
+            or self._probability_calibrator.get("converged") is not True
+            or self._purchase_calibrator.get("converged") is not True
+        ):
+            raise ValueError("V20 dual-head routing or provenance is inconsistent")
+        # The inherited V18 decision path is the canonical purchase head.
+        self._calibrator = self._purchase_calibrator
+
+    def _probability_head_output(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot
+    ) -> dict[str, float]:
+        point = normalize_odds_checkpoint(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "source_update_time": snapshot.source_update_time,
+                "raw_json": snapshot.raw_json,
+                "betting_deadline_at": race.betting_deadline_at.isoformat(),
+                "odds": snapshot.odds,
+            },
+            target_offset_seconds=T300_OFFSET_SECONDS,
+        )
+        if point is None:
+            return {}
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return {}
+        model_race = {
+            "race_id": race.race_id,
+            "race_date": race.race_date,
+            "jcd": race.jcd,
+            "rno": race.rno,
+            "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base,
+            "market_probabilities": market,
+            "odds": dict(snapshot.odds),
+            "odds_checkpoints": {"300": point},
+            "odds_path": [{
+                "minutes_before_decision": 0.0,
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "market_probabilities": market,
+            }],
+            "odds_path_points": 1,
+        }
+        transformed = attach_odds_path_model(
+            [model_race], dict(self._operational_model)
+        )[0]
+        probabilities = blend_probabilities(
+            transformed["model_probabilities"],
+            market,
+            model_weight=float(self._probability_calibrator["model_weight"]),
+            temperature=float(self._probability_calibrator["temperature"]),
+        )
+        if (
+            len(probabilities) != 120
+            or set(probabilities) != set(snapshot.odds)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=1e-8)
+        ):
+            return {}
+        return probabilities
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        purchase = super().decide(
+            conn, race, snapshot, bankroll_yen=bankroll_yen
+        )
+        diagnostics = dict(purchase.diagnostics)
+        dual_diagnostic: dict[str, Any] = {
+            "status": "recorded" if purchase.probabilities else "purchase_head_no_output",
+            "checkpoint": "t300",
+            "source_snapshot_id": snapshot.snapshot_id,
+            "source_evaluation_job_id": 8458,
+            "probability_output_head": "probability_head",
+            "candidate_selection_head": "purchase_head",
+            "chronological_bankroll_head": "purchase_head",
+            "probability_calibrator_sha256": _payload_hash(
+                self._probability_calibrator
+            ),
+            "purchase_calibrator_sha256": _payload_hash(
+                self._purchase_calibrator
+            ),
+            "purchase_probabilities_sha256": _payload_hash(
+                purchase.probabilities
+            ),
+            "purchase_decisions_sha256": _payload_hash(
+                purchase.selected_candidates
+            ),
+            "decision_features": "t300_or_earlier",
+            "outer_result_used": False,
+            "outer_payout_used": False,
+            "settlement_fields_used_for_capital_only": True,
+            "real_betting_enabled": False,
+        }
+        if not purchase.probabilities:
+            diagnostics["v20_dual_head"] = dual_diagnostic
+            return ShadowDecision(
+                {},
+                purchase.closing_lower_odds,
+                purchase.selected_candidates,
+                purchase.no_bet_reason,
+                diagnostics,
+            )
+        probability_output = self._probability_head_output(conn, race, snapshot)
+        if not probability_output:
+            return _no_bet(
+                "invalid_v20_probability_head_output",
+                diagnostics={
+                    **diagnostics,
+                    "v20_dual_head": {
+                        **dual_diagnostic,
+                        "status": "invalid_probability_head_output",
+                    },
+                },
+            )
+        dual_diagnostic["probability_output_sha256"] = _payload_hash(
+            probability_output
+        )
+        diagnostics["v20_dual_head"] = dual_diagnostic
+        return ShadowDecision(
+            probability_output,
+            purchase.closing_lower_odds,
+            purchase.selected_candidates,
+            purchase.no_bet_reason,
+            diagnostics,
+        )
+
+
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
     "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
         model_key=key, bundle_path=bundle, base_model_path=base
@@ -1478,6 +1656,11 @@ ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = 
     ),
     "v18_schedule_quota_t300": lambda key, bundle, base: (
         V18ScheduleQuotaModelAdapter(
+            model_key=key, bundle_path=bundle, base_model_path=base
+        )
+    ),
+    "v20_dual_head_t300": lambda key, bundle, base: (
+        V20DualHeadModelAdapter(
             model_key=key, bundle_path=bundle, base_model_path=base
         )
     ),

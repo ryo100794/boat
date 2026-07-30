@@ -288,6 +288,11 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         "manifest": {"output": {"bundle_sha256": "e" * 64}},
     }
     active_jobs["v18"] = _job(tmp_path / "v18.json", 8191, "v18")
+    bundles["v20"] = {
+        "path": str(tmp_path / "v20.joblib"),
+        "manifest": {"output": {"bundle_sha256": "f" * 64}},
+    }
+    active_jobs["v20"] = _job(tmp_path / "v20.json", 8458, "v20")
     now = datetime(2026, 7, 30, 8, tzinfo=JST)
     _legacy_active(
         state_root,
@@ -325,6 +330,9 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         updater, "build_v18_composite", lambda *args, **kwargs: bundles["v18"]
     )
     monkeypatch.setattr(
+        updater, "build_v20_composite", lambda *args, **kwargs: bundles["v20"]
+    )
+    monkeypatch.setattr(
         updater, "first_race_start", lambda *args: now + timedelta(hours=1)
     )
 
@@ -338,10 +346,10 @@ def test_run_once_pins_active_v12_v14_jobs_when_newer_jobs_exist(
         now=now,
     )
 
-    assert result["status"] == "additive_v16_v18_extended"
+    assert result["status"] == "additive_v16_v18_v20_extended"
     assert fixed_calls == [("v12", 12), ("v14", 14)]
-    assert latest_calls == ["v16", "v18"]
-    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16, "v18": 8191}
+    assert latest_calls == ["v16", "v18", "v20"]
+    assert result["jobs"] == {"v12": 12, "v14": 14, "v16": 16, "v18": 8191, "v20": 8458}
 
 
 def test_additive_extension_rejects_existing_identity_change_and_post_start(
