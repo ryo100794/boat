@@ -106,6 +106,131 @@ def test_walk_forward_executes_newton_residual_branch(monkeypatch) -> None:
     assert result["folds"][0]["calibrator"]["model_weight"] == 0.1
 
 
+def test_v20_routes_dual_heads_without_outer_holdout_selection(monkeypatch) -> None:
+    races = [
+        _race("2026-07-20", "1-2-3"),
+        _race("2026-07-21", "1-3-2"),
+        _race("2026-07-22", "1-2-3"),
+    ]
+    probability_calibrator = {"model_weight": 1.0, "temperature": 1.0}
+    purchase_calibrator = {"model_weight": 0.0, "temperature": 1.0}
+    routed = {
+        "selection_race_dates": [],
+        "policy": [],
+        "chronological": [],
+        "probability_metrics": [],
+        "market_comparison": [],
+    }
+
+    def fit_dual(prior_races):
+        dates = [race["race_date"] for race in prior_races]
+        routed["selection_race_dates"].append(dates)
+        return {
+            "architecture": "strict_prior_dual_calibrator_heads_v20",
+            "selection_data": (
+                "strict_prior_training_and_inner_prequential_folds_only"
+            ),
+            "outer_holdout_used": False,
+            "training_dates": sorted(set(dates)),
+            "trained_through_date": max(dates),
+            "probability_head": {
+                "role": "probability_reporting_and_promotion_calibration",
+                "calibrator_strategy": market_calibration.V19_STRATEGY_NAME,
+                "raw_nonregression_enforced": True,
+                "calibrator": probability_calibrator,
+                "selection": {"final_calibrator": probability_calibrator},
+            },
+            "purchase_head": {
+                "role": "purchase_policy_and_chronological_bankroll",
+                "calibrator_strategy": market_calibration.V18_STRATEGY_NAME,
+                "raw_nonregression_enforced": False,
+                "policy_strategy": market_calibration.V18_STRATEGY_NAME,
+                "calibrator": purchase_calibrator,
+                "selection": {"final_calibrator": purchase_calibrator},
+            },
+        }
+
+    monkeypatch.setattr(
+        market_calibration, "fit_v20_dual_head_calibrators", fit_dual
+    )
+    monkeypatch.setattr(
+        market_calibration, "attach_observed_closing_return_prices", lambda rows: rows
+    )
+    monkeypatch.setattr(
+        market_calibration, "fit_odds_path_model", lambda *args, **kwargs: {"v": 20}
+    )
+    monkeypatch.setattr(
+        market_calibration, "attach_odds_path_model", lambda rows, model: rows
+    )
+
+    def select_policy(*args, calibrator, **kwargs):
+        routed["policy"].append(calibrator)
+        return {"name": "no_bet", "no_bet": True}, []
+
+    monkeypatch.setattr(market_calibration, "select_policy_v18", select_policy)
+    monkeypatch.setattr(
+        market_calibration,
+        "select_flat_policy",
+        lambda *args, **kwargs: ({"name": "no_bet", "no_bet": True}, []),
+    )
+
+    original_probability_metrics = market_calibration.probability_metrics
+    original_paired_market_differences = market_calibration.paired_market_differences
+
+    def probability_metrics(rows, *, calibrator):
+        routed["probability_metrics"].append(calibrator)
+        return original_probability_metrics(rows, calibrator=calibrator)
+
+    def paired_market_differences(rows, *, calibrator):
+        routed["market_comparison"].append(calibrator)
+        return original_paired_market_differences(rows, calibrator=calibrator)
+
+    monkeypatch.setattr(market_calibration, "probability_metrics", probability_metrics)
+    monkeypatch.setattr(
+        market_calibration, "paired_market_differences", paired_market_differences
+    )
+
+    original_simulate_policy = market_calibration.simulate_policy
+
+    def simulate_policy(rows, *, calibrator, include_chronological=False, **kwargs):
+        if include_chronological:
+            routed["chronological"].append(calibrator)
+        return original_simulate_policy(
+            rows,
+            calibrator=calibrator,
+            include_chronological=include_chronological,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(market_calibration, "simulate_policy", simulate_policy)
+
+    result = market_calibration.walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy=market_calibration.V20_STRATEGY_NAME,
+    )
+
+    assert routed["selection_race_dates"][0] == ["2026-07-20", "2026-07-21"]
+    # A later all-completed-data call is the explicitly labeled next-day refit.
+    assert routed["selection_race_dates"][-1] == [
+        "2026-07-20",
+        "2026-07-21",
+        "2026-07-22",
+    ]
+    assert routed["policy"] and all(
+        calibrator == purchase_calibrator for calibrator in routed["policy"]
+    )
+    assert routed["chronological"] == [purchase_calibrator]
+    assert routed["probability_metrics"] == [probability_calibrator]
+    assert routed["market_comparison"] == [probability_calibrator]
+    fold = result["folds"][0]
+    assert fold["probability_metrics_head"] == "probability_head"
+    assert fold["chronological_bankroll_head"] == "purchase_head"
+    assert result["dual_head_architecture"]["outer_holdout_used"] is False
+    assert result["deployment_mode"] == "evaluation_only"
+    assert result["promotion_eligible"] is False
+
+
 def test_walk_forward_supports_preregistered_single_day_provisional_track(
     monkeypatch,
 ) -> None:

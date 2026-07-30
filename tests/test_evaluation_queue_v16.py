@@ -185,6 +185,7 @@ def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
         "odds_path_role_integrated_registered_band_lcb_v14": 103,
         "odds_path_role_integrated_fixed_band_passthrough_v16": 102,
         "odds_path_observed_closing_return_schedule_quota_v18": 101,
+        "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19": 100,
     }
     assert min(deployment_priorities.values()) > max(
         row["priority"]
