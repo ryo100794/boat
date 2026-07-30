@@ -1,0 +1,22 @@
+{
+  "source_job_id": 7013,
+  "learning_rate": 0.005943150869421049,
+  "epochs": 2,
+  "batch_races": 1000,
+  "candidate_count": 48,
+  "finalists": 8,
+  "bootstrap_samples": 20000,
+  "payout_prior_weights": "10,30,100",
+  "evaluation_days": 365,
+  "research_only": false,
+  "seed": 20260731,
+  "timeout_seconds": 43200,
+  "coefficient_optimizer": "newton_cg",
+  "max_newton_iterations": 10,
+  "max_cg_iterations": 75,
+  "gradient_tolerance": 0.0001,
+  "cg_tolerance": 0.001,
+  "ev_calibration_mode": "contextual_lcb95",
+  "calibration_fraction": 0.5,
+  "calibration_bootstrap_samples": 2000
+}
