@@ -1056,6 +1056,21 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     standardized = _load_standardized_v2_bundle(model_dir)
     standardized_labels: set[str] = set()
 
+    runtime_state_dir = db_path.parent / "runtime" / "daily-shadow-models"
+    runtime_reports: dict[str, Any] = {}
+    for key, filename in (
+        ("v21_activation_recovery", "activation-recovery.json"),
+        ("v21_prospective_evidence", "v21-prospective-evidence.json"),
+    ):
+        path = runtime_state_dir / filename
+        try:
+            runtime_reports[key] = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            runtime_reports[key] = None
+        except Exception as exc:
+            runtime_reports[key] = None
+            errors.append({"file": str(path), "error": str(exc)})
+
     for path in sorted(model_dir.glob("*.json")):
         try:
             data = _read_json_artifact(path)
@@ -1330,6 +1345,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 for row in queued_evaluations["jobs"]
             ),
         ),
+        **runtime_reports,
         "errors": errors,
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)

@@ -61,6 +61,35 @@ def test_model_report_exposes_empirical_lcb_separately_from_legacy(tmp_path) -> 
     assert row["sample_size_pass"] is True
     assert row["tail_bootstrap_roi_lower95"] == 1.006
 
+def test_model_report_exposes_v21_runtime_evidence(tmp_path) -> None:
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    state_dir = tmp_path / "runtime" / "daily-shadow-models"
+    state_dir.mkdir(parents=True)
+    activation = {"status": "monitoring", "real_betting_enabled": False}
+    evidence = {
+        "bankroll": {"clean_days": 1, "races": 132, "roi": 1.1},
+        "promotion_gate": {"pass": False, "failed_checks": ["minimum_clean_days"]},
+    }
+    (state_dir / "activation-recovery.json").write_text(
+        json.dumps(activation), encoding="utf-8"
+    )
+    (state_dir / "v21-prospective-evidence.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    dashboard._MODEL_REPORT_CACHE.clear()
+
+    report = dashboard.model_performance_report(
+        tmp_path / "boatrace.sqlite",
+        {"model_dir": [str(model_dir)]},
+    )
+
+    assert report["v21_activation_recovery"] == activation
+    assert report["v21_prospective_evidence"] == evidence
+    public = dashboard.model_performance_public_report(report)
+    assert public["v21_activation_recovery"] == activation
+    assert public["v21_prospective_evidence"] == evidence
+
 
 def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> None:
     model_dir = tmp_path / "models"

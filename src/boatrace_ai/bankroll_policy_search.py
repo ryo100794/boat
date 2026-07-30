@@ -214,7 +214,9 @@ def policy_candidates(
         raise ValueError("candidate count must be positive")
     rng = np.random.default_rng(seed)
     canonical_base = dict(base_policy)
+    canonical_base.setdefault("min_ticket_probability", 0.0)
     canonical_base.setdefault("min_estimated_odds", None)
+    canonical_base.setdefault("max_estimated_odds", None)
     candidates = [canonical_base]
     seen = {_policy_key(candidates[0])}
     anchors = _registered_anchor_policies(canonical_base)

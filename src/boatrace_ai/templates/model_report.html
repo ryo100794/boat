@@ -87,6 +87,7 @@
   <section id="promotionSection" class="report-group promotion">
     <div class="group-heading"><h2>4. 本番昇格判定</h2><span class="scope-note">予測・オッズ・購入の全ゲートを分離判定</span></div>
     <div class="section-intro"><span><b>目的</b> 本番差替え可否</span><span><b>必須条件</b> 精度非劣化・オッズ品質・ROI片側95%下限&gt;1・損益&gt;0・DD監査</span><span><b>結論</b> 確率精度と資金成績を同時評価 / 全必須gate接続・合格時だけ昇格 / 未接続または未評価なら追加評価待ち</span></div>
+    <div id="v21Prospective" class="panel"></div>
     <div id="standardProtocol" class="panel"></div>
     <div class="panel"><h2><span>統一365日 複合判定</span><span class="muted">行タップで日次詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
     <span id="selectedModelGroup" aria-hidden="true"></span>
@@ -110,6 +111,7 @@ async function refreshGeneticEvolution(){ if(gaRefreshing||document.hidden) retu
 function render(data){
   const bank=data.bankroll||[], empirical=data.empirical_lcb_walk_forward||[], tests=data.backtests||[], folds=data.fold_metrics||[], features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
   const v2Ready=Boolean(data.standardized_evaluation&&data.standardized_evaluation.ready);
+  renderV21Prospective(data.v21_activation_recovery,data.v21_prospective_evidence);
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
   const comparisonBank=v2Ready?v2Bank:v1Bank, comparisonTests=v2Ready?v2Tests:v1Tests;
@@ -133,6 +135,18 @@ function render(data){
   $("compositeSummaryRows").innerHTML=comparisonRows.filter(x=>x.prediction&&x.bankroll).map(compositeRow).join("")||'<tr><td colspan="9" class="muted">複合評価を実行中</td></tr>';
   $("sweepRows").innerHTML=(data.sweeps||[]).map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||"")}"><td title="${esc(x.name)}">${esc(shortName(x.name))}</td><td>${ratio(x.entry_log_loss)}</td><td>${ratio(x.entry_brier)}</td><td>${pct(x.winner_top1_accuracy)}</td><td>${pct(x.trifecta_top1_hit_rate)}</td><td>${pct(x.trifecta_top5_hit_rate)}</td><td>${fmt(x.evaluated_races)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">スイープ結果なし</td></tr>';
   configureModelSelection(data,comparisonRows); renderSelectedModel(data);
+}
+function renderV21Prospective(activation,evidence){
+  const a=activation||{},e=evidence||{},b=e.bankroll||{},m=e.market||{},g=e.promotion_gate||{},failed=g.failed_checks||[];
+  const passed=g.pass===true,cls=passed?"done":(a.status==="failed"?"failed":"running");
+  const label=passed?"正式ゲート合格":(evidence?"未見検証中":"開始待ち");
+  const delay=a.maximum_observed_delay_seconds==null?"-":Number(a.maximum_observed_delay_seconds).toFixed(1)+"秒";
+  $("v21Prospective").innerHTML=
+    `<h2><span>V21 未見期間・本番昇格証跡</span><span class="tag ${cls}">${label}</span></h2>`+
+    `<div class="mono">稼働 ${esc(a.status||"-")} / 初回判定 ${fmt(a.recorded_decisions)}/${fmt(a.expected_decisions)} / 最大遅延 ${delay}</div>`+
+    `<div class="mono">完全日 ${fmt(b.clean_days)}/30 / ${fmt(b.races)}/1,000R / ROI ${ratio(b.roi)} / 最大配当除外 ${ratio(b.roi_without_largest_hit)} / 片側95%下限 ${ratio(b.daily_cluster_bootstrap_roi_lower_95)} / 有効的中 ${ratio(b.effective_hit_count)}</div>`+
+    `<div class="mono">3連単LL ${ratio(m.model_trifecta_log_loss)} / 3T5 ${pct(m.model_trifecta_top5)} / 市場非劣化信頼度 ${pct(m.market_noninferiority_confidence)} / Top5改善信頼度 ${pct(m.top5_improvement_confidence)}</div>`+
+    `<div class="muted">未達条件 ${esc(failed.join(", ")||"証跡蓄積待ち")} / 実投票 ${a.real_betting_enabled?"有効":"無効"}</div>`;
 }
 function renderGeneticEvolution(jobs){
   const islands=(jobs||[]).filter(row=>row.kind==="genetic_island_search"&&row.cohort);

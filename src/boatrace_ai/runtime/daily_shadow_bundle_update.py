@@ -17,7 +17,12 @@ import joblib
 import psycopg
 from psycopg.rows import dict_row
 
+from ..postgresql import Connection as PostgresqlConnection
 from . import v12_shadow_bundle
+from .v21_prospective_evidence import (
+    V21ProspectiveEvidenceConfig,
+    collect_v21_prospective_evidence,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -48,6 +53,7 @@ FROZEN_SOURCE_JOB_IDS = {
     "v21": 8666,
 }
 FROZEN_TRAINED_THROUGH_DATE = "2026-07-29"
+V21_PROSPECTIVE_START_DATE = "2026-07-31"
 
 
 @dataclass(frozen=True)
@@ -859,6 +865,18 @@ def build_v21_composite(
 ) -> dict[str, Any]:
     if job.job_id != FROZEN_SOURCE_JOB_IDS["v21"]:
         raise ValueError("V21 frozen source must be formal job 8666")
+    canonical_output = (
+        output_root / V21_PROSPECTIVE_START_DATE
+        / f"v21-{V21_PROSPECTIVE_START_DATE}-job-{job.job_id}.joblib"
+    )
+    if prediction_date > V21_PROSPECTIVE_START_DATE:
+        if not canonical_output.exists():
+            raise ValueError("V21 canonical prospective bundle is missing")
+        manifest = verify_bundle(
+            canonical_output, family="v21", through_date=through_date,
+            prediction_date=V21_PROSPECTIVE_START_DATE,
+        )
+        return {"path": str(canonical_output), "manifest": manifest}
     output = output_root / prediction_date / f"v21-{prediction_date}-job-{job.job_id}.joblib"
     if output.exists():
         manifest = verify_bundle(output, family="v21", through_date=through_date, prediction_date=prediction_date)
@@ -996,6 +1014,98 @@ def _timestamp(value: object, name: str) -> datetime:
     return parsed.astimezone(JST)
 
 
+_INVALID_DECISION_REASON_MARKERS = (
+    "model_error", "missing", "stale", "inconsistent", "incomplete",
+)
+
+
+def _parse_recovery_model_spec(value: object) -> tuple[str, str, Path, Path]:
+    parts = str(value or "").split(":", 3)
+    if len(parts) != 4 or any(not part for part in parts):
+        raise ValueError("model spec must contain model, strategy, bundle, and base")
+    return parts[0], parts[1], Path(parts[2]), Path(parts[3])
+
+
+def _recovery_artifact_checks(
+    *, active_specs: Mapping[str, Any], active_identities: Mapping[str, Any],
+    runtime_identities: Mapping[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str]]:
+    checks: dict[str, dict[str, Any]] = {}
+    model_keys: dict[str, str] = {}
+    for family in RECOVERY_FAMILIES:
+        check: dict[str, Any] = {"family": family, "verified": False}
+        try:
+            model_key, strategy, bundle_path, base_path = _parse_recovery_model_spec(
+                active_specs.get(family)
+            )
+            bundle_sha256 = _sha256(bundle_path)
+            base_sha256 = _sha256(base_path)
+            calculated_runtime = hashlib.sha256(
+                (bundle_sha256 + base_sha256).encode("ascii")
+            ).hexdigest()
+            bundle_identity_ok = (
+                str(active_identities.get(family) or "") == bundle_sha256
+            )
+            runtime_identity_ok = (
+                str(runtime_identities.get(family) or "") == calculated_runtime
+            )
+            check.update({
+                "model_key": model_key,
+                "strategy_name": strategy,
+                "bundle_path": str(bundle_path),
+                "base_path": str(base_path),
+                "bundle_sha256": bundle_sha256,
+                "base_sha256": base_sha256,
+                "calculated_runtime_identity": calculated_runtime,
+                "bundle_identity_ok": bundle_identity_ok,
+                "runtime_identity_ok": runtime_identity_ok,
+                "verified": bundle_identity_ok and runtime_identity_ok,
+            })
+            model_keys[family] = model_key
+        except (OSError, ValueError) as exc:
+            check["error"] = str(exc)
+        checks[family] = check
+    duplicate_keys = sorted({
+        key for key in model_keys.values()
+        if tuple(model_keys.values()).count(key) > 1
+    })
+    return checks, model_keys, duplicate_keys
+
+
+def _decision_mapping_size(value: object) -> int | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return len(value) if isinstance(value, Mapping) else None
+
+
+def _fixed_recovery_races(
+    previous: Mapping[str, Any] | None, *, prediction_date: str, race_limit: int,
+) -> tuple[list[str], dict[str, datetime]] | None:
+    if not previous or previous.get("prediction_date") != prediction_date:
+        return None
+    race_ids = previous.get("first_race_ids")
+    raw_targets = previous.get("first_race_targets")
+    if (
+        not isinstance(race_ids, list)
+        or len(race_ids) != race_limit
+        or len(set(map(str, race_ids))) != race_limit
+        or not isinstance(raw_targets, Mapping)
+    ):
+        return None
+    ids = [str(value) for value in race_ids]
+    try:
+        targets = {
+            race_id: _timestamp(raw_targets[race_id], "first_race_target")
+            for race_id in ids
+        }
+    except (KeyError, ValueError):
+        return None
+    return ids, targets
+
+
 def verify_activation_recovery(
     conn: Any, *, state_root: Path, prediction_date: str, now: datetime,
     race_limit: int = RECOVERY_FIRST_RACES,
@@ -1004,66 +1114,104 @@ def verify_activation_recovery(
     if race_limit <= 0 or max_delay_seconds <= 0:
         raise ValueError("recovery thresholds must be positive")
     active = _active_state(state_root)
+    try:
+        previous = _json(state_root / "activation-recovery.json")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        previous = None
     required = set(RECOVERY_FAMILIES)
     active_identities = dict((active or {}).get("model_identities") or {})
     active_specs = dict((active or {}).get("model_specs") or {})
-    runtime_identities = dict(
-        (active or {}).get("runtime_model_identities") or {}
+    runtime_identities = dict((active or {}).get("runtime_model_identities") or {})
+    artifact_checks, model_keys, duplicate_model_keys = _recovery_artifact_checks(
+        active_specs=active_specs, active_identities=active_identities,
+        runtime_identities=runtime_identities,
     )
+    artifacts_verified = bool(
+        required.issubset(artifact_checks)
+        and all(artifact_checks[family]["verified"] for family in RECOVERY_FAMILIES)
+    )
+    real_betting_enabled = (active or {}).get("real_betting_enabled")
     activation_ready = bool(
-        active
-        and active.get("prediction_date") == prediction_date
-        and active.get("real_betting_enabled") is False
+        active and active.get("prediction_date") == prediction_date
+        and real_betting_enabled is False
         and required.issubset(active_identities)
         and required.issubset(active_specs)
         and required.issubset(runtime_identities)
+        and required.issubset(model_keys)
+        and not duplicate_model_keys and artifacts_verified
+    )
+    fixed = _fixed_recovery_races(
+        previous, prediction_date=prediction_date, race_limit=race_limit
     )
     payload: dict[str, Any] = {
-        "schema_version": 1,
-        "prediction_date": prediction_date,
+        "schema_version": 1, "prediction_date": prediction_date,
         "checked_at": now.isoformat(),
         "required_families": list(RECOVERY_FAMILIES),
         "required_first_races": race_limit,
         "maximum_decision_delay_seconds": max_delay_seconds,
         "activation_ready": activation_ready,
-        "identity_freeze_preserved": activation_ready,
-        "real_betting_enabled": False,
+        "identity_freeze_preserved": artifacts_verified,
+        "real_betting_enabled": real_betting_enabled,
+        "artifact_identity_checks": artifact_checks,
+        "duplicate_model_keys": duplicate_model_keys,
     }
+    if fixed is not None:
+        payload["first_race_ids"] = fixed[0]
+        payload["first_race_targets"] = {
+            race_id: fixed[1][race_id].isoformat() for race_id in fixed[0]
+        }
     if not activation_ready:
         payload.update({
-            "status": "activation_pending",
+            "status": "activation_invalid" if active else "activation_pending",
             "missing_families": sorted(required - set(active_identities)),
             "gate_pass": False,
         })
     else:
-        race_rows = conn.execute(
-            """
-            SELECT r.race_id,
-                   r.deadline_at::timestamptz - INTERVAL '10 minutes'
-                     AS target_t300_at
-            FROM races r
-            WHERE r.race_date = %s AND r.deadline_at IS NOT NULL
-              AND (SELECT COUNT(DISTINCT e.lane) FROM entries e
-                   WHERE e.race_id = r.race_id) = 6
-            ORDER BY r.deadline_at, r.jcd, r.rno, r.race_id
-            LIMIT %s
-            """,
-            (prediction_date, race_limit),
-        ).fetchall()
-        race_ids = [str(row["race_id"]) for row in race_rows]
-        targets = {
-            str(row["race_id"]): _timestamp(row["target_t300_at"], "target_t300_at")
-            for row in race_rows
-        }
-        model_keys = {family: active_specs[family].split(":", 1)[0] for family in RECOVERY_FAMILIES}
+        if fixed is None:
+            race_rows = conn.execute(
+                """
+                SELECT r.race_id,
+                       r.deadline_at::timestamptz - INTERVAL '10 minutes'
+                         AS target_t300_at
+                FROM races r
+                WHERE r.race_date = %s AND r.deadline_at IS NOT NULL
+                  AND (SELECT COUNT(DISTINCT e.lane) FROM entries e
+                       WHERE e.race_id = r.race_id) = 6
+                ORDER BY r.deadline_at, r.jcd, r.rno, r.race_id
+                LIMIT %s
+                """,
+                (prediction_date, race_limit),
+            ).fetchall()
+            race_ids = [str(row["race_id"]) for row in race_rows]
+            targets = {
+                str(row["race_id"]): _timestamp(row["target_t300_at"], "target_t300_at")
+                for row in race_rows
+            }
+            if len(race_ids) == race_limit:
+                payload["first_race_ids"] = race_ids
+                payload["first_race_targets"] = {
+                    race_id: targets[race_id].isoformat() for race_id in race_ids
+                }
+        else:
+            race_ids, targets = fixed
+            race_rows = [
+                {"race_id": race_id, "target_t300_at": targets[race_id]}
+                for race_id in race_ids
+            ]
         decision_rows = []
         if race_ids:
             decision_rows = conn.execute(
                 """
-                SELECT race_id, model_key, model_hash, strategy_name,
-                       decision_at, target_t300_at
-                FROM intraday_t300_shadow_decisions
-                WHERE race_date = %s AND race_id = ANY(%s) AND model_key = ANY(%s)
+                SELECT d.race_id, d.model_key, d.model_hash, d.strategy_name,
+                       COALESCE(
+                         NULLIF(to_jsonb(d)->>'decision_completed_at', '')::timestamptz,
+                         d.created_at
+                       ) AS decision_completed_at,
+                       d.created_at, d.target_t300_at, d.source_snapshot_id,
+                       d.probabilities, d.closing_lower_odds, d.no_bet_reason
+                FROM intraday_t300_shadow_decisions d
+                WHERE d.race_date = %s AND d.race_id = ANY(%s)
+                  AND d.model_key = ANY(%s)
                 """,
                 (prediction_date, race_ids, list(model_keys.values())),
             ).fetchall()
@@ -1071,6 +1219,7 @@ def verify_activation_recovery(
         checks = []
         missing_overdue = []
         identity_mismatches = []
+        invalid_decisions = []
         for race_id in race_ids:
             for family in RECOVERY_FAMILIES:
                 key = model_keys[family]
@@ -1084,25 +1233,70 @@ def verify_activation_recovery(
                     if overdue:
                         missing_overdue.append({"race_id": race_id, "family": family})
                     continue
-                decision_at = _timestamp(row["decision_at"], "decision_at")
-                target = _timestamp(row["target_t300_at"], "target_t300_at")
-                delay = max(0.0, (decision_at - target).total_seconds())
-                identity_ok = (
-                    str(row["model_hash"]) == str(runtime_identities[family])
-                    and str(row["strategy_name"]) == active_specs[family].split(":", 2)[1]
+                invalid_reasons = []
+                if row.get("source_snapshot_id") is None:
+                    invalid_reasons.append("source_snapshot_missing")
+                if _decision_mapping_size(row.get("probabilities")) != 120:
+                    invalid_reasons.append("probabilities_incomplete")
+                if _decision_mapping_size(row.get("closing_lower_odds")) != 120:
+                    invalid_reasons.append("closing_lower_odds_incomplete")
+                no_bet_reason = str(row.get("no_bet_reason") or "").lower()
+                if any(marker in no_bet_reason for marker in _INVALID_DECISION_REASON_MARKERS):
+                    invalid_reasons.append("prohibited_no_bet_reason")
+                completion_value = row.get("decision_completed_at") or row.get("created_at")
+                try:
+                    completed_at = _timestamp(completion_value, "decision_completed_at")
+                except (TypeError, ValueError):
+                    completed_at = None
+                    invalid_reasons.append("decision_completion_missing")
+                target = targets[race_id]
+                delay = (
+                    max(0.0, (completed_at - target).total_seconds())
+                    if completed_at is not None else None
                 )
-                checks.append({
+                expected_runtime_identity = str(
+                    artifact_checks[family]["calculated_runtime_identity"]
+                )
+                identity_ok = (
+                    str(row["model_hash"]) == expected_runtime_identity
+                    and str(row["strategy_name"])
+                    == str(artifact_checks[family]["strategy_name"])
+                )
+                check = {
                     "race_id": race_id, "family": family, "model_key": key,
-                    "status": "recorded", "decision_delay_seconds": delay,
-                    "within_limit": delay < max_delay_seconds,
-                    "identity_ok": identity_ok,
-                })
+                    "status": "invalid" if invalid_reasons else "recorded",
+                    "decision_delay_seconds": delay,
+                    "within_limit": delay is not None and delay < max_delay_seconds,
+                    "identity_ok": identity_ok, "invalid_reasons": invalid_reasons,
+                }
+                checks.append(check)
+                if invalid_reasons:
+                    invalid_decisions.append(check)
                 if not identity_ok:
                     identity_mismatches.append({"race_id": race_id, "family": family})
         recorded = [row for row in checks if row["status"] == "recorded"]
         late = [row for row in recorded if not row["within_limit"]]
-        complete = len(race_rows) == race_limit and len(recorded) == race_limit * len(RECOVERY_FAMILIES)
-        failed = bool(late or missing_overdue or identity_mismatches)
+        complete = (
+            len(race_rows) == race_limit
+            and len(recorded) == race_limit * len(RECOVERY_FAMILIES)
+        )
+        first_start_value = (active or {}).get("first_race_start")
+        try:
+            first_start = (
+                _timestamp(first_start_value, "first_race_start")
+                if first_start_value else None
+            )
+        except ValueError:
+            first_start = None
+        collector_missing = bool(
+            not race_rows and first_start is not None
+            and now >= first_start - timedelta(minutes=10)
+            + timedelta(seconds=max_delay_seconds)
+        )
+        failed = bool(
+            late or missing_overdue or identity_mismatches
+            or invalid_decisions or collector_missing
+        )
         payload.update({
             "status": "failed" if failed else "passed" if complete else "monitoring",
             "gate_pass": complete and not failed,
@@ -1112,10 +1306,10 @@ def verify_activation_recovery(
             "maximum_observed_delay_seconds": max(
                 (float(row["decision_delay_seconds"]) for row in recorded), default=None
             ),
-            "late_decisions": late,
-            "missing_overdue": missing_overdue,
+            "late_decisions": late, "missing_overdue": missing_overdue,
             "identity_mismatches": identity_mismatches,
-            "checks": checks,
+            "invalid_decisions": invalid_decisions,
+            "collector_missing": collector_missing, "checks": checks,
             "recovery_action": (
                 "retain_shadow_real_betting_disabled_and_raise_latency_incident"
                 if failed else "continue_automatic_observation"
@@ -1364,12 +1558,36 @@ def run_once(
     recovery = verify_activation_recovery(
         conn, state_root=state_root, prediction_date=prediction, now=now,
     )
+    evidence = None
+    current_active = _active_state(state_root)
+    if (
+        now.date().isoformat() >= V21_PROSPECTIVE_START_DATE
+        and current_active
+        and str(current_active.get("prediction_date") or "") >= V21_PROSPECTIVE_START_DATE
+        and "v21" in dict(current_active.get("model_specs") or {})
+    ):
+        v21_spec = _parse_recovery_model_spec(
+            dict(current_active["model_specs"])["v21"]
+        )
+        expected_hash = str(
+            dict(current_active.get("runtime_model_identities") or {}).get("v21") or ""
+        )
+        evidence = collect_v21_prospective_evidence(
+            PostgresqlConnection(conn),
+            config=V21ProspectiveEvidenceConfig(
+                start_date=V21_PROSPECTIVE_START_DATE,
+                through_date=now.date().isoformat(), model_key=v21_spec[0],
+                expected_model_hash=expected_hash,
+            ),
+            output_path=state_root / "v21-prospective-evidence.json",
+        )
     return {
         "status": status, "through_date": through, "prediction_date": prediction,
         "jobs": {family: job.job_id for family, job in jobs.items()},
         "bundles": {family: row["path"] for family, row in bundles.items()},
         "real_betting_enabled": False,
         "activation_recovery": recovery,
+        "v21_prospective_evidence": evidence,
     }
 
 
