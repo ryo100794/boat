@@ -1967,6 +1967,33 @@ def test_periodic_enqueue_retains_atomic_dedupe_conflict_guard() -> None:
                 "evaluation_through": "2026-07-23",
             },
         ),
+        (
+            "market_residual_walk_forward",
+            "odds-path-v21:market_residual:20260718-29",
+            {
+                "model_input": "data/models/evaluation_queue/job-00002707.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10000,
+                "min_calibration_days": 2,
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+                ),
+                "minimum_day_coverage": 1.0,
+                "timeout_seconds": 14400,
+            },
+            {
+                "model_input": "data/models/evaluation_queue/job-00002707.joblib",
+                "from_date": "2026-07-18",
+                "through_date": "2026-07-29",
+                "daily_budget_yen": 10000,
+                "min_calibration_days": 2,
+                "calibrator_strategy": (
+                    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+                ),
+                "minimum_day_coverage": 1.0,
+            },
+        ),
     ],
 )
 def test_long_evaluation_enqueue_semantically_dedupes_retry_parameter_changes(
