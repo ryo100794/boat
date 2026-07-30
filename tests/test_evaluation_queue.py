@@ -1070,7 +1070,10 @@ def test_feature_search_accepts_explicit_feature_variants(tmp_path) -> None:
             "listwise_feature_search",
             {
                 "evaluation_date": "2026-07-22",
-                "feature_variants": "full,drop_research_correlates",
+                "feature_variants": (
+                    "drop_card_numeric,drop_card_relative,"
+                    "drop_card_numeric_card_relative,drop_card_numeric"
+                ),
             },
         ),
         app_root=tmp_path,
@@ -1078,7 +1081,45 @@ def test_feature_search_accepts_explicit_feature_variants(tmp_path) -> None:
         db="postgresql://test",
     )
     index = command.index("--feature-variants")
-    assert command[index + 1] == "full,drop_research_correlates"
+    assert command[index + 1] == (
+        "drop_card_numeric,drop_card_relative,drop_card_numeric_card_relative"
+    )
+
+
+def test_feature_search_can_reuse_verified_completed_job_output(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-07-22",
+                "reuse_search_job_id": 7476,
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+    index = command.index("--reuse-search-output")
+    assert command[index + 1] == str(
+        tmp_path
+        / "data/models/evaluation_queue/job-00007476.json"
+    )
+
+
+def test_combined_search_rejects_reuse_search_job_id(tmp_path) -> None:
+    with pytest.raises(ValueError, match="supported only"):
+        build_command(
+            _job(
+                "combined_feature_search",
+                {
+                    "evaluation_date": "2026-07-22",
+                    "reuse_search_job_id": 7476,
+                },
+            ),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
 
 
 def test_combined_search_accepts_registered_feature_variant_subset(tmp_path) -> None:
