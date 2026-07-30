@@ -81,6 +81,72 @@ def make_v12_bundle(path: Path) -> None:
     v12_shadow_bundle._write_bundle_and_manifest_atomic(path, bundle, manifest)
 
 
+class PriorityJobConnection:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.query = ""
+        self.parameters: tuple[str, str] | None = None
+
+    def execute(self, query: str, parameters: tuple[str, str]):
+        self.query = " ".join(query.split())
+        self.parameters = parameters
+        return self
+
+    def fetchone(self) -> dict:
+        assert self.query.index("priority DESC NULLS LAST") < self.query.index(
+            "completed_at DESC NULLS LAST"
+        )
+        return max(
+            self.rows,
+            key=lambda row: (
+                int(row["priority"]),
+                str(row["completed_at"]),
+                int(row["job_id"]),
+            ),
+        )
+
+
+def test_latest_completed_v18_prefers_canonical_priority_over_completion_time(
+    tmp_path: Path,
+) -> None:
+    duplicate = tmp_path / "job-00008181.json"
+    canonical = tmp_path / "job-00008191.json"
+    duplicate.write_text("{}", encoding="utf-8")
+    canonical.write_text("{}", encoding="utf-8")
+    conn = PriorityJobConnection([
+        {
+            "job_id": 8181,
+            "model_key": "v18-duplicate",
+            "result_path": str(duplicate),
+            "priority": 100,
+            "completed_at": "2026-07-30T01:00:00+00:00",
+        },
+        {
+            "job_id": 8191,
+            "model_key": "v18-canonical",
+            "result_path": str(canonical),
+            "priority": 115,
+            "completed_at": "2026-07-29T23:00:00+00:00",
+        },
+    ])
+
+    selected = updater.find_latest_completed_job(
+        conn,
+        family="v18",
+        through_date="2026-07-29",
+        app_root=tmp_path,
+    )
+
+    assert selected.job_id == 8191
+    assert selected.model_key == "v18-canonical"
+    assert selected.result_path == canonical
+    assert conn.parameters == ("2026-07-29", updater.V18_MODEL)
+    assert conn.query.endswith(
+        "priority DESC NULLS LAST, completed_at DESC NULLS LAST, "
+        "job_id DESC LIMIT 1"
+    )
+
+
 def test_shared_source_requires_same_hash_date_and_scored_cache(tmp_path: Path) -> None:
     cache = tmp_path / "cache.joblib"
     cache.write_bytes(b"same-cache")
