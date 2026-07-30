@@ -9,8 +9,134 @@ from typing import Any
 import psycopg
 
 
-_NAMED_PARAMETER = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 _MEMORY_SETTING = re.compile(r"[1-9][0-9]*(?:kB|MB|GB)", re.IGNORECASE)
+
+
+def _dollar_quote_delimiter(statement: str, index: int) -> str | None:
+    if index > 0 and (
+        statement[index - 1].isalnum() or statement[index - 1] in "_$"
+    ):
+        return None
+    end = statement.find("$", index + 1)
+    if end < 0:
+        return None
+    tag = statement[index + 1 : end]
+    if tag and not (
+        (tag[0].isalpha() or tag[0] == "_")
+        and all(char.isalnum() or char == "_" for char in tag[1:])
+    ):
+        return None
+    return statement[index : end + 1]
+
+
+def _convert_placeholders(statement: str) -> str:
+    converted: list[str] = []
+    index = 0
+    state = "sql"
+    block_comment_depth = 0
+    dollar_delimiter: str | None = None
+
+    while index < len(statement):
+        char = statement[index]
+        following = statement[index + 1] if index + 1 < len(statement) else ""
+
+        if state == "sql":
+            if char == "$" and (
+                delimiter := _dollar_quote_delimiter(statement, index)
+            ) is not None:
+                converted.append(delimiter)
+                index += len(delimiter)
+                dollar_delimiter = delimiter
+                state = "dollar_quote"
+                continue
+            if char == "'":
+                state = "single_quote"
+            elif char == '"':
+                state = "double_quote"
+            elif char == "-" and following == "-":
+                converted.append("--")
+                index += 2
+                state = "line_comment"
+                continue
+            elif char == "/" and following == "*":
+                converted.append("/*")
+                index += 2
+                block_comment_depth = 1
+                state = "block_comment"
+                continue
+            elif char == "?":
+                converted.append("%s")
+                index += 1
+                continue
+            elif (
+                char == ":"
+                and following != ":"
+                and (index == 0 or statement[index - 1] != ":")
+                and following.isascii()
+                and (following.isalpha() or following == "_")
+            ):
+                end = index + 2
+                while end < len(statement) and (
+                    statement[end].isascii()
+                    and (statement[end].isalnum() or statement[end] == "_")
+                ):
+                    end += 1
+                converted.append(f"%({statement[index + 1:end]})s")
+                index = end
+                continue
+
+            converted.append(char)
+            index += 1
+            continue
+
+        if state == "dollar_quote":
+            delimiter = dollar_delimiter
+            if delimiter is not None and statement.startswith(delimiter, index):
+                converted.append(delimiter)
+                index += len(delimiter)
+                dollar_delimiter = None
+                state = "sql"
+            else:
+                converted.append(char)
+                index += 1
+            continue
+
+        if state in {"single_quote", "double_quote"}:
+            quote = "'" if state == "single_quote" else '"'
+            converted.append(char)
+            index += 1
+            if char == "\\" and index < len(statement):
+                converted.append(statement[index])
+                index += 1
+            elif char == quote:
+                if index < len(statement) and statement[index] == quote:
+                    converted.append(statement[index])
+                    index += 1
+                else:
+                    state = "sql"
+            continue
+
+        if state == "line_comment":
+            converted.append(char)
+            index += 1
+            if char in "\r\n":
+                state = "sql"
+            continue
+
+        converted.append(char)
+        index += 1
+        if char == "/" and following == "*":
+            converted.append(following)
+            index += 1
+            block_comment_depth += 1
+        elif char == "*" and following == "/":
+            converted.append(following)
+            index += 1
+            block_comment_depth -= 1
+            if block_comment_depth == 0:
+                state = "sql"
+
+    return "".join(converted)
 
 
 class CompatRow(Sequence[Any]):
@@ -79,8 +205,7 @@ def convert_sql(statement: str) -> str:
     converted = converted.replace('rp.page_type = "racelist"', "rp.page_type = 'racelist'")
     converted = converted.replace("INSERT OR REPLACE INTO odds_trifecta", "INSERT INTO odds_trifecta")
     converted = converted.replace("INSERT OR REPLACE INTO beforeinfo", "INSERT INTO beforeinfo")
-    converted = _NAMED_PARAMETER.sub(r"%(\1)s", converted)
-    converted = converted.replace("?", "%s")
+    converted = _convert_placeholders(converted)
     if converted.startswith("INSERT INTO odds_trifecta") and "ON CONFLICT" not in converted:
         converted += (
             " ON CONFLICT (snapshot_id, combination) DO UPDATE SET "

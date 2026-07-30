@@ -26,6 +26,103 @@ def test_qmark_and_named_parameters_are_converted() -> None:
     assert cast_query.endswith("id = %s")
 
 
+def test_placeholders_inside_quoted_strings_are_preserved() -> None:
+    statement = (
+        "SELECT ':invalid-source-job:', '?', 'it''s :literal?', "
+        "\"column:name?\" FROM samples WHERE id = :sample_id AND lane = ?"
+    )
+
+    assert convert_sql(statement) == (
+        "SELECT ':invalid-source-job:', '?', 'it''s :literal?', "
+        "\"column:name?\" FROM samples WHERE id = %(sample_id)s AND lane = %s"
+    )
+
+
+def test_placeholders_inside_escaped_quoted_strings_are_preserved() -> None:
+    statement = (
+        "SELECT E'escaped\\':literal?', \"escaped\\\":identifier?\" "
+        "FROM samples WHERE id = :sample_id"
+    )
+
+    assert convert_sql(statement) == (
+        "SELECT E'escaped\\':literal?', \"escaped\\\":identifier?\" "
+        "FROM samples WHERE id = %(sample_id)s"
+    )
+
+
+def test_placeholders_inside_sql_comments_are_preserved() -> None:
+    statement = (
+        "SELECT ? -- :line_parameter ?\n"
+        "FROM samples /* :block_parameter ? /* :nested ? */ still ? */ "
+        "WHERE id = :sample_id"
+    )
+
+    assert convert_sql(statement) == (
+        "SELECT %s -- :line_parameter ?\n"
+        "FROM samples /* :block_parameter ? /* :nested ? */ still ? */ "
+        "WHERE id = %(sample_id)s"
+    )
+
+
+def test_placeholders_inside_anonymous_dollar_quote_are_preserved() -> None:
+    statement = (
+        "CREATE FUNCTION reject_mutation() RETURNS trigger AS $$\n"
+        "BEGIN\n"
+        "  RAISE EXCEPTION ':invalid-source-job: ?';\n"
+        "END;\n"
+        "$$ LANGUAGE plpgsql; SELECT ? WHERE id = :race_id"
+    )
+
+    assert convert_sql(statement) == statement.replace(
+        "SELECT ? WHERE id = :race_id",
+        "SELECT %s WHERE id = %(race_id)s",
+    )
+
+
+def test_placeholders_inside_tagged_dollar_quote_are_preserved() -> None:
+    statement = (
+        "$body$ :inside ? $$ :not_a_closer ? $$ $other$ ? $other$ $body$ "
+        "SELECT :outside, ?"
+    )
+
+    assert convert_sql(statement) == (
+        "$body$ :inside ? $$ :not_a_closer ? $$ $other$ ? $other$ $body$ "
+        "SELECT %(outside)s, %s"
+    )
+
+
+def test_unterminated_dollar_quote_is_preserved() -> None:
+    statement = "DO $body$ BEGIN PERFORM :inside; RAISE NOTICE '?';"
+
+    assert convert_sql(statement) == statement
+
+
+def test_postgresql_casts_are_preserved_next_to_named_parameters() -> None:
+    statement = "SELECT :value::numeric, :_other::text, source:::invalid"
+
+    assert convert_sql(statement) == (
+        "SELECT %(value)s::numeric, %(_other)s::text, source:::invalid"
+    )
+
+
+def test_non_ascii_colon_tokens_preserve_existing_behavior() -> None:
+    assert convert_sql("SELECT :名前, :valid_name") == (
+        "SELECT :名前, %(valid_name)s"
+    )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "SELECT ':unterminated ?",
+        'SELECT "unterminated :name?',
+        "SELECT 1 /* unterminated :name ?",
+    ],
+)
+def test_unterminated_literals_and_comments_are_preserved(statement: str) -> None:
+    assert convert_sql(statement) == statement
+
+
 def test_sqlite_replace_forms_become_postgresql_upserts() -> None:
     odds = convert_sql(
         "INSERT OR REPLACE INTO odds_trifecta "
