@@ -55,8 +55,8 @@ def _install_sources(monkeypatch, dates: list[str], *, missing_odds: set[str] = 
     race_ids = [f"{date}-01-01" for date in dates]
     monkeypatch.setattr(
         evaluation,
-        "load_complete_race_ids",
-        lambda conn: [
+        "_load_target_complete_race_ids",
+        lambda conn, **kwargs: [
             (race_id, date, "01", 1) for race_id, date in zip(race_ids, dates)
         ],
     )
@@ -96,6 +96,50 @@ def _install_sources(monkeypatch, dates: list[str], *, missing_odds: set[str] = 
     monkeypatch.setattr(evaluation, "iter_scored_artifact_feature_rows", scored)
     return race_ids, snapshots
 
+
+
+def test_target_race_query_pushes_date_bounds_and_day_limit_into_sql():
+    class Result:
+        def fetchall(self):
+            return [
+                {
+                    "race_id": "2026-07-01-01-01",
+                    "race_date": "2026-07-01",
+                    "jcd": "01",
+                    "rno": 1,
+                }
+            ]
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = []
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = list(params)
+            return Result()
+
+    conn = Connection()
+    rows = evaluation._load_target_complete_race_ids(
+        conn,
+        training_from_date="2026-07-01",
+        training_through_date="2026-07-03",
+        outer_from_date="2026-07-04",
+        outer_through_date="2026-07-04",
+        max_races_per_day=4,
+    )
+
+    assert rows == [("2026-07-01-01-01", "2026-07-01", "01", 1)]
+    assert "r.race_date BETWEEN ? AND ?" in conn.sql
+    assert "WHERE day_sequence <= ?" in conn.sql
+    assert conn.params == [
+        "2026-07-01",
+        "2026-07-03",
+        "2026-07-04",
+        "2026-07-04",
+        4,
+    ]
 
 def test_loader_builds_120_choices_and_audits_snapshot_before_target(monkeypatch):
     race_ids, snapshots = _install_sources(

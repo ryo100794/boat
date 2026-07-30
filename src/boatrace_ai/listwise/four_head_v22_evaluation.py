@@ -14,7 +14,7 @@ import numpy as np
 
 from ..db import connection
 from ..fast_math import TRIFECTA_COMBINATIONS
-from ..feature_tuning import load_complete_race_ids, to_hashable
+from ..feature_tuning import to_hashable
 from ..features import MODEL_DECISION_LEAD_MINUTES, latest_trifecta_odds_before_deadline
 from ..odds_quality import plausible_trifecta_odds
 from .four_head_nested_v22 import (
@@ -201,6 +201,65 @@ def _ranking_order(winner_index: int, closing_odds: Sequence[float]) -> tuple[in
     return (winner_index, *remaining)
 
 
+def _load_target_complete_race_ids(
+    conn: Any,
+    *,
+    training_from_date: str,
+    training_through_date: str,
+    outer_from_date: str,
+    outer_through_date: str,
+    max_races_per_day: int | None,
+) -> list[tuple[str, str, str, int]]:
+    """Select only bounded V22 races before running completeness checks."""
+
+    day_limit = "WHERE day_sequence <= ?" if max_races_per_day is not None else ""
+    params: list[Any] = [
+        training_from_date,
+        training_through_date,
+        outer_from_date,
+        outer_through_date,
+    ]
+    if max_races_per_day is not None:
+        params.append(max_races_per_day)
+    rows = conn.execute(
+        f"""
+        WITH bounded_complete AS (
+          SELECT
+            r.race_id,
+            r.race_date,
+            r.jcd,
+            r.rno,
+            ROW_NUMBER() OVER (
+              PARTITION BY r.race_date
+              ORDER BY r.jcd, r.rno, r.race_id
+            ) AS day_sequence
+          FROM races r
+          WHERE (
+              r.race_date BETWEEN ? AND ?
+              OR r.race_date BETWEEN ? AND ?
+            )
+            AND (
+              SELECT COUNT(*) FROM entries e WHERE e.race_id = r.race_id
+            ) = 6
+            AND (
+              SELECT COUNT(*)
+              FROM race_results rr
+              WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL
+            ) = 6
+        )
+        SELECT race_id, race_date, jcd, rno
+        FROM bounded_complete
+        {day_limit}
+        ORDER BY race_date, jcd, rno, race_id
+        """,
+        params,
+    ).fetchall()
+    return [
+        (str(row["race_id"]), str(row["race_date"]), str(row["jcd"]), int(row["rno"]))
+        for row in rows
+    ]
+
+
 def load_v22_evaluation_data(
     conn: Any,
     *,
@@ -228,16 +287,15 @@ def load_v22_evaluation_data(
         raise ValueError("max_races_per_day must be positive")
 
     race_meta: dict[str, tuple[str, str, int]] = {}
-    per_day: Counter[str] = Counter()
-    for race_id, race_date, jcd, rno in load_complete_race_ids(conn):
+    for race_id, race_date, jcd, rno in _load_target_complete_race_ids(
+        conn,
+        training_from_date=training_from_date,
+        training_through_date=training_through_date,
+        outer_from_date=outer_from_date,
+        outer_through_date=outer_through_date,
+        max_races_per_day=max_races_per_day,
+    ):
         date_value = str(race_date)
-        in_training = training_from_date <= date_value <= training_through_date
-        in_outer = outer_from_date <= date_value <= outer_through_date
-        if not (in_training or in_outer):
-            continue
-        if max_races_per_day is not None and per_day[date_value] >= max_races_per_day:
-            continue
-        per_day[date_value] += 1
         race_meta[str(race_id)] = (date_value, str(jcd), int(rno))
     target_ids = set(race_meta)
     counters: Counter[str] = Counter(
