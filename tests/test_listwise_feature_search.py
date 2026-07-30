@@ -9,12 +9,17 @@ import threading
 
 import pytest
 
+from boatrace_ai.bankroll_backtest import _load_trifecta_payouts
 from boatrace_ai.db import connection, init_db
 from boatrace_ai.feature_tuning import DEFAULT_ABLATION_FEATURE_GROUPS
+from boatrace_ai.hashed_feature_dataset import race_ids_sha256
+from boatrace_ai.listwise import feature_search as feature_search_module
 from boatrace_ai.listwise.feature_search import (
     _candidate_key,
+    _canonical_sha256,
     _checkpoint_signature,
     _ordered_rows,
+    _selected_cache_manifest_sha256,
     _selected_row,
     _evaluate_variant,
     build_parser,
@@ -23,8 +28,27 @@ from boatrace_ai.listwise.feature_search import (
     parse_ev_thresholds,
     parse_feature_variants,
     search,
+    source_data_snapshot,
     selected_cache_candidates,
 )
+
+
+def _data_snapshot(
+    race_keys: list[tuple[str, str, str, int]],
+    *,
+    watermark_hash: str = "d" * 64,
+    payout_hash: str = "e" * 64,
+) -> dict:
+    identity = {
+        "snapshot_version": 1,
+        "race_count": len(race_keys),
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_watermark_sha256": watermark_hash,
+        "selected_cache_manifest_sha256": "f" * 64,
+        "trifecta_payouts_sha256": payout_hash,
+    }
+    identity["snapshot_sha256"] = _canonical_sha256(identity)
+    return identity
 
 
 def test_selection_prefers_hit_rates_within_one_percent_ranking_loss() -> None:
@@ -254,6 +278,12 @@ def test_candidate_workers_are_deterministic_and_checkpoint_resumes(
         race_keys,
         int(len(race_keys) * resume_args.selection_fraction),
     )
+    with connection(db) as conn:
+        checkpoint_snapshot = source_data_snapshot(
+            conn,
+            race_keys=race_keys,
+            payouts=_load_trifecta_payouts(conn),
+        )
     signature = _checkpoint_signature(
         args=args_one,
         race_keys=race_keys,
@@ -261,6 +291,7 @@ def test_candidate_workers_are_deterministic_and_checkpoint_resumes(
         selection_end=selection_end,
         targets=("winner", "top3_pl"),
         alphas=(0.0001,),
+        data_snapshot=checkpoint_snapshot,
     )
     Path(resume_args.checkpoint).parent.mkdir(parents=True, exist_ok=True)
     Path(resume_args.checkpoint).write_text(
@@ -405,7 +436,7 @@ def test_variant_reuses_dataset_and_scaler_and_parallelizes_only_missing_candida
     ]
 
 
-def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None:
+def test_checkpoint_signature_v2_requires_source_content_identity() -> None:
     args = SimpleNamespace(
         as_of_date="2026-07-23",
         n_features=4096,
@@ -417,6 +448,7 @@ def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None
         ("race-a", "2026-07-22", "01", 1),
         ("race-b", "2026-07-23", "02", 2),
     ]
+    snapshot = _data_snapshot(race_keys)
     signature = _checkpoint_signature(
         args=args,
         race_keys=race_keys,
@@ -424,21 +456,144 @@ def test_default_checkpoint_signature_remains_byte_for_byte_compatible() -> None
         selection_end=2,
         targets=("winner", "top3_pl"),
         alphas=(0.00001, 0.0001),
+        data_snapshot=snapshot,
     )
 
-    assert json.dumps(signature, separators=(",", ":")) == (
-        '{"checkpoint_version":1,"cache_version":2,'
-        '"feature_schema_version":"pastlog-listwise-hashed-v6-no-untrained-series",'
-        '"as_of_date":"2026-07-23","race_count":2,'
-        '"race_universe_sha256":'
-        '"a5d59ddbba062a4884a2242737fca8bc14d2858a52d64cb1af19dddb3bd6bd23",'
-        '"train_end":1,"selection_end":2,"n_features":4096,"batch_races":1000,'
-        '"epochs":2,"learning_rate":0.02,"targets":["winner","top3_pl"],'
-        '"alphas":[1e-05,0.0001],"feature_variants":[["full",[]],'
-        '["drop_base_pastlog",["base_pastlog"]],'
-        '["drop_research_correlates",["research_correlates"]],'
-        '["drop_series_cached",["series_cached"]],'
-        '["drop_series_relative",["series_relative"]],'
-        '["drop_rolling_history",["rolling_history"]],'
-        '["drop_legacy_composites",["legacy_composites"]]]}'
+    assert signature["checkpoint_version"] == 2
+    assert signature["as_of_date"] == "2026-07-23"
+    assert signature["source_data_snapshot"] == snapshot
+    assert signature["race_universe_sha256"] == snapshot["race_universe_sha256"]
+
+
+def test_source_snapshot_changes_for_corrected_features_and_payouts(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "snapshot.sqlite"
+    _small_feature_db(db)
+    with connection(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO payouts(
+              race_id, bet_type, combination, payout_yen, popularity
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("fixture-00", "3連単", "1-2-3", 1230, 1),
+        )
+        race_keys = [
+            (f"fixture-{index:02d}", f"2026-01-{index + 1:02d}", "01", 1)
+            for index in range(10)
+        ]
+        before = source_data_snapshot(
+            conn,
+            race_keys=race_keys,
+            payouts=_load_trifecta_payouts(conn),
+        )
+        conn.execute(
+            "UPDATE entries SET weight_kg = weight_kg + 0.5, "
+            "updated_at = '2026-08-01T00:00:00+00:00' "
+            "WHERE race_id = ? AND lane = ?",
+            ("fixture-00", 1),
+        )
+        feature_corrected = source_data_snapshot(
+            conn,
+            race_keys=race_keys,
+            payouts=_load_trifecta_payouts(conn),
+        )
+        conn.execute(
+            "UPDATE payouts SET payout_yen = ? "
+            "WHERE race_id = ? AND bet_type = ? AND combination = ?",
+            (4560, "fixture-00", "3\u9023\u5358", "1-2-3"),
+        )
+        payout_corrected = source_data_snapshot(
+            conn,
+            race_keys=race_keys,
+            payouts=_load_trifecta_payouts(conn),
+        )
+
+    assert before["race_universe_sha256"] == feature_corrected["race_universe_sha256"]
+    assert before["source_watermark_sha256"] != feature_corrected["source_watermark_sha256"]
+    assert (
+        feature_corrected["trifecta_payouts_sha256"]
+        == before["trifecta_payouts_sha256"]
     )
+    assert (
+        payout_corrected["source_watermark_sha256"]
+        == feature_corrected["source_watermark_sha256"]
+    )
+    assert (
+        payout_corrected["trifecta_payouts_sha256"]
+        != feature_corrected["trifecta_payouts_sha256"]
+    )
+
+
+def test_source_snapshot_does_not_rebuild_feature_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = tmp_path / "watermark.sqlite"
+    _small_feature_db(db)
+    race_keys = [
+        (f"fixture-{index:02d}", f"2026-01-{index + 1:02d}", "01", 1)
+        for index in range(10)
+    ]
+
+    def fail_feature_scan(*_args, **_kwargs):
+        raise AssertionError("source snapshot must not rebuild feature rows")
+
+    monkeypatch.setattr(
+        feature_search_module,
+        "iter_race_feature_rows",
+        fail_feature_scan,
+    )
+    with connection(db) as conn:
+        snapshot = source_data_snapshot(
+            conn,
+            race_keys=race_keys,
+            payouts={},
+            as_of_date="2026-01-10",
+        )
+
+    assert snapshot["race_count"] == 10
+    assert len(snapshot["source_watermark_sha256"]) == 64
+
+
+def test_selected_cache_identity_uses_manifest_content_hashes(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "selected"
+    cache_dir.mkdir()
+    manifest = {
+        "cache_version": 2,
+        "feature_schema_version": (
+            "pastlog-listwise-hashed-v6-no-untrained-series"
+        ),
+        "race_count": 10,
+        "race_ids_sha256": "a" * 64,
+        "n_features": 64,
+        "drop_feature_groups": [],
+        "matrix_shape": [60, 64],
+        "matrix_nnz": 100,
+        "matrix_dtype": "float64",
+        "matrix_file_sha256": "b" * 64,
+        "ranks_shape": [10, 6],
+        "ranks_dtype": "int8",
+        "ranks_sha256": "c" * 64,
+        "ranks_file_sha256": "d" * 64,
+    }
+    path = cache_dir / "listwise_search_64_full.manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = _selected_cache_manifest_sha256(
+        cache_dir,
+        n_features=64,
+        variants=(("full", ()),),
+    )
+
+    manifest["matrix_file_sha256"] = "e" * 64
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    after = _selected_cache_manifest_sha256(
+        cache_dir,
+        n_features=64,
+        variants=(("full", ()),),
+    )
+
+    assert before != after

@@ -35,6 +35,10 @@ STANDARDIZED_SELECTED_CACHE_DIR = Path(
 SCHEMA_LOCK_ID = 71234001
 CLAIM_LOCK_ID = 71234002
 EVALUATION_MEMORY_SAFETY_MB = 6144
+CHECKPOINT_RECOVERABLE_TASKS = frozenset({
+    "listwise_feature_search",
+    "combined_feature_search",
+})
 
 
 @dataclass(frozen=True)
@@ -655,6 +659,192 @@ def _timeout_retry_parameters(
     return updated
 
 
+def _feature_search_checkpoint_path(job: dict[str, Any], *, app_root: Path) -> Path:
+    output = (
+        app_root / "data" / "models" / "evaluation_queue"
+        / f"job-{int(job['job_id']):08d}.json"
+    )
+    return output.with_name(f".{output.name}.checkpoint.json")
+
+
+def _valid_feature_search_checkpoint(
+    job: dict[str, Any],
+    *,
+    app_root: Path,
+) -> tuple[Path | None, str]:
+    """Return a verified persistent checkpoint or a fail-closed reason."""
+    if str(job.get("task_type")) not in CHECKPOINT_RECOVERABLE_TASKS:
+        return None, "task does not support checkpoint recovery"
+    path = _feature_search_checkpoint_path(job, app_root=app_root)
+    try:
+        persistent_root = (
+            app_root / "data" / "models" / "evaluation_queue"
+        ).resolve()
+        resolved = path.resolve(strict=True)
+        if resolved.parent != persistent_root or not resolved.is_file():
+            return None, "checkpoint is outside the persistent evaluation directory"
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "checkpoint is missing"
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return None, f"checkpoint is unreadable: {type(exc).__name__}"
+    if not isinstance(payload, dict):
+        return None, "checkpoint root is not an object"
+    signature = payload.get("signature")
+    progress = payload.get("progress")
+    rows = payload.get("search_results")
+    if not isinstance(signature, dict):
+        return None, "checkpoint signature is missing"
+    if not isinstance(progress, dict) or not isinstance(rows, list) or not rows:
+        return None, "checkpoint has no completed candidates"
+    from .listwise.feature_search import (
+        CACHE_VERSION,
+        CHECKPOINT_VERSION,
+        _load_checkpoint,
+        _validated_source_data_snapshot,
+    )
+
+    if signature.get("checkpoint_version") != CHECKPOINT_VERSION:
+        return None, "checkpoint version is unsupported"
+    if signature.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
+        return None, "checkpoint feature schema is stale"
+    if signature.get("cache_version") != CACHE_VERSION:
+        return None, "checkpoint cache version is stale"
+
+    parameters = job.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        try:
+            parameters = json.loads(str(parameters))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None, "job parameters are invalid"
+    try:
+        expected_signature = {
+            "as_of_date": parameters.get("evaluation_date"),
+            "n_features": int(parameters.get("n_features", 4096)),
+            "batch_races": int(parameters.get("batch_races", 1000)),
+            "epochs": int(parameters.get("epochs", 2)),
+            "learning_rate": float(parameters.get("learning_rate", 0.02)),
+            "targets": [
+                value.strip()
+                for value in str(
+                    parameters.get("targets", "winner,top3_pl")
+                ).split(",")
+                if value.strip()
+            ],
+            "alphas": [
+                float(value)
+                for value in str(
+                    parameters.get("alphas", "0.00001,0.0001")
+                ).split(",")
+                if value.strip()
+            ],
+        }
+        if parameters.get("loss_blend") is not None:
+            expected_signature["loss_blend"] = float(parameters["loss_blend"])
+    except (TypeError, ValueError):
+        return None, "job parameters are invalid"
+    for name, expected in expected_signature.items():
+        if signature.get(name) != expected:
+            return None, f"checkpoint signature mismatch: {name}"
+
+    variants = signature.get("feature_variants")
+    if not isinstance(variants, list) or not variants:
+        return None, "checkpoint feature variants are missing"
+    if str(job["task_type"]) == "combined_feature_search":
+        from .listwise.combined_feature_search import (
+            COMBINED_FEATURE_VARIANTS,
+            RESEARCH_PARTITION_FEATURE_VARIANTS,
+        )
+
+        defaults = COMBINED_FEATURE_VARIANTS
+        available = dict(
+            (*COMBINED_FEATURE_VARIANTS, *RESEARCH_PARTITION_FEATURE_VARIANTS)
+        )
+    else:
+        from .listwise.feature_search import feature_variants
+
+        defaults = tuple(feature_variants())
+        available = dict(defaults)
+    requested = parameters.get("feature_variants")
+    if requested is None:
+        expected_variants = defaults
+    else:
+        requested_names = [
+            value.strip()
+            for value in str(requested).split(",")
+            if value.strip()
+        ]
+        if any(name not in available for name in requested_names):
+            return None, "checkpoint requests unknown feature variants"
+        expected_variants = tuple(
+            (name, available[name]) for name in requested_names
+        )
+    expected_variant_payload = [
+        [name, list(dropped)] for name, dropped in expected_variants
+    ]
+    if variants != expected_variant_payload:
+        return None, "checkpoint feature variants are invalid"
+    variant_names = [str(item[0]) for item in variants]
+
+    race_count = signature.get("race_count")
+    train_end = signature.get("train_end")
+    selection_end = signature.get("selection_end")
+    universe_hash = signature.get("race_universe_sha256")
+    if (
+        isinstance(race_count, bool)
+        or not isinstance(race_count, int)
+        or race_count <= 0
+        or isinstance(train_end, bool)
+        or not isinstance(train_end, int)
+        or isinstance(selection_end, bool)
+        or not isinstance(selection_end, int)
+        or not 0 < train_end < selection_end <= race_count
+        or not isinstance(universe_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", universe_hash) is None
+    ):
+        return None, "checkpoint race-universe signature is invalid"
+
+    try:
+        source_snapshot = _validated_source_data_snapshot(
+            signature.get("source_data_snapshot")
+        )
+    except ValueError as exc:
+        return None, f"checkpoint source data snapshot is invalid: {exc}"
+    if (
+        source_snapshot["race_count"] != race_count
+        or source_snapshot["race_universe_sha256"] != universe_hash
+    ):
+        return None, "checkpoint source data snapshot race universe mismatch"
+
+    completed = progress.get("completed_candidates")
+    total = progress.get("total_candidates")
+    completed_variants = progress.get("completed_variants")
+    total_variants = progress.get("total_variants")
+    expected_total = (
+        len(variant_names)
+        * len(expected_signature["targets"])
+        * len(expected_signature["alphas"])
+    )
+    if (
+        isinstance(completed, bool)
+        or not isinstance(completed, int)
+        or completed != len(rows)
+        or not 0 < completed <= expected_total
+        or total != expected_total
+        or total_variants != len(variant_names)
+        or isinstance(completed_variants, bool)
+        or not isinstance(completed_variants, int)
+        or not 0 <= completed_variants <= total_variants
+    ):
+        return None, "checkpoint progress is inconsistent"
+
+
+    loaded = _load_checkpoint(resolved, signature)
+    if len(loaded) != completed:
+        return None, "checkpoint candidates failed integrity validation"
+    return resolved, ""
+
+
 def _evaluation_reservation_mb(resources: ResourceSnapshot) -> int:
     return max(
         8192,
@@ -776,7 +966,32 @@ def claim_job(
     return result
 
 
-def requeue_stale_jobs(conn: Any, *, stale_minutes: int = 180) -> int:
+def requeue_stale_jobs(
+    conn: Any,
+    *,
+    stale_minutes: int = 180,
+    app_root: Path | None = None,
+) -> int:
+    if app_root is not None:
+        rows = conn.execute(
+            """
+            SELECT * FROM model_evaluation_jobs
+            WHERE status = 'running'
+              AND locked_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
+            ORDER BY job_id
+            FOR UPDATE SKIP LOCKED
+            """,
+            (max(1, int(stale_minutes)),),
+        ).fetchall()
+        for row in rows:
+            job = {key: row[key] for key in row.keys()}
+            _record_failed_attempt(
+                conn,
+                job=job,
+                error="worker lease expired",
+                app_root=app_root,
+            )
+        return len(rows)
     audit_error = "worker lease expired"
     rows = conn.execute(
         """
@@ -958,7 +1173,31 @@ def retry_pending_jobs(
     return len(rows)
 
 
-def recover_worker_job(conn: Any, *, worker_id: str) -> int:
+def recover_worker_job(
+    conn: Any,
+    *,
+    worker_id: str,
+    app_root: Path | None = None,
+) -> int:
+    if app_root is not None:
+        rows = conn.execute(
+            """
+            SELECT * FROM model_evaluation_jobs
+            WHERE status = 'running' AND worker_id = ?
+            ORDER BY job_id
+            FOR UPDATE SKIP LOCKED
+            """,
+            (worker_id,),
+        ).fetchall()
+        for row in rows:
+            job = {key: row[key] for key in row.keys()}
+            _record_failed_attempt(
+                conn,
+                job=job,
+                error="worker restarted before completion update",
+                app_root=app_root,
+            )
+        return len(rows)
     rows = conn.execute(
         """
         WITH locked_jobs AS MATERIALIZED (
@@ -3299,18 +3538,52 @@ def complete_job(
     )
 
 
-def fail_job(conn: Any, *, job: dict[str, Any], error: str) -> None:
-    terminal = int(job["attempt"]) >= int(job["max_attempts"])
+def _record_failed_attempt(
+    conn: Any,
+    *,
+    job: dict[str, Any],
+    error: str,
+    app_root: Path | None = None,
+) -> bool:
+    remaining = int(job["attempt"]) < int(job["max_attempts"])
+    recoverable_task = (
+        str(job.get("task_type")) in CHECKPOINT_RECOVERABLE_TASKS
+    )
+    checkpoint: Path | None = None
+    checkpoint_error = ""
+    if recoverable_task:
+        if app_root is None:
+            checkpoint_error = "application root is unavailable"
+        else:
+            checkpoint, checkpoint_error = _valid_feature_search_checkpoint(
+                job,
+                app_root=app_root,
+            )
+    requeue = remaining and (not recoverable_task or checkpoint is not None)
+    if checkpoint is not None:
+        audit_error = (
+            f"{error}; checkpoint recovery queued: {checkpoint}"
+            if requeue
+            else f"{error}; checkpoint recovery exhausted: {checkpoint}"
+        )
+    elif recoverable_task:
+        audit_error = (
+            f"{error}; checkpoint recovery unavailable: {checkpoint_error}"
+        )
+    else:
+        audit_error = error
+    audit_error = audit_error[-8000:]
+    status = "queued" if requeue else "failed"
     conn.execute(
         """
         UPDATE model_evaluation_jobs
         SET status = ?, available_at = CURRENT_TIMESTAMP + INTERVAL '15 minutes',
             worker_id = NULL, locked_at = NULL, updated_at = CURRENT_TIMESTAMP,
-            completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE completed_at END,
+            completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END,
             error = ?
         WHERE job_id = ?
         """,
-        ("failed" if terminal else "queued", "failed" if terminal else "queued", error[-8000:], int(job["job_id"])),
+        (status, status, audit_error, int(job["job_id"])),
     )
     conn.execute(
         """
@@ -3318,7 +3591,23 @@ def fail_job(conn: Any, *, job: dict[str, Any], error: str) -> None:
         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error = ?
         WHERE job_id = ? AND attempt = ?
         """,
-        (error[-8000:], int(job["job_id"]), int(job["attempt"])),
+        (audit_error, int(job["job_id"]), int(job["attempt"])),
+    )
+    return requeue
+
+
+def fail_job(
+    conn: Any,
+    *,
+    job: dict[str, Any],
+    error: str,
+    app_root: Path | None = None,
+) -> None:
+    _record_failed_attempt(
+        conn,
+        job=job,
+        error=error,
+        app_root=app_root,
     )
 
 
@@ -4672,7 +4961,7 @@ def run_worker(args: argparse.Namespace) -> int:
     is_leader = args.worker_id is None or str(args.worker_id).endswith("-00")
     with connection(args.db) as conn:
         ensure_schema(conn)
-        recover_worker_job(conn, worker_id=worker_id)
+        recover_worker_job(conn, worker_id=worker_id, app_root=app_root)
         if is_leader:
             seed_work_tickets(conn)
     while True:
@@ -4686,7 +4975,11 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         app_root=app_root,
                     )
-                    requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                    requeue_stale_jobs(
+                        conn,
+                        stale_minutes=args.stale_minutes,
+                        app_root=app_root,
+                    )
                     reconcile_queue_state(conn)
                     record_overdue_work_ticket_events(conn)
                 seed_defaults_now = (
@@ -4784,6 +5077,7 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         job=job,
                         error=f"{type(exc).__name__}: {exc}",
+                        app_root=app_root,
                     )
             if args.once:
                 return 0
@@ -4815,7 +5109,11 @@ def run_scheduler(args: argparse.Namespace) -> int:
                     conn,
                     app_root=app_root,
                 )
-                requeue_stale_jobs(conn, stale_minutes=args.stale_minutes)
+                requeue_stale_jobs(
+                    conn,
+                    stale_minutes=args.stale_minutes,
+                    app_root=app_root,
+                )
                 reconcile_queue_state(conn)
                 record_overdue_work_ticket_events(conn)
             seed_defaults_now = (

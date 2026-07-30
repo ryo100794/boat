@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 import time
@@ -14,6 +15,7 @@ from sklearn.feature_extraction import FeatureHasher
 
 from ..adaptive_allocation import zero_totals
 from ..bankroll_backtest import _load_trifecta_payouts
+from ..cache_entry_series_features import ensure_series_cache_table
 from ..db import connection, init_db
 from ..feature_tuning import (
     DEFAULT_ABLATION_FEATURE_GROUPS,
@@ -48,6 +50,8 @@ FeatureVariants = tuple[tuple[str, tuple[str, ...]], ...]
 SELECTION_RULE_VERSION = "ranking-loss-tolerance-top5-v2"
 SELECTION_RANKING_LOSS_RELATIVE_TOLERANCE = 0.01
 DEFAULT_EV_THRESHOLDS = (1.00, 1.10, 1.20, 1.35, 1.50)
+CHECKPOINT_VERSION = 2
+SOURCE_DATA_SNAPSHOT_VERSION = 1
 
 
 def parse_ev_thresholds(value: str | None, fallback: float) -> tuple[float, ...]:
@@ -272,6 +276,300 @@ def _candidate_key(variant_name: str, target: str, alpha: float) -> str:
     return json.dumps([variant_name, target, float(alpha)], separators=(",", ":"))
 
 
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _selected_cache_manifest_sha256(
+    cache_dir: Path | None,
+    *,
+    n_features: int,
+    variants: FeatureVariants | None,
+) -> str:
+    manifests: list[dict[str, Any]] = []
+    if cache_dir is None:
+        return _canonical_sha256(manifests)
+    for prefix in selected_cache_candidates(
+        cache_dir,
+        n_features=n_features,
+        variants=variants,
+    ):
+        path = cache_paths(prefix)["manifest"]
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"selected cache manifest is invalid: {path}") from exc
+        fields = {
+            name: manifest.get(name)
+            for name in (
+                "cache_version",
+                "feature_schema_version",
+                "race_count",
+                "race_ids_sha256",
+                "n_features",
+                "drop_feature_groups",
+                "matrix_shape",
+                "matrix_nnz",
+                "matrix_dtype",
+                "matrix_file_sha256",
+                "ranks_shape",
+                "ranks_dtype",
+                "ranks_sha256",
+                "ranks_file_sha256",
+            )
+        }
+        for name in (
+            "race_ids_sha256",
+            "matrix_file_sha256",
+            "ranks_sha256",
+            "ranks_file_sha256",
+        ):
+            if not _is_sha256(fields[name]):
+                raise ValueError(
+                    f"selected cache manifest lacks valid {name}: {path}"
+                )
+        manifests.append({"prefix": prefix.name, **fields})
+    return _canonical_sha256(manifests)
+
+
+def _source_table_watermark(conn: Any, *, as_of_date: str) -> str:
+    ensure_series_cache_table(conn)
+    statements = (
+        (
+            "races",
+            """
+            SELECT COUNT(*) AS row_count, MIN(r.updated_at) AS min_updated_at,
+                   MAX(r.updated_at) AS max_updated_at
+            FROM races r
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "entries",
+            """
+            SELECT COUNT(*) AS row_count, MIN(e.updated_at) AS min_updated_at,
+                   MAX(e.updated_at) AS max_updated_at
+            FROM entries e
+            JOIN races r ON r.race_id = e.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "race_results",
+            """
+            SELECT COUNT(*) AS row_count, MIN(rr.updated_at) AS min_updated_at,
+                   MAX(rr.updated_at) AS max_updated_at
+            FROM race_results rr
+            JOIN races r ON r.race_id = rr.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+        (
+            "entry_series_features",
+            """
+            SELECT COUNT(*) AS row_count, MIN(sf.updated_at) AS min_updated_at,
+                   MAX(sf.updated_at) AS max_updated_at
+            FROM entry_series_features sf
+            JOIN races r ON r.race_id = sf.race_id
+            WHERE r.race_date <= ?
+            """,
+        ),
+    )
+    tables: list[dict[str, Any]] = []
+    for name, statement in statements:
+        row = conn.execute(statement, (as_of_date,)).fetchone()
+        tables.append({
+            "table": name,
+            "row_count": int(row["row_count"] or 0),
+            "min_updated_at": (
+                None
+                if row["min_updated_at"] is None
+                else str(row["min_updated_at"])
+            ),
+            "max_updated_at": (
+                None
+                if row["max_updated_at"] is None
+                else str(row["max_updated_at"])
+            ),
+        })
+
+    period_digest = hashlib.sha256()
+    period_count = 0
+    period_rows = conn.execute(
+        """
+        SELECT year, half, racer_no, raw_json
+        FROM racer_period_stats
+        ORDER BY year, half, racer_no
+        """
+    ).fetchall()
+    for row in period_rows:
+        period_count += 1
+        period_digest.update(
+            json.dumps(
+                [
+                    int(row["year"]),
+                    int(row["half"]),
+                    int(row["racer_no"]),
+                    str(row["raw_json"]),
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        period_digest.update(b"\n")
+    return _canonical_sha256({
+        "watermark_version": 1,
+        "as_of_date": as_of_date,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "tables": tables,
+        "racer_period_stats_count": period_count,
+        "racer_period_stats_sha256": period_digest.hexdigest(),
+    })
+
+
+def source_data_snapshot(
+    conn: Any,
+    *,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    selected_cache_dir: Path | None = None,
+    n_features: int = 4096,
+    variants: FeatureVariants | None = None,
+    as_of_date: str | None = None,
+) -> dict[str, Any]:
+    """Build a cheap source watermark plus immutable payout/cache identities."""
+    expected_ids = [str(race_id) for race_id, *_rest in race_keys]
+    if not expected_ids:
+        raise ValueError("source snapshot requires at least one race")
+    as_of_date = str(as_of_date or race_keys[-1][1])
+    payout_digest = hashlib.sha256()
+    payout_digest.update(b"trifecta-payouts-v1\n")
+    for race_id in expected_ids:
+        payout = payouts.get(race_id)
+        settlements = tuple(payout.get("settlements") or ()) if payout else ()
+        canonical = sorted(
+            (
+                str(row["combination"]),
+                int(row["payout_yen"]),
+                (
+                    None
+                    if row.get("popularity") is None
+                    else int(row["popularity"])
+                ),
+            )
+            for row in settlements
+        )
+        payout_digest.update(
+            json.dumps(
+                [race_id, canonical],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        payout_digest.update(b"\n")
+
+    identity = {
+        "snapshot_version": SOURCE_DATA_SNAPSHOT_VERSION,
+        "race_count": len(expected_ids),
+        "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_watermark_sha256": _source_table_watermark(
+            conn,
+            as_of_date=as_of_date,
+        ),
+        "trifecta_payouts_sha256": payout_digest.hexdigest(),
+        "selected_cache_manifest_sha256": _selected_cache_manifest_sha256(
+            selected_cache_dir,
+            n_features=n_features,
+            variants=variants,
+        ),
+    }
+    identity["snapshot_sha256"] = _canonical_sha256(identity)
+    return identity
+
+
+def _validated_source_data_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("source data snapshot identity is required")
+    required = {
+        "snapshot_version",
+        "race_count",
+        "race_universe_sha256",
+        "source_watermark_sha256",
+        "trifecta_payouts_sha256",
+        "selected_cache_manifest_sha256",
+        "snapshot_sha256",
+    }
+    if set(value) != required:
+        raise ValueError("source data snapshot identity fields are invalid")
+    if (
+        value.get("snapshot_version") != SOURCE_DATA_SNAPSHOT_VERSION
+        or isinstance(value.get("race_count"), bool)
+        or not isinstance(value.get("race_count"), int)
+        or int(value["race_count"]) <= 0
+        or any(
+            not _is_sha256(value.get(name))
+            for name in (
+                "race_universe_sha256",
+                "source_watermark_sha256",
+                "trifecta_payouts_sha256",
+                "selected_cache_manifest_sha256",
+                "snapshot_sha256",
+            )
+        )
+    ):
+        raise ValueError("source data snapshot identity is invalid")
+    expected = _canonical_sha256({
+        name: field
+        for name, field in value.items()
+        if name != "snapshot_sha256"
+    })
+    if value["snapshot_sha256"] != expected:
+        raise ValueError("source data snapshot aggregate hash is invalid")
+    return dict(value)
+
+
+def _refresh_selected_cache_identity(
+    signature: dict[str, Any],
+    *,
+    selected_cache_dir: Path | None,
+    n_features: int,
+    variants: FeatureVariants | None,
+) -> bool:
+    snapshot = dict(signature["source_data_snapshot"])
+    current = _selected_cache_manifest_sha256(
+        selected_cache_dir,
+        n_features=n_features,
+        variants=variants,
+    )
+    if snapshot["selected_cache_manifest_sha256"] == current:
+        return False
+    snapshot["selected_cache_manifest_sha256"] = current
+    snapshot["snapshot_sha256"] = _canonical_sha256({
+        name: value
+        for name, value in snapshot.items()
+        if name != "snapshot_sha256"
+    })
+    signature["source_data_snapshot"] = snapshot
+    return True
+
+
 def _checkpoint_signature(
     *,
     args: argparse.Namespace,
@@ -280,15 +578,22 @@ def _checkpoint_signature(
     selection_end: int,
     targets: tuple[str, ...],
     alphas: tuple[float, ...],
+    data_snapshot: dict[str, Any],
     variants: FeatureVariants | None = None,
 ) -> dict[str, Any]:
+    verified_snapshot = _validated_source_data_snapshot(data_snapshot)
+    if verified_snapshot["race_count"] != len(race_keys):
+        raise ValueError("source data snapshot race count mismatch")
+    if verified_snapshot["race_universe_sha256"] != race_ids_sha256(race_keys):
+        raise ValueError("source data snapshot race universe mismatch")
     signature = {
-        "checkpoint_version": 1,
+        "checkpoint_version": CHECKPOINT_VERSION,
         "cache_version": CACHE_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "as_of_date": getattr(args, "as_of_date", None),
         "race_count": len(race_keys),
         "race_universe_sha256": race_ids_sha256(race_keys),
+        "source_data_snapshot": verified_snapshot,
         "train_end": train_end,
         "selection_end": selection_end,
         "n_features": int(args.n_features),
@@ -312,7 +617,14 @@ def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[st
         checkpoint = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
-    if checkpoint.get("signature") != signature:
+    stored_signature = checkpoint.get("signature")
+    if (
+        not isinstance(stored_signature, dict)
+        or stored_signature.get("checkpoint_version") != CHECKPOINT_VERSION
+        or "source_data_snapshot" not in stored_signature
+    ):
+        return {}
+    if stored_signature != signature:
         return {}
     rows = checkpoint.get("search_results")
     if not isinstance(rows, list):
@@ -623,6 +935,16 @@ def search(
         if getattr(args, "checkpoint", None)
         else output.with_name(f".{output.name}.checkpoint.json")
     )
+    payouts = _load_trifecta_payouts(conn)
+    data_snapshot = source_data_snapshot(
+        conn,
+        race_keys=race_keys,
+        payouts=payouts,
+        selected_cache_dir=selected_cache_dir,
+        n_features=int(args.n_features),
+        variants=run_variants,
+        as_of_date=args.as_of_date,
+    )
     checkpoint_signature = _checkpoint_signature(
         args=args,
         race_keys=race_keys,
@@ -630,6 +952,7 @@ def search(
         selection_end=selection_end,
         targets=targets,
         alphas=alphas,
+        data_snapshot=data_snapshot,
         variants=run_variants,
     )
     completed = _load_checkpoint(checkpoint_path, checkpoint_signature)
@@ -666,6 +989,21 @@ def search(
                 n_features=args.n_features,
                 variants=run_variants,
             )
+            if completed and _refresh_selected_cache_identity(
+                checkpoint_signature,
+                selected_cache_dir=selected_cache_dir,
+                n_features=int(args.n_features),
+                variants=run_variants,
+            ):
+                _persist_checkpoint_progress(
+                    checkpoint_path,
+                    checkpoint_signature,
+                    completed,
+                    targets=targets,
+                    alphas=alphas,
+                    variants=run_variants,
+                    last_completed={"kind": "selected_cache_reset"},
+                )
 
     requests: list[dict[str, Any]] = []
     for variant_name, dropped in run_variants:
@@ -792,6 +1130,24 @@ def search(
                 )
                 save_hashed_dataset(save_prefix, dataset)
                 active_cache_variant = variant_name
+                if _refresh_selected_cache_identity(
+                    checkpoint_signature,
+                    selected_cache_dir=selected_cache_dir,
+                    n_features=int(args.n_features),
+                    variants=run_variants,
+                ):
+                    _persist_checkpoint_progress(
+                        checkpoint_path,
+                        checkpoint_signature,
+                        completed,
+                        targets=targets,
+                        alphas=alphas,
+                        variants=run_variants,
+                        last_completed={
+                            "kind": "selected_cache_manifest",
+                            "feature_variant": variant_name,
+                        },
+                    )
             print(json.dumps({
                 "feature_variant_complete": variant_name,
                 "elapsed_seconds": payload["elapsed_seconds"],
@@ -875,7 +1231,6 @@ def search(
         batch_races=args.batch_races,
         keep_rows=True,
     )
-    payouts = _load_trifecta_payouts(conn)
     selected_ev_threshold, ev_policy_results = select_ev_policy(
         rows_by_race=selection_rows,
         race_keys=race_keys,
