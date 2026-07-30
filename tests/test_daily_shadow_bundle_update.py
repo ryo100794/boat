@@ -60,6 +60,7 @@ def make_v12_bundle(path: Path) -> None:
     bundle = {
         "prediction_date": "2026-07-30",
         "deployment": {
+            "prediction_date": "2026-07-30",
             "calibrator_strategy": updater.V12_MODEL,
             "operational_model": {"name": "v12-operational"},
             "probability_lcb": {"method": "v12-lcb"},
@@ -79,6 +80,51 @@ def make_v12_bundle(path: Path) -> None:
         },
     }
     v12_shadow_bundle._write_bundle_and_manifest_atomic(path, bundle, manifest)
+
+
+def test_frozen_v12_rebinds_only_runtime_prediction_date(tmp_path: Path) -> None:
+    output_root = tmp_path / "bundles"
+    source = (
+        output_root
+        / "2026-07-30"
+        / "v12-2026-07-30-job-7401.joblib"
+    )
+    source.parent.mkdir(parents=True)
+    make_v12_bundle(source)
+    result = tmp_path / "job-00007401.json"
+    result.write_text("{}", encoding="utf-8")
+
+    built = updater.build_v12(
+        updater.CompletedJob(7401, "v12-frozen", result),
+        through_date="2026-07-30",
+        prediction_date="2026-07-31",
+        output_root=output_root,
+    )
+
+    rebound_path = Path(built["path"])
+    original = joblib.load(source)
+    rebound = joblib.load(rebound_path)
+    assert rebound["prediction_date"] == "2026-07-31"
+    assert rebound["deployment"]["prediction_date"] == "2026-07-31"
+    original["prediction_date"] = rebound["prediction_date"]
+    original["deployment"]["prediction_date"] = rebound["deployment"]["prediction_date"]
+    assert joblib.hash(rebound) == joblib.hash(original)
+    manifest = built["manifest"]
+    assert manifest["trained_through_date"] == "2026-07-29"
+    assert manifest["model_identities"] == {
+        "integrated_model": updater.V12_MODEL,
+        "calibrator_strategy": updater.V12_MODEL,
+    }
+    assert manifest["runtime_date_rebind"] == {
+        "source_bundle": str(source),
+        "source_bundle_sha256": updater._sha256(source),
+        "changed_fields": [
+            "prediction_date",
+            "deployment.prediction_date",
+        ],
+        "model_identities_unchanged": True,
+        "real_betting_enabled": False,
+    }
 
 
 class PriorityJobConnection:

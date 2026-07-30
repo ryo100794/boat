@@ -465,7 +465,62 @@ def build_v12(
 ) -> dict[str, Any]:
     output = output_root / prediction_date / f"v12-{prediction_date}-job-{job.job_id}.joblib"
     output.parent.mkdir(parents=True, exist_ok=True)
-    if not output.exists():
+    source_prediction_date = (
+        date.fromisoformat(FROZEN_TRAINED_THROUGH_DATE) + timedelta(days=1)
+    ).isoformat()
+    if (
+        job.job_id == FROZEN_SOURCE_JOB_IDS["v12"]
+        and prediction_date != source_prediction_date
+        and not output.exists()
+    ):
+        source = (
+            output_root
+            / source_prediction_date
+            / f"v12-{source_prediction_date}-job-{job.job_id}.joblib"
+        )
+        if not source.exists():
+            source.parent.mkdir(parents=True, exist_ok=True)
+            v12_shadow_bundle.build_v12_shadow_bundle(
+                job.result_path,
+                scored_cache=None,
+                output=source,
+                prediction_date=source_prediction_date,
+            )
+        source_manifest = verify_bundle(
+            source,
+            family="v12",
+            through_date=FROZEN_TRAINED_THROUGH_DATE,
+            prediction_date=source_prediction_date,
+        )
+        bundle = joblib.load(source)
+        deployment = bundle.get("deployment") if isinstance(bundle, dict) else None
+        if (
+            not isinstance(deployment, dict)
+            or bundle.get("prediction_date") != source_prediction_date
+            or deployment.get("prediction_date") != source_prediction_date
+        ):
+            raise ValueError("frozen V12 source prediction identity mismatch")
+        rebound = copy.deepcopy(bundle)
+        rebound["prediction_date"] = prediction_date
+        rebound["deployment"]["prediction_date"] = prediction_date
+        manifest = copy.deepcopy(source_manifest)
+        manifest.pop("output", None)
+        manifest["prediction_date"] = prediction_date
+        manifest["trained_through_date"] = FROZEN_TRAINED_THROUGH_DATE
+        manifest["runtime_date_rebind"] = {
+            "source_bundle": str(source),
+            "source_bundle_sha256": _sha256(source),
+            "changed_fields": [
+                "prediction_date",
+                "deployment.prediction_date",
+            ],
+            "model_identities_unchanged": True,
+            "real_betting_enabled": False,
+        }
+        v12_shadow_bundle._write_bundle_and_manifest_atomic(
+            output, rebound, manifest
+        )
+    elif not output.exists():
         v12_shadow_bundle.build_v12_shadow_bundle(
             job.result_path, scored_cache=None, output=output,
             prediction_date=prediction_date,
