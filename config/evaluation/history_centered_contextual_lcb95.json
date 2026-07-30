@@ -1,0 +1,18 @@
+{
+  "source_job_id": 9106,
+  "learning_rate": 0.02,
+  "epochs": 2,
+  "batch_races": 1000,
+  "candidate_count": 48,
+  "finalists": 8,
+  "bootstrap_samples": 20000,
+  "payout_prior_weights": "10,30,100",
+  "evaluation_days": 365,
+  "research_only": false,
+  "seed": 20260731,
+  "timeout_seconds": 21600,
+  "coefficient_optimizer": "adam",
+  "ev_calibration_mode": "contextual_lcb95",
+  "calibration_fraction": 0.5,
+  "calibration_bootstrap_samples": 2000
+}
