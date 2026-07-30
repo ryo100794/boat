@@ -67,6 +67,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 21504, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
+    "four_head_v22_actual_annual": {"category": "evaluation", "memory_mb": 21504, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -2029,6 +2030,98 @@ def build_command(
                 str(_number(params, "ev_threshold", 1.2, 1.0, 3.0)),
             ])
         return command, output
+    if task_type == "four_head_v22_actual_annual":
+        allowed = {
+            "source_job_id", "source_model_artifact", "source_model_sha256",
+            "training_from_date", "training_through_date",
+            "outer_from_date", "outer_through_date",
+            "max_snapshot_age_seconds", "projection_dimensions",
+            "minimum_inner_training_dates", "minimum_purchase_training_dates",
+            "alpha", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported four_head_v22_actual_annual parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        source_job_id = _integer(params, "source_job_id", 0, 1, 9_999_999_999)
+        artifact_name = params.get("source_model_artifact")
+        if not isinstance(artifact_name, str) or not artifact_name.strip():
+            raise ValueError("source_model_artifact is required")
+        artifact_relative = Path(artifact_name)
+        if artifact_relative.is_absolute():
+            raise ValueError("source_model_artifact must be relative to app_root")
+        source_model = (app_root / artifact_relative).resolve()
+        model_root = (app_root / "data/models/evaluation_queue").resolve()
+        if model_root not in source_model.parents:
+            raise ValueError(
+                "source_model_artifact must be inside data/models/evaluation_queue"
+            )
+        expected_names = {
+            f"job-{source_job_id:08d}.joblib",
+            f"job-{source_job_id:08d}.deployment.joblib",
+        }
+        if source_model.name not in expected_names:
+            raise ValueError(
+                "source_model_artifact must identify the source_job_id joblib"
+            )
+        if not source_model.is_file():
+            raise JobDependencyUnavailable(
+                f"V22 source model artifact is not available yet: {source_model}"
+            )
+        expected_sha = params.get("source_model_sha256")
+        if (
+            not isinstance(expected_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None
+        ):
+            raise ValueError("source_model_sha256 must be 64 lowercase hex characters")
+        digest = hashlib.sha256()
+        with source_model.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha:
+            raise ObsoleteJob("V22 source model artifact SHA-256 does not match")
+
+        training_from = _date(params, "training_from_date")
+        training_through = _date(params, "training_through_date")
+        outer_from = _date(params, "outer_from_date")
+        outer_through = _date(params, "outer_through_date")
+        dates = [
+            datetime.strptime(value, "%Y-%m-%d").date()
+            for value in (training_from, training_through, outer_from, outer_through)
+        ]
+        if dates[0] > dates[1]:
+            raise ValueError("V22 training period is reversed")
+        if dates[1] >= dates[2]:
+            raise ValueError("V22 outer period must be strictly after training")
+        if dates[3] - dates[2] != timedelta(days=364):
+            raise ValueError("V22 outer period must be exactly 365 calendar days")
+        snapshot_age = _number(
+            params, "max_snapshot_age_seconds", 65.0, 0.0, 300.0
+        )
+        projection = _integer(params, "projection_dimensions", 8, 1, 128)
+        inner_dates = _integer(
+            params, "minimum_inner_training_dates", 30, 2, 3650
+        )
+        purchase_dates = _integer(
+            params, "minimum_purchase_training_dates", 30, 2, 3650
+        )
+        alpha = _number(params, "alpha", 0.001, 1e-8, 1.0)
+        _integer(params, "timeout_seconds", 86400, 300, 86400)
+        return [
+            str(python), "-m", "boatrace_ai.listwise.four_head_v22_evaluation",
+            "--db", db, "--source-model", str(source_model),
+            "--training-from", training_from,
+            "--training-through", training_through,
+            "--outer-from", outer_from, "--outer-through", outer_through,
+            "--output", str(output),
+            "--max-snapshot-age-seconds", str(snapshot_age),
+            "--projection-dimensions", str(projection),
+            "--minimum-inner-training-dates", str(inner_dates),
+            "--minimum-purchase-training-dates", str(purchase_dates),
+            "--alpha", str(alpha),
+        ], output
     if task_type == "bankroll_policy_search":
         allowed = {
             "source_job_id", "source_kind", "learning_rate", "epochs", "batch_races",
@@ -3415,6 +3508,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "reject_or_research_only"
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         return "refine_selected_candidate"
+    if task_type == "four_head_v22_actual_annual":
+        return "diagnostic_evaluation_complete"
     if summary.get("promotion_eligible") is True:
         return "promotion_candidate"
     if summary.get("payout_feature_promotion_eligible") is True:
