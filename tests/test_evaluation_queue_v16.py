@@ -199,6 +199,11 @@ def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
     ]
     assert v19["priority"] == 96
     assert v19["priority"] < min(deployment_priorities.values())
+    v21 = by_strategy[
+        "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+    ]
+    assert v21["priority"] == 97
+    assert v21["priority"] < min(deployment_priorities.values())
     assert v16["parameters"]["v12_closing_fallback_policy"] == "no_bet"
     assert v16["parameters"]["model_input"] == v15["parameters"]["model_input"]
     assert v16["parameters"]["from_date"] == v15["parameters"]["from_date"]

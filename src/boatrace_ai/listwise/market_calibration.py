@@ -186,6 +186,13 @@ V20_MODEL_NAME = V20_STRATEGY_NAME
 V20_COMPARISON_ROLE = (
     "strict_prior_dual_head_probability_v19_purchase_v18_evaluation_only"
 )
+V21_STRATEGY_NAME = (
+    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+)
+V21_MODEL_NAME = V21_STRATEGY_NAME
+V21_COMPARISON_ROLE = (
+    "strict_prior_triple_head_probability_v19_ranking_v18_purchase_v18_evaluation_only"
+)
 V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
@@ -193,13 +200,17 @@ SCHEDULE_QUOTA_STRATEGIES = frozenset({
     V18_STRATEGY_NAME,
     V19_STRATEGY_NAME,
     V20_STRATEGY_NAME,
+    V21_STRATEGY_NAME,
 })
 ROBUST_POLICY_STRATEGIES = frozenset({
     V17_STRATEGY_NAME,
     V18_STRATEGY_NAME,
     V19_STRATEGY_NAME,
 })
-EVALUATION_ONLY_STRATEGIES = frozenset({V20_STRATEGY_NAME})
+EVALUATION_ONLY_STRATEGIES = frozenset({
+    V20_STRATEGY_NAME,
+    V21_STRATEGY_NAME,
+})
 CHRONOLOGICAL_BANKROLL_STRATEGIES = frozenset({
     *ROBUST_POLICY_STRATEGIES,
     *EVALUATION_ONLY_STRATEGIES,
@@ -232,6 +243,8 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 
 
 def robust_policy_comparison_role(calibrator_strategy: str) -> str:
+    if calibrator_strategy == V21_STRATEGY_NAME:
+        return V21_COMPARISON_ROLE
     if calibrator_strategy == V20_STRATEGY_NAME:
         return V20_COMPARISON_ROLE
     if calibrator_strategy == V19_STRATEGY_NAME:
@@ -299,6 +312,52 @@ def fit_v20_dual_head_calibrators(
     }
 
 
+def fit_v21_triple_head_calibrators(
+    races: list[dict[str, Any]],
+) -> dict[str, Any]:
+    training_dates = sorted({str(race["race_date"]) for race in races})
+    probability_selection = fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=V19_STRATEGY_NAME,
+    )
+    v18_selection = fit_market_residual_calibrator(
+        races,
+        calibrator_strategy=V18_STRATEGY_NAME,
+    )
+    probability_calibrator = dict(probability_selection["final_calibrator"])
+    v18_calibrator = dict(v18_selection["final_calibrator"])
+    return {
+        "architecture": "strict_prior_triple_calibrator_heads_v21",
+        "selection_data": "strict_prior_training_and_inner_prequential_folds_only",
+        "outer_holdout_used": False,
+        "training_dates": training_dates,
+        "trained_through_date": training_dates[-1] if training_dates else None,
+        "probability_head": {
+            "role": "winner_and_trifecta_logloss",
+            "calibrator_strategy": V19_STRATEGY_NAME,
+            "raw_nonregression_enforced": True,
+            "calibrator": probability_calibrator,
+            "selection": probability_selection,
+        },
+        "ranking_head": {
+            "role": "trifecta_top5_ranking",
+            "calibrator_strategy": V18_STRATEGY_NAME,
+            "raw_nonregression_enforced": False,
+            "calibrator": v18_calibrator,
+            "selection": v18_selection,
+        },
+        "purchase_head": {
+            "role": "purchase_policy_and_chronological_bankroll",
+            "calibrator_strategy": V18_STRATEGY_NAME,
+            "raw_nonregression_enforced": False,
+            "policy_strategy": V18_STRATEGY_NAME,
+            "calibrator": dict(v18_calibrator),
+            "selection": v18_selection,
+        },
+        "ranking_purchase_share_v18_selection": True,
+    }
+
+
 def odds_path_model_name(calibrator_strategy: str) -> str:
     if calibrator_strategy == "odds_path_return":
         return "odds_path_operational_v1"
@@ -308,6 +367,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
+    if calibrator_strategy == V21_STRATEGY_NAME:
+        return V21_MODEL_NAME
     if calibrator_strategy == V20_STRATEGY_NAME:
         return V20_MODEL_NAME
     if calibrator_strategy == V19_STRATEGY_NAME:
@@ -1851,6 +1912,27 @@ def probability_metrics(
     return result
 
 
+def split_head_probability_metrics(
+    races: list[dict[str, Any]],
+    *,
+    probability_calibrator: dict[str, float],
+    ranking_calibrator: dict[str, float],
+) -> dict[str, float | int | None]:
+    probability_head = probability_metrics(
+        races,
+        calibrator=probability_calibrator,
+    )
+    ranking_head = probability_metrics(
+        races,
+        calibrator=ranking_calibrator,
+    )
+    result = dict(probability_head)
+    result["calibrated_trifecta_top5_hit_rate"] = ranking_head[
+        "calibrated_trifecta_top5_hit_rate"
+    ]
+    return result
+
+
 def paired_market_differences(
     races: list[dict[str, Any]],
     *,
@@ -1879,6 +1961,23 @@ def paired_market_differences(
         top5_differences.append(
             float(actual in calibrated_top5) - float(actual in market_top5)
         )
+    return loss_differences, top5_differences
+
+
+def split_head_paired_market_differences(
+    races: list[dict[str, Any]],
+    *,
+    probability_calibrator: dict[str, float],
+    ranking_calibrator: dict[str, float],
+) -> tuple[list[float], list[float]]:
+    loss_differences, _ = paired_market_differences(
+        races,
+        calibrator=probability_calibrator,
+    )
+    _, top5_differences = paired_market_differences(
+        races,
+        calibrator=ranking_calibrator,
+    )
     return loss_differences, top5_differences
 
 
@@ -2517,8 +2616,10 @@ def fit_deployment_configuration(
     operational_model = None
     dual_head_calibration = None
     probability_calibrator = None
+    ranking_calibrator = None
     purchase_calibrator = None
     probability_calibrator_selection = None
+    ranking_calibrator_selection = None
     purchase_calibrator_selection = None
     if calibrator_strategy in {
         "odds_path_return",
@@ -2529,6 +2630,7 @@ def fit_deployment_configuration(
         V18_STRATEGY_NAME,
         V19_STRATEGY_NAME,
         V20_STRATEGY_NAME,
+        V21_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -2551,6 +2653,7 @@ def fit_deployment_configuration(
                         V18_STRATEGY_NAME,
                         V19_STRATEGY_NAME,
                         V20_STRATEGY_NAME,
+                        V21_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -2572,16 +2675,31 @@ def fit_deployment_configuration(
                 ),
             )
         races = attach_odds_path_model(races, operational_model)
-        if calibrator_strategy == V20_STRATEGY_NAME:
-            dual_head_calibration = fit_v20_dual_head_calibrators(races)
+        if calibrator_strategy in {
+            V20_STRATEGY_NAME,
+            V21_STRATEGY_NAME,
+        }:
+            dual_head_calibration = (
+                fit_v21_triple_head_calibrators(races)
+                if calibrator_strategy == V21_STRATEGY_NAME
+                else fit_v20_dual_head_calibrators(races)
+            )
             probability_calibrator_selection = dual_head_calibration[
                 "probability_head"
             ]["selection"]
+            ranking_calibrator_selection = dual_head_calibration.get(
+                "ranking_head", dual_head_calibration["probability_head"]
+            )["selection"]
             purchase_calibrator_selection = dual_head_calibration[
                 "purchase_head"
             ]["selection"]
             probability_calibrator = dict(
                 dual_head_calibration["probability_head"]["calibrator"]
+            )
+            ranking_calibrator = dict(
+                dual_head_calibration.get(
+                    "ranking_head", dual_head_calibration["probability_head"]
+                )["calibrator"]
             )
             purchase_calibrator = dict(
                 dual_head_calibration["purchase_head"]["calibrator"]
@@ -2626,10 +2744,14 @@ def fit_deployment_configuration(
 
     if probability_calibrator is None:
         probability_calibrator = calibrator
+    if ranking_calibrator is None:
+        ranking_calibrator = probability_calibrator
     if purchase_calibrator is None:
         purchase_calibrator = calibrator
     if probability_calibrator_selection is None:
         probability_calibrator_selection = calibrator_selection
+    if ranking_calibrator_selection is None:
+        ranking_calibrator_selection = probability_calibrator_selection
     if purchase_calibrator_selection is None:
         purchase_calibrator_selection = calibrator_selection
 
@@ -2664,7 +2786,9 @@ def fit_deployment_configuration(
     )
     return {
         "role": (
-            "evaluation_only_dual_head_refit"
+            "evaluation_only_triple_head_refit"
+            if calibrator_strategy == V21_STRATEGY_NAME
+            else "evaluation_only_dual_head_refit"
             if calibrator_strategy == V20_STRATEGY_NAME
             else "next_day_refit_not_evaluation"
         ),
@@ -2699,9 +2823,21 @@ def fit_deployment_configuration(
         "calibrator_selection": probability_calibrator_selection,
         **(
             {
-                "dual_head_calibration": dual_head_calibration,
+                (
+                    "triple_head_calibration"
+                    if calibrator_strategy == V21_STRATEGY_NAME
+                    else "dual_head_calibration"
+                ): dual_head_calibration,
                 "probability_calibrator": probability_calibrator,
                 "probability_calibrator_selection": probability_calibrator_selection,
+                **(
+                    {
+                        "ranking_calibrator": ranking_calibrator,
+                        "ranking_calibrator_selection": ranking_calibrator_selection,
+                    }
+                    if calibrator_strategy == V21_STRATEGY_NAME
+                    else {}
+                ),
                 "purchase_calibrator": purchase_calibrator,
                 "purchase_calibrator_selection": purchase_calibrator_selection,
             }
@@ -3007,8 +3143,10 @@ def walk_forward_evaluate(
         operational_model = None
         dual_head_calibration = None
         probability_calibrator = None
+        ranking_calibrator = None
         purchase_calibrator = None
         probability_calibrator_selection = None
+        ranking_calibrator_selection = None
         purchase_calibrator_selection = None
         if calibrator_strategy in {
             "odds_path_return",
@@ -3019,6 +3157,7 @@ def walk_forward_evaluate(
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
+            V21_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -3038,6 +3177,7 @@ def walk_forward_evaluate(
                 V18_STRATEGY_NAME,
                 V19_STRATEGY_NAME,
                 V20_STRATEGY_NAME,
+                V21_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -3059,6 +3199,7 @@ def walk_forward_evaluate(
                             V18_STRATEGY_NAME,
                             V19_STRATEGY_NAME,
                             V20_STRATEGY_NAME,
+                            V21_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -3083,18 +3224,31 @@ def walk_forward_evaluate(
                 calibration_races, operational_model
             )
             holdout = attach_odds_path_model(holdout, operational_model)
-            if calibrator_strategy == V20_STRATEGY_NAME:
-                dual_head_calibration = fit_v20_dual_head_calibrators(
-                    calibration_races
+            if calibrator_strategy in {
+                V20_STRATEGY_NAME,
+                V21_STRATEGY_NAME,
+            }:
+                dual_head_calibration = (
+                    fit_v21_triple_head_calibrators(calibration_races)
+                    if calibrator_strategy == V21_STRATEGY_NAME
+                    else fit_v20_dual_head_calibrators(calibration_races)
                 )
                 probability_calibrator_selection = dual_head_calibration[
                     "probability_head"
                 ]["selection"]
+                ranking_calibrator_selection = dual_head_calibration.get(
+                    "ranking_head", dual_head_calibration["probability_head"]
+                )["selection"]
                 purchase_calibrator_selection = dual_head_calibration[
                     "purchase_head"
                 ]["selection"]
                 probability_calibrator = dict(
                     dual_head_calibration["probability_head"]["calibrator"]
+                )
+                ranking_calibrator = dict(
+                    dual_head_calibration.get(
+                        "ranking_head", dual_head_calibration["probability_head"]
+                    )["calibrator"]
                 )
                 purchase_calibrator = dict(
                     dual_head_calibration["purchase_head"]["calibrator"]
@@ -3146,10 +3300,14 @@ def walk_forward_evaluate(
             raise ValueError(f"unsupported calibrator strategy: {calibrator_strategy}")
         if probability_calibrator is None:
             probability_calibrator = calibrator
+        if ranking_calibrator is None:
+            ranking_calibrator = probability_calibrator
         if purchase_calibrator is None:
             purchase_calibrator = calibrator
         if probability_calibrator_selection is None:
             probability_calibrator_selection = calibrator_selection
+        if ranking_calibrator_selection is None:
+            ranking_calibrator_selection = probability_calibrator_selection
         if purchase_calibrator_selection is None:
             purchase_calibrator_selection = calibrator_selection
 
@@ -3241,8 +3399,16 @@ def walk_forward_evaluate(
             policy=flat_policy,
             probability_blender=blend_probabilities,
         )
-        metrics = probability_metrics(
-            holdout, calibrator=probability_calibrator
+        metrics = (
+            split_head_probability_metrics(
+                holdout,
+                probability_calibrator=probability_calibrator,
+                ranking_calibrator=ranking_calibrator,
+            )
+            if calibrator_strategy == V21_STRATEGY_NAME
+            else probability_metrics(
+                holdout, calibrator=probability_calibrator
+            )
         )
         edge_diagnostic_records.extend(
             edge_records(
@@ -3251,10 +3417,23 @@ def walk_forward_evaluate(
                 probability_blender=blend_probabilities,
             )
         )
-        fold_loss_differences, fold_top5_differences = paired_market_differences(
-            holdout,
-            calibrator=probability_calibrator,
-        )
+        if calibrator_strategy == V21_STRATEGY_NAME:
+            (
+                fold_loss_differences,
+                fold_top5_differences,
+            ) = split_head_paired_market_differences(
+                holdout,
+                probability_calibrator=probability_calibrator,
+                ranking_calibrator=ranking_calibrator,
+            )
+        else:
+            (
+                fold_loss_differences,
+                fold_top5_differences,
+            ) = paired_market_differences(
+                holdout,
+                calibrator=probability_calibrator,
+            )
         market_loss_differences.extend(fold_loss_differences)
         market_top5_differences.extend(fold_top5_differences)
         market_cluster_labels.extend(
@@ -3272,16 +3451,41 @@ def walk_forward_evaluate(
                 "calibrator_selection": probability_calibrator_selection,
                 **(
                     {
-                        "dual_head_calibration": dual_head_calibration,
+                        (
+                            "triple_head_calibration"
+                            if calibrator_strategy == V21_STRATEGY_NAME
+                            else "dual_head_calibration"
+                        ): dual_head_calibration,
                         "probability_calibrator": probability_calibrator,
                         "probability_calibrator_selection": (
                             probability_calibrator_selection
+                        ),
+                        **(
+                            {
+                                "ranking_calibrator": ranking_calibrator,
+                                "ranking_calibrator_selection": (
+                                    ranking_calibrator_selection
+                                ),
+                            }
+                            if calibrator_strategy == V21_STRATEGY_NAME
+                            else {}
                         ),
                         "purchase_calibrator": purchase_calibrator,
                         "purchase_calibrator_selection": (
                             purchase_calibrator_selection
                         ),
                         "probability_metrics_head": "probability_head",
+                        **(
+                            {
+                                "trifecta_top5_head": "ranking_head",
+                                "market_logloss_comparison_head": (
+                                    "probability_head"
+                                ),
+                                "market_top5_comparison_head": "ranking_head",
+                            }
+                            if calibrator_strategy == V21_STRATEGY_NAME
+                            else {}
+                        ),
                         "chronological_bankroll_head": "purchase_head",
                     }
                     if dual_head_calibration is not None
@@ -3631,6 +3835,17 @@ def walk_forward_evaluate(
         market_top5_differences,
         cluster_labels=market_cluster_labels,
     )
+    if calibrator_strategy == V21_STRATEGY_NAME:
+        market_comparison.update({
+            "logloss_difference_source": "probability_head",
+            "top5_difference_source": "ranking_head",
+            "probability_calibrator_strategy": V19_STRATEGY_NAME,
+            "ranking_calibrator_strategy": V18_STRATEGY_NAME,
+            "selection_data": (
+                "strict_prior_training_and_inner_prequential_folds_only"
+            ),
+            "outer_holdout_used_for_selection": False,
+        })
     empirical_lcb_walk_forward = _summarize_empirical_lcb_walk_forward(
         empirical_daily_rows,
         evaluated_races=empirical_evaluated_races,
@@ -3738,6 +3953,7 @@ def walk_forward_evaluate(
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
+            V21_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -3845,6 +4061,29 @@ def walk_forward_evaluate(
             "daily_stake_limit_fraction": 1.0,
             "primary_promotion_bankroll": "chronological_bankroll",
             "probability_metrics_head": "probability_head",
+            "chronological_bankroll_head": "purchase_head",
+            "policy_selection": (
+                "v18_strict_prior_residual_schedule_quota_purchase_head"
+            ),
+            "candidate_policy": candidate_policy,
+            "selected_policy": {"name": "no_bet", "no_bet": True},
+            "operational_status": "evaluation_only_challenger",
+        })
+    if calibrator_strategy == V21_STRATEGY_NAME:
+        candidate_policy = deployment_configuration.get(
+            "candidate_policy",
+            deployment_configuration["selected_policy"],
+        )
+        deployment_configuration.update({
+            "comparison_role": V21_COMPARISON_ROLE,
+            "deployment_mode": "evaluation_only",
+            "real_betting_enabled": False,
+            "daily_stake_limit_fraction": 1.0,
+            "primary_promotion_bankroll": "chronological_bankroll",
+            "winner_and_logloss_head": "probability_head",
+            "trifecta_top5_head": "ranking_head",
+            "market_logloss_comparison_head": "probability_head",
+            "market_top5_comparison_head": "ranking_head",
             "chronological_bankroll_head": "purchase_head",
             "policy_selection": (
                 "v18_strict_prior_residual_schedule_quota_purchase_head"
@@ -3992,6 +4231,33 @@ def walk_forward_evaluate(
                 }
             }
             if calibrator_strategy == V20_STRATEGY_NAME
+            else {}
+        ),
+        **(
+            {
+                "triple_head_architecture": {
+                    "architecture": "strict_prior_triple_calibrator_heads_v21",
+                    "probability_head_role": "winner_and_trifecta_logloss",
+                    "ranking_head_role": "trifecta_top5_ranking",
+                    "purchase_head_role": (
+                        "purchase_policy_and_chronological_bankroll"
+                    ),
+                    "probability_calibrator_strategy": V19_STRATEGY_NAME,
+                    "ranking_calibrator_strategy": V18_STRATEGY_NAME,
+                    "purchase_calibrator_strategy": V18_STRATEGY_NAME,
+                    "ranking_purchase_share_v18_selection": True,
+                    "selection_data": (
+                        "strict_prior_training_and_inner_prequential_folds_only"
+                    ),
+                    "outer_holdout_used": False,
+                    "winner_and_logloss_source": "probability_head",
+                    "trifecta_top5_source": "ranking_head",
+                    "market_logloss_difference_source": "probability_head",
+                    "market_top5_difference_source": "ranking_head",
+                    "chronological_bankroll_source": "purchase_head",
+                }
+            }
+            if calibrator_strategy == V21_STRATEGY_NAME
             else {}
         ),
         "promotion_gate": promotion_gate,
@@ -5489,6 +5755,7 @@ def build_parser() -> argparse.ArgumentParser:
             V18_STRATEGY_NAME,
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
+            V21_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
