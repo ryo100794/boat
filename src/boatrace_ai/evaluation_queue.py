@@ -3993,6 +3993,16 @@ DEFAULT_WORK_TICKETS = (
         20,
     ),
     (
+        "MODEL-V21-PROSPECTIVE-EVIDENCE-001",
+        "Frozen V21 prospective confirmation",
+        "Model",
+        "Freeze the V21 triple-head architecture on 2026-07-30 and collect only unseen, append-only T300 shadow evidence from 2026-07-31. Job 8666 remains exploratory because its six days informed the head selection.",
+        "After at least 30 fully covered unseen days, 1000 races, and 20 effective hits, require positive profit, ROI and largest-hit-excluded ROI above one, daily bootstrap lower95 above one, profitable-day fraction at least 0.6, probability calibration non-regression, and race/day market confidence. Any model or policy change resets evidence to D1; real betting stays disabled.",
+        116,
+        "in_progress",
+        5,
+    ),
+    (
         "MODEL-EDGE-CONDITIONAL-LCB-V13-001",
         "高EV候補向け階層的確率LCB V13",
         "モデル",
