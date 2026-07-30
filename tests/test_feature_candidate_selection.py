@@ -62,3 +62,37 @@ def test_selection_uses_top1_then_entry_loss_as_tie_breakers() -> None:
     assert _selected_row([lower_top1, higher_top1, better_entry])[
         "feature_variant"
     ] == "better-entry"
+
+
+def test_selection_does_not_trade_material_top1_for_negligible_top5_gain() -> None:
+    top3_teacher = _candidate(
+        "top3-teacher",
+        ranking_loss=1.3335046109,
+        top5=0.2995805550,
+        top1=0.5547832867,
+        entry_loss=0.3444898392,
+    )
+    winner_teacher = _candidate(
+        "winner-teacher",
+        ranking_loss=1.3403561559,
+        top5=0.2989890299,
+        top1=0.5636023876,
+        entry_loss=0.3293205908,
+    )
+
+    assert _selected_row([top3_teacher, winner_teacher])["feature_variant"] == (
+        "winner-teacher"
+    )
+
+
+def test_selection_keeps_material_top5_gain() -> None:
+    stronger_top1 = _candidate(
+        "stronger-top1", ranking_loss=1.0, top5=0.30, top1=0.57
+    )
+    stronger_top5 = _candidate(
+        "stronger-top5", ranking_loss=1.005, top5=0.302, top1=0.56
+    )
+
+    assert _selected_row([stronger_top1, stronger_top5])["feature_variant"] == (
+        "stronger-top5"
+    )
