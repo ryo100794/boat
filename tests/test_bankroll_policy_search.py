@@ -78,6 +78,20 @@ def test_policy_candidates_are_unique_and_reproducible() -> None:
     }) == 16
 
 
+def test_legacy_base_policy_is_normalized_to_current_search_schema() -> None:
+    legacy = {
+        key: value
+        for key, value in POLICY.items()
+        if key not in {"min_ticket_probability", "max_estimated_odds"}
+    }
+
+    candidate = policy_candidates(legacy, count=1)[0]
+
+    assert candidate["min_ticket_probability"] == 0.0
+    assert candidate["min_estimated_odds"] is None
+    assert candidate["max_estimated_odds"] is None
+
+
 def test_candidate_registry_has_canonical_order_sensitive_hash() -> None:
     first = policy_candidates(POLICY, count=4, seed=7)
     reordered_keys = [{key: row[key] for key in reversed(row)} for row in first]

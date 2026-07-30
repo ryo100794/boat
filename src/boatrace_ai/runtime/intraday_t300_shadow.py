@@ -67,6 +67,7 @@ T300_OFFSET_SECONDS = 300
 DECISION_BEFORE_START_SECONDS = 600
 DEFAULT_MAX_CHECKPOINT_AGE_SECONDS = 90.0
 DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS = 120.0
+DEFAULT_MAX_DECISION_DELAY_SECONDS = 90.0
 DEFAULT_INTERVAL_SECONDS = 5.0
 SCHEMA_VERSION = 1
 
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
   model_hash CHAR(64) NOT NULL,
   strategy_name TEXT NOT NULL,
   decision_at TIMESTAMPTZ NOT NULL,
+  decision_completed_at TIMESTAMPTZ NOT NULL,
   target_t300_at TIMESTAMPTZ NOT NULL,
   source_snapshot_id BIGINT REFERENCES odds_snapshots(snapshot_id) ON DELETE RESTRICT,
   source_captured_at TIMESTAMPTZ,
@@ -104,6 +106,8 @@ CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
     (decision_status = 'no_bet' AND no_bet_reason IS NOT NULL AND total_stake_yen = 0)
   )
 );
+ALTER TABLE intraday_t300_shadow_decisions
+  ADD COLUMN IF NOT EXISTS decision_completed_at TIMESTAMPTZ;
 ALTER TABLE intraday_t300_shadow_decisions
   ADD COLUMN IF NOT EXISTS diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_intraday_t300_shadow_decisions_day_model
@@ -416,6 +420,7 @@ class PostgresShadowStore:
 
     def insert_decision(
         self, *, race: RaceWindow, identity: ModelIdentity, decision_at: datetime,
+        decision_completed_at: datetime,
         snapshot: T300Snapshot | None, snapshot_check: SnapshotCheck,
         bankroll_before_yen: int, decision: ShadowDecision,
     ) -> bool:
@@ -439,19 +444,20 @@ class PostgresShadowStore:
             """
             INSERT INTO intraday_t300_shadow_decisions(
               schema_version, race_date, race_id, model_key, model_hash, strategy_name,
-              decision_at, target_t300_at, source_snapshot_id, source_captured_at,
+              decision_at, decision_completed_at, target_t300_at, source_snapshot_id, source_captured_at,
               checkpoint_age_before_target_seconds, source_update_staleness_seconds,
               bankroll_before_yen, decision_status, no_bet_reason, probabilities,
               probability_summary, closing_lower_odds, closing_lower_summary,
               selected_candidates, diagnostics, total_stake_yen, decision_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb,
                       ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?)
             ON CONFLICT (race_id, model_key) DO NOTHING
             """,
             (
                 SCHEMA_VERSION, race.race_date, race.race_id, identity.model_key,
                 identity.model_hash, identity.strategy_name, decision_at.isoformat(),
-                race.target_t300_at.isoformat(), snapshot.snapshot_id if snapshot else None,
+                decision_completed_at.isoformat(), race.target_t300_at.isoformat(),
+                snapshot.snapshot_id if snapshot else None,
                 snapshot.captured_at.isoformat() if snapshot else None,
                 snapshot_check.checkpoint_age_before_target_seconds,
                 snapshot_check.source_update_staleness_seconds, bankroll_before_yen,
@@ -1839,22 +1845,31 @@ def run_cycle(
     configured_date: str | None = None,
     max_checkpoint_age_seconds: float = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
     max_source_update_staleness_seconds: float = DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
+    max_decision_delay_seconds: float = DEFAULT_MAX_DECISION_DELAY_SECONDS,
     starting_bankroll_yen: int = STARTING_BANKROLL_YEN,
 ) -> dict[str, Any]:
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
-    if max_checkpoint_age_seconds <= 0 or max_source_update_staleness_seconds <= 0:
-        raise ValueError("snapshot staleness limits must be positive")
+    if (
+        max_checkpoint_age_seconds <= 0
+        or max_source_update_staleness_seconds <= 0
+        or max_decision_delay_seconds <= 0
+    ):
+        raise ValueError("snapshot staleness and decision delay limits must be positive")
     cycle_started = time.perf_counter()
     race_date = resolve_race_date(now, configured_date)
     store.ensure_schema()
     settlements = store.append_available_settlements(race_date=race_date, now=now)
-    inserted = duplicate = model_errors = no_bets = selected = 0
+    inserted = duplicate = model_errors = no_bets = selected = deferred = 0
     due_races = store.due_races(race_date=race_date, now=now)
     pending_backlog_max_seconds = 0.0
     pending_decisions = 0
     model_decide_timing: dict[str, dict[str, float | int]] = {}
     for race in due_races:
+        decision_delay_seconds = max(
+            0.0,
+            (now - race.target_t300_at.astimezone(now.tzinfo)).total_seconds(),
+        )
         snapshot_loaded = False
         snapshot: T300Snapshot | None = None
         check = SnapshotCheck(None, None, "missing_complete_t300_snapshot")
@@ -1880,6 +1895,12 @@ def run_cycle(
                         max_checkpoint_age_seconds=max_checkpoint_age_seconds,
                         max_source_update_staleness_seconds=max_source_update_staleness_seconds,
                     )
+            if (
+                (snapshot is None or check.reason is not None)
+                and decision_delay_seconds < max_decision_delay_seconds
+            ):
+                deferred += 1
+                continue
             bankroll = store.bankroll_yen(
                 race_date=race_date, model_key=identity.model_key, starting_yen=starting_bankroll_yen
             )
@@ -1900,8 +1921,10 @@ def run_cycle(
                 timing["calls"] = int(timing["calls"]) + 1
                 timing["total_seconds"] = float(timing["total_seconds"]) + decision_elapsed
                 timing["max_seconds"] = max(float(timing["max_seconds"]), decision_elapsed)
+            decision_completed_at = datetime.now(timezone.utc)
             created = store.insert_decision(
                 race=race, identity=identity, decision_at=now, snapshot=snapshot,
+                decision_completed_at=decision_completed_at,
                 snapshot_check=check, bankroll_before_yen=bankroll, decision=decision,
             )
             inserted += int(created)
@@ -1922,6 +1945,7 @@ def run_cycle(
             "models": [adapter.identity.model_key for adapter in adapters],
             "decisions_inserted": inserted, "selected_decisions": selected,
             "no_bet_decisions": no_bets, "existing_decisions": duplicate,
+            "deferred_decisions": deferred,
             "model_errors": model_errors, "settlements_inserted": settlements,
             "timing": {
                 "cycle_elapsed_seconds": round(cycle_elapsed, 6),
@@ -1948,6 +1972,8 @@ def build_parser() -> argparse.ArgumentParser:
                         default=DEFAULT_MAX_CHECKPOINT_AGE_SECONDS)
     parser.add_argument("--max-source-update-staleness-seconds", type=float,
                         default=DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS)
+    parser.add_argument("--max-decision-delay-seconds", type=float,
+                        default=DEFAULT_MAX_DECISION_DELAY_SECONDS)
     parser.add_argument("--starting-bankroll-yen", type=int, default=STARTING_BANKROLL_YEN)
     parser.add_argument("--once", action="store_true")
     return parser
@@ -1963,6 +1989,7 @@ def main(argv: list[str] | None = None) -> int:
                 PostgresShadowStore(conn), adapters, now=now, configured_date=args.date,
                 max_checkpoint_age_seconds=args.max_checkpoint_age_seconds,
                 max_source_update_staleness_seconds=args.max_source_update_staleness_seconds,
+                max_decision_delay_seconds=args.max_decision_delay_seconds,
                 starting_bankroll_yen=args.starting_bankroll_yen,
             )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)

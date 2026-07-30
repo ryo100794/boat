@@ -13,6 +13,7 @@ from boatrace_ai.listwise.edge_conditional_probability_lcb_v14 import METHOD
 from boatrace_ai.runtime import intraday_t300_shadow as shadow_runtime
 from boatrace_ai.runtime.intraday_t300_shadow import (
     DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
+    DEFAULT_MAX_DECISION_DELAY_SECONDS,
     DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS,
     ModelIdentity,
     PostgresShadowStore,
@@ -242,7 +243,15 @@ def test_stale_snapshot_is_recorded_as_no_bet_with_actual_ages(
         [row], {row.race_id: snapshot(row.target_t300_at, age=age, source_stale=source_stale)}
     )
     adapter = Adapter("v12")
-    run_cycle(store, [adapter], now=cycle_time(row))
+    first = run_cycle(store, [adapter], now=cycle_time(row))
+    assert first["deferred_decisions"] == 1
+    assert store.decisions == {}
+
+    run_cycle(
+        store,
+        [adapter],
+        now=row.target_t300_at + timedelta(seconds=90),
+    )
     saved = store.decisions[(row.race_id, "v12")]
 
     assert saved["decision"].no_bet_reason == reason
@@ -256,9 +265,51 @@ def test_exactly_120_combinations_are_required() -> None:
     row = race("2026-07-30")
     store = MemoryStore([row], {row.race_id: snapshot(row.target_t300_at, count=119)})
     adapter = Adapter("v12")
-    run_cycle(store, [adapter], now=cycle_time(row))
+    run_cycle(
+        store,
+        [adapter],
+        now=row.target_t300_at + timedelta(seconds=90),
+    )
     saved = store.decisions[(row.race_id, "v12")]
     assert saved["decision"].no_bet_reason == "incomplete_t300_snapshot"
+    assert adapter.calls == 0
+
+
+def test_missing_snapshot_is_retried_and_recovers_within_decision_delay() -> None:
+    row = race("2026-07-30")
+    store = MemoryStore([row], {})
+    adapter = Adapter("v12")
+
+    first = run_cycle(store, [adapter], now=cycle_time(row))
+    assert first["decisions_inserted"] == 0
+    assert first["deferred_decisions"] == 1
+    assert store.decisions == {}
+
+    store.snapshots[row.race_id] = snapshot(row.target_t300_at)
+    recovered = run_cycle(
+        store,
+        [adapter],
+        now=row.target_t300_at + timedelta(seconds=6),
+    )
+    assert recovered["decisions_inserted"] == 1
+    assert recovered["deferred_decisions"] == 0
+    assert adapter.calls == 1
+    assert store.decisions[(row.race_id, "v12")]["decision"].status == "selected"
+
+
+def test_missing_snapshot_is_finalized_as_no_bet_at_decision_deadline() -> None:
+    row = race("2026-07-30")
+    store = MemoryStore([row], {})
+    adapter = Adapter("v12")
+
+    result = run_cycle(
+        store,
+        [adapter],
+        now=row.target_t300_at + timedelta(seconds=90),
+    )
+    saved = store.decisions[(row.race_id, "v12")]
+    assert result["deferred_decisions"] == 0
+    assert saved["decision"].no_bet_reason == "missing_complete_t300_snapshot"
     assert adapter.calls == 0
 
 
@@ -302,16 +353,19 @@ def test_cycle_reports_backlog_and_only_configured_model_timings(
 
 def test_default_staleness_limits_and_daemon_cli_are_explicit() -> None:
     assert DEFAULT_MAX_CHECKPOINT_AGE_SECONDS == 90.0
+    assert DEFAULT_MAX_DECISION_DELAY_SECONDS == 90.0
     assert DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS == 120.0
     args = build_parser().parse_args([
         "--db", "host=localhost dbname=boatrace",
         "--model-spec", "v12:v12_role_t300:bundle.joblib:base.joblib",
         "--max-checkpoint-age-seconds", "75",
         "--max-source-update-staleness-seconds", "100",
+        "--max-decision-delay-seconds", "80",
         "--once",
     ])
     assert args.max_checkpoint_age_seconds == 75.0
     assert args.max_source_update_staleness_seconds == 100.0
+    assert args.max_decision_delay_seconds == 80.0
     assert args.once is True
 
 

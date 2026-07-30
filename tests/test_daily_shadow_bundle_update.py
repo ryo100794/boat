@@ -398,14 +398,18 @@ class RecoveryConnection:
     def __init__(self, races, decisions):
         self.races = races
         self.decisions = decisions
+        self.race_query_count = 0
+        self.queries = []
 
     def execute(self, query, parameters):
         self.query = " ".join(query.split())
         self.parameters = parameters
+        self.queries.append(self.query)
         return self
 
     def fetchall(self):
         if "FROM races r" in self.query:
+            self.race_query_count += 1
             return self.races[: int(self.parameters[1])]
         if "FROM intraday_t300_shadow_decisions" in self.query:
             race_ids = set(self.parameters[1])
@@ -417,26 +421,90 @@ class RecoveryConnection:
         raise AssertionError(self.query)
 
 
-def write_recovery_active(state_root: Path, base: Path) -> tuple[dict, dict]:
+def write_recovery_active(
+    state_root: Path, base: Path, *, real_betting_enabled: bool = False,
+    first_start: datetime | None = None, duplicate_model_key: bool = False,
+) -> tuple[dict, dict, dict]:
     release = state_root / "releases" / "next-day"
     release.mkdir(parents=True)
-    specs = {
-        "v18": f"v18_daily:{updater.V18_SHADOW_STRATEGY}:v18.joblib:{base}",
-        "v20": f"v20_daily:{updater.V20_SHADOW_STRATEGY}:v20.joblib:{base}",
-        "v21": f"v21_daily:{updater.V21_SHADOW_STRATEGY}:v21.joblib:{base}",
+    bundle_paths = {}
+    for family in updater.RECOVERY_FAMILIES:
+        bundle = release / f"{family}.joblib"
+        bundle.write_bytes(f"bundle-{family}".encode())
+        bundle_paths[family] = bundle
+    model_keys = {family: f"{family}_daily" for family in updater.RECOVERY_FAMILIES}
+    if duplicate_model_key:
+        model_keys["v20"] = model_keys["v18"]
+    strategies = {
+        "v18": updater.V18_SHADOW_STRATEGY,
+        "v20": updater.V20_SHADOW_STRATEGY,
+        "v21": updater.V21_SHADOW_STRATEGY,
     }
-    hashes = {family: hashlib.sha256(family.encode()).hexdigest() for family in specs}
+    specs = {
+        family: f"{model_keys[family]}:{strategies[family]}:{bundle_paths[family]}:{base}"
+        for family in updater.RECOVERY_FAMILIES
+    }
+    bundle_hashes = {
+        family: updater._sha256(bundle_paths[family])
+        for family in updater.RECOVERY_FAMILIES
+    }
+    base_hash = updater._sha256(base)
+    runtime_hashes = {
+        family: hashlib.sha256(
+            (bundle_hashes[family] + base_hash).encode("ascii")
+        ).hexdigest()
+        for family in updater.RECOVERY_FAMILIES
+    }
     state = {
         "prediction_date": "2026-07-31",
-        "real_betting_enabled": False,
-        "model_identities": hashes,
-        "runtime_model_identities": hashes,
+        "first_race_start": first_start.isoformat() if first_start else None,
+        "real_betting_enabled": real_betting_enabled,
+        "model_identities": bundle_hashes,
+        "runtime_model_identities": runtime_hashes,
         "model_specs": specs,
     }
     (release / "state.json").write_text(json.dumps(state))
-    (release / "model-spec.env").write_text("BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0\n")
+    (release / "model-spec.env").write_text(
+        "BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0\n"
+    )
     (state_root / "active").symlink_to(release.relative_to(state_root))
-    return specs, hashes
+    return specs, runtime_hashes, bundle_paths
+
+
+def recovery_races(
+    target: datetime, *, prefix: str = "race", count: int = 5,
+) -> list[dict]:
+    return [
+        {"race_id": f"{prefix}-{index}",
+         "target_t300_at": target + timedelta(minutes=index)}
+        for index in range(count)
+    ]
+
+
+def valid_recovery_decisions(
+    races: list[dict], specs: dict, hashes: dict, *, delay_seconds: float = 10.0,
+) -> list[dict]:
+    values = {str(index): float(index + 1) for index in range(120)}
+    rows = []
+    for race in races:
+        for family in updater.RECOVERY_FAMILIES:
+            rows.append({
+                "race_id": race["race_id"],
+                "model_key": specs[family].split(":", 1)[0],
+                "model_hash": hashes[family],
+                "strategy_name": specs[family].split(":", 2)[1],
+                "target_t300_at": race["target_t300_at"],
+                "decision_at": race["target_t300_at"] + timedelta(seconds=1),
+                "decision_completed_at": (
+                    race["target_t300_at"] + timedelta(seconds=delay_seconds)
+                ),
+                "created_at": race["target_t300_at"] + timedelta(seconds=2),
+                "source_snapshot_id": 100,
+                "probabilities": values,
+                "closing_lower_odds": values,
+                "no_bet_reason": "no_positive_edge",
+            })
+    return rows
 
 
 def test_recovery_gate_requires_first_five_for_v18_v20_v21_below_90_seconds(
@@ -445,23 +513,12 @@ def test_recovery_gate_requires_first_five_for_v18_v20_v21_below_90_seconds(
     state_root = tmp_path / "state"
     base = tmp_path / "base.joblib"
     base.write_bytes(b"base")
-    specs, hashes = write_recovery_active(state_root, base)
+    specs, hashes, _ = write_recovery_active(state_root, base)
     target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
-    races = [
-        {"race_id": f"race-{index}", "target_t300_at": target + timedelta(minutes=index)}
-        for index in range(5)
-    ]
-    decisions = []
-    for race in races:
-        for family in updater.RECOVERY_FAMILIES:
-            decisions.append({
-                "race_id": race["race_id"],
-                "model_key": specs[family].split(":", 1)[0],
-                "model_hash": hashes[family],
-                "strategy_name": specs[family].split(":", 2)[1],
-                "target_t300_at": race["target_t300_at"],
-                "decision_at": race["target_t300_at"] + timedelta(seconds=89.9),
-            })
+    races = recovery_races(target)
+    decisions = valid_recovery_decisions(
+        races, specs, hashes, delay_seconds=89.9
+    )
     result = updater.verify_activation_recovery(
         RecoveryConnection(races, decisions),
         state_root=state_root, prediction_date="2026-07-31",
@@ -472,8 +529,161 @@ def test_recovery_gate_requires_first_five_for_v18_v20_v21_below_90_seconds(
     assert result["recorded_decisions"] == 15
     assert result["maximum_observed_delay_seconds"] == pytest.approx(89.9)
     assert result["real_betting_enabled"] is False
+    assert result["first_race_ids"] == [race["race_id"] for race in races]
     persisted = json.loads((state_root / "activation-recovery.json").read_text())
     assert persisted["status"] == "passed"
+
+
+@pytest.mark.parametrize("completion_field", ["decision_completed_at", "created_at"])
+def test_recovery_gate_uses_completion_not_decision_start_for_90_second_limit(
+    tmp_path: Path, completion_field: str,
+) -> None:
+    state_root = tmp_path / completion_field
+    base = tmp_path / f"{completion_field}.joblib"
+    base.write_bytes(b"base")
+    specs, hashes, _ = write_recovery_active(state_root, base)
+    target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    races = recovery_races(target)
+    decisions = valid_recovery_decisions(races, specs, hashes)
+    row = decisions[0]
+    row["decision_at"] = target + timedelta(seconds=1)
+    if completion_field == "created_at":
+        row["decision_completed_at"] = None
+    row[completion_field] = target + timedelta(seconds=90)
+    result = updater.verify_activation_recovery(
+        RecoveryConnection(races, decisions), state_root=state_root,
+        prediction_date="2026-07-31", now=target + timedelta(minutes=10),
+    )
+    assert result["status"] == "failed"
+    assert len(result["late_decisions"]) == 1
+    assert result["late_decisions"][0]["decision_delay_seconds"] == 90.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_reason"),
+    [
+        ("source_snapshot_id", None, "source_snapshot_missing"),
+        ("probabilities", {str(i): 1.0 for i in range(119)},
+         "probabilities_incomplete"),
+        ("closing_lower_odds", {str(i): 1.0 for i in range(119)},
+         "closing_lower_odds_incomplete"),
+        ("no_bet_reason", "model_error:boom", "prohibited_no_bet_reason"),
+        ("no_bet_reason", "missing_snapshot", "prohibited_no_bet_reason"),
+        ("no_bet_reason", "stale_odds", "prohibited_no_bet_reason"),
+        ("no_bet_reason", "inconsistent_input", "prohibited_no_bet_reason"),
+        ("no_bet_reason", "incomplete_output", "prohibited_no_bet_reason"),
+    ],
+)
+def test_recovery_gate_rejects_invalid_decisions(
+    tmp_path: Path, field: str, value: object, expected_reason: str,
+) -> None:
+    state_root = tmp_path / field / expected_reason
+    base = tmp_path / field / f"{expected_reason}.joblib"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_bytes(b"base")
+    specs, hashes, _ = write_recovery_active(state_root, base)
+    target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    races = recovery_races(target)
+    decisions = valid_recovery_decisions(races, specs, hashes)
+    decisions[0][field] = value
+    result = updater.verify_activation_recovery(
+        RecoveryConnection(races, decisions), state_root=state_root,
+        prediction_date="2026-07-31", now=target + timedelta(minutes=10),
+    )
+    assert result["status"] == "failed"
+    assert result["recorded_decisions"] == 14
+    assert expected_reason in result["invalid_decisions"][0]["invalid_reasons"]
+
+
+def test_recovery_gate_rehashes_active_artifacts_on_every_check(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    _, _, bundles = write_recovery_active(state_root, base)
+    bundles["v18"].write_bytes(b"tampered")
+    result = updater.verify_activation_recovery(
+        RecoveryConnection([], []), state_root=state_root,
+        prediction_date="2026-07-31",
+        now=datetime(2026, 7, 31, 1, tzinfo=timezone.utc),
+    )
+    assert result["activation_ready"] is False
+    assert result["identity_freeze_preserved"] is False
+    assert result["artifact_identity_checks"]["v18"]["verified"] is False
+
+
+def test_recovery_gate_rejects_duplicate_model_keys(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    write_recovery_active(state_root, base, duplicate_model_key=True)
+    result = updater.verify_activation_recovery(
+        RecoveryConnection([], []), state_root=state_root,
+        prediction_date="2026-07-31",
+        now=datetime(2026, 7, 31, 1, tzinfo=timezone.utc),
+    )
+    assert result["activation_ready"] is False
+    assert result["duplicate_model_keys"] == ["v18_daily"]
+
+
+def test_recovery_gate_freezes_first_five_race_ids(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    specs, hashes, _ = write_recovery_active(state_root, base)
+    target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    original = recovery_races(target, prefix="original")
+    connection = RecoveryConnection(original, [])
+    first = updater.verify_activation_recovery(
+        connection, state_root=state_root, prediction_date="2026-07-31",
+        now=target - timedelta(seconds=1),
+    )
+    assert first["first_race_ids"] == [row["race_id"] for row in original]
+    assert connection.race_query_count == 1
+
+    connection.races = recovery_races(target, prefix="replacement")
+    connection.decisions = valid_recovery_decisions(original, specs, hashes)
+    second = updater.verify_activation_recovery(
+        connection, state_root=state_root, prediction_date="2026-07-31",
+        now=target + timedelta(minutes=10),
+    )
+    assert second["status"] == "passed"
+    assert second["first_race_ids"] == [row["race_id"] for row in original]
+    assert connection.race_query_count == 1
+
+
+def test_recovery_gate_fails_collector_missing_after_t300_target(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    first_start = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+    write_recovery_active(state_root, base, first_start=first_start)
+    result = updater.verify_activation_recovery(
+        RecoveryConnection([], []), state_root=state_root,
+        prediction_date="2026-07-31",
+        now=first_start - timedelta(minutes=10) + timedelta(seconds=90),
+    )
+    assert result["status"] == "failed"
+    assert result["collector_missing"] is True
+    assert result["gate_pass"] is False
+
+
+def test_recovery_gate_reflects_active_real_betting_value(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    base = tmp_path / "base.joblib"
+    base.write_bytes(b"base")
+    write_recovery_active(state_root, base, real_betting_enabled=True)
+    result = updater.verify_activation_recovery(
+        RecoveryConnection([], []), state_root=state_root,
+        prediction_date="2026-07-31",
+        now=datetime(2026, 7, 31, 1, tzinfo=timezone.utc),
+    )
+    assert result["real_betting_enabled"] is True
+    assert result["activation_ready"] is False
+    assert result["gate_pass"] is False
 
 
 def test_recovery_gate_fails_at_90_seconds_and_on_missing_overdue(
@@ -482,19 +692,10 @@ def test_recovery_gate_fails_at_90_seconds_and_on_missing_overdue(
     state_root = tmp_path / "state"
     base = tmp_path / "base.joblib"
     base.write_bytes(b"base")
-    specs, hashes = write_recovery_active(state_root, base)
+    specs, hashes, _ = write_recovery_active(state_root, base)
     target = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
-    races = [
-        {"race_id": f"race-{index}", "target_t300_at": target + timedelta(minutes=index)}
-        for index in range(5)
-    ]
-    decisions = [{
-        "race_id": "race-0", "model_key": "v18_daily",
-        "model_hash": hashes["v18"],
-        "strategy_name": updater.V18_SHADOW_STRATEGY,
-        "target_t300_at": target,
-        "decision_at": target + timedelta(seconds=90),
-    }]
+    races = recovery_races(target)
+    decisions = valid_recovery_decisions(races[:1], specs, hashes, delay_seconds=90)
     result = updater.verify_activation_recovery(
         RecoveryConnection(races, decisions),
         state_root=state_root, prediction_date="2026-07-31",
@@ -502,11 +703,58 @@ def test_recovery_gate_fails_at_90_seconds_and_on_missing_overdue(
     )
     assert result["status"] == "failed"
     assert result["gate_pass"] is False
-    assert len(result["late_decisions"]) == 1
+    assert len(result["late_decisions"]) == 3
     assert result["missing_overdue"]
     assert result["recovery_action"] == (
         "retain_shadow_real_betting_disabled_and_raise_latency_incident"
     )
+
+
+def test_v21_later_dates_reuse_july31_canonical_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "bundles"
+    canonical = (
+        output_root / updater.V21_PROSPECTIVE_START_DATE
+        / "v21-2026-07-31-job-8666.joblib"
+    )
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"frozen-v21")
+    calls = []
+
+    def verify(path, **kwargs):
+        calls.append((path, kwargs))
+        return {"output": {"bundle_sha256": "a" * 64}}
+
+    monkeypatch.setattr(updater, "verify_bundle", verify)
+    result = updater.build_v21_composite(
+        updater.CompletedJob(8666, "v21", tmp_path / "unused.json"),
+        v12_path=tmp_path / "unused.joblib", shared_source={},
+        through_date="2026-07-31", prediction_date="2026-08-01",
+        output_root=output_root,
+    )
+
+    assert result["path"] == str(canonical)
+    assert calls == [(
+        canonical,
+        {
+            "family": "v21",
+            "through_date": "2026-07-31",
+            "prediction_date": "2026-07-31",
+        },
+    )]
+
+
+def test_v21_later_date_fails_closed_without_canonical_bundle(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="canonical prospective bundle is missing"):
+        updater.build_v21_composite(
+            updater.CompletedJob(8666, "v21", tmp_path / "unused.json"),
+            v12_path=tmp_path / "unused.joblib", shared_source={},
+            through_date="2026-07-31", prediction_date="2026-08-01",
+            output_root=tmp_path / "bundles",
+        )
 
 
 def test_shadow_runner_uses_intraday_module_with_static_v21_registration() -> None:
