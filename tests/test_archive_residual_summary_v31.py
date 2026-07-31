@@ -17,7 +17,7 @@ def test_v31_probability_ranking_and_bankroll_roles_are_separate() -> None:
             },
             "ticket_utility_meta_ranking_v31": {
                 "selected_candidate": {
-                    "label_scheme": "payout_bucket",
+                    "label_scheme": "payout_weighted",
                     "tree_preset": "balanced",
                     "top_k": 3,
                 },
@@ -70,7 +70,7 @@ def test_v31_probability_ranking_and_bankroll_roles_are_separate() -> None:
 
     assert summary["model"] == "ticket_utility_meta_ranking_v31"
     assert summary["trifecta_log_loss"] == 3.665
-    assert summary["residual_selection"]["label_scheme"] == "payout_bucket"
+    assert summary["residual_selection"]["label_scheme"] == "payout_weighted"
     assert summary["residual_selection"]["tree_preset"] == "balanced"
     assert summary["residual_selection"]["top_k"] == 3
     assert summary["residual_ranking_metrics"]["roi"] == 1.0631

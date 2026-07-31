@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from boatrace_ai.listwise.ticket_utility_ranking_v31 import (
+    _ranking_teacher_weights,
     evaluate_temporal_ticket_utility_roles,
     fit_ticket_utility_ranker,
     ticket_feature_matrix,
@@ -83,6 +84,39 @@ def test_ticket_features_do_not_read_payout_or_winner_teacher() -> None:
     assert features.shape[1] > 100
 
 
+def test_payout_teacher_weights_races_without_changing_features() -> None:
+    start = date(2026, 1, 1)
+    races = [
+        _race(start + timedelta(days=index), payout=payout)
+        for index, payout in enumerate((500, 1000, 5000, 50_000))
+    ]
+    winner = _ranking_teacher_weights(races, "winner")
+    weighted = _ranking_teacher_weights(races, "payout_weighted")
+    np.testing.assert_array_equal(winner, np.ones(len(races)))
+    assert np.mean(weighted) == pytest.approx(1.0)
+    assert float(np.max(weighted)) > float(np.min(weighted))
+
+
+def test_payout_teacher_changes_fitted_ranking_model() -> None:
+    start = date(2026, 1, 1)
+    races = [
+        _race(
+            start + timedelta(days=index),
+            winner_index=index,
+            payout=50_000 if index % 6 == 5 else 700,
+        )
+        for index in range(48)
+    ]
+    preset = {"name": "tiny", "num_leaves": 7, "max_depth": 3}
+    winner = fit_ticket_utility_ranker(
+        races, label_scheme="winner", tree_preset=preset, num_threads=1
+    )
+    weighted = fit_ticket_utility_ranker(
+        races, label_scheme="payout_weighted", tree_preset=preset, num_threads=1
+    )
+    assert winner["booster_sha256"] != weighted["booster_sha256"]
+
+
 def test_ticket_ranker_serializes_and_returns_a_complete_order() -> None:
     start = date(2026, 1, 1)
     races = [
@@ -91,7 +125,7 @@ def test_ticket_ranker_serializes_and_returns_a_complete_order() -> None:
     ]
     artifact = fit_ticket_utility_ranker(
         races,
-        label_scheme="payout_bucket",
+        label_scheme="payout_weighted",
         tree_preset={"name": "tiny", "num_leaves": 7, "max_depth": 3},
         num_threads=1,
     )
@@ -100,6 +134,7 @@ def test_ticket_ranker_serializes_and_returns_a_complete_order() -> None:
 
     assert artifact["role"] == "ticket_utility_ranking_only"
     assert artifact["training_tickets"] == len(races) * len(COMBINATIONS)
+    assert artifact["teacher_weighting"] == "payout_weighted"
     assert set(ranked) == set(COMBINATIONS)
     assert len(ranked) == len(COMBINATIONS)
     assert metrics["evaluated_races"] == len(races)
