@@ -350,19 +350,19 @@ def test_opportunity_policy_selector_uses_prior_bankroll_only(
         "reserve_slots": 1,
         "minimum_score": 1.05,
     }
-    assert len(diagnostics) == 7
+    assert len(diagnostics) == 6
     assert all(
         "actual_combination" not in row and "actual_payout_yen" not in row
         for row in diagnostics
     )
 
 
-def test_schedule_quota_selector_can_choose_budget_backed_limit(
+def test_schedule_quota_selector_can_choose_strict_prior_maximum_limit(
     monkeypatch,
 ) -> None:
     def simulate(*args, **kwargs):
         control = kwargs["policy"]["v18_ticket_control"]
-        selected = control["learned_daily_ticket_limit"] == 100
+        selected = control["learned_daily_ticket_limit"] == 30
         returned = 300 if selected else 100
         day = {
             "race_date": "2026-07-29",
@@ -405,12 +405,12 @@ def test_schedule_quota_selector_can_choose_budget_backed_limit(
         daily_budget_yen=10_000,
     )
 
-    assert control["learned_daily_ticket_limit"] == 100
+    assert control["learned_daily_ticket_limit"] == 30
     assert control["schedule_quota_rounding"] == "ceil"
     assert control["schedule_quota_opportunity"] is None
     assert any(
-        row["name"] == "budget_cap_ceil"
-        and row["learned_daily_ticket_limit"] == 100
+        row["name"] == "prior_max_ceil"
+        and row["learned_daily_ticket_limit"] == 30
         for row in diagnostics
     )
 
