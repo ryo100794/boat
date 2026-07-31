@@ -78,7 +78,7 @@ def select_top5_narrow_candidates(
 
 
 def daily_capital_limits(
-    rows: list[Mapping[str, Any]],
+    rows: list[Any],
     *,
     bankroll_yen: int,
     starting_bankroll_yen: int = 10_000,
@@ -87,9 +87,10 @@ def daily_capital_limits(
     gross_stake = 0
     realized_profit = 0
     for row in rows:
-        gross_stake += int(row.get("total_stake_yen") or 0)
-        if row.get("profit_yen") is not None:
-            realized_profit += int(row["profit_yen"])
+        gross_stake += int(row["total_stake_yen"] or 0)
+        profit = row["profit_yen"]
+        if profit is not None:
+            realized_profit += int(profit)
     gross_allowance = starting_bankroll_yen + max(0, realized_profit)
     remaining_gross = max(0, gross_allowance - gross_stake)
     return {

@@ -75,11 +75,18 @@ def test_capital_limits_ticket_count_and_invalid_vectors() -> None:
 
 
 def test_daily_capital_uses_settlements_only_for_realized_allowance() -> None:
+    class Row:
+        def __init__(self, **values):
+            self.values = values
+
+        def __getitem__(self, key):
+            return self.values[key]
+
     limits = daily_capital_limits(
         [
-            {"total_stake_yen": 100, "profit_yen": -100},
-            {"total_stake_yen": 200, "profit_yen": 600},
-            {"total_stake_yen": 100, "profit_yen": None},
+            Row(total_stake_yen=100, profit_yen=-100),
+            Row(total_stake_yen=200, profit_yen=600),
+            Row(total_stake_yen=100, profit_yen=None),
         ],
         bankroll_yen=10_100,
     )
