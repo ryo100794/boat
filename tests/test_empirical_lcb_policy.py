@@ -168,3 +168,36 @@ def test_ready_policy_rejects_artifact_without_training_boundary():
             _Artifact(trained_through_date=None),
             10_000,
         )
+
+
+def test_external_ranking_changes_rank_without_changing_probability() -> None:
+    race = _race("r1")
+    order = ["2-1-3", "1-3-2", "1-2-3"]
+    records = policy_edge_records(
+        [race],
+        CALIBRATOR,
+        _blend,
+        ranking_provider=lambda _race, _probabilities: order,
+    )
+
+    by_combination = {row["combination"]: row for row in records}
+    assert by_combination["2-1-3"]["probability_rank"] == 1
+    assert by_combination["2-1-3"]["probability"] == pytest.approx(0.25)
+    assert by_combination["1-2-3"]["probability_rank"] == 3
+    assert by_combination["1-2-3"]["probability"] == pytest.approx(0.40)
+
+
+@pytest.mark.parametrize(
+    "invalid_order",
+    [
+        ["1-2-3", "1-3-2"],
+        ["1-2-3", "1-3-2", "not-a-ticket"],
+        ["1-2-3", "1-2-3", "2-1-3"],
+    ],
+)
+def test_external_ranking_must_be_a_complete_permutation(invalid_order) -> None:
+    with pytest.raises(ValueError, match="every probability combination once"):
+        policy_edge_records(
+            [_race("r1")], CALIBRATOR, _blend,
+            ranking_provider=lambda _race, _probabilities: invalid_order,
+        )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime
 from math import isfinite
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..adaptive_allocation import allocate_adaptive_day
 from .closing_odds import decision_odds
@@ -26,6 +26,11 @@ class EmpiricalEVArtifact(Protocol):
     ) -> Mapping[str, object]: ...
 
     def as_dict(self) -> Mapping[str, object]: ...
+
+
+RankingProvider = Callable[
+    [Mapping[str, Any], Mapping[str, float]], Sequence[str]
+]
 
 
 def _iso_date(value: object, name: str) -> str:
@@ -84,10 +89,27 @@ def _ranked_combinations(probabilities: Mapping[str, float]) -> list[str]:
     )
 
 
+def _ranking_order(
+    race: Mapping[str, Any],
+    probabilities: Mapping[str, float],
+    ranking_provider: RankingProvider | None,
+) -> list[str]:
+    if ranking_provider is None:
+        return _ranked_combinations(probabilities)
+    ranked = [str(value) for value in ranking_provider(race, probabilities)]
+    expected = set(probabilities)
+    if len(ranked) != len(expected) or set(ranked) != expected:
+        raise ValueError(
+            "ranking_provider must return every probability combination once"
+        )
+    return ranked
+
+
 def policy_edge_records(
     races: list[dict[str, Any]],
     calibrator: Mapping[str, float],
     probability_blender: Callable[..., dict[str, float]],
+    ranking_provider: RankingProvider | None = None,
 ) -> list[dict[str, Any]]:
     """Build realized tickets for fitting an artifact used on later dates."""
     records: list[dict[str, Any]] = []
@@ -95,7 +117,7 @@ def policy_edge_records(
         probabilities = _blended_probabilities(race, calibrator, probability_blender)
         odds = decision_odds(race)
         multipliers = race.get("historical_return_multipliers") or {}
-        ranked = _ranked_combinations(probabilities)
+        ranked = _ranking_order(race, probabilities, ranking_provider)
         ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
         actual = str(race["actual_combination"])
         actual_payout_yen = int(race["actual_payout_yen"])
@@ -174,12 +196,13 @@ def _race_candidates(
     calibrator: Mapping[str, float],
     probability_blender: Callable[..., dict[str, float]],
     artifact: EmpiricalEVArtifact,
+    ranking_provider: RankingProvider | None = None,
 ) -> list[dict[str, Any]]:
     probabilities = _blended_probabilities(race, calibrator, probability_blender)
     odds = decision_odds(race)
     multipliers = race.get("historical_return_multipliers") or {}
     candidates: list[dict[str, Any]] = []
-    ranked = _ranked_combinations(probabilities)
+    ranked = _ranking_order(race, probabilities, ranking_provider)
     ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
     for combination in ranked:
         probability = probabilities[combination]
@@ -234,6 +257,7 @@ def simulate_empirical_lcb_policy(
     probability_blender: Callable[..., dict[str, float]],
     artifact: EmpiricalEVArtifact,
     daily_budget_yen: int,
+    ranking_provider: RankingProvider | None = None,
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
@@ -258,7 +282,13 @@ def simulate_empirical_lcb_policy(
         if artifact.ready:
             for race in day_races:
                 candidates.extend(
-                    _race_candidates(race, calibrator, probability_blender, artifact)
+                    _race_candidates(
+                        race,
+                        calibrator,
+                        probability_blender,
+                        artifact,
+                        ranking_provider,
+                    )
                 )
             candidates = sorted(
                 candidates, key=_candidate_sort_key, reverse=True
