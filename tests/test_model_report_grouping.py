@@ -83,6 +83,9 @@ def test_unified_summary_and_promotion_display_are_explicit() -> None:
         assert text in protocol_source
     for reason in ("ROI<1", "損益<=0", "艇Entry LL悪化", "1着悪化", "3T5悪化"):
         assert reason in protocol_source
+    assert "EV帯 証拠/診断" in MODEL_REPORT_HTML
+    assert "診断(昇格外)" in MODEL_REPORT_HTML
+    assert "top5_narrow_retrospective_roi_without_largest_hit" in MODEL_REPORT_HTML
 
 
 def test_model_metrics_are_split_into_vertical_full_width_tables() -> None:
