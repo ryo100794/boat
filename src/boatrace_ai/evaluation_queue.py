@@ -66,6 +66,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
+    "listwise_cutoff_refit": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "calibrated_mlp_recency_search": {"category": "evaluation", "memory_mb": 16384, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "lightgbm_recency_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
@@ -2605,6 +2606,61 @@ def build_command(
             "--through-date", through_date,
             "--daily-budget-yen", str(daily_budget),
             "--output", str(output),
+        ], output
+    if task_type == "listwise_cutoff_refit":
+        allowed = {
+            "source_model", "training_cutoff", "evaluation_from",
+            "evaluation_through", "batch_races", "max_newton_iterations",
+            "max_cg_iterations", "gradient_tolerance", "cg_tolerance",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported listwise cutoff refit parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        source_model = (app_root / str(params["source_model"])).resolve()
+        model_root = (app_root / "data" / "models").resolve()
+        if model_root not in source_model.parents:
+            raise ValueError("cutoff refit source_model must be inside data/models")
+        training_cutoff = _date(params, "training_cutoff")
+        evaluation_from = _date(params, "evaluation_from")
+        evaluation_through = _date(params, "evaluation_through")
+        if not training_cutoff < evaluation_from <= evaluation_through:
+            raise ValueError(
+                "cutoff refit dates must satisfy training_cutoff < "
+                "evaluation_from <= evaluation_through"
+            )
+        batch_races = _integer(params, "batch_races", 2000, 100, 10000)
+        max_newton_iterations = _integer(
+            params, "max_newton_iterations", 5, 1, 20
+        )
+        max_cg_iterations = _integer(params, "max_cg_iterations", 30, 1, 200)
+        gradient_tolerance = _number(
+            params, "gradient_tolerance", 1e-4, 1e-8, 1.0
+        )
+        cg_tolerance = _number(params, "cg_tolerance", 1e-3, 1e-8, 1.0)
+        _integer(params, "timeout_seconds", 43200, 600, 172800)
+        model_output = output.with_suffix(".joblib")
+        cache_dir = app_root / "data" / "models" / "evaluation_cache" / (
+            f"job-{int(job['job_id']):08d}-cutoff"
+        )
+        return [
+            str(python), "-m", "boatrace_ai.listwise.cutoff_refit",
+            "--db", db,
+            "--source-model", str(source_model),
+            "--model-output", str(model_output),
+            "--output", str(output),
+            "--cache-dir", str(cache_dir),
+            "--training-cutoff", training_cutoff,
+            "--evaluation-from", evaluation_from,
+            "--evaluation-through", evaluation_through,
+            "--batch-races", str(batch_races),
+            "--max-newton-iterations", str(max_newton_iterations),
+            "--max-cg-iterations", str(max_cg_iterations),
+            "--gradient-tolerance", str(gradient_tolerance),
+            "--cg-tolerance", str(cg_tolerance),
         ], output
     if task_type == "listwise_newton_refine":
         search_result = app_root / str(params["search_result"])
