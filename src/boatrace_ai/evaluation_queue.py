@@ -2580,7 +2580,7 @@ def build_command(
     if task_type == "archive_market_oracle":
         allowed = {
             "from_date", "through_date", "model_input", "daily_budget_yen",
-            "timeout_seconds",
+            "timeout_seconds", "temporal_calibration_through",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -2592,13 +2592,24 @@ def build_command(
         through_date = _date(params, "through_date")
         if from_date > through_date:
             raise ValueError("oracle from_date must not be after through_date")
+        temporal_calibration_through = params.get(
+            "temporal_calibration_through"
+        )
+        if temporal_calibration_through is not None:
+            temporal_calibration_through = _date(
+                params, "temporal_calibration_through"
+            )
+            if not from_date <= temporal_calibration_through < through_date:
+                raise ValueError(
+                    "oracle temporal cutoff must be inside evaluation period"
+                )
         model_input = (app_root / str(params["model_input"])).resolve()
         model_root = (app_root / "data" / "models").resolve()
         if model_root not in model_input.parents:
             raise ValueError("oracle model_input must be inside data/models")
         daily_budget = _integer(params, "daily_budget_yen", 10000, 100, 10000000)
         _integer(params, "timeout_seconds", 43200, 600, 172800)
-        return [
+        command = [
             str(python), "-m", "boatrace_ai.listwise.archive_market_oracle",
             "--db", db,
             "--model", str(model_input),
@@ -2606,7 +2617,12 @@ def build_command(
             "--through-date", through_date,
             "--daily-budget-yen", str(daily_budget),
             "--output", str(output),
-        ], output
+        ]
+        if temporal_calibration_through is not None:
+            command.extend([
+                "--temporal-calibration-through", temporal_calibration_through,
+            ])
+        return command, output
     if task_type == "listwise_cutoff_refit":
         allowed = {
             "source_model", "training_cutoff", "evaluation_from",
