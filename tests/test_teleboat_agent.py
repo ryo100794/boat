@@ -9,6 +9,7 @@ from teleboat_agent.api import TeleboatApplication, VOTES_PATH
 from teleboat_agent.browser import (
     SeleniumVoteExecutor,
     VoteExecutionError,
+    purchase_amount_units,
     verify_confirmation_text,
 )
 from teleboat_agent.config import Settings
@@ -177,6 +178,22 @@ def test_wsgi_api_uses_bearer_token_and_returns_dry_run() -> None:
 def test_settings_reject_insecure_authentication_destinations(overrides) -> None:
     with pytest.raises(RuntimeError):
         settings(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("stake_yen", "expected_units"),
+    [(100, 1), (500, 5), (10_000, 100)],
+)
+def test_final_purchase_amount_uses_100_yen_units(
+    stake_yen: int, expected_units: int
+) -> None:
+    assert purchase_amount_units(stake_yen) == expected_units
+
+
+@pytest.mark.parametrize("invalid", [0, -100, 1, 150, True, 100.0])
+def test_final_purchase_amount_rejects_invalid_yen_values(invalid) -> None:
+    with pytest.raises(VoteExecutionError, match="100-yen units"):
+        purchase_amount_units(invalid)
 
 
 def test_verified_teleboat_selectors_use_current_named_controls() -> None:

@@ -41,7 +41,7 @@ class PreviewFailure(RuntimeError):
 
 
 def _default_target_date() -> date:
-    return datetime.now(JST).date() + timedelta(days=1)
+    return datetime.now(JST).date()
 
 
 def _parse_date(value: str) -> date:
@@ -177,6 +177,8 @@ def _safe_preview_result(result: Any) -> dict[str, Any]:
     verifications = result.get("verifications")
     required = (
         "authentication",
+        "available_balance",
+        "sufficient_balance",
         "official_host_allowlist",
         "mode_selection",
         "ticket_inputs",
@@ -188,19 +190,26 @@ def _safe_preview_result(result: Any) -> dict[str, Any]:
         "unfinished_marker",
         "final_button_ready",
     )
+    tickets = int(result.get("tickets") or 0)
+    stake_yen = int(result.get("stake_yen") or 0)
+    available_balance_yen = int(result.get("available_balance_yen") or 0)
     valid = (
         result.get("status") == "preview_verified"
         and result.get("final_button_clicked") is False
         and result.get("logout_confirmed") is True
         and isinstance(verifications, dict)
         and all(verifications.get(key) is True for key in required)
+        and tickets > 0
+        and stake_yen > 0
+        and available_balance_yen >= stake_yen
     )
     if not valid:
         raise PreviewFailure("official_preview_not_verified", EXIT_PREVIEW_FAILED)
     return {
         "status": "preview_verified",
-        "tickets": int(result.get("tickets") or 0),
-        "stake_yen": int(result.get("stake_yen") or 0),
+        "tickets": tickets,
+        "stake_yen": stake_yen,
+        "available_balance_yen": available_balance_yen,
         "unfinished": True,
         "final_button_ready": True,
         "final_button_clicked": False,
@@ -378,6 +387,8 @@ def run(
         verification = {
             "official_confirmation": True,
             "authentication": True,
+            "available_balance": safe_result["available_balance_yen"] >= 100,
+            "sufficient_balance": safe_result["available_balance_yen"] >= 100,
             "race_identity": True,
             "selection": True,
             "stake_yen": safe_result["stake_yen"] == 100,

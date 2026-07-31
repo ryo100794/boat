@@ -59,14 +59,15 @@ def _args(tmp_path: Path, secret: Path, **updates):
 
 def _verified_result():
     keys = (
-        "authentication", "official_host_allowlist", "mode_selection",
+        "authentication", "available_balance", "sufficient_balance",
+        "official_host_allowlist", "mode_selection",
         "ticket_inputs", "confirmation_identity", "confirmation_selection",
         "confirmation_ticket_count", "confirmation_stake_yen",
         "official_hidden_total", "unfinished_marker", "final_button_ready",
     )
     return {
         "status": "preview_verified", "tickets": 1, "stake_yen": 100,
-        "final_button_clicked": False, "logout_confirmed": True,
+        "available_balance_yen": 10_000, "final_button_clicked": False, "logout_confirmed": True,
         "verifications": {key: True for key in keys},
     }
 
@@ -107,6 +108,7 @@ def test_preview_uses_first_candidate_quantity_one_and_never_executes(tmp_path):
     assert saved["selection"]["stake_yen"] == 100
     assert saved["submission_attempted"] is False
     assert saved["official_confirmation"]["final_button_clicked"] is False
+    assert saved["official_confirmation"]["available_balance_yen"] == 10_000
     assert saved["request_id"]
     verified = verify_journal(args.journal_path)
     assert verified["valid"] is True
@@ -227,6 +229,33 @@ def test_validate_only_has_no_browser_or_network_and_no_secrets_in_output(tmp_pa
     assert "12345678" not in journal_text
     assert "2468" not in journal_text
     assert "1357" not in journal_text
+
+
+def test_insufficient_reported_balance_fails_closed(tmp_path):
+    secret = tmp_path / "login.json"
+    _secret(secret)
+
+    class Executor:
+        def __init__(self, _settings):
+            pass
+
+        def preview(self, _request):
+            result = _verified_result()
+            result["available_balance_yen"] = 0
+            return result
+
+    args = _args(tmp_path, secret)
+    code = preview.run(
+        args,
+        fetch_guide=lambda *_args, **_kwargs: {
+            "date": "2026-07-31", "candidates": [_candidate()]
+        },
+        executor_factory=Executor,
+        clock=lambda: NOW,
+        sleeper=lambda _seconds: None,
+    )
+    assert code == preview.EXIT_PREVIEW_FAILED
+    assert json.loads(args.output.read_text())["code"] == "official_preview_not_verified"
 
 
 def test_unverified_official_confirmation_fails_closed(tmp_path):

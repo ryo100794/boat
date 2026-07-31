@@ -16,7 +16,14 @@ def _executable(path: Path, source: str) -> None:
     path.chmod(0o755)
 
 
-def _run(tmp_path: Path, today: str, *, check_rc: int = 1, run_rc: int = 0):
+def _run(
+    tmp_path: Path,
+    today: str,
+    *,
+    check_rc: int = 1,
+    run_rc: int = 0,
+    target_date: str | None = None,
+):
     prefix = tmp_path / "termux"
     bin_dir = prefix / "bin"
     bin_dir.mkdir(parents=True)
@@ -38,13 +45,15 @@ def _run(tmp_path: Path, today: str, *, check_rc: int = 1, run_rc: int = 0):
     )
     env = os.environ.copy()
     env["TERMUX_PREFIX"] = str(prefix)
+    if target_date is not None:
+        env["TELEBOAT_PREVIEW_DATE"] = target_date
     result = subprocess.run(["bash", str(SCRIPT)], env=env, check=False)
     return result, calls.read_text(encoding="utf-8") if calls.exists() else ""
 
 
 @pytest.mark.parametrize("today", ["2026-07-30", "2026-08-01"])
 def test_outside_target_date_is_a_noop(tmp_path, today):
-    result, calls = _run(tmp_path, today)
+    result, calls = _run(tmp_path, today, target_date="2026-07-31")
     assert result.returncode == 0
     assert calls == ""
 
@@ -70,6 +79,13 @@ def test_no_candidate_remains_retryable_and_unlocks(tmp_path):
     assert "--secret-path /root/boat/.secrets/teleboat-login.json" in calls
     assert "05730047" not in calls
     assert "0911" not in calls
+
+
+def test_current_jst_date_drives_daily_output_paths(tmp_path):
+    result, calls = _run(tmp_path, "2026-08-01", check_rc=1, run_rc=3)
+    assert result.returncode == 3
+    assert "--date 2026-08-01" in calls
+    assert "--output /root/boat/data/teleboat-opening-preview-2026-08-01.json" in calls
 
 
 def test_shell_is_valid_and_never_requests_submission():

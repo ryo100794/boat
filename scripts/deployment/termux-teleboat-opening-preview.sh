@@ -1,7 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-readonly TARGET_DATE="2026-07-31"
 readonly TERMUX_PREFIX="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}"
 readonly DATE_BIN="$TERMUX_PREFIX/bin/date"
 readonly PROOT_DISTRO="$TERMUX_PREFIX/bin/proot-distro"
@@ -11,16 +10,16 @@ readonly WAKE_UNLOCK="$TERMUX_PREFIX/bin/termux-wake-unlock"
 readonly APP_DIR="/root/boat"
 readonly PYTHON="$APP_DIR/.venv/bin/python"
 readonly PREVIEW_SCRIPT="$APP_DIR/scripts/teleboat_opening_preview.py"
-readonly OUTPUT="$APP_DIR/data/teleboat-opening-preview-2026-07-31.json"
 readonly JOURNAL="$APP_DIR/data/teleboat_vote_journal.jsonl"
 readonly SECRET="$APP_DIR/.secrets/teleboat-login.json"
-readonly LOG="$APP_DIR/data/teleboat-opening-preview-2026-07-31.log"
 readonly DASHBOARD_URL="https://unr72rnwxtcmvv-10001.proxy.runpod.net/"
 
 current_date="$(TZ=Asia/Tokyo "$DATE_BIN" +%F)"
-if [[ "$current_date" < "$TARGET_DATE" || "$current_date" > "$TARGET_DATE" ]]; then
-  exit 0
-fi
+readonly TARGET_DATE="${TELEBOAT_PREVIEW_DATE:-$current_date}"
+readonly OUTPUT="$APP_DIR/data/teleboat-opening-preview-$TARGET_DATE.json"
+readonly LOG="$APP_DIR/data/teleboat-opening-preview-$TARGET_DATE.log"
+
+[[ "$current_date" == "$TARGET_DATE" ]] || exit 0
 
 # The Python output is atomically written. Only an exact success for this date
 # suppresses another attempt; malformed and failed output remains retryable.

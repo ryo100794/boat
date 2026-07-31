@@ -28,6 +28,17 @@ class VoteExecutor(Protocol):
     def execute(self, request: VoteRequest) -> list[dict[str, object]]: ...
 
 
+def purchase_amount_units(total_stake_yen: int) -> int:
+    if (
+        isinstance(total_stake_yen, bool)
+        or not isinstance(total_stake_yen, int)
+        or total_stake_yen <= 0
+        or total_stake_yen % 100 != 0
+    ):
+        raise VoteExecutionError("purchase amount must be positive 100-yen units")
+    return total_stake_yen // 100
+
+
 @dataclass(frozen=True)
 class ConfirmationSummary:
     tickets: int
@@ -183,9 +194,11 @@ class PlaywrightVoteExecutor:
                     if submit:
                         stage = "final_amount"
                         amount = self._visible(page, 'input[name="buyAmtSumInput"]')
-                        amount.fill(str(request.total_stake_yen))
-                        if amount.input_value() != str(request.total_stake_yen):
+                        amount_units = purchase_amount_units(request.total_stake_yen)
+                        amount.fill(str(amount_units))
+                        if amount.input_value() != str(amount_units):
                             raise VoteExecutionError("final purchase amount verification failed")
+                        result["final_amount_units"] = amount_units
                         result["verifications"]["final_amount_input"] = True
                         final_button = self._final_button(page)
                         stage = "final_submission"
