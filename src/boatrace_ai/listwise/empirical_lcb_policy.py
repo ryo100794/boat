@@ -105,11 +105,26 @@ def _ranking_order(
     return ranked
 
 
+def _limited_ranking(
+    race: Mapping[str, Any],
+    probabilities: Mapping[str, float],
+    ranking_provider: RankingProvider | None,
+    max_rank: int | None,
+) -> list[str]:
+    ranked = _ranking_order(race, probabilities, ranking_provider)
+    if max_rank is None:
+        return ranked
+    if isinstance(max_rank, bool) or not isinstance(max_rank, int) or max_rank < 1:
+        raise ValueError("max_rank must be a positive integer")
+    return ranked[:max_rank]
+
+
 def policy_edge_records(
     races: list[dict[str, Any]],
     calibrator: Mapping[str, float],
     probability_blender: Callable[..., dict[str, float]],
     ranking_provider: RankingProvider | None = None,
+    max_rank: int | None = None,
 ) -> list[dict[str, Any]]:
     """Build realized tickets for fitting an artifact used on later dates."""
     records: list[dict[str, Any]] = []
@@ -117,7 +132,9 @@ def policy_edge_records(
         probabilities = _blended_probabilities(race, calibrator, probability_blender)
         odds = decision_odds(race)
         multipliers = race.get("historical_return_multipliers") or {}
-        ranked = _ranking_order(race, probabilities, ranking_provider)
+        ranked = _limited_ranking(
+            race, probabilities, ranking_provider, max_rank
+        )
         ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
         actual = str(race["actual_combination"])
         actual_payout_yen = int(race["actual_payout_yen"])
@@ -197,12 +214,15 @@ def _race_candidates(
     probability_blender: Callable[..., dict[str, float]],
     artifact: EmpiricalEVArtifact,
     ranking_provider: RankingProvider | None = None,
+    max_rank: int | None = None,
 ) -> list[dict[str, Any]]:
     probabilities = _blended_probabilities(race, calibrator, probability_blender)
     odds = decision_odds(race)
     multipliers = race.get("historical_return_multipliers") or {}
     candidates: list[dict[str, Any]] = []
-    ranked = _ranking_order(race, probabilities, ranking_provider)
+    ranked = _limited_ranking(
+        race, probabilities, ranking_provider, max_rank
+    )
     ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
     for combination in ranked:
         probability = probabilities[combination]
@@ -258,6 +278,7 @@ def simulate_empirical_lcb_policy(
     artifact: EmpiricalEVArtifact,
     daily_budget_yen: int,
     ranking_provider: RankingProvider | None = None,
+    max_rank: int | None = None,
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
@@ -288,6 +309,7 @@ def simulate_empirical_lcb_policy(
                         probability_blender,
                         artifact,
                         ranking_provider,
+                        max_rank,
                     )
                 )
             candidates = sorted(
