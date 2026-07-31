@@ -1455,20 +1455,7 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
                 f"{self.artifact_label} artifacts are not strictly prior to race date"
             )
         limits = self._runtime_limits(conn, race, bankroll_yen=bankroll_yen)
-        if (
-            limits["remaining_ticket_quota"] <= 0
-            and getattr(self, "_opportunity_policy", None) is None
-        ):
-            return _no_bet(
-                "v18_schedule_ticket_quota_not_released",
-                diagnostics={"v18_schedule_quota": limits},
-            )
         allocatable = limits["allocatable_bankroll_yen"]
-        if allocatable < STAKE_GRANULARITY_YEN:
-            return _no_bet(
-                "v18_daily_gross_stake_allowance_exhausted",
-                diagnostics={"v18_schedule_quota": limits},
-            )
         point = normalize_odds_checkpoint(
             {
                 "snapshot_id": snapshot.snapshot_id,
@@ -1589,10 +1576,38 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
                 self, "_opportunity_policy", None
             ),
         })
+        quota_diagnostics = {
+            **limits,
+            "checkpoint": "t300",
+            "source_snapshot_id": snapshot.snapshot_id,
+            "learned_daily_ticket_limit": self._ticket_limit,
+            "candidate_policy": str(self._policy.get("name") or ""),
+            "formal_selected_policy": str(
+                self._formal_selection.get("name") or "no_bet"
+            ),
+            "raw_candidates": len(raw_candidates),
+            "allocation_candidates": 0,
+            "decision_features": "t300_or_earlier",
+            "settlement_fields_used_for_capital_only": True,
+            "uses_result_as_model_feature": False,
+            "uses_payout_as_model_feature": False,
+            "real_betting_enabled": False,
+        }
         if limits["remaining_ticket_quota"] <= 0:
-            return _no_bet(
+            return ShadowDecision(
+                probabilities,
+                dict(snapshot.odds),
+                (),
                 "v18_schedule_ticket_quota_not_released",
-                diagnostics={"v18_schedule_quota": limits},
+                {"v18_schedule_quota": quota_diagnostics},
+            )
+        if allocatable < STAKE_GRANULARITY_YEN:
+            return ShadowDecision(
+                probabilities,
+                dict(snapshot.odds),
+                (),
+                "v18_daily_gross_stake_allowance_exhausted",
+                {"v18_schedule_quota": quota_diagnostics},
             )
         allocated = allocate_adaptive_day(
             race.race_date,
@@ -1615,19 +1630,8 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
         )
         diagnostics = {
             "v18_schedule_quota": {
-                **limits,
-                "checkpoint": "t300",
-                "source_snapshot_id": snapshot.snapshot_id,
-                "learned_daily_ticket_limit": self._ticket_limit,
-                "candidate_policy": str(self._policy.get("name") or ""),
-                "formal_selected_policy": str(self._formal_selection.get("name") or "no_bet"),
-                "raw_candidates": len(raw_candidates),
+                **quota_diagnostics,
                 "allocation_candidates": int(allocated["allocation_candidate_tickets"]),
-                "decision_features": "t300_or_earlier",
-                "settlement_fields_used_for_capital_only": True,
-                "uses_result_as_model_feature": False,
-                "uses_payout_as_model_feature": False,
-                "real_betting_enabled": False,
             }
         }
         reason = None if selected else _zero_reason(

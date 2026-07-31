@@ -219,11 +219,42 @@ def test_v18_registry_and_quota_zero_are_no_bet(tmp_path: Path, monkeypatch) -> 
     built = build_adapter(f"v18_daily:v18_schedule_quota_t300:{bundle}:{base}")
     assert isinstance(built, V18ScheduleQuotaModelAdapter)
     race, snapshot = race_snapshot()
+    probabilities = {
+        combination: (0.02 if index == 0 else 0.98 / 119)
+        for index, combination in enumerate(COMBINATIONS)
+    }
+    monkeypatch.setattr(model, "_base_probabilities", lambda conn, race: probabilities)
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.attach_odds_path_model",
+        lambda rows, operational: [{
+            **copy.deepcopy(rows[0]),
+            "model_probabilities": probabilities,
+            "historical_return_multipliers": {
+                combination: 1.0 for combination in COMBINATIONS
+            },
+        }],
+    )
     monkeypatch.setattr(model, "_runtime_limits", lambda conn, race, bankroll_yen: {
+        "schedule_races_elapsed": 1,
+        "schedule_races_total": 100,
+        "cumulative_ticket_quota": 0,
+        "used_tickets": 0,
         "remaining_ticket_quota": 0,
+        "observed_candidate_scores": [],
+        "gross_stake_yen": 0,
+        "realized_cumulative_profit_yen": 0,
+        "gross_stake_allowance_yen": 10_000,
+        "remaining_gross_stake_allowance_yen": 10_000,
+        "allocatable_bankroll_yen": 10_000,
     })
     decision = model.decide(object(), race, snapshot, bankroll_yen=10_000)
     assert decision.no_bet_reason == "v18_schedule_ticket_quota_not_released"
+    assert len(decision.probabilities) == 120
+    assert decision.closing_lower_odds == snapshot.odds
+    assert decision.selected_candidates == ()
+    diagnostic = decision.diagnostics["v18_schedule_quota"]
+    assert diagnostic["allocation_candidates"] == 0
+    assert diagnostic["real_betting_enabled"] is False
 
 
 def test_additive_v18_extension_preserves_existing_three_identities(tmp_path: Path) -> None:
