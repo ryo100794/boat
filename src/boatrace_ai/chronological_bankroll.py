@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,43 @@ Allocator = Callable[..., dict[str, Any]]
 ScheduleQuotaRounding = Literal["floor", "ceil"]
 
 
+def _empirical_quantile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = math.ceil((len(ordered) - 1) * quantile)
+    return float(ordered[index])
+
+
+def _validate_schedule_quota_opportunity(
+    policy: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if policy is None:
+        return None
+    configured = dict(policy)
+    after_fraction = float(configured.get("after_fraction", 0.95))
+    score_quantile = float(configured.get("score_quantile", 0.75))
+    reserve_slots = int(configured.get("reserve_slots", 1))
+    minimum_score = float(configured.get("minimum_score", 0.0))
+    if not 0.0 <= after_fraction <= 1.0:
+        raise ValueError("opportunity after_fraction must be between zero and one")
+    if not 0.0 <= score_quantile <= 1.0:
+        raise ValueError("opportunity score_quantile must be between zero and one")
+    if reserve_slots <= 0:
+        raise ValueError("opportunity reserve_slots must be positive")
+    if not math.isfinite(minimum_score):
+        raise ValueError("opportunity minimum_score must be finite")
+    return {
+        "method": "strictly_observed_intraday_score_quantile",
+        "after_fraction": after_fraction,
+        "score_quantile": score_quantile,
+        "reserve_slots": reserve_slots,
+        "minimum_score": minimum_score,
+        "score_field": "estimated_ev",
+        "result_or_payout_fields_used": False,
+    }
+
+
 def cumulative_schedule_ticket_quota(
     *,
     limit: int,
@@ -35,6 +73,45 @@ def cumulative_schedule_ticket_quota(
     if rounding == "ceil" and numerator:
         return min(limit, (numerator + total - 1) // total)
     return min(limit, numerator // total)
+
+
+def opportunity_adjusted_ticket_quota(
+    *,
+    limit: int,
+    base_quota: int,
+    used_tickets: int,
+    elapsed: int,
+    total: int,
+    current_score: float | None,
+    observed_scores: list[float],
+    policy: Mapping[str, Any] | None,
+) -> tuple[int, float | None, bool]:
+    configured = _validate_schedule_quota_opportunity(policy)
+    preserved_quota = max(base_quota, min(used_tickets, limit))
+    if (
+        configured is None
+        or limit <= 0
+        or total <= 0
+        or current_score is None
+    ):
+        return preserved_quota, None, False
+    history_threshold = _empirical_quantile(
+        observed_scores, float(configured["score_quantile"])
+    )
+    if history_threshold is None:
+        return preserved_quota, None, False
+    score_threshold = max(
+        float(configured["minimum_score"]), history_threshold
+    )
+    reserve_floor = max(0, limit - int(configured["reserve_slots"]))
+    if (
+        elapsed / total >= float(configured["after_fraction"])
+        and preserved_quota >= reserve_floor
+        and preserved_quota < limit
+        and current_score >= score_threshold
+    ):
+        return preserved_quota + 1, score_threshold, True
+    return preserved_quota, score_threshold, False
 
 
 def _timestamp(value: Any, *, field: str) -> datetime:
@@ -155,6 +232,7 @@ def simulate_chronological_bankroll_day(
     max_daily_tickets: int | None = None,
     schedule: Iterable[Mapping[str, Any]] | None = None,
     schedule_quota_rounding: ScheduleQuotaRounding = "floor",
+    schedule_quota_opportunity: Mapping[str, Any] | None = None,
     stake_granularity_yen: int = STAKE_UNIT_YEN,
     allocate_day: Allocator = allocate_discrete_log_day,
     allocator_kwargs: Mapping[str, Any] | None = None,
@@ -169,6 +247,9 @@ def simulate_chronological_bankroll_day(
         raise ValueError("max_daily_tickets must be non-negative")
     if schedule_quota_rounding not in {"floor", "ceil"}:
         raise ValueError("schedule quota rounding must be floor or ceil")
+    opportunity_policy = _validate_schedule_quota_opportunity(
+        schedule_quota_opportunity
+    )
 
     decisions = [dict(candidate) for candidate in candidates]
     by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -232,6 +313,7 @@ def simulate_chronological_bankroll_day(
     ledger: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
     configured_allocator_kwargs = dict(allocator_kwargs or {})
+    observed_candidate_scores: list[float] = []
 
     def settle_due(as_of: datetime) -> None:
         nonlocal cash_yen, peak_equity_yen, max_drawdown_yen
@@ -299,6 +381,32 @@ def simulate_chronological_bankroll_day(
             if max_daily_tickets is not None and schedule_races_total
             else max_daily_tickets
         )
+        current_candidate_score = max(
+            (
+                float(candidate["estimated_ev"])
+                for candidate in race_candidates
+                if candidate.get("estimated_ev") is not None
+                and math.isfinite(float(candidate["estimated_ev"]))
+            ),
+            default=None,
+        )
+        opportunity_score_threshold = None
+        opportunity_quota_released = False
+        if max_daily_tickets is not None:
+            (
+                cumulative_ticket_quota,
+                opportunity_score_threshold,
+                opportunity_quota_released,
+            ) = opportunity_adjusted_ticket_quota(
+                limit=max_daily_tickets,
+                base_quota=int(cumulative_ticket_quota or 0),
+                used_tickets=len(selected),
+                elapsed=schedule_races_elapsed,
+                total=schedule_races_total,
+                current_score=current_candidate_score,
+                observed_scores=observed_candidate_scores,
+                policy=opportunity_policy,
+            )
         remaining_ticket_quota = (
             max(0, cumulative_ticket_quota - len(selected))
             if cumulative_ticket_quota is not None else None
@@ -407,6 +515,14 @@ def simulate_chronological_bankroll_day(
             "schedule_races_elapsed": schedule_races_elapsed,
             "schedule_races_total": schedule_races_total,
             "cumulative_ticket_quota": cumulative_ticket_quota,
+            "opportunity_candidate_score": current_candidate_score,
+            "opportunity_score_threshold": (
+                opportunity_score_threshold
+                if opportunity_score_threshold is not None
+                and math.isfinite(opportunity_score_threshold)
+                else None
+            ),
+            "opportunity_quota_released": opportunity_quota_released,
             "remaining_ticket_quota": (
                 max(0, (cumulative_ticket_quota or 0) - len(selected))
                 if cumulative_ticket_quota is not None else None
@@ -420,6 +536,8 @@ def simulate_chronological_bankroll_day(
                 for row in tickets
             ],
         })
+        if current_candidate_score is not None:
+            observed_candidate_scores.append(current_candidate_score)
 
     settle_due(datetime.max.replace(tzinfo=timezone.utc))
     stake_yen = sum(int(row["stake_yen"]) for row in selected)
@@ -465,6 +583,7 @@ def simulate_chronological_bankroll_day(
         "schedule_quota_rounding": (
             schedule_quota_rounding if max_daily_tickets is not None else None
         ),
+        "schedule_quota_opportunity": opportunity_policy,
         "schedule_quota_rule": (
             f"{schedule_quota_rounding}(learned_daily_ticket_limit*"
             "scheduled_races_elapsed/scheduled_races_total)"
