@@ -9,11 +9,17 @@ from typing import Any, Iterable, Mapping
 
 import joblib
 
-from ..archive_closing_odds import SOURCE_KEY, ensure_archive_schema
+from ..archive_closing_odds import (
+    OFFICIAL_SOURCE_KEY,
+    SOURCE_KEY,
+    ensure_archive_schema,
+)
 from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..db import connection, init_db
+from .flat_policy import simulate_chronological_flat_policy
 from .market_calibration import (
     _validate_artifact_before_period,
+    blend_probabilities,
     iter_scored_artifact_feature_rows,
     normalized_market_probabilities,
     probability_metrics,
@@ -33,6 +39,16 @@ PRIMARY_POLICY: dict[str, Any] = {
     "max_tickets_per_race": 3,
     "min_model_market_ratio": 1.05,
     "staking_mode": "kelly_025",
+}
+V23_TOP5_ORACLE_POLICY: dict[str, Any] = {
+    "name": "observed_closing_oracle_top5_ev100_105_flat100_v1",
+    "max_model_rank": 5,
+    "min_odds": None,
+    "max_odds": None,
+    "ev_threshold": 1.0,
+    "max_estimated_ev": 1.05,
+    "min_model_market_ratio": 0.0,
+    "stake_per_ticket_yen": 100,
 }
 DIAGNOSTIC_CONFIGS: tuple[tuple[str, dict[str, float], dict[str, Any]], ...] = (
     ("model_only_conservative", {"model_weight": 1.0, "temperature": 1.0}, {
@@ -61,13 +77,22 @@ def restrict_probabilities_to_available(
 
 
 def load_archive_markets(
-    conn: Any, *, from_date: str, through_date: str
+    conn: Any,
+    *,
+    from_date: str,
+    through_date: str,
+    source_key: str = SOURCE_KEY,
 ) -> dict[str, dict[str, Any]]:
     ensure_archive_schema(conn)
+    verification_status = (
+        "official_primary_winner_payout_match"
+        if source_key == OFFICIAL_SOURCE_KEY
+        else "winner_only_match_unverified_market"
+    )
     markets: dict[str, dict[str, Any]] = {}
     for row in conn.execute(
         """
-        SELECT a.race_id, r.race_date, r.jcd, r.rno, a.odds_count,
+        SELECT a.race_id, r.race_date, r.jcd, r.rno, r.deadline_at, a.odds_count,
                a.verification_status,
                p.combination AS actual_combination,
                p.payout_yen AS actual_payout_yen
@@ -75,14 +100,11 @@ def load_archive_markets(
         JOIN races r ON r.race_id = a.race_id
         JOIN payouts p ON p.race_id = a.race_id AND p.bet_type = '3連単'
         WHERE a.source_key = ?
-          AND a.verification_status IN (
-            'all_market_official_match',
-            'winner_only_match_unverified_market'
-          )
+          AND a.verification_status = ?
           AND r.race_date BETWEEN ? AND ?
         ORDER BY r.race_date, r.jcd, r.rno
         """,
-        (SOURCE_KEY, from_date, through_date),
+        (source_key, verification_status, from_date, through_date),
     ):
         race_id = str(row["race_id"])
         markets[race_id] = {
@@ -92,6 +114,8 @@ def load_archive_markets(
             "rno": int(row["rno"]),
             "archive_odds_count": int(row["odds_count"]),
             "archive_verification_status": str(row["verification_status"]),
+            "captured_at": str(row["deadline_at"]),
+            "odds_deadline_at": str(row["deadline_at"]),
             "actual_combination": str(row["actual_combination"]),
             "actual_payout_yen": int(row["actual_payout_yen"]),
             "odds": {},
@@ -104,7 +128,7 @@ def load_archive_markets(
         WHERE o.source_key = ? AND r.race_date BETWEEN ? AND ?
         ORDER BY o.race_id, o.combination
         """,
-        (SOURCE_KEY, from_date, through_date),
+        (source_key, from_date, through_date),
     ):
         market = markets.get(str(row["race_id"]))
         if market is not None:
@@ -121,7 +145,8 @@ def score_archive_markets(
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     _validate_artifact_before_period(artifact, from_date=from_date)
     markets = load_archive_markets(
-        conn, from_date=from_date, through_date=through_date
+        conn, from_date=from_date, through_date=through_date,
+        source_key=OFFICIAL_SOURCE_KEY,
     )
     target_ids = set(markets)
     races: list[dict[str, Any]] = []
@@ -159,7 +184,7 @@ def score_archive_markets(
             **market,
             "model_probabilities": available_model,
             "market_probabilities": market_probabilities,
-            "archive_source_key": SOURCE_KEY,
+            "archive_source_key": OFFICIAL_SOURCE_KEY,
             "archive_market_role": "closing_oracle_research_only",
         })
     races.sort(key=lambda row: (row["race_date"], row["jcd"], row["rno"]))
@@ -209,6 +234,19 @@ def evaluate_archive_oracle(
             primary = item
     if primary is None:
         raise AssertionError("primary oracle policy is missing")
+    v23_top5_oracle = simulate_chronological_flat_policy(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy=V23_TOP5_ORACLE_POLICY,
+        probability_blender=blend_probabilities,
+        initial_bankroll_yen=daily_budget_yen,
+    )
+    v23_top5_oracle_bootstrap = (
+        bootstrap_daily_roi(v23_top5_oracle["daily"])
+        if v23_top5_oracle["daily"]
+        else {"days": 0, "roi": None, "roi_ci95_lower": None,
+              "probability_roi_above_one": None}
+    )
     bootstrap = (
         bootstrap_daily_roi(primary["daily"])
         if primary["daily"]
@@ -235,8 +273,7 @@ def evaluate_archive_oracle(
         "status": "completed",
         "comparison_role": "unavailable_at_decision_closing_oracle_research_only",
         "market_source_scope": (
-            "secondary closing archive; each winning price matches official payout, "
-            "losing prices are not independently official-verified"
+            "boatrace official historical closing trifecta odds"
         ),
         "production_transfer_required": True,
         "promotion_eligible": False,
@@ -251,6 +288,8 @@ def evaluate_archive_oracle(
         "winner_top1_accuracy": prediction[
             "calibrated_winner_top1_accuracy"
         ],
+        "v23_top5_observed_closing_oracle": v23_top5_oracle,
+        "v23_top5_observed_closing_oracle_bootstrap": v23_top5_oracle_bootstrap,
         "primary": primary,
         "primary_bootstrap": bootstrap,
         "diagnostics": diagnostics,

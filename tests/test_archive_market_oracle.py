@@ -4,6 +4,7 @@ import pytest
 
 from boatrace_ai.listwise.archive_market_oracle import (
     PRIMARY_POLICY,
+    V23_TOP5_ORACLE_POLICY,
     restrict_probabilities_to_available,
 )
 
@@ -27,3 +28,10 @@ def test_primary_oracle_policy_is_fixed_and_conservative() -> None:
     assert PRIMARY_POLICY["max_estimated_ev"] == 1.20
     assert PRIMARY_POLICY["max_tickets_per_race"] == 3
     assert PRIMARY_POLICY["staking_mode"] == "kelly_025"
+
+
+def test_v23_top5_oracle_policy_matches_registered_band() -> None:
+    assert V23_TOP5_ORACLE_POLICY["max_model_rank"] == 5
+    assert V23_TOP5_ORACLE_POLICY["ev_threshold"] == 1.0
+    assert V23_TOP5_ORACLE_POLICY["max_estimated_ev"] == 1.05
+    assert V23_TOP5_ORACLE_POLICY["stake_per_ticket_yen"] == 100

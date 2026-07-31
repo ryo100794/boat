@@ -208,6 +208,52 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_listwise_cutoff_refit_command_is_period_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "listwise_cutoff_refit",
+            {
+                "source_model": "data/models/listwise_newton_cg_v1.joblib",
+                "training_cutoff": "2026-05-09",
+                "evaluation_from": "2026-05-10",
+                "evaluation_through": "2026-05-16",
+                "timeout_seconds": 43200,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.listwise.cutoff_refit"]
+    assert command[command.index("--training-cutoff") + 1] == "2026-05-09"
+    assert command[command.index("--evaluation-from") + 1] == "2026-05-10"
+    assert command[command.index("--model-output") + 1] == str(
+        root / "data/models/evaluation_queue/job-00000007.joblib"
+    )
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_listwise_cutoff_refit_rejects_overlapping_dates(tmp_path) -> None:
+    root = tmp_path / "boat"
+    with pytest.raises(ValueError, match="training_cutoff"):
+        build_command(
+            _job(
+                "listwise_cutoff_refit",
+                {
+                    "source_model": "data/models/listwise_newton_cg_v1.joblib",
+                    "training_cutoff": "2026-05-10",
+                    "evaluation_from": "2026-05-10",
+                    "evaluation_through": "2026-05-16",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_archive_closing_backfill_is_rate_limited_and_serial(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
