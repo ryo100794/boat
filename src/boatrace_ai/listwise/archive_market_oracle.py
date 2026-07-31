@@ -20,6 +20,11 @@ from .contextual_market_residual_v24 import (
     contextual_probabilities,
     fit_temporal_contextual_residual,
 )
+from .direct_context_market_residual_v25 import (
+    direct_context_probabilities,
+    extract_lane_context,
+    fit_temporal_direct_context_residual,
+)
 from .flat_policy import simulate_chronological_flat_policy
 from .market_calibration import (
     _validate_artifact_before_period,
@@ -37,7 +42,7 @@ from .market_residual import (
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 3
+EVALUATION_VERSION = 4
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -234,6 +239,7 @@ def score_archive_markets(
             **market,
             "model_probabilities": available_model,
             "market_probabilities": market_probabilities,
+            "lane_context": extract_lane_context(feature_rows),
             "archive_source_key": OFFICIAL_SOURCE_KEY,
             "archive_market_role": "closing_oracle_research_only",
         })
@@ -373,6 +379,44 @@ def temporal_residual_diagnostic(
             }
         )
     contextual["purchase_diagnostics"] = contextual_purchase_diagnostics
+    direct_context = fit_temporal_direct_context_residual(calibration, evaluation)
+    direct_context_evaluation = [
+        {
+            **race,
+            "model_probabilities": direct_context_probabilities(
+                race,
+                direct_context["artifact"],
+            ),
+        }
+        for race in evaluation
+    ]
+    direct_context_purchase_diagnostics = []
+    for policy in TEMPORAL_RESIDUAL_POLICIES:
+        simulation = simulate_chronological_flat_policy(
+            direct_context_evaluation,
+            calibrator={"model_weight": 1.0, "temperature": 1.0},
+            policy=policy,
+            probability_blender=blend_probabilities,
+            initial_bankroll_yen=daily_budget_yen,
+        )
+        bootstrap = (
+            bootstrap_daily_roi(simulation["daily"])
+            if simulation["daily"]
+            else {
+                "days": 0,
+                "roi": None,
+                "roi_ci95_lower": None,
+                "probability_roi_above_one": None,
+            }
+        )
+        direct_context_purchase_diagnostics.append(
+            {
+                "policy": dict(policy),
+                "simulation": simulation,
+                "bootstrap": bootstrap,
+            }
+        )
+    direct_context["purchase_diagnostics"] = direct_context_purchase_diagnostics
     return {
         "status": "completed",
         "validation_design": (
@@ -391,6 +435,7 @@ def temporal_residual_diagnostic(
         "metrics": metrics,
         "purchase_diagnostics": purchase_diagnostics,
         "contextual_market_residual_v24": contextual,
+        "direct_context_market_residual_v25": direct_context,
     }
 
 
