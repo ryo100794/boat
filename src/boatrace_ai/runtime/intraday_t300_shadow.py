@@ -560,6 +560,11 @@ class V12RoleModelAdapter:
         raise ValueError(f"V12 shadow bundle lacks component: {names[0]}")
 
     def prewarm(self, conn: Any, race_date: str) -> None:
+        if (
+            race_date in self._state_by_date
+            and race_date in self._rows_by_date
+        ):
+            return
         state_key = (id(conn), race_date)
         state = _SHARED_HISTORICAL_STATE.get(state_key)
         if state is None:
