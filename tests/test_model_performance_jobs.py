@@ -142,6 +142,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "max_drawdown_yen": 1_500,
         "tickets": 100,
         "hit_tickets": 8,
+        "residual_purchase_policies": [
+            {
+                "name": "residual-top5",
+                "tickets": 12,
+                "hit_tickets": 2,
+                "stake_yen": 1_200,
+                "roi": 1.25,
+            }
+        ],
         "roi_without_largest_hit": 0.82,
         "trifecta_log_loss": 3.79,
         "winner_log_loss": 1.24,
@@ -212,6 +221,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["max_drawdown_yen"] == 1_500
     assert status["jobs"][0]["tickets"] == 100
     assert status["jobs"][0]["hit_tickets"] == 8
+    assert status["jobs"][0]["residual_purchase_policies"] == [
+        {
+            "name": "residual-top5",
+            "tickets": 12,
+            "hit_tickets": 2,
+            "stake_yen": 1_200,
+            "roi": 1.25,
+        }
+    ]
     assert status["jobs"][0]["roi_without_largest_hit"] == 0.82
     assert status["jobs"][0]["promotion_gate_passed"] == 7
     assert status["jobs"][0]["promotion_gate_total"] == 10

@@ -463,6 +463,14 @@ function bankrollSourceDiagnostic(x,base){
   const parts=[];
   if(x.primary_bankroll==="chronological") parts.push("時系列 primary");
   if(base&&base!=="-") parts.push(base);
+  const residual=(x.residual_purchase_policies||[]).filter(row=>row&&typeof row==="object");
+  if(residual.length){
+    const tickets=residual.reduce((sum,row)=>sum+Number(row.tickets||0),0);
+    const hits=residual.reduce((sum,row)=>sum+Number(row.hit_tickets||0),0);
+    const stake=residual.reduce((sum,row)=>sum+Number(row.stake_yen||0),0);
+    const best=residual.reduce((selected,row)=>selected==null||Number(row.roi||0)>Number(selected.roi||0)?row:selected,null);
+    parts.push("残差候補 "+fmt(residual.length)+" / "+fmt(tickets)+"券 "+fmt(hits)+"的中 / 投資 "+yen(stake)+" / best "+(best&&best.name||"-")+" ROI "+ratio(best&&best.roi));
+  }
   if(x.legacy_batch_roi!=null){
     const legacy=["旧batch診断 ROI "+ratio(x.legacy_batch_roi)];
     if(x.legacy_batch_stake_yen!=null) legacy.push("投資 "+yen(x.legacy_batch_stake_yen));

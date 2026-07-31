@@ -3012,6 +3012,13 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "max_drawdown_yen": metrics.get("max_drawdown_yen"),
                 "tickets": metrics.get("tickets"),
                 "hit_tickets": metrics.get("hit_tickets"),
+                "residual_purchase_policies": (
+                    metrics.get("residual_purchase_policies")
+                    if isinstance(
+                        metrics.get("residual_purchase_policies"), list
+                    )
+                    else []
+                ),
                 "roi_without_largest_hit": _float_or_none(
                     metrics.get("roi_without_largest_hit")
                 ),
