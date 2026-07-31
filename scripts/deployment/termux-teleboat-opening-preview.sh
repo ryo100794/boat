@@ -2,7 +2,9 @@
 set -Eeuo pipefail
 
 readonly TERMUX_PREFIX="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}"
+readonly TERMUX_HOME="${TERMUX_HOME:-/data/data/com.termux/files/home}"
 readonly DATE_BIN="$TERMUX_PREFIX/bin/date"
+readonly FLOCK="$TERMUX_PREFIX/bin/flock"
 readonly PROOT_DISTRO="$TERMUX_PREFIX/bin/proot-distro"
 readonly WAKE_LOCK="$TERMUX_PREFIX/bin/termux-wake-lock"
 readonly WAKE_UNLOCK="$TERMUX_PREFIX/bin/termux-wake-unlock"
@@ -18,8 +20,13 @@ current_date="$(TZ=Asia/Tokyo "$DATE_BIN" +%F)"
 readonly TARGET_DATE="${TELEBOAT_PREVIEW_DATE:-$current_date}"
 readonly OUTPUT="$APP_DIR/data/teleboat-opening-preview-$TARGET_DATE.json"
 readonly LOG="$APP_DIR/data/teleboat-opening-preview-$TARGET_DATE.log"
+readonly LOCK_DIR="$TERMUX_HOME/.local/state/boat"
+readonly LOCK_FILE="$LOCK_DIR/teleboat-opening-preview.lock"
 
 [[ "$current_date" == "$TARGET_DATE" ]] || exit 0
+mkdir -p "$LOCK_DIR"
+exec 9>"$LOCK_FILE"
+"$FLOCK" -n 9 || exit 0
 
 # The Python output is atomically written. Only an exact success for this date
 # suppresses another attempt; malformed and failed output remains retryable.

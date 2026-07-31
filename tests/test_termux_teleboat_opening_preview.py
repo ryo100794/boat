@@ -29,6 +29,7 @@ def _run(
     bin_dir.mkdir(parents=True)
     calls = tmp_path / "calls"
     _executable(bin_dir / "date", f"#!/bin/sh\nprintf '%s\\n' '{today}'\n")
+    _executable(bin_dir / "flock", "#!/bin/sh\nexit 0\n")
     for command in ("termux-wake-lock", "termux-wake-unlock"):
         _executable(
             bin_dir / command,
@@ -45,6 +46,7 @@ def _run(
     )
     env = os.environ.copy()
     env["TERMUX_PREFIX"] = str(prefix)
+    env["TERMUX_HOME"] = str(tmp_path / "home")
     if target_date is not None:
         env["TELEBOAT_PREVIEW_DATE"] = target_date
     result = subprocess.run(["bash", str(SCRIPT)], env=env, check=False)
@@ -92,6 +94,7 @@ def test_shell_is_valid_and_never_requests_submission():
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
     source = SCRIPT.read_text(encoding="utf-8")
     assert "set -x" not in source
+    assert '"$FLOCK" -n 9' in source
     assert "--execute" not in source
     assert "05730047" not in source
     assert "0911" not in source
