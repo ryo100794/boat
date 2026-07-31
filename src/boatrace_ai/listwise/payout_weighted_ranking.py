@@ -14,6 +14,7 @@ from .course_interaction_residual import (
     structure_metrics,
 )
 from .empirical_lcb_policy import (
+    empirical_bankroll_promotion_eligible,
     policy_edge_records,
     simulate_empirical_lcb_policy,
 )
@@ -345,9 +346,5 @@ def evaluate_temporal_payout_weighted_roles(
         ),
         "empirical_ev_calibration": empirical_artifact.as_dict(),
         "bankroll": bankroll,
-        "promotion_eligible": bool(
-            bankroll.get("tickets", 0) >= 50
-            and bankroll.get("profit_yen", 0) > 0
-            and (bankroll.get("roi") or 0.0) >= 1.05
-        ),
+        "promotion_eligible": empirical_bankroll_promotion_eligible(bankroll),
     }

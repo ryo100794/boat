@@ -211,6 +211,8 @@ def apply_archive_residual_summary(
             "return_yen",
             "profit_yen",
             "roi",
+            "roi_ci95_lower",
+            "probability_roi_above_one",
             "max_drawdown_yen",
         ):
             if bankroll.get(key) is not None:
@@ -224,6 +226,8 @@ def apply_archive_residual_summary(
             "return_yen": bankroll.get("return_yen"),
             "profit_yen": bankroll.get("profit_yen"),
             "roi": bankroll.get("roi"),
+            "roi_ci95_lower": bankroll.get("roi_ci95_lower"),
+            "probability_roi_above_one": bankroll.get("probability_roi_above_one"),
             "status": bankroll.get("status"),
         }]
         calibration = selected.get("empirical_ev_calibration")

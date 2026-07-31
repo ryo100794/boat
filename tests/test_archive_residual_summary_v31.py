@@ -56,6 +56,8 @@ def test_v31_probability_ranking_and_bankroll_roles_are_separate() -> None:
                     "return_yen": 8000,
                     "profit_yen": 1000,
                     "roi": 1.1429,
+                    "roi_ci95_lower": 1.02,
+                    "probability_roi_above_one": 0.96,
                     "max_drawdown_yen": 1700,
                     "status": "ready",
                 },
@@ -74,4 +76,6 @@ def test_v31_probability_ranking_and_bankroll_roles_are_separate() -> None:
     assert summary["residual_ranking_metrics"]["roi"] == 1.0631
     assert summary["residual_ranking_metrics"]["roi_ci95_lower"] == 1.01
     assert summary["roi"] == 1.1429
+    assert summary["roi_ci95_lower"] == 1.02
+    assert summary["probability_roi_above_one"] == 0.96
     assert summary["promotion_eligible"] is True
