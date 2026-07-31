@@ -380,7 +380,12 @@ def test_opportunity_policy_selector_uses_prior_bankroll_only(
         "reserve_slots": 1,
         "minimum_score": 1.05,
     }
-    assert len(diagnostics) == 10
+    assert len(diagnostics) == 14
+    assert any(
+        row["name"] == "online_reserve_f25_q75_r25"
+        and row["schedule_quota_opportunity"]["reserve_slots"] == 3
+        for row in diagnostics
+    )
     assert all(
         "actual_combination" not in row and "actual_payout_yen" not in row
         for row in diagnostics
