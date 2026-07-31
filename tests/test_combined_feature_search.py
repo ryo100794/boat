@@ -11,6 +11,7 @@ from boatrace_ai.hashed_feature_dataset import race_ids_sha256
 from boatrace_ai.listwise import feature_search as feature_search_module
 from boatrace_ai.listwise.combined_feature_search import (
     COMBINED_FEATURE_VARIANTS,
+    LEGACY_COMPAT_FEATURE_VARIANTS,
     RESEARCH_PARTITION_FEATURE_VARIANTS,
     build_parser,
     parse_combined_feature_variants,
@@ -164,6 +165,17 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     assert args.candidate_workers == 1
     assert args.output.endswith("listwise_combined_feature_search_v1.json")
     assert args.cache_dir.endswith("listwise_combined_search_cache")
+
+
+def test_removed_equipment_id_variant_is_resume_compatibility_only() -> None:
+    name = "keep_card_numeric_without_raw_equipment_ids"
+    assert name not in {item[0] for item in COMBINED_FEATURE_VARIANTS}
+    assert LEGACY_COMPAT_FEATURE_VARIANTS == (
+        parse_combined_feature_variants(name)[0],
+    )
+    assert "raw_equipment_identifiers" in (
+        LEGACY_COMPAT_FEATURE_VARIANTS[0][1]
+    )
 
 
 def test_combined_variant_subset_is_registered_and_ordered() -> None:
