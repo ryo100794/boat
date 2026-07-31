@@ -1887,13 +1887,15 @@ def select_v18_schedule_quota_policy(
                     "minimum_score": minimum_score,
                 },
             })
-    online_reserve_slots = max(1, math.ceil(learned_limit * 0.50))
-    for after_fraction in (0.25, 0.50):
-        for score_quantile in (0.75, 0.90):
-            candidates.append({
+    for reserve_fraction in (0.25, 0.50):
+        online_reserve_slots = max(1, math.ceil(learned_limit * reserve_fraction))
+        for after_fraction in (0.25, 0.50):
+            for score_quantile in (0.75, 0.90):
+                reserve_percent = int(reserve_fraction * 100)
+                candidates.append({
                 "name": (
                     f"online_reserve_f{int(after_fraction * 100)}_"
-                    f"q{int(score_quantile * 100)}_r50"
+                    f"q{int(score_quantile * 100)}_r{reserve_percent}"
                 ),
                 "schedule_quota_rounding": "floor",
                 "learned_daily_ticket_limit": learned_limit,
