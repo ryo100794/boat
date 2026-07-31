@@ -169,6 +169,10 @@ def test_mobile_logout_completion_url_is_confirmed() -> None:
         "https://mb.brtb.jp/tohyo-ap-smtohyo/PWTAUT/F_PWTAUT_Logout/pwtautlogout_displayBL.do",
         "mobile",
     )
+    assert TeleboatLoginProbe._logout_location_confirmed(
+        "https://spweb.brtb.jp/",
+        "mobile",
+    )
     assert not TeleboatLoginProbe._logout_location_confirmed(
         "https://mb.brtb.jp/",
         "mobile",
