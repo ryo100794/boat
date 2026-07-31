@@ -328,11 +328,18 @@ def attach_selected_closing_odds(
     baseline_model = selection["baseline_model"]
     for race in races:
         item = dict(race)
-        if use_contextual and contextual_model and momentum_price_eligible(race):
-            forecast = forecast_contextual_closing_odds(
+        if use_contextual and contextual_model and momentum_model and momentum_price_eligible(race):
+            contextual_forecast = forecast_contextual_closing_odds(
                 race, contextual_model, expected_value=True
             )
-            source = "contextual"
+            momentum_forecast = forecast_momentum_closing_odds(
+                race, momentum_model, expected_value=True
+            )
+            forecast = {
+                combination: min(value, momentum_forecast[combination])
+                for combination, value in contextual_forecast.items()
+            }
+            source = "contextual_momentum_lower_envelope"
         elif use_momentum and momentum_model and momentum_price_eligible(race):
             forecast = forecast_momentum_closing_odds(
                 race, momentum_model, expected_value=True
