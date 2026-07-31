@@ -27,6 +27,7 @@ from ..listwise.closing_odds_t300_nonlinear_v12 import (
     MODEL_NAME as V12_CLOSING_MODEL_NAME,
     forecast_closing_odds_t300_nonlinear_v12,
 )
+from ..listwise.closing_odds_momentum import attach_selected_closing_odds
 from ..listwise.edge_conditional_probability_lcb_v14 import (
     METHOD as V14_PROBABILITY_LCB_METHOD,
     REGISTERED_DIVERGENCE_LOWER,
@@ -38,8 +39,10 @@ from ..listwise.live_shadow import historical_state, load_date_races
 from ..listwise.market_calibration import (
     artifact_model_probabilities,
     blend_probabilities,
+    earlier_market_fields,
     normalized_market_probabilities,
     normalize_odds_checkpoint,
+    odds_path_fields,
 )
 from ..listwise.odds_path_operational import attach_odds_path_model
 from ..listwise.odds_path_conservative_v7 import (
@@ -59,6 +62,13 @@ from ..listwise.strict_prior_t300_divergence_passthrough_v16 import (
     MODEL_NAME as V16_PASSTHROUGH_MODEL,
 )
 from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
+from .top5_narrow_policy import (
+    POLICY_NAME as V23_POLICY_NAME,
+    REGISTERED_AFTER as V23_REGISTERED_AFTER,
+    STAKE_YEN as V23_STAKE_YEN,
+    daily_capital_limits,
+    select_top5_narrow_candidates,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -1787,6 +1797,194 @@ class V21TripleHeadModelAdapter(V18ScheduleQuotaModelAdapter):
         )
 
 
+class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
+    """Evaluate the preregistered top-5/forecast-price policy in shadow mode."""
+
+    strategy_name = "v23_top5_narrow_t300"
+    artifact_label = "V23"
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        bundle_path: Path,
+        base_model_path: Path,
+    ) -> None:
+        super().__init__(
+            model_key=model_key,
+            bundle_path=bundle_path,
+            base_model_path=base_model_path,
+        )
+        self._closing_selection = self._component("closing_odds_selection")
+        if (
+            self._closing_selection.get("selected") not in {"baseline", "momentum"}
+            or not isinstance(self._closing_selection.get("baseline_model"), Mapping)
+            or self._bundle.get("real_betting_enabled") is not False
+        ):
+            raise ValueError("V23 closing forecast or shadow-only provenance is invalid")
+
+    @staticmethod
+    def _blend_head(
+        transformed: Mapping[str, Any],
+        market: Mapping[str, float],
+        calibrator: Mapping[str, Any],
+    ) -> dict[str, float]:
+        output = blend_probabilities(
+            transformed["model_probabilities"],
+            market,
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        if (
+            len(output) != 120
+            or set(output) != set(market)
+            or not math.isclose(sum(output.values()), 1.0, abs_tol=1e-8)
+        ):
+            return {}
+        return output
+
+    def _v23_model_race(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot
+    ) -> tuple[dict[str, Any], dict[str, float], str] | None:
+        current_snapshot = {
+            "snapshot_id": snapshot.snapshot_id,
+            "captured_at": snapshot.captured_at.isoformat(),
+            "source_update_time": snapshot.source_update_time,
+            "raw_json": snapshot.raw_json,
+            "betting_deadline_at": race.betting_deadline_at.isoformat(),
+            "odds": dict(snapshot.odds),
+        }
+        point = normalize_odds_checkpoint(
+            current_snapshot, target_offset_seconds=T300_OFFSET_SECONDS
+        )
+        if point is None:
+            return None
+        base = self._base_probabilities(conn, race)
+        market = normalized_market_probabilities(snapshot.odds)
+        if len(base) != 120 or set(base) != set(snapshot.odds) or set(market) != set(base):
+            return None
+        model_race: dict[str, Any] = {
+            "race_id": race.race_id,
+            "race_date": race.race_date,
+            "jcd": race.jcd,
+            "rno": race.rno,
+            "snapshot_id": snapshot.snapshot_id,
+            "model_probabilities": base,
+            "market_probabilities": market,
+            "odds": dict(snapshot.odds),
+            "odds_checkpoints": {"300": point},
+        }
+        earlier, earlier_reason = earlier_market_fields(
+            conn,
+            race.race_id,
+            current_snapshot=current_snapshot,
+            max_snapshot_age_seconds=DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
+        )
+        if earlier is not None:
+            model_race.update(earlier)
+        model_race.update(
+            odds_path_fields(
+                conn,
+                race.race_id,
+                current_snapshot=current_snapshot,
+                max_snapshot_age_seconds=DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
+            )
+        )
+        transformed = attach_odds_path_model(
+            [model_race], dict(self._operational_model)
+        )[0]
+        return transformed, market, earlier_reason
+
+    def _capital_limits(
+        self, conn: Any, race: RaceWindow, *, bankroll_yen: int
+    ) -> dict[str, int]:
+        rows = conn.execute(
+            """
+            SELECT d.total_stake_yen, s.profit_yen
+            FROM intraday_t300_shadow_decisions d
+            LEFT JOIN intraday_t300_shadow_settlements s
+              ON s.decision_id = d.decision_id
+            WHERE d.race_date = ? AND d.model_key = ?
+            """,
+            (race.race_date, self.identity.model_key),
+        ).fetchall()
+        return daily_capital_limits(
+            list(rows),
+            bankroll_yen=bankroll_yen,
+            starting_bankroll_yen=STARTING_BANKROLL_YEN,
+        )
+
+    def decide(
+        self, conn: Any, race: RaceWindow, snapshot: T300Snapshot, *, bankroll_yen: int
+    ) -> ShadowDecision:
+        trained = str(self._bundle.get("trained_through_date") or "")
+        if trained and trained >= race.race_date:
+            raise ValueError("V23 artifacts are not strictly prior to race date")
+        prepared = self._v23_model_race(conn, race, snapshot)
+        if prepared is None:
+            return _no_bet("invalid_v23_t300_market_features")
+        transformed, market, earlier_reason = prepared
+        probability_output = self._blend_head(
+            transformed, market, self._probability_calibrator
+        )
+        ranking_output = self._blend_head(
+            transformed, market, self._ranking_calibrator
+        )
+        if not probability_output or not ranking_output:
+            return _no_bet("invalid_v23_probability_or_ranking_head_output")
+        closing = attach_selected_closing_odds(
+            [dict(transformed)], dict(self._closing_selection)
+        )[0]
+        forecast_odds = dict(closing.get("estimated_final_odds") or {})
+        if len(forecast_odds) != 120 or set(forecast_odds) != set(ranking_output):
+            return _no_bet("invalid_v23_closing_odds_forecast")
+        limits = self._capital_limits(conn, race, bankroll_yen=bankroll_yen)
+        selected = select_top5_narrow_candidates(
+            ranking_output,
+            forecast_odds,
+            race_id=race.race_id,
+            race_date=race.race_date,
+            jcd=race.jcd,
+            rno=race.rno,
+            snapshot_id=snapshot.snapshot_id,
+            captured_at=snapshot.captured_at.isoformat(),
+            available_capital_yen=limits["allocatable_bankroll_yen"],
+        )
+        diagnostics = {
+            "v23_top5_narrow": {
+                **limits,
+                "status": "selected" if selected else "no_bet",
+                "policy_name": V23_POLICY_NAME,
+                "registered_after": V23_REGISTERED_AFTER,
+                "checkpoint": "t300",
+                "source_snapshot_id": snapshot.snapshot_id,
+                "source_evaluation_job_id": 8666,
+                "ranking_top5": sorted(
+                    ranking_output,
+                    key=lambda combination: (-ranking_output[combination], combination),
+                )[:5],
+                "ranking_probabilities": ranking_output,
+                "closing_odds_forecast_source": closing.get(
+                    "closing_odds_forecast_source"
+                ),
+                "earlier_market_status": earlier_reason,
+                "odds_path_points": int(transformed.get("odds_path_points") or 0),
+                "decision_features": "t300_or_earlier",
+                "outer_result_used": False,
+                "outer_payout_used": False,
+                "settlement_fields_used_for_capital_only": True,
+                "real_betting_enabled": False,
+            }
+        }
+        if limits["allocatable_bankroll_yen"] < V23_STAKE_YEN:
+            reason = "v23_daily_capital_exhausted"
+        else:
+            reason = None if selected else "v23_no_top5_candidate_in_registered_ev_band"
+        return ShadowDecision(
+            probability_output, forecast_odds, selected, reason, diagnostics
+        )
+
+
 ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = {
     "v12_role_t300": lambda key, bundle, base: V12RoleModelAdapter(
         model_key=key, bundle_path=bundle, base_model_path=base
@@ -1813,6 +2011,11 @@ ADAPTER_FACTORIES: dict[str, Callable[[str, Path, Path], ShadowModelAdapter]] = 
     ),
     "v21_triple_head_t300": lambda key, bundle, base: (
         V21TripleHeadModelAdapter(
+            model_key=key, bundle_path=bundle, base_model_path=base
+        )
+    ),
+    "v23_top5_narrow_t300": lambda key, bundle, base: (
+        V23Top5NarrowModelAdapter(
             model_key=key, bundle_path=bundle, base_model_path=base
         )
     ),

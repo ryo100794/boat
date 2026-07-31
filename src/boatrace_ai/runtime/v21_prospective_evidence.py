@@ -37,6 +37,8 @@ class V21ProspectiveEvidenceConfig:
     through_date: str | date | None = None
     expected_model_hash: str | None = None
     expected_strategy_name: str = V21_STRATEGY_NAME
+    diagnostic_key: str = "v21_triple_head"
+    evidence_kind: str = "v21_frozen_identity_fully_unseen_prospective"
     max_decision_delay_seconds: float = 90.0
     bootstrap_samples: int = 20_000
     bootstrap_seed: int = 20260731
@@ -57,6 +59,10 @@ class V21ProspectiveEvidenceConfig:
             raise ValueError("model_key must not be empty")
         if not str(self.expected_strategy_name).strip():
             raise ValueError("expected_strategy_name must not be empty")
+        if not str(self.diagnostic_key).strip():
+            raise ValueError("diagnostic_key must not be empty")
+        if not str(self.evidence_kind).strip():
+            raise ValueError("evidence_kind must not be empty")
         if self.expected_model_hash is not None and not str(
             self.expected_model_hash
         ).strip():
@@ -251,6 +257,7 @@ def _audit_decision(
     sources: Mapping[int, Mapping[str, Any]],
     duplicate_sources: set[int],
     max_delay: float,
+    diagnostic_key: str,
 ) -> dict[str, Any]:
     decision_id = _integer(row.get("decision_id"), "decision_id", minimum=1)
     race_id = str(row.get("race_id") or "").strip()
@@ -283,17 +290,23 @@ def _audit_decision(
         raise ValueError("source snapshot must contain exactly 120 odds")
     probabilities = _probabilities(row.get("probabilities"), "probabilities")
     diagnostics = _mapping(row.get("diagnostics"), "diagnostics")
-    v21 = _mapping(diagnostics.get("v21_triple_head"), "v21_triple_head")
-    ranking = _probabilities(v21.get("ranking_probabilities"), "ranking_probabilities")
+    model_diagnostic = _mapping(diagnostics.get(diagnostic_key), diagnostic_key)
+    ranking = _probabilities(
+        model_diagnostic.get("ranking_probabilities"), "ranking_probabilities"
+    )
     if (
-        v21.get("decision_features") != "t300_or_earlier"
-        or v21.get("outer_result_used") is not False
-        or v21.get("outer_payout_used") is not False
-        or v21.get("real_betting_enabled") is not False
-        or _integer(v21.get("source_snapshot_id"), "diagnostic source_snapshot_id", minimum=1)
+        model_diagnostic.get("decision_features") != "t300_or_earlier"
+        or model_diagnostic.get("outer_result_used") is not False
+        or model_diagnostic.get("outer_payout_used") is not False
+        or model_diagnostic.get("real_betting_enabled") is not False
+        or _integer(
+            model_diagnostic.get("source_snapshot_id"),
+            "diagnostic source_snapshot_id",
+            minimum=1,
+        )
         != snapshot_id
     ):
-        raise ValueError("V21 information boundary or shadow-only flag is invalid")
+        raise ValueError("model information boundary or shadow-only flag is invalid")
     selected = []
     for candidate in _sequence(row.get("selected_candidates"), "selected_candidates"):
         candidate = _mapping(candidate, "selected_candidate")
@@ -421,6 +434,7 @@ def aggregate_v21_prospective_evidence(
                     sources=sources,
                     duplicate_sources=duplicate_sources,
                     max_delay=config.max_decision_delay_seconds,
+                    diagnostic_key=config.diagnostic_key,
                 )
                 if len(decision_ids[item["decision_id"]]) != 1:
                     raise ValueError("decision_id is not unique")
@@ -592,7 +606,7 @@ def aggregate_v21_prospective_evidence(
     failed = [name for name, passed in checks.items() if not passed]
     return {
         "schema_version": 1,
-        "evidence_kind": "v21_frozen_identity_fully_unseen_prospective",
+        "evidence_kind": config.evidence_kind,
         "model_key": config.model_key,
         "start_date": start,
         "through_date": through,

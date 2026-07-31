@@ -385,12 +385,19 @@ def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:
     wrapper = (
         root / "scripts/deployment/run-boatrace-intraday-t300-daily-bundles.sh"
     ).read_text()
-    assert supervisor.count("autostart=false") == 2
+    v23_wrapper = (
+        root / "scripts/deployment/run-boatrace-intraday-v23-shadow.sh"
+    ).read_text()
+    assert supervisor.count("autostart=false") == 3
     assert "REAL_BETTING_ENABLED" in wrapper
     assert "run-boatrace-intraday-t300-shadow.sh" in wrapper
     assert "kill -TERM" in wrapper
     assert "wait \"$child_pid\"" in wrapper
     assert "sha256sum" in wrapper
+    assert "v23_daily:v23_top5_narrow_t300" in v23_wrapper
+    assert "BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0" in v23_wrapper
+    assert "kill -TERM" in v23_wrapper
+    assert "sha256sum" in v23_wrapper
     assert "startretries=20" not in supervisor
 
 
