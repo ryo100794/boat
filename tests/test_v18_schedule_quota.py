@@ -159,6 +159,35 @@ def test_opportunity_quota_keeps_last_slot_for_late_low_score() -> None:
     assert decisions[2]["opportunity_quota_released"] is False
 
 
+def test_online_reserve_preserves_capacity_for_later_high_scores() -> None:
+    result = _simulate(
+        4,
+        [0, 0, 0, 0],
+        rounding="ceil",
+        opportunity={
+            "quota_mode": "online_reserve",
+            "after_fraction": 0.50,
+            "score_quantile": 0.75,
+            "reserve_slots": 2,
+            "minimum_score": 1.0,
+        },
+        estimated_evs=[1.2, 1.1, 3.0, 4.0],
+    )
+    decisions = [
+        row for row in result["ledger"] if row["event"] == "decision"
+    ]
+
+    assert [row["tickets"] for row in decisions] == [0, 1, 1, 1]
+    assert [row["opportunity_quota_released"] for row in decisions] == [
+        False, False, True, True,
+    ]
+    assert result["tickets"] == 3
+    assert (
+        result["schedule_quota_opportunity"]["quota_mode"]
+        == "online_reserve"
+    )
+
+
 def test_opportunity_quota_decisions_do_not_use_payouts() -> None:
     config = {
         "after_fraction": 0.75,
@@ -351,7 +380,7 @@ def test_opportunity_policy_selector_uses_prior_bankroll_only(
         "reserve_slots": 1,
         "minimum_score": 1.05,
     }
-    assert len(diagnostics) == 6
+    assert len(diagnostics) == 10
     assert all(
         "actual_combination" not in row and "actual_payout_yen" not in row
         for row in diagnostics
