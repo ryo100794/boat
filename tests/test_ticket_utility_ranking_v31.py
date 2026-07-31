@@ -117,6 +117,33 @@ def test_payout_teacher_changes_fitted_ranking_model() -> None:
     assert winner["booster_sha256"] != weighted["booster_sha256"]
 
 
+def test_poisson_head_directly_targets_capped_realized_gross_return() -> None:
+    start = date(2026, 1, 1)
+    races = [
+        _race(
+            start + timedelta(days=index),
+            winner_index=index,
+            payout=80_000 if index % 6 == 5 else 700,
+        )
+        for index in range(48)
+    ]
+    preset = {"name": "tiny", "num_leaves": 7, "max_depth": 3}
+    winner = fit_ticket_utility_ranker(
+        races, label_scheme="winner", tree_preset=preset, num_threads=1
+    )
+    poisson = fit_ticket_utility_ranker(
+        races,
+        label_scheme="gross_return_poisson_c50",
+        tree_preset=preset,
+        num_threads=1,
+    )
+
+    assert poisson["learner_objective"] == "poisson_expected_gross_return"
+    assert poisson["gross_return_cap"] == 50.0
+    assert poisson["booster_sha256"] != winner["booster_sha256"]
+    assert set(ticket_ranking(races[-1], poisson)) == set(COMBINATIONS)
+
+
 def test_ticket_ranker_serializes_and_returns_a_complete_order() -> None:
     start = date(2026, 1, 1)
     races = [
