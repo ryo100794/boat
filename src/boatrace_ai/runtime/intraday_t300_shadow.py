@@ -2115,7 +2115,15 @@ def run_cycle(
                     decision = adapter.decide(store.conn, race, snapshot, bankroll_yen=bankroll)
                 except Exception as exc:
                     model_errors += 1
-                    decision = _no_bet(f"model_error:{type(exc).__name__}")
+                    decision = _no_bet(
+                        f"model_error:{type(exc).__name__}",
+                        diagnostics={
+                            "model_error": {
+                                "type": type(exc).__name__,
+                                "message": str(exc)[:300],
+                            }
+                        },
+                    )
                 decision_elapsed = time.perf_counter() - decision_started
                 timing = model_decide_timing.setdefault(
                     identity.model_key,
