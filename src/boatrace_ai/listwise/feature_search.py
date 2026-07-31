@@ -739,6 +739,43 @@ def _validated_candidate_rows(
     return completed
 
 
+def _variant_compatible_checkpoint_rows(
+    checkpoint: dict[str, Any],
+    *,
+    stored_signature: dict[str, Any],
+    signature: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    stored_base = {key: value for key, value in stored_signature.items()
+                   if key != "feature_variants"}
+    current_base = {key: value for key, value in signature.items()
+                    if key != "feature_variants"}
+    if stored_base != current_base:
+        return None
+    stored_variants = {
+        str(name): list(dropped)
+        for name, dropped in stored_signature.get("feature_variants", [])
+    }
+    current_variants = {
+        str(name): list(dropped)
+        for name, dropped in signature.get("feature_variants", [])
+    }
+    if (
+        set(stored_variants) - set(current_variants)
+        != {"keep_card_numeric_without_raw_equipment_ids"}
+        or set(current_variants) - set(stored_variants) != {"full"}
+    ):
+        return None
+    shared = set(stored_variants) & set(current_variants)
+    if not shared or any(
+        stored_variants[name] != current_variants[name] for name in shared
+    ):
+        return None
+    rows = checkpoint.get("search_results")
+    if not isinstance(rows, list):
+        return None
+    return [row for row in rows if row.get("feature_variant") in current_variants]
+
+
 def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[str, Any]]:
     try:
         checkpoint = json.loads(path.read_text(encoding="utf-8"))
@@ -749,10 +786,18 @@ def _load_checkpoint(path: Path, signature: dict[str, Any]) -> dict[str, dict[st
         not isinstance(stored_signature, dict)
         or stored_signature.get("checkpoint_version") != CHECKPOINT_VERSION
         or "source_data_snapshot" not in stored_signature
-        or stored_signature != signature
     ):
         return {}
-    return _validated_candidate_rows(checkpoint.get("search_results"), signature)
+    rows = checkpoint.get("search_results")
+    if stored_signature != signature:
+        rows = _variant_compatible_checkpoint_rows(
+            checkpoint,
+            stored_signature=stored_signature,
+            signature=signature,
+        )
+        if rows is None:
+            return {}
+    return _validated_candidate_rows(rows, signature)
 
 
 def _load_reusable_search_results(

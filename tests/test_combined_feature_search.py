@@ -255,6 +255,55 @@ def test_combined_checkpoint_resumes_without_accepting_default_signature(
     assert _load_checkpoint(checkpoint, _signature()) == {}
 
 
+def test_checkpoint_reuses_only_unchanged_variants_after_registry_change(
+    tmp_path: Path,
+) -> None:
+    legacy_variants = (
+        *COMBINED_FEATURE_VARIANTS[:-1],
+        *LEGACY_COMPAT_FEATURE_VARIANTS,
+    )
+    stored_signature = _signature(variants=legacy_variants)
+    current_signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
+    shared = _row(*COMBINED_FEATURE_VARIANTS[0], "winner", 0.0001)
+    removed = _row(*LEGACY_COMPAT_FEATURE_VARIANTS[0], "winner", 0.0001)
+    checkpoint = tmp_path / "registry-change.json"
+    checkpoint.write_text(
+        json.dumps({
+            "signature": stored_signature,
+            "search_results": [shared, removed],
+        }),
+        encoding="utf-8",
+    )
+
+    resumed = _load_checkpoint(checkpoint, current_signature)
+
+    assert list(resumed.values()) == [shared]
+
+
+def test_checkpoint_rejects_changed_definition_for_shared_variant(
+    tmp_path: Path,
+) -> None:
+    stored_variants = (
+        ("keep_card_numeric", ("card_identity_context",)),
+    )
+    current_variants = (
+        ("keep_card_numeric", ("card_relative",)),
+    )
+    stored_signature = _signature(variants=stored_variants)
+    current_signature = _signature(variants=current_variants)
+    row = _row(*stored_variants[0], "winner", 0.0001)
+    checkpoint = tmp_path / "changed-definition.json"
+    checkpoint.write_text(
+        json.dumps({
+            "signature": stored_signature,
+            "search_results": [row],
+        }),
+        encoding="utf-8",
+    )
+
+    assert _load_checkpoint(checkpoint, current_signature) == {}
+
+
 
 def test_checkpoint_v1_without_source_identity_is_rejected(tmp_path: Path) -> None:
     signature = _signature(variants=COMBINED_FEATURE_VARIANTS)
