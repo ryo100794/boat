@@ -42,13 +42,16 @@ from .market_residual import (
     fit_log_pool_newton,
     residual_probability_metrics,
 )
+from .course_interaction_residual import (
+    evaluate_temporal_course_interaction,
+)
 from .pruned_direct_context_evaluation_v27 import (
     evaluate_temporal_pruned_residual,
 )
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 5
+EVALUATION_VERSION = 6
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -434,6 +437,12 @@ def temporal_residual_diagnostic(
         policies=TEMPORAL_RESIDUAL_POLICIES,
         daily_budget_yen=daily_budget_yen,
     )
+    course_interaction = evaluate_temporal_course_interaction(
+        calibration,
+        evaluation,
+        policies=TEMPORAL_RESIDUAL_POLICIES,
+        daily_budget_yen=daily_budget_yen,
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -455,6 +464,7 @@ def temporal_residual_diagnostic(
         "direct_context_market_residual_v25": direct_context,
         "direct_context_empirical_lcb_v26": direct_context_empirical,
         "pruned_direct_context_market_residual_v27": pruned_direct_context,
+        "course_interaction_market_residual_v28": course_interaction,
     }
 
 
