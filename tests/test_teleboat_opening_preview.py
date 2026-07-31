@@ -140,9 +140,12 @@ def test_date_deadline_and_candidate_fail_closed(tmp_path, payload, expected):
         clock=lambda: NOW, sleeper=lambda _seconds: None,
     )
     assert code == expected
-    assert json.loads(args.output.read_text())["status"] == "failed"
+    waiting = expected == preview.EXIT_NO_CANDIDATE
+    assert json.loads(args.output.read_text())["status"] == (
+        "waiting" if waiting else "failed"
+    )
     assert verify_journal(args.journal_path)["events"] == {
-        "opening_preview_failed": 1
+        "opening_preview_waiting" if waiting else "opening_preview_failed": 1
     }
 
 
@@ -304,7 +307,7 @@ def test_target_date_candidate_is_not_used_on_previous_jst_day(tmp_path):
     )
     assert code == preview.EXIT_NO_CANDIDATE
     assert verify_journal(args.journal_path)["events"] == {
-        "opening_preview_failed": 1
+        "opening_preview_waiting": 1
     }
 
 

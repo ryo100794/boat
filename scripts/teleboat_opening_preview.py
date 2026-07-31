@@ -423,15 +423,18 @@ def run(
     except Exception:
         failure = PreviewFailure("preview_failed_closed", EXIT_PREVIEW_FAILED)
 
+    waiting = failure.code == "no_eligible_candidate"
+    status = "waiting" if waiting else "failed"
+    event = "opening_preview_waiting" if waiting else "opening_preview_failed"
     try:
         _record_and_write(
             journal=journal,
             output=args.output,
             journal_event=_journal_event(
                 request_id=request_id,
-                event="opening_preview_failed",
+                event=event,
                 target_date=args.date,
-                status="failed",
+                status=status,
                 code=failure.code,
                 request=request,
                 verification={
@@ -442,7 +445,7 @@ def run(
             output_payload=_audit_payload(
                 request_id=request_id,
                 target_date=args.date,
-                status="failed",
+                status=status,
                 code=failure.code,
                 request=request,
             ),
