@@ -122,21 +122,56 @@ def select_candidate(
             continue
         if candidate.get("entries") != 6:
             continue
-        top_prediction = candidate.get("top_prediction")
-        if not isinstance(top_prediction, dict) or not top_prediction.get("combination"):
+        decision = candidate.get("t300_decision")
+        if not isinstance(decision, dict):
             continue
-        buy_until = _parse_jst_datetime(
-            candidate.get("buy_until_at", candidate.get("buy_until"))
-        )
-        if buy_until is None or now_jst >= buy_until:
+        if (
+            decision.get("model_key") != "v21_daily"
+            or decision.get("decision_status") != "selected"
+            or not decision.get("source_snapshot_id")
+        ):
             continue
-        return candidate
+        target_t300 = _parse_jst_datetime(decision.get("target_t300_at"))
+        deadline = _parse_jst_datetime(candidate.get("deadline_at"))
+        if (
+            target_t300 is None
+            or deadline is None
+            or now_jst < target_t300
+            or now_jst >= deadline
+        ):
+            continue
+        selected = decision.get("selected_candidates")
+        if not isinstance(selected, list) or not selected:
+            continue
+        normalized = []
+        for ticket in selected:
+            if not isinstance(ticket, dict) or not ticket.get("combination"):
+                normalized = []
+                break
+            try:
+                stake_yen = int(ticket.get("stake_yen") or 0)
+            except (TypeError, ValueError):
+                normalized = []
+                break
+            if stake_yen <= 0 or stake_yen % 100:
+                normalized = []
+                break
+            normalized.append({**ticket, "stake_yen": stake_yen})
+        if not normalized:
+            continue
+        return {**candidate, "t300_selection": normalized}
     return None
 
 
 def build_vote_request(candidate: dict[str, Any]) -> VoteRequest:
-    prediction = candidate["top_prediction"]
-    combination = str(prediction["combination"]).replace("-", "").strip()
+    selected = candidate["t300_selection"]
+    tickets = [
+        {
+            "number": str(ticket["combination"]).replace("-", "").strip(),
+            "quantity": int(ticket["stake_yen"]) // 100,
+        }
+        for ticket in selected
+    ]
     return VoteRequest.parse(
         {
             "race": {
@@ -145,10 +180,10 @@ def build_vote_request(candidate: dict[str, Any]) -> VoteRequest:
             },
             "bet_type": "trifecta",
             "method": "regular",
-            "tickets": [{"number": combination, "quantity": 1}],
+            "tickets": tickets,
         },
-        max_tickets=1,
-        max_total_stake_yen=100,
+        max_tickets=120,
+        max_total_stake_yen=10_000,
     )
 
 
@@ -163,8 +198,8 @@ def load_settings(secret_path: Path, *, journal_path: Path) -> Settings:
         pin=secrets.pin,
         authorization_number_of_mobile=secrets.auth_secret,
         journal_path=str(journal_path),
-        max_tickets_per_request=1,
-        max_total_stake_yen=100,
+        max_tickets_per_request=120,
+        max_total_stake_yen=10_000,
         batch_size=1,
     )
     settings.validate()
@@ -264,6 +299,14 @@ def _audit_payload(
             "method": request.method.value,
             "combination": request.tickets[0].betting_number.display(request.bet_type),
             "quantity": request.tickets[0].quantity,
+            "tickets": [
+                {
+                    "combination": ticket.betting_number.display(request.bet_type),
+                    "quantity": ticket.quantity,
+                    "stake_yen": ticket.stake_yen,
+                }
+                for ticket in request.tickets
+            ],
             "stake_yen": request.total_stake_yen,
         }
     if preview is not None:
@@ -382,7 +425,10 @@ def run(
         request = build_vote_request(candidate)
         result = executor_factory(settings).preview(request)
         safe_result = _safe_preview_result(result)
-        if safe_result["tickets"] != 1 or safe_result["stake_yen"] != 100:
+        if (
+            safe_result["tickets"] != len(request.tickets)
+            or safe_result["stake_yen"] != request.total_stake_yen
+        ):
             raise PreviewFailure("official_preview_totals_mismatch", EXIT_PREVIEW_FAILED)
         verification = {
             "official_confirmation": True,

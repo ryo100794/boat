@@ -36,7 +36,18 @@ def _candidate(**updates):
         "rno": 1,
         "entries": 6,
         "buy_until_at": "2026-07-31T09:00:00+09:00",
+        "deadline_at": "2026-07-31T09:05:00+09:00",
         "top_prediction": {"combination": "1-2-3", "probability": 0.1},
+        "t300_decision": {
+            "model_key": "v21_daily",
+            "decision_status": "selected",
+            "source_snapshot_id": 123,
+            "target_t300_at": NOW.isoformat(),
+            "selected_candidates": [
+                {"combination": "1-2-3", "stake_yen": 100}
+            ],
+            "total_stake_yen": 100,
+        },
     }
     value.update(updates)
     return value
@@ -127,8 +138,8 @@ def test_preview_uses_first_candidate_quantity_one_and_never_executes(tmp_path):
 @pytest.mark.parametrize(("payload", "expected"), [
     ({"date": "2026-07-30", "candidates": [_candidate()]}, preview.EXIT_GUIDE_REJECTED),
     ({"date": "2026-07-31", "candidates": [_candidate(entries=5)]}, preview.EXIT_NO_CANDIDATE),
-    ({"date": "2026-07-31", "candidates": [_candidate(top_prediction=None)]}, preview.EXIT_NO_CANDIDATE),
-    ({"date": "2026-07-31", "candidates": [_candidate(buy_until_at=NOW.isoformat())]}, preview.EXIT_NO_CANDIDATE),
+    ({"date": "2026-07-31", "candidates": [_candidate(t300_decision=None)]}, preview.EXIT_NO_CANDIDATE),
+    ({"date": "2026-07-31", "candidates": [_candidate(deadline_at=NOW.isoformat())]}, preview.EXIT_NO_CANDIDATE),
 ])
 def test_date_deadline_and_candidate_fail_closed(tmp_path, payload, expected):
     secret = tmp_path / "login.json"
@@ -147,6 +158,45 @@ def test_date_deadline_and_candidate_fail_closed(tmp_path, payload, expected):
     assert verify_journal(args.journal_path)["events"] == {
         "opening_preview_waiting" if waiting else "opening_preview_failed": 1
     }
+
+
+def test_preview_preserves_v21_multiple_tickets_and_quantities(tmp_path):
+    secret = tmp_path / "login.json"
+    _secret(secret)
+    observed = []
+
+    class Executor:
+        def __init__(self, _settings):
+            pass
+
+        def preview(self, request):
+            observed.append(request)
+            result = _verified_result()
+            result.update(tickets=2, stake_yen=400)
+            return result
+
+    candidate = _candidate()
+    candidate["t300_decision"]["selected_candidates"] = [
+        {"combination": "1-2-3", "stake_yen": 100},
+        {"combination": "2-1-3", "stake_yen": 300},
+    ]
+    candidate["t300_decision"]["total_stake_yen"] = 400
+    args = _args(tmp_path, secret)
+    code = preview.run(
+        args,
+        fetch_guide=lambda *_args, **_kwargs: {
+            "date": "2026-07-31", "candidates": [candidate]
+        },
+        executor_factory=Executor,
+        clock=lambda: NOW,
+        sleeper=lambda _seconds: None,
+    )
+    assert code == preview.EXIT_OK
+    assert [ticket.quantity for ticket in observed[0].tickets] == [1, 3]
+    saved = json.loads(args.output.read_text())
+    assert saved["official_confirmation"]["tickets"] == 2
+    assert saved["official_confirmation"]["stake_yen"] == 400
+    assert [row["quantity"] for row in saved["selection"]["tickets"]] == [1, 3]
 
 
 def test_fetch_guide_uses_explicit_user_agent(monkeypatch):
