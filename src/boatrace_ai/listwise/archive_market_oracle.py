@@ -20,6 +20,9 @@ from .contextual_market_residual_v24 import (
     contextual_probabilities,
     fit_temporal_contextual_residual,
 )
+from .direct_context_empirical_v26 import (
+    evaluate_temporal_direct_context_empirical,
+)
 from .direct_context_market_residual_v25 import (
     direct_context_probabilities,
     extract_lane_context,
@@ -42,7 +45,7 @@ from .market_residual import (
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 4
+EVALUATION_VERSION = 5
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -417,6 +420,11 @@ def temporal_residual_diagnostic(
             }
         )
     direct_context["purchase_diagnostics"] = direct_context_purchase_diagnostics
+    direct_context_empirical = evaluate_temporal_direct_context_empirical(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -436,6 +444,7 @@ def temporal_residual_diagnostic(
         "purchase_diagnostics": purchase_diagnostics,
         "contextual_market_residual_v24": contextual,
         "direct_context_market_residual_v25": direct_context,
+        "direct_context_empirical_lcb_v26": direct_context_empirical,
     }
 
 
