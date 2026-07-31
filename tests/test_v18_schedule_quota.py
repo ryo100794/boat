@@ -350,9 +350,67 @@ def test_opportunity_policy_selector_uses_prior_bankroll_only(
         "reserve_slots": 1,
         "minimum_score": 1.05,
     }
-    assert len(diagnostics) == 6
+    assert len(diagnostics) == 7
     assert all(
         "actual_combination" not in row and "actual_payout_yen" not in row
+        for row in diagnostics
+    )
+
+
+def test_schedule_quota_selector_can_choose_budget_backed_limit(
+    monkeypatch,
+) -> None:
+    def simulate(*args, **kwargs):
+        control = kwargs["policy"]["v18_ticket_control"]
+        selected = control["learned_daily_ticket_limit"] == 100
+        returned = 300 if selected else 100
+        day = {
+            "race_date": "2026-07-29",
+            "evaluated_races": 1,
+            "tickets": 1,
+            "races_bet": 1,
+            "hit_races": int(selected),
+            "hit_tickets": int(selected),
+            "largest_hit_return_yen": returned,
+            "hit_return_square_sum_yen2": returned * returned,
+            "stake_yen": 100,
+            "return_yen": returned,
+            "profit_yen": returned - 100,
+            "roi": returned / 100,
+            "max_drawdown_yen": 0,
+        }
+        return {
+            "chronological_bankroll": {
+                "race_days": 1,
+                "tickets": 1,
+                "hit_tickets": day["hit_tickets"],
+                "stake_yen": 100,
+                "return_yen": returned,
+                "profit_yen": returned - 100,
+                "roi": returned / 100,
+                "winning_days": int(selected),
+                "daily": [day],
+            }
+        }
+
+    monkeypatch.setattr(market_calibration, "simulate_policy", simulate)
+    control, diagnostics = market_calibration.select_v18_schedule_quota_policy(
+        [],
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={"ev_threshold": 1.05},
+        ticket_control={
+            "learned_daily_ticket_limit": 10,
+            "prior_daily_ticket_counts": [10, 20, 30],
+        },
+        daily_budget_yen=10_000,
+    )
+
+    assert control["learned_daily_ticket_limit"] == 100
+    assert control["schedule_quota_rounding"] == "ceil"
+    assert control["schedule_quota_opportunity"] is None
+    assert any(
+        row["name"] == "budget_cap_ceil"
+        and row["learned_daily_ticket_limit"] == 100
         for row in diagnostics
     )
 
