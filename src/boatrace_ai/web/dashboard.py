@@ -1065,6 +1065,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     for key, filename in (
         ("v21_activation_recovery", "activation-recovery.json"),
         ("v21_prospective_evidence", "v21-prospective-evidence.json"),
+        ("v23_prospective_evidence", "v23-prospective-evidence.json"),
     ):
         path = runtime_state_dir / filename
         try:

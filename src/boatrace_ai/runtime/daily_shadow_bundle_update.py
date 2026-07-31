@@ -23,6 +23,10 @@ from .v21_prospective_evidence import (
     V21ProspectiveEvidenceConfig,
     collect_v21_prospective_evidence,
 )
+from .v23_prospective_evidence import (
+    V23ProspectiveEvidenceConfig,
+    collect_v23_prospective_evidence,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -38,6 +42,7 @@ V16_SHADOW_STRATEGY = "v16_fixed_band_t300"
 V18_SHADOW_STRATEGY = "v18_schedule_quota_t300"
 V20_SHADOW_STRATEGY = "v20_dual_head_t300"
 V21_SHADOW_STRATEGY = "v21_triple_head_t300"
+V23_PROSPECTIVE_START_DATE = "2026-08-01"
 FAMILIES = ("v12", "v14", "v16")
 ALL_FAMILIES = (*FAMILIES, "v18")
 BUNDLE_FAMILIES = (*ALL_FAMILIES, "v20", "v21")
@@ -1559,6 +1564,7 @@ def run_once(
         conn, state_root=state_root, prediction_date=prediction, now=now,
     )
     evidence = None
+    v23_evidence = None
     current_active = _active_state(state_root)
     if (
         now.date().isoformat() >= V21_PROSPECTIVE_START_DATE
@@ -1581,6 +1587,17 @@ def run_once(
             ),
             output_path=state_root / "v21-prospective-evidence.json",
         )
+        if now.date().isoformat() >= V23_PROSPECTIVE_START_DATE:
+            v23_evidence = collect_v23_prospective_evidence(
+                PostgresqlConnection(conn),
+                config=V23ProspectiveEvidenceConfig(
+                    start_date=V23_PROSPECTIVE_START_DATE,
+                    through_date=now.date().isoformat(),
+                    model_key="v23_daily",
+                    expected_model_hash=expected_hash,
+                ),
+                output_path=state_root / "v23-prospective-evidence.json",
+            )
     return {
         "status": status, "through_date": through, "prediction_date": prediction,
         "jobs": {family: job.job_id for family, job in jobs.items()},
@@ -1588,6 +1605,7 @@ def run_once(
         "real_betting_enabled": False,
         "activation_recovery": recovery,
         "v21_prospective_evidence": evidence,
+        "v23_prospective_evidence": v23_evidence,
     }
 
 
