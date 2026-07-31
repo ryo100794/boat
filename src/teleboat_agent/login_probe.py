@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .login_secrets import LoginSecrets, SecretFileError, load_login_secrets
 
 
-MOBILE_URL = "https://mb.brtb.jp/"
+MOBILE_URL = "https://spweb.brtb.jp/"
 PC_URL = "https://ib.mbrace.or.jp/"
 MOBILE_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
