@@ -48,6 +48,7 @@ from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
 from .bankroll_diagnostics import sequential_top5_ev_kelly_diagnostic
 from .flat_policy import (
     select_flat_policy,
+    simulate_chronological_flat_policy,
     simulate_flat_policy,
     summarize_flat_candidates,
 )
@@ -3363,7 +3364,12 @@ def walk_forward_evaluate(
                 policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
                 daily_budget_yen=daily_budget_yen,
             )
-        top5_narrow_retrospective_bankroll = simulate_flat_policy(
+        top5_narrow_simulator = (
+            simulate_chronological_flat_policy
+            if calibrator_strategy == V21_STRATEGY_NAME
+            else simulate_flat_policy
+        )
+        top5_narrow_retrospective_bankroll = top5_narrow_simulator(
             holdout_policy_races,
             calibrator=purchase_calibrator,
             policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,

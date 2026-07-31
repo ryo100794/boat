@@ -4,6 +4,11 @@ import math
 from collections import defaultdict
 from typing import Any, Callable, Iterable
 
+from ..chronological_bankroll import (
+    settlement_events_from_races,
+    simulate_chronological_bankroll_day,
+    summarize_chronological_bankroll_days,
+)
 from .closing_odds import decision_odds
 
 
@@ -137,6 +142,132 @@ def simulate_flat_policy(
         "roi": returned / stake if stake else 0.0,
         "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
         "max_drawdown_yen": max_drawdown,
+        "daily": daily,
+    }
+
+
+def simulate_chronological_flat_policy(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    policy: dict[str, Any],
+    probability_blender: Callable[..., dict[str, float]],
+    initial_bankroll_yen: int = 10_000,
+) -> dict[str, Any]:
+    """Replay a fixed-unit flat policy with the live gross-capital rule."""
+    races_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in races:
+        races_by_day[str(race["race_date"])].append(race)
+
+    daily: list[dict[str, Any]] = []
+    for race_date in sorted(races_by_day):
+        day_races = races_by_day[race_date]
+        candidates: list[dict[str, Any]] = []
+        for race in day_races:
+            if policy.get("no_bet"):
+                continue
+            probabilities = probability_blender(
+                race["model_probabilities"],
+                race["market_probabilities"],
+                model_weight=float(calibrator["model_weight"]),
+                temperature=float(calibrator["temperature"]),
+            )
+            ranked = sorted(
+                probabilities,
+                key=lambda combination: (-float(probabilities[combination]), combination),
+            )
+            for combination in ranked[: int(policy["max_model_rank"])]:
+                probability = float(probabilities[combination])
+                market_probability = float(
+                    race["market_probabilities"][combination]
+                )
+                odds = float(decision_odds(race)[combination])
+                estimated_ev = probability * odds
+                if policy.get("min_odds") is not None and odds < float(
+                    policy["min_odds"]
+                ):
+                    continue
+                if policy.get("max_odds") is not None and odds > float(
+                    policy["max_odds"]
+                ):
+                    continue
+                if estimated_ev < float(policy["ev_threshold"]):
+                    continue
+                if policy.get("max_estimated_ev") is not None and (
+                    estimated_ev > float(policy["max_estimated_ev"])
+                ):
+                    continue
+                if probability / max(1e-15, market_probability) < float(
+                    policy["min_model_market_ratio"]
+                ):
+                    continue
+                candidates.append({
+                    "race_id": str(race["race_id"]),
+                    "race_date": race_date,
+                    "jcd": race.get("jcd"),
+                    "rno": int(race.get("rno") or 0),
+                    "combination": combination,
+                    "probability": probability,
+                    "estimated_odds": odds,
+                    "estimated_ev": estimated_ev,
+                    "decision_at": race.get("captured_at")
+                    or race.get("odds_deadline_at"),
+                })
+
+        def allocate_fixed_unit(
+            _race_date: str,
+            race_candidates: Iterable[dict[str, Any]],
+            _eligible_races: set[str],
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            budget = int(kwargs["daily_budget_yen"])
+            settlements = dict(kwargs.get("settlements") or {})
+            selected = []
+            for candidate in race_candidates:
+                if budget < STAKE_YEN:
+                    break
+                row = dict(candidate)
+                returned = int(
+                    settlements.get(
+                        (str(row["race_id"]), str(row["combination"])), 0
+                    )
+                )
+                row.update({
+                    "stake_yen": STAKE_YEN,
+                    "return_yen": returned,
+                    "hit": returned > 0,
+                })
+                selected.append(row)
+                budget -= STAKE_YEN
+            return {
+                "selected_sample": selected,
+                "allocation_candidate_tickets": len(list(race_candidates)),
+            }
+
+        result = simulate_chronological_bankroll_day(
+            race_date,
+            candidates,
+            (str(race["race_id"]) for race in day_races),
+            settlement_events=settlement_events_from_races(day_races),
+            initial_bankroll_yen=initial_bankroll_yen,
+            daily_stake_limit_fraction=1.0,
+            max_decision_exposure_fraction=1.0,
+            race_cap_fraction=1.0,
+            ticket_cap_fraction=1.0,
+            max_tickets_per_race=int(policy.get("max_model_rank") or 5),
+            schedule=day_races,
+            allocate_day=allocate_fixed_unit,
+            allocation_method="chronological_fixed100_registered_top5",
+        )
+        result.pop("ledger", None)
+        daily.append(result)
+
+    summary = summarize_chronological_bankroll_days(daily)
+    return {
+        **summary,
+        "evaluated_races": len(races),
+        "evaluation_days": len(daily),
+        "winning_days": summary["winning_days"],
         "daily": daily,
     }
 
