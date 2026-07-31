@@ -1075,10 +1075,17 @@ def test_registered_ev_band_uses_only_days_after_hypothesis_registration() -> No
     registered = result["registered_ev_band_walk_forward"]
 
     assert registered["registered_after"] == "2026-07-25"
+    assert registered["comparison_role"].endswith("chronological_shadow")
+    assert registered["allocation_time_basis"] == (
+        "decision_time_order_with_settlement_only_reinvestment"
+    )
     assert registered["status"] == "evaluating"
     assert registered["evaluation_days"] == 1
     assert registered["evaluated_races"] == 3
     assert [row["race_date"] for row in registered["daily"]] == ["2026-07-26"]
+    assert registered["daily"][0]["information_boundary"][
+        "settlement_joined_after_allocation"
+    ] is True
     assert result["folds"][0]["registered_ev_band_bankroll"] is None
     assert result["folds"][1]["registered_ev_band_bankroll"] is not None
 

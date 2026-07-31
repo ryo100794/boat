@@ -1424,7 +1424,8 @@ def summarize_registered_policy_daily(
     return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
     return {
         "status": "evaluating" if daily else "waiting_for_first_unseen_day",
-        "comparison_role": "prospective_only_pre_registered_policy_shadow",
+        "comparison_role": "prospective_only_pre_registered_policy_chronological_shadow",
+        "allocation_time_basis": "decision_time_order_with_settlement_only_reinvestment",
         "registered_after": registered_after,
         "policy": dict(selected_policy),
         "evaluation_days": len(daily),
@@ -3664,6 +3665,7 @@ def walk_forward_evaluate(
                 calibrator=purchase_calibrator,
                 policy=REGISTERED_EV_BAND_POLICY,
                 daily_budget_yen=daily_budget_yen,
+                include_chronological=True,
             )
         prospective_bankroll = None
         if evaluation_date > PROSPECTIVE_NORMALIZED_EV_REGISTERED_AFTER:
@@ -3672,6 +3674,7 @@ def walk_forward_evaluate(
                 calibrator=purchase_calibrator,
                 policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
                 daily_budget_yen=daily_budget_yen,
+                include_chronological=True,
             )
         top5_narrow_simulator = (
             simulate_chronological_flat_policy
@@ -3911,10 +3914,14 @@ def walk_forward_evaluate(
             )
         flat_daily_rows.extend(flat_bankroll["daily"])
         if registered_bankroll is not None:
-            registered_daily_rows.extend(registered_bankroll["daily"])
+            registered_daily_rows.extend(
+                registered_bankroll["chronological_bankroll"]["daily"]
+            )
             registered_evaluated_races += len(holdout_policy_races)
         if prospective_bankroll is not None:
-            prospective_daily_rows.extend(prospective_bankroll["daily"])
+            prospective_daily_rows.extend(
+                prospective_bankroll["chronological_bankroll"]["daily"]
+            )
             prospective_evaluated_races += len(holdout_policy_races)
         if prospective_top5_bankroll is not None:
             prospective_top5_daily_rows.extend(
