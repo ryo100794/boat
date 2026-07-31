@@ -25,3 +25,19 @@ def plausible_trifecta_odds(odds: Mapping[str, float]) -> bool:
         and sum(value in {1.0, 2.0, 3.0, 4.0, 5.0, 6.0} for value in values)
         <= MAX_LANE_MARKER_ODDS
     )
+
+
+def plausible_trifecta_capture(odds: Mapping[str, float]) -> bool:
+    """Accept official in-sale snapshots while keeping zero odds out of inference."""
+    if set(odds) != set(TRIFECTA_COMBINATION_KEYS):
+        return False
+    try:
+        values = [float(odds[key]) for key in TRIFECTA_COMBINATION_KEYS]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) and value >= 0.0 for value in values)
+        and any(value > 0.0 for value in values)
+        and sum(value in {1.0, 2.0, 3.0, 4.0, 5.0, 6.0} for value in values)
+        <= MAX_LANE_MARKER_ODDS
+    )
