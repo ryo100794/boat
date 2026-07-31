@@ -1034,14 +1034,30 @@ def requeue_stale_jobs(
 
 
 def reconcile_queue_state(conn: Any) -> int:
-    """Cancel exhausted queued jobs that can no longer be claimed."""
+    """Close orphaned runs and cancel exhausted jobs that cannot be claimed."""
+    orphaned_run_error = (
+        "queue reconciliation closed orphaned running attempt"
+    )
     audit_error = (
         "queue reconciliation cancelled exhausted job: "
         "attempt reached max_attempts"
     )
     rows = conn.execute(
         """
-        WITH locked_jobs AS MATERIALIZED (
+        WITH orphaned_runs AS (
+          UPDATE model_evaluation_job_runs AS runs
+          SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
+              error = COALESCE(runs.error, ?)
+          WHERE runs.status = 'running'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM model_evaluation_jobs AS jobs
+              WHERE jobs.job_id = runs.job_id
+                AND jobs.status = 'running'
+                AND jobs.attempt = runs.attempt
+            )
+          RETURNING runs.run_id
+        ), locked_jobs AS MATERIALIZED (
           SELECT job_id
           FROM model_evaluation_jobs
           WHERE status = 'queued' AND attempt >= max_attempts
@@ -1056,7 +1072,7 @@ def reconcile_queue_state(conn: Any) -> int:
         WHERE jobs.job_id = locked_jobs.job_id
         RETURNING jobs.job_id
         """,
-        (audit_error,),
+        (orphaned_run_error, audit_error),
     ).fetchall()
     return len(rows)
 

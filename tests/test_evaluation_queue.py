@@ -2660,8 +2660,13 @@ def test_reconcile_queue_state_only_cancels_exhausted_queued_jobs() -> None:
     assert "SET status = 'cancelled'" in sql
     assert "completed_at = CURRENT_TIMESTAMP" in sql
     assert "WHERE status = 'queued' AND attempt >= max_attempts" in sql
-    assert "running" not in sql
+    assert "WITH orphaned_runs AS" in sql
+    assert "UPDATE model_evaluation_job_runs AS runs" in sql
+    assert "runs.status = 'running'" in sql
+    assert "jobs.status = 'running'" in sql
+    assert "jobs.attempt = runs.attempt" in sql
     assert parameters == (
+        "queue reconciliation closed orphaned running attempt",
         "queue reconciliation cancelled exhausted job: "
         "attempt reached max_attempts",
     )
