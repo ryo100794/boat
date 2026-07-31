@@ -3120,6 +3120,8 @@ def walk_forward_evaluate(
     prospective_evaluated_races = 0
     prospective_top5_daily_rows = []
     prospective_top5_evaluated_races = 0
+    top5_narrow_retrospective_daily_rows = []
+    top5_narrow_retrospective_evaluated_races = 0
     prospective_architecture_daily_rows = []
     prospective_architecture_evaluated_races = 0
     prospective_architecture_config = {
@@ -3361,14 +3363,17 @@ def walk_forward_evaluate(
                 policy=PROSPECTIVE_NORMALIZED_EV_POLICY,
                 daily_budget_yen=daily_budget_yen,
             )
-        prospective_top5_bankroll = None
-        if evaluation_date > PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER:
-            prospective_top5_bankroll = simulate_flat_policy(
-                holdout_policy_races,
-                calibrator=purchase_calibrator,
-                policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
-                probability_blender=blend_probabilities,
-            )
+        top5_narrow_retrospective_bankroll = simulate_flat_policy(
+            holdout_policy_races,
+            calibrator=purchase_calibrator,
+            policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
+            probability_blender=blend_probabilities,
+        )
+        prospective_top5_bankroll = (
+            top5_narrow_retrospective_bankroll
+            if evaluation_date > PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER
+            else None
+        )
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
             calibrator=purchase_calibrator,
@@ -3564,6 +3569,11 @@ def walk_forward_evaluate(
                     if prospective_top5_bankroll is not None
                     else None
                 ),
+                "top5_narrow_retrospective_bankroll": {
+                    key: value
+                    for key, value in top5_narrow_retrospective_bankroll.items()
+                    if key != "daily"
+                },
                 "empirical_lcb_bankroll": {
                     key: value
                     for key, value in empirical_bankroll.items()
@@ -3596,6 +3606,10 @@ def walk_forward_evaluate(
                 prospective_top5_bankroll["daily"]
             )
             prospective_top5_evaluated_races += len(holdout_policy_races)
+        top5_narrow_retrospective_daily_rows.extend(
+            top5_narrow_retrospective_bankroll["daily"]
+        )
+        top5_narrow_retrospective_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
         empirical_daily_rows.extend(empirical_bankroll["daily"])
@@ -4187,6 +4201,20 @@ def walk_forward_evaluate(
             policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
             registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
         ),
+        "top5_narrow_retrospective_diagnostic": {
+            **summarize_registered_policy_daily(
+                top5_narrow_retrospective_daily_rows,
+                evaluated_races=top5_narrow_retrospective_evaluated_races,
+                policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
+                registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "comparison_role": (
+                "strict-prior fold predictions across all evaluation days; "
+                "pre-registration days may have informed policy selection"
+            ),
+            "promotion_evidence": False,
+        },
         **(
             {
                 str(prospective_architecture_config["output_key"]): (

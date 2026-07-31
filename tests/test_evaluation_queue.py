@@ -3689,6 +3689,18 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
             "roi": 0.0,
             "profit_yen": 0,
         },
+        "top5_narrow_retrospective_diagnostic": {
+            "status": "diagnostic_only_not_promotion_evidence",
+            "evaluation_days": 8,
+            "evaluated_races": 1179,
+            "tickets": 609,
+            "hit_tickets": 71,
+            "roi": 1.312,
+            "profit_yen": 19010,
+            "roi_without_largest_hit": 1.28,
+            "effective_hit_count": 50.0,
+            "promotion_evidence": False,
+        },
         "prospective_observed_closing_return_v4_walk_forward": {
             "status": "waiting_for_first_unseen_day",
             "registered_after": "2026-07-29",
@@ -3713,6 +3725,9 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
         "waiting_for_first_unseen_day"
     )
     assert summary["prospective_top5_narrow_ev_registered_after"] == "2026-07-28"
+    assert summary["top5_narrow_retrospective_evaluation_days"] == 8
+    assert summary["top5_narrow_retrospective_roi"] == 1.312
+    assert summary["top5_narrow_retrospective_promotion_evidence"] is False
     assert summary["prospective_observed_closing_v4_status"] == (
         "waiting_for_first_unseen_day"
     )
