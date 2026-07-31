@@ -80,6 +80,8 @@ DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS = 120.0
 DEFAULT_MAX_DECISION_DELAY_SECONDS = 90.0
 DEFAULT_INTERVAL_SECONDS = 5.0
 SCHEMA_VERSION = 1
+_SHARED_HISTORICAL_STATE: dict[tuple[int, str], Any] = {}
+_SHARED_DATE_RACES: dict[tuple[int, str, object], dict[str, list[Any]]] = {}
 
 POSTGRESQL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS intraday_t300_shadow_decisions (
@@ -557,19 +559,36 @@ class V12RoleModelAdapter:
                 return value
         raise ValueError(f"V12 shadow bundle lacks component: {names[0]}")
 
+    def prewarm(self, conn: Any, race_date: str) -> None:
+        state_key = (id(conn), race_date)
+        state = _SHARED_HISTORICAL_STATE.get(state_key)
+        if state is None:
+            state = historical_state(conn, race_date=race_date)
+            _SHARED_HISTORICAL_STATE[state_key] = state
+        schema = self._base_artifact.get("feature_schema_version")
+        rows_key = (id(conn), race_date, schema)
+        rows = _SHARED_DATE_RACES.get(rows_key)
+        if rows is None:
+            rows = load_date_races(
+                conn,
+                race_date=race_date,
+                feature_schema_version=schema,
+            )
+            _SHARED_DATE_RACES[rows_key] = rows
+        self._state_by_date[race_date] = state
+        self._rows_by_date[race_date] = rows
+
     def _base_probabilities(self, conn: Any, race: RaceWindow) -> dict[str, float]:
         if race.race_date not in self._state_by_date:
-            self._state_by_date[race.race_date] = historical_state(conn, race_date=race.race_date)
-            self._rows_by_date[race.race_date] = load_date_races(
-                conn, race_date=race.race_date,
-                feature_schema_version=self._base_artifact.get("feature_schema_version"),
-            )
+            self.prewarm(conn, race.race_date)
         rows = self._rows_by_date[race.race_date].get(race.race_id)
         if rows is None:
-            self._rows_by_date[race.race_date] = load_date_races(
+            refreshed = load_date_races(
                 conn, race_date=race.race_date,
                 feature_schema_version=self._base_artifact.get("feature_schema_version"),
             )
+            self._rows_by_date[race.race_date].clear()
+            self._rows_by_date[race.race_date].update(refreshed)
             rows = self._rows_by_date[race.race_date].get(race.race_id)
         if rows is None or len(rows) != 6:
             raise ValueError("six complete entry rows are required")
@@ -2062,6 +2081,18 @@ def run_cycle(
     cycle_started = time.perf_counter()
     race_date = resolve_race_date(now, configured_date)
     store.ensure_schema()
+    prewarm_timing: dict[str, float] = {}
+    store_conn = getattr(store, "conn", None)
+    if isinstance(store, PostgresShadowStore):
+        for adapter in adapters:
+            prewarm = getattr(adapter, "prewarm", None)
+            if not callable(prewarm):
+                continue
+            started = time.perf_counter()
+            prewarm(store_conn, race_date)
+            prewarm_timing[adapter.identity.model_key] = round(
+                time.perf_counter() - started, 6
+            )
     settlements = store.append_available_settlements(race_date=race_date, now=now)
     inserted = duplicate = model_errors = no_bets = selected = deferred = 0
     due_races = store.due_races(race_date=race_date, now=now)
@@ -2152,21 +2183,24 @@ def run_cycle(
         }
         for key, value in model_decide_timing.items()
     }
+    timing_payload = {
+        "cycle_elapsed_seconds": round(cycle_elapsed, 6),
+        "due_races_scanned": len(due_races),
+        "pending_decisions": pending_decisions,
+        "initial_pending_backlog_max_seconds": round(
+            pending_backlog_max_seconds, 6
+        ),
+        "model_decide": timing_diagnostics,
+    }
+    if prewarm_timing:
+        timing_payload["model_prewarm_seconds"] = prewarm_timing
     return {"race_date": race_date, "observed_at": now.isoformat(),
             "models": [adapter.identity.model_key for adapter in adapters],
             "decisions_inserted": inserted, "selected_decisions": selected,
             "no_bet_decisions": no_bets, "existing_decisions": duplicate,
             "deferred_decisions": deferred,
             "model_errors": model_errors, "settlements_inserted": settlements,
-            "timing": {
-                "cycle_elapsed_seconds": round(cycle_elapsed, 6),
-                "due_races_scanned": len(due_races),
-                "pending_decisions": pending_decisions,
-                "initial_pending_backlog_max_seconds": round(
-                    pending_backlog_max_seconds, 6
-                ),
-                "model_decide": timing_diagnostics,
-            },
+            "timing": timing_payload,
             "real_betting": False}
 
 
