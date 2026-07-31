@@ -4,8 +4,24 @@ from typing import Any, Mapping
 
 
 RESIDUAL_MODELS = (
-    ("direct_context_market_residual_v25", "direct_context_market_residual_v25"),
-    ("contextual_market_residual_v24", "contextual_market_residual_v24"),
+    (
+        "direct_context_empirical_lcb_v26",
+        "direct_context_empirical_lcb_v26",
+        "probability_metrics",
+        "final_probability_artifact",
+    ),
+    (
+        "direct_context_market_residual_v25",
+        "direct_context_market_residual_v25",
+        "metrics",
+        "artifact",
+    ),
+    (
+        "contextual_market_residual_v24",
+        "contextual_market_residual_v24",
+        "metrics",
+        "artifact",
+    ),
 )
 
 
@@ -16,16 +32,18 @@ def apply_archive_residual_summary(
     temporal = payload.get("temporal_residual_diagnostic")
     if not isinstance(temporal, Mapping):
         return
-    selected_name = selected = None
-    for result_key, model_name in RESIDUAL_MODELS:
+    selected_name = selected = selected_metric_key = selected_artifact_key = None
+    for result_key, model_name, metric_key, artifact_key in RESIDUAL_MODELS:
         candidate = temporal.get(result_key)
         if isinstance(candidate, Mapping):
             selected_name = model_name
             selected = candidate
+            selected_metric_key = metric_key
+            selected_artifact_key = artifact_key
             break
-    if selected is None or selected_name is None:
+    if None in (selected, selected_name, selected_metric_key, selected_artifact_key):
         return
-    metrics = selected.get("metrics")
+    metrics = selected.get(str(selected_metric_key))
     if not isinstance(metrics, Mapping):
         return
 
@@ -50,7 +68,7 @@ def apply_archive_residual_summary(
         "residual_evaluation_from": temporal.get("evaluation_from"),
         "residual_evaluation_through": temporal.get("evaluation_through"),
     })
-    artifact = selected.get("artifact")
+    artifact = selected.get(str(selected_artifact_key))
     if isinstance(artifact, Mapping):
         for key in (
             "feature_dimension",
@@ -93,4 +111,33 @@ def apply_archive_residual_summary(
                 else None
             ),
         })
+    bankroll = selected.get("bankroll")
+    if isinstance(bankroll, Mapping):
+        for key in (
+            "evaluated_races",
+            "evaluation_days",
+            "tickets",
+            "hit_tickets",
+            "stake_yen",
+            "return_yen",
+            "profit_yen",
+            "roi",
+            "max_drawdown_yen",
+        ):
+            if bankroll.get(key) is not None:
+                summary[key] = bankroll[key]
+        summary["promotion_eligible"] = bool(selected.get("promotion_eligible"))
+        compact_policies = [{
+            "name": "empirical_ev_lcb95_adaptive_kelly",
+            "tickets": bankroll.get("tickets"),
+            "hit_tickets": bankroll.get("hit_tickets"),
+            "stake_yen": bankroll.get("stake_yen"),
+            "return_yen": bankroll.get("return_yen"),
+            "profit_yen": bankroll.get("profit_yen"),
+            "roi": bankroll.get("roi"),
+            "status": bankroll.get("status"),
+        }]
+        calibration = selected.get("empirical_ev_calibration")
+        if isinstance(calibration, Mapping):
+            summary["residual_empirical_ev_calibration"] = dict(calibration)
     summary["residual_purchase_policies"] = compact_policies
