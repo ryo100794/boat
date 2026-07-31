@@ -122,7 +122,7 @@ def main() -> int:
     for race in cache["races"]:
         races_by_date.setdefault(str(race["race_date"]), []).append(race)
     calibrators = {
-        str(fold["evaluation_date"]): fold["purchase_calibrator"]
+        str(fold["evaluation_date"]): fold["calibrator"]
         for fold in evaluation["folds"]
     }
 
