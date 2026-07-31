@@ -9,6 +9,8 @@ from .feature_search import build_parser as build_feature_search_parser
 from .feature_search import search
 
 
+# Raw equipment IDs are always removed upstream; venue-scoped motor and boat
+# history remains available through the rolling_history group.
 COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     ("drop_base_pastlog", ("base_pastlog",)),
     (
@@ -18,15 +20,6 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     (
         "keep_card_numeric",
         ("card_identity_context", "card_relative", "research_correlates"),
-    ),
-    (
-        "keep_card_numeric_without_raw_equipment_ids",
-        (
-            "card_identity_context",
-            "card_relative",
-            "raw_equipment_identifiers",
-            "research_correlates",
-        ),
     ),
     (
         "keep_card_relative",
