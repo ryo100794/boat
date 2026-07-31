@@ -1848,9 +1848,25 @@ def select_v18_schedule_quota_policy(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Select a quota release rule using strict-prior days only."""
     minimum_score = float(policy.get("ev_threshold") or 0.0)
+    learned_limit = int(ticket_control["learned_daily_ticket_limit"])
+    prior_counts = sorted(
+        max(0, int(value))
+        for value in ticket_control.get("prior_daily_ticket_counts", [])
+    )
+    median_limit = (
+        prior_counts[math.floor((len(prior_counts) - 1) * 0.50)]
+        if prior_counts else learned_limit
+    )
+    budget_limit = max(1, daily_budget_yen // STAKE_YEN)
     candidates = [
-        {"name": "floor", "schedule_quota_rounding": "floor"},
-        {"name": "ceil", "schedule_quota_rounding": "ceil"},
+        {
+            "name": "floor", "schedule_quota_rounding": "floor",
+            "learned_daily_ticket_limit": learned_limit,
+        },
+        {
+            "name": "ceil", "schedule_quota_rounding": "ceil",
+            "learned_daily_ticket_limit": learned_limit,
+        },
     ]
     for after_fraction in (0.90, 0.95):
         for score_quantile in (0.75, 0.90):
@@ -1860,6 +1876,7 @@ def select_v18_schedule_quota_policy(
                     f"q{int(score_quantile * 100)}"
                 ),
                 "schedule_quota_rounding": "floor",
+                "learned_daily_ticket_limit": learned_limit,
                 "schedule_quota_opportunity": {
                     "after_fraction": after_fraction,
                     "score_quantile": score_quantile,
@@ -1867,11 +1884,33 @@ def select_v18_schedule_quota_policy(
                     "minimum_score": minimum_score,
                 },
             })
+    if median_limit != learned_limit:
+        candidates.extend([
+            {
+                "name": "median_floor",
+                "schedule_quota_rounding": "floor",
+                "learned_daily_ticket_limit": median_limit,
+            },
+            {
+                "name": "median_ceil",
+                "schedule_quota_rounding": "ceil",
+                "learned_daily_ticket_limit": median_limit,
+            },
+        ])
+    if budget_limit not in {learned_limit, median_limit}:
+        candidates.append({
+            "name": "budget_cap_ceil",
+            "schedule_quota_rounding": "ceil",
+            "learned_daily_ticket_limit": budget_limit,
+        })
 
     diagnostics = []
     for candidate in candidates:
         candidate_control = {
             **ticket_control,
+            "learned_daily_ticket_limit": candidate[
+                "learned_daily_ticket_limit"
+            ],
             "schedule_quota_rounding": candidate["schedule_quota_rounding"],
             "schedule_quota_opportunity": candidate.get(
                 "schedule_quota_opportunity"
@@ -1922,6 +1961,9 @@ def select_v18_schedule_quota_policy(
         ),
     )
     selected_control = {
+        "learned_daily_ticket_limit": int(
+            selected["learned_daily_ticket_limit"]
+        ),
         "schedule_quota_rounding": str(
             selected["schedule_quota_rounding"]
         ),
@@ -2003,6 +2045,8 @@ def select_policy_v18(
                 for row in quota_diagnostics
                 if row["schedule_quota_rounding"]
                 == selected_control["schedule_quota_rounding"]
+                and row["learned_daily_ticket_limit"]
+                == selected_control["learned_daily_ticket_limit"]
                 and row.get("schedule_quota_opportunity")
                 == selected_control["schedule_quota_opportunity"]
             ),
