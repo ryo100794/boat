@@ -159,6 +159,24 @@ def test_confirmed_five_boat_odds_are_terminally_excluded(
         assert attempt["status"] == "excluded_non_six_boat"
         assert "five-boat" in attempt["error"]
 
+        conn.execute(
+            "UPDATE archive_closing_odds_attempts "
+            "SET status = 'invalid', error = ? WHERE race_id = ?",
+            (
+                "ValueError: official trifecta odds are incomplete: 60/120",
+                race_id,
+            ),
+        )
+        replay = backfill_official_closing_odds(
+            conn,
+            from_date="2026-06-01",
+            through_date="2026-06-01",
+            sleep_seconds=0.0,
+        )
+        assert replay["reclassified_non_six_boat"] == 1
+        assert replay["targets"] == 0
+        assert replay["remaining"] == 0
+
 
 def test_archive_queue_selects_official_backfill_module(tmp_path) -> None:
     command, _output = build_command(
