@@ -245,13 +245,28 @@ class TeleboatLoginProbe:
 
     def _logout(self, page, mode: str) -> bool:
         try:
+            if mode == "mobile":
+                modal_closes = page.locator(".modal-close")
+                for index in range(modal_closes.count() - 1, -1, -1):
+                    close = modal_closes.nth(index)
+                    if close.is_visible():
+                        close.click(force=True)
+                        page.wait_for_timeout(200)
             logout = page.get_by_text("ログアウト", exact=True)
             if mode == "mobile" and not any(
                 logout.nth(index).is_visible() for index in range(logout.count())
             ):
                 self._visible_locator(page, ".menu-open").click()
+                page.wait_for_timeout(200)
                 logout = page.get_by_text("ログアウト", exact=True)
-            self._visible_from_locator(logout).click()
+            if not any(
+                logout.nth(index).is_visible() for index in range(logout.count())
+            ):
+                logout = page.locator(
+                    'a[href*="logout" i], button[data-action*="logout" i]'
+                )
+            self._visible_from_locator(logout).evaluate(
+                "element => element.click()")
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
                 if self._logout_location_confirmed(page.url, mode):
@@ -313,12 +328,19 @@ class TeleboatLoginProbe:
     def _logout_location_confirmed(url: str, mode: str) -> bool:
         parsed = urlsplit(url)
         return bool(
-            mode == "mobile"
-            and parsed.scheme == "https"
-            and parsed.hostname == "mb.brtb.jp"
+            mode == "mobile" and parsed.scheme == "https"
             and (
-                "/F_PWTAUT_Logout/" in parsed.path
-                or "pwtautlogout_display" in parsed.path
+                (
+                    parsed.hostname == "spweb.brtb.jp"
+                    and parsed.path in {"", "/"}
+                )
+                or (
+                    parsed.hostname == "mb.brtb.jp"
+                    and (
+                        "/F_PWTAUT_Logout/" in parsed.path
+                        or "pwtautlogout_display" in parsed.path
+                    )
+                )
             )
         )
 
