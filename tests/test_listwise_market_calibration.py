@@ -1118,6 +1118,16 @@ def test_prospective_normalized_ev_uses_only_unseen_days_after_registration() ->
     assert [row["race_date"] for row in top5["daily"]] == ["2026-07-29"]
     assert folds["2026-07-28"]["prospective_top5_narrow_ev_bankroll"] is None
     assert folds["2026-07-29"]["prospective_top5_narrow_ev_bankroll"] is not None
+    diagnostic = result["top5_narrow_retrospective_diagnostic"]
+    assert diagnostic["status"] == "diagnostic_only_not_promotion_evidence"
+    assert diagnostic["promotion_evidence"] is False
+    assert diagnostic["evaluation_days"] == result["evaluation_days"]
+    assert diagnostic["evaluated_races"] == result["evaluated_races"]
+    assert diagnostic["evaluation_days"] > top5["evaluation_days"]
+    assert all(
+        fold["top5_narrow_retrospective_bankroll"] is not None
+        for fold in folds.values()
+    )
 
 
 def test_cli_accepts_and_dispatches_v9_discrete_strategy(monkeypatch) -> None:

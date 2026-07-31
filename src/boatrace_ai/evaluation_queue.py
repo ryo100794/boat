@@ -2937,6 +2937,24 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"prospective_top5_narrow_ev_{key}"] = (
                     prospective_top5[key]
                 )
+    retrospective_top5 = payload.get("top5_narrow_retrospective_diagnostic")
+    if isinstance(retrospective_top5, dict):
+        for key in (
+            "status",
+            "evaluation_days",
+            "evaluated_races",
+            "tickets",
+            "hit_tickets",
+            "roi",
+            "profit_yen",
+            "roi_without_largest_hit",
+            "effective_hit_count",
+            "promotion_evidence",
+        ):
+            if key in retrospective_top5:
+                summary[f"top5_narrow_retrospective_{key}"] = (
+                    retrospective_top5[key]
+                )
     prospective_v4 = payload.get(
         "prospective_observed_closing_return_v4_walk_forward"
     )
