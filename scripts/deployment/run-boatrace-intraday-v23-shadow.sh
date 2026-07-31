@@ -57,6 +57,7 @@ while true; do
     stop_child
     export BOATRACE_T300_SHADOW_MODEL_SPEC="v23_daily:v23_top5_narrow_t300:${v21_spec#v21_daily:v21_triple_head_t300:}"
     export BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=""
+    export BOATRACE_T300_SHADOW_DATE
     export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0
     "$SHADOW_RUNNER" &
     child_pid=$!
