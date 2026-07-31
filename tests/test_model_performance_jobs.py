@@ -171,6 +171,19 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "roi_ci95_lower": 0.97,
         "roi_ci95_upper": 1.09,
         "probability_roi_above_one": 0.91,
+        "prospective_top5_narrow_ev_status": "evaluating",
+        "prospective_top5_narrow_ev_evaluation_days": 2,
+        "prospective_top5_narrow_ev_tickets": 112,
+        "prospective_top5_narrow_ev_hit_tickets": 13,
+        "prospective_top5_narrow_ev_roi": 1.298,
+        "top5_narrow_retrospective_status": (
+            "diagnostic_only_not_promotion_evidence"
+        ),
+        "top5_narrow_retrospective_evaluation_days": 8,
+        "top5_narrow_retrospective_tickets": 609,
+        "top5_narrow_retrospective_hit_tickets": 71,
+        "top5_narrow_retrospective_roi": 1.312,
+        "top5_narrow_retrospective_roi_without_largest_hit": 1.28,
     }
     conn.execute(
         "INSERT INTO model_evaluation_jobs VALUES (273, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -209,6 +222,14 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["largest_hit_excluded_roi"] == 1.01
     assert status["jobs"][0]["roi_ci95_lower"] == 0.97
     assert status["jobs"][0]["probability_roi_above_one"] == 0.91
+    assert status["jobs"][0]["prospective_top5_narrow_ev_evaluation_days"] == 2
+    assert status["jobs"][0]["prospective_top5_narrow_ev_roi"] == 1.298
+    assert status["jobs"][0]["top5_narrow_retrospective_evaluation_days"] == 8
+    assert status["jobs"][0]["top5_narrow_retrospective_roi"] == 1.312
+    assert (
+        status["jobs"][0]["top5_narrow_retrospective_roi_without_largest_hit"]
+        == 1.28
+    )
     assert status["candidates"][0]["payout_feature_candidate_roi"] == 1.03
     assert status["candidates"][0]["payout_feature_candidate_profit_yen"] == 300
     assert status["candidates"][0]["payout_feature_candidate_max_drawdown_yen"] == 1_200
