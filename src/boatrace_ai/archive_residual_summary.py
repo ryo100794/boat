@@ -5,6 +5,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "pruned_direct_context_market_residual_v27",
+        "pruned_direct_context_market_residual_v27",
+        "metrics",
+        "artifact",
+    ),
+    (
         "direct_context_empirical_lcb_v26",
         "direct_context_empirical_lcb_v26",
         "probability_metrics",
@@ -72,6 +78,8 @@ def apply_archive_residual_summary(
     if isinstance(artifact, Mapping):
         for key in (
             "feature_dimension",
+            "feature_variant",
+            "active_context_feature_count",
             "regularization",
             "objective",
             "gradient_norm",
@@ -81,6 +89,19 @@ def apply_archive_residual_summary(
         ):
             if key in artifact:
                 summary[f"residual_{key}"] = artifact[key]
+
+    selection = selected.get("selected_candidate")
+    if isinstance(selection, Mapping):
+        summary["residual_selection"] = {
+            key: selection.get(key)
+            for key in (
+                "variant",
+                "active_context_feature_count",
+                "feature_dimension",
+                "regularization",
+                "converged",
+            )
+        }
 
     compact_policies = []
     for row in selected.get("purchase_diagnostics") or ():
