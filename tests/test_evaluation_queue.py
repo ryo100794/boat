@@ -195,6 +195,7 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
                 "model_input": "data/models/evaluation_queue/job-00002606.joblib",
                 "daily_budget_yen": 10000,
                 "timeout_seconds": 43200,
+                "temporal_calibration_through": "2026-07-17",
             },
         ),
         app_root=root,
@@ -204,6 +205,9 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
 
     assert command[1:3] == ["-m", "boatrace_ai.listwise.archive_market_oracle"]
     assert command[command.index("--from-date") + 1] == "2025-07-25"
+    assert command[command.index("--temporal-calibration-through") + 1] == (
+        "2026-07-17"
+    )
     assert command[command.index("--daily-budget-yen") + 1] == "10000"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 

@@ -40,8 +40,15 @@ def test_v23_top5_oracle_policy_matches_registered_band() -> None:
 
 def _residual_race(race_date: str, actual: str) -> dict:
     return {
+        "race_id": f"{race_date}-01-01",
         "race_date": race_date,
+        "jcd": "01",
+        "rno": 1,
+        "captured_at": f"{race_date}T10:00:00+09:00",
+        "odds_deadline_at": f"{race_date}T10:00:00+09:00",
         "actual_combination": actual,
+        "actual_payout_yen": 200 if actual == "1-2-3" else 300,
+        "odds": {"1-2-3": 2.0, "1-3-2": 3.0},
         "model_probabilities": {"1-2-3": 0.7, "1-3-2": 0.3},
         "market_probabilities": {"1-2-3": 0.6, "1-3-2": 0.4},
     }
@@ -56,7 +63,7 @@ def test_temporal_residual_uses_strictly_earlier_calibration_days() -> None:
     ]
     result = temporal_residual_diagnostic(
         races,
-        calibration_fraction=0.5,
+        calibration_through="2026-01-02",
     )
     assert result["status"] == "completed"
     assert result["calibration_from"] == "2026-01-01"
@@ -66,6 +73,8 @@ def test_temporal_residual_uses_strictly_earlier_calibration_days() -> None:
     assert result["calibration_races"] == 2
     assert result["evaluation_races"] == 2
     assert result["metrics"]["evaluated_races"] == 2
+    assert len(result["purchase_diagnostics"]) == 4
+    assert all("bootstrap" in row for row in result["purchase_diagnostics"])
 
 
 def test_temporal_residual_requires_four_days() -> None:

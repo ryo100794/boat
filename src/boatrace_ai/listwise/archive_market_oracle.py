@@ -33,7 +33,7 @@ from .market_residual import (
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 1
+EVALUATION_VERSION = 2
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -54,6 +54,48 @@ V23_TOP5_ORACLE_POLICY: dict[str, Any] = {
     "min_model_market_ratio": 0.0,
     "stake_per_ticket_yen": 100,
 }
+TEMPORAL_RESIDUAL_POLICIES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "residual_top5_ev100_120_odds80_flat100_v1",
+        "max_model_rank": 5,
+        "min_odds": None,
+        "max_odds": 80.0,
+        "ev_threshold": 1.0,
+        "max_estimated_ev": 1.20,
+        "min_model_market_ratio": 0.0,
+        "stake_per_ticket_yen": 100,
+    },
+    {
+        "name": "residual_top10_ev105_150_odds80_flat100_v1",
+        "max_model_rank": 10,
+        "min_odds": None,
+        "max_odds": 80.0,
+        "ev_threshold": 1.05,
+        "max_estimated_ev": 1.50,
+        "min_model_market_ratio": 0.0,
+        "stake_per_ticket_yen": 100,
+    },
+    {
+        "name": "residual_top20_ev110_200_odds120_flat100_v1",
+        "max_model_rank": 20,
+        "min_odds": None,
+        "max_odds": 120.0,
+        "ev_threshold": 1.10,
+        "max_estimated_ev": 2.0,
+        "min_model_market_ratio": 0.0,
+        "stake_per_ticket_yen": 100,
+    },
+    {
+        "name": "residual_tail_ev105_150_odds100_500_flat100_v1",
+        "max_model_rank": 120,
+        "min_odds": 100.0,
+        "max_odds": 500.0,
+        "ev_threshold": 1.05,
+        "max_estimated_ev": 1.50,
+        "min_model_market_ratio": 0.0,
+        "stake_per_ticket_yen": 100,
+    },
+)
 DIAGNOSTIC_CONFIGS: tuple[tuple[str, dict[str, float], dict[str, Any]], ...] = (
     ("model_only_conservative", {"model_weight": 1.0, "temperature": 1.0}, {
         **PRIMARY_POLICY, "name": "model_only_ev120_odds80_r3", "ev_threshold": 1.20,
@@ -220,6 +262,7 @@ def temporal_residual_diagnostic(
     *,
     calibration_fraction: float = 0.75,
     regularization: float = 0.01,
+    calibration_through: str | None = None,
 ) -> dict[str, Any]:
     """Fit a market residual on prior days and score untouched later days."""
     dates = sorted({str(race["race_date"]) for race in races})
@@ -230,10 +273,17 @@ def temporal_residual_diagnostic(
             "calibration_days": 0,
             "evaluation_days": 0,
         }
-    split_index = max(
-        1,
-        min(len(dates) - 1, int(len(dates) * calibration_fraction)),
-    )
+    if calibration_through is None:
+        split_index = max(
+            1,
+            min(len(dates) - 1, int(len(dates) * calibration_fraction)),
+        )
+    else:
+        split_index = sum(race_date <= calibration_through for race_date in dates)
+        if split_index < 1 or split_index >= len(dates):
+            raise ValueError(
+                "calibration-through must leave calibration and evaluation days"
+            )
     calibration_dates = set(dates[:split_index])
     evaluation_dates = set(dates[split_index:])
     calibration = [
@@ -251,6 +301,34 @@ def temporal_residual_diagnostic(
         calibrator,
         include_raw_model=True,
     )
+    purchase_diagnostics = []
+    for policy in TEMPORAL_RESIDUAL_POLICIES:
+        simulation = simulate_chronological_flat_policy(
+            evaluation,
+            calibrator={
+                "model_weight": float(calibrator["model_weight"]),
+                "temperature": float(calibrator["temperature"]),
+            },
+            policy=policy,
+            probability_blender=blend_probabilities,
+        )
+        bootstrap = (
+            bootstrap_daily_roi(simulation["daily"])
+            if simulation["daily"]
+            else {
+                "days": 0,
+                "roi": None,
+                "roi_ci95_lower": None,
+                "probability_roi_above_one": None,
+            }
+        )
+        purchase_diagnostics.append(
+            {
+                "policy": dict(policy),
+                "simulation": simulation,
+                "bootstrap": bootstrap,
+            }
+        )
     return {
         "status": "completed",
         "validation_design": (
@@ -267,11 +345,15 @@ def temporal_residual_diagnostic(
         "evaluation_races": len(evaluation),
         "calibrator": calibrator,
         "metrics": metrics,
+        "purchase_diagnostics": purchase_diagnostics,
     }
 
 
 def evaluate_archive_oracle(
-    races: list[dict[str, Any]], *, daily_budget_yen: int
+    races: list[dict[str, Any]],
+    *,
+    daily_budget_yen: int,
+    temporal_calibration_through: str | None = None,
 ) -> dict[str, Any]:
     diagnostics = []
     primary = None
@@ -326,7 +408,10 @@ def evaluate_archive_oracle(
         ) > 1.0,
         "effective_hit_count": float(primary.get("effective_hit_count") or 0.0) >= 30.0,
     }
-    temporal_residual = temporal_residual_diagnostic(races)
+    temporal_residual = temporal_residual_diagnostic(
+        races,
+        calibration_through=temporal_calibration_through,
+    )
     prediction = probability_metrics(races, calibrator=PRIMARY_CALIBRATOR)
     return {
         "model": MODEL_NAME,
@@ -371,6 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--from-date", required=True)
     parser.add_argument("--through-date", required=True)
+    parser.add_argument("--temporal-calibration-through")
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--output", type=Path, required=True)
     return parser
@@ -392,7 +478,9 @@ def main(argv: list[str] | None = None) -> int:
             through_date=args.through_date,
         )
     result = evaluate_archive_oracle(
-        races, daily_budget_yen=args.daily_budget_yen
+        races,
+        daily_budget_yen=args.daily_budget_yen,
+        temporal_calibration_through=args.temporal_calibration_through,
     )
     result.update({
         "evaluation_version": EVALUATION_VERSION,
