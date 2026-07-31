@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .archive_residual_summary import apply_archive_residual_summary
 from .db import connection
 from .evaluation_probability_summary import canonicalize_probability_metrics
 from .evaluation_result_summary import canonicalize_primary_bankroll
@@ -2884,6 +2885,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    apply_archive_residual_summary(payload, summary)
     chronological = payload.get("chronological_bankroll")
     if isinstance(chronological, dict):
         summary["primary_bankroll"] = (
