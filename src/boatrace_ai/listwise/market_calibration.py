@@ -1907,6 +1907,9 @@ def select_v18_schedule_quota_policy(
             "learned_daily_ticket_limit": prior_max_limit,
         })
 
+    prepared_policy_matrix = (
+        prepare_policy_matrix(races, calibrator) if races else None
+    )
     diagnostics = []
     for candidate in candidates:
         candidate_control = {
@@ -1924,6 +1927,7 @@ def select_v18_schedule_quota_policy(
             calibrator=calibrator,
             policy={**policy, "v18_ticket_control": candidate_control},
             daily_budget_yen=daily_budget_yen,
+            prepared_policy_matrix=prepared_policy_matrix,
             include_chronological=True,
             include_robust_metrics=False,
         )

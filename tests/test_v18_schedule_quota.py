@@ -277,6 +277,7 @@ def test_v18_selector_attaches_control_without_changing_v17_policy(
         "race_date": "2026-07-29",
         "model_probabilities": {"1-2-3": 0.5, "1-3-2": 0.5},
         "market_probabilities": {"1-2-3": 0.5, "1-3-2": 0.5},
+        "odds": {"1-2-3": 2.0, "1-3-2": 2.0},
     }]
 
     v18, rows = market_calibration.select_policy_v18(
