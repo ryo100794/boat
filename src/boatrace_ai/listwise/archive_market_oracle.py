@@ -26,6 +26,10 @@ from .market_calibration import (
     simulate_policy,
     write_json_atomic,
 )
+from .market_residual import (
+    fit_log_pool_newton,
+    residual_probability_metrics,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
@@ -211,6 +215,61 @@ def score_archive_markets(
     }
 
 
+def temporal_residual_diagnostic(
+    races: list[dict[str, Any]],
+    *,
+    calibration_fraction: float = 0.75,
+    regularization: float = 0.01,
+) -> dict[str, Any]:
+    """Fit a market residual on prior days and score untouched later days."""
+    dates = sorted({str(race["race_date"]) for race in races})
+    if len(dates) < 4:
+        return {
+            "status": "insufficient_days",
+            "dates": len(dates),
+            "calibration_days": 0,
+            "evaluation_days": 0,
+        }
+    split_index = max(
+        1,
+        min(len(dates) - 1, int(len(dates) * calibration_fraction)),
+    )
+    calibration_dates = set(dates[:split_index])
+    evaluation_dates = set(dates[split_index:])
+    calibration = [
+        race for race in races if str(race["race_date"]) in calibration_dates
+    ]
+    evaluation = [
+        race for race in races if str(race["race_date"]) in evaluation_dates
+    ]
+    calibrator = fit_log_pool_newton(
+        calibration,
+        regularization=regularization,
+    )
+    metrics = residual_probability_metrics(
+        evaluation,
+        calibrator,
+        include_raw_model=True,
+    )
+    return {
+        "status": "completed",
+        "validation_design": (
+            "Residual coefficients are fit on the earliest complete days and "
+            "scored once on untouched later days"
+        ),
+        "calibration_from": dates[0],
+        "calibration_through": dates[split_index - 1],
+        "evaluation_from": dates[split_index],
+        "evaluation_through": dates[-1],
+        "calibration_days": split_index,
+        "evaluation_days": len(dates) - split_index,
+        "calibration_races": len(calibration),
+        "evaluation_races": len(evaluation),
+        "calibrator": calibrator,
+        "metrics": metrics,
+    }
+
+
 def evaluate_archive_oracle(
     races: list[dict[str, Any]], *, daily_budget_yen: int
 ) -> dict[str, Any]:
@@ -267,6 +326,7 @@ def evaluate_archive_oracle(
         ) > 1.0,
         "effective_hit_count": float(primary.get("effective_hit_count") or 0.0) >= 30.0,
     }
+    temporal_residual = temporal_residual_diagnostic(races)
     prediction = probability_metrics(races, calibrator=PRIMARY_CALIBRATOR)
     return {
         "model": MODEL_NAME,
@@ -288,6 +348,7 @@ def evaluate_archive_oracle(
         "winner_top1_accuracy": prediction[
             "calibrated_winner_top1_accuracy"
         ],
+        "temporal_residual_diagnostic": temporal_residual,
         "v23_top5_observed_closing_oracle": v23_top5_oracle,
         "v23_top5_observed_closing_oracle_bootstrap": v23_top5_oracle_bootstrap,
         "primary": primary,
