@@ -22,6 +22,14 @@ from .odds_quality import TRIFECTA_COMBINATION_KEYS, plausible_trifecta_odds
 from .official import race_page_url
 
 
+class IncompleteOfficialTrifectaOdds(ValueError):
+    def __init__(self, odds_count: int) -> None:
+        self.odds_count = int(odds_count)
+        super().__init__(
+            f"official trifecta odds are incomplete: {self.odds_count}/120"
+        )
+
+
 def official_closing_url(race_date: str | date, jcd: str, rno: int) -> str:
     day = date.fromisoformat(str(race_date)[:10])
     return race_page_url("odds3t", day, str(jcd), int(rno))
@@ -35,7 +43,7 @@ def parse_official_closing_odds_html(html: str) -> dict[str, Any]:
         if value is not None
     }
     if set(odds) != set(TRIFECTA_COMBINATION_KEYS):
-        raise ValueError(f"official trifecta odds are incomplete: {len(odds)}/120")
+        raise IncompleteOfficialTrifectaOdds(len(odds))
     if not plausible_trifecta_odds(odds):
         raise ValueError("official trifecta odds are implausible")
     return {
@@ -47,6 +55,18 @@ def parse_official_closing_odds_html(html: str) -> dict[str, Any]:
         "unavailable_combinations": [],
         "odds": odds,
     }
+
+
+def _confirmed_result_boats(conn: Any, race_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT lane) AS boats
+        FROM race_results
+        WHERE race_id = ? AND rank IS NOT NULL
+        """,
+        (race_id,),
+    ).fetchone()
+    return int(row["boats"] if row is not None else 0)
 
 
 def backfill_official_closing_odds(
@@ -76,6 +96,7 @@ def backfill_official_closing_odds(
         "not_found": 0,
         "invalid": 0,
         "fetch_failed": 0,
+        "excluded_non_six_boat": 0,
     }
     for index, row in enumerate(targets):
         url = official_closing_url(row["race_date"], row["jcd"], int(row["rno"]))
@@ -140,14 +161,29 @@ def backfill_official_closing_odds(
                 source_key=OFFICIAL_SOURCE_KEY,
             )
         except (KeyError, TypeError, ValueError) as exc:
-            counters["invalid"] += 1
-            record_attempt(
-                conn,
-                race_id=row["race_id"],
-                status="invalid",
-                error=f"{type(exc).__name__}: {exc}"[:500],
-                source_key=OFFICIAL_SOURCE_KEY,
+            confirmed_non_six = (
+                isinstance(exc, IncompleteOfficialTrifectaOdds)
+                and exc.odds_count == 60
+                and _confirmed_result_boats(conn, str(row["race_id"])) == 5
             )
+            if confirmed_non_six:
+                counters["excluded_non_six_boat"] += 1
+                record_attempt(
+                    conn,
+                    race_id=row["race_id"],
+                    status="excluded_non_six_boat",
+                    error="confirmed five-boat race: official odds contain 60/120",
+                    source_key=OFFICIAL_SOURCE_KEY,
+                )
+            else:
+                counters["invalid"] += 1
+                record_attempt(
+                    conn,
+                    race_id=row["race_id"],
+                    status="invalid",
+                    error=f"{type(exc).__name__}: {exc}"[:500],
+                    source_key=OFFICIAL_SOURCE_KEY,
+                )
         conn.commit()
         if index + 1 < len(targets) and sleep_seconds > 0:
             time.sleep(sleep_seconds)
