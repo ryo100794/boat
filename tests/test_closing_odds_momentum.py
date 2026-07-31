@@ -89,6 +89,12 @@ def test_price_model_selection_requires_prior_day_improvement() -> None:
     ]
 
 
+    augmented = attach_selected_closing_odds([races[0]], selection)
+    assert augmented[0]["closing_odds_forecast_source"] == (
+        "contextual_momentum_lower_envelope"
+    )
+    assert len(augmented[0]["estimated_final_odds"]) == 120
+
 def test_price_model_selection_falls_back_without_two_momentum_days() -> None:
     race = _race(rising=True)
     race["race_date"] = "2026-07-21"
