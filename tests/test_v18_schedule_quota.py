@@ -48,7 +48,9 @@ def _one_ticket_allocator(
     }
 
 
-def _simulate(limit: int, payouts: list[int]) -> dict:
+def _simulate(
+    limit: int, payouts: list[int], *, rounding: str = "floor"
+) -> dict:
     candidates = [_candidate(index) for index in range(4)]
     return simulate_chronological_bankroll_day(
         DATE,
@@ -58,6 +60,7 @@ def _simulate(limit: int, payouts: list[int]) -> dict:
             _event(index, payout) for index, payout in enumerate(payouts)
         ],
         schedule=deepcopy(candidates),
+        schedule_quota_rounding=rounding,
         max_daily_tickets=limit,
         initial_bankroll_yen=10_000,
         max_decision_exposure_fraction=1.0,
@@ -93,6 +96,16 @@ def test_v18_schedule_quota_spreads_learned_limit_over_known_day() -> None:
     assert result["gross_stake_allowance_rule"] == (
         "initial_allowance_plus_positive_part_of_cumulative_net_realized_profit"
     )
+
+
+def test_ceil_schedule_quota_releases_each_slot_before_day_end() -> None:
+    result = _simulate(2, [0, 0, 0, 0], rounding="ceil")
+    decisions = [row for row in result["ledger"] if row["event"] == "decision"]
+
+    assert [row["cumulative_ticket_quota"] for row in decisions] == [1, 1, 2, 2]
+    assert [row["tickets"] for row in decisions] == [1, 0, 1, 0]
+    assert result["schedule_quota_rounding"] == "ceil"
+    assert result["schedule_quota_rule"].startswith("ceil(")
 
 
 def test_v18_zero_ticket_day_is_valid() -> None:
@@ -140,13 +153,48 @@ def test_v18_selector_attaches_control_without_changing_v17_policy(
         "select_policy_v17",
         lambda *args, **kwargs: (dict(selected), [{"policy": dict(selected)}]),
     )
-    monkeypatch.setattr(
-        market_calibration,
-        "simulate_policy",
-        lambda *args, **kwargs: {
-            "daily": [{"tickets": value} for value in (16, 14, 30, 30, 15, 10)]
-        },
-    )
+    def simulate(*args, **kwargs):
+        if not kwargs.get("include_chronological"):
+            return {
+                "daily": [
+                    {"tickets": value}
+                    for value in (16, 14, 30, 30, 15, 10)
+                ]
+            }
+        rounding = kwargs["policy"]["v18_ticket_control"][
+            "schedule_quota_rounding"
+        ]
+        returned = 200 if rounding == "ceil" else 100
+        day = {
+            "race_date": "2026-07-29",
+            "evaluated_races": 1,
+            "tickets": 1,
+            "races_bet": 1,
+            "hit_races": int(returned > 100),
+            "hit_tickets": int(returned > 100),
+            "largest_hit_return_yen": returned,
+            "hit_return_square_sum_yen2": returned * returned,
+            "stake_yen": 100,
+            "return_yen": returned,
+            "profit_yen": returned - 100,
+            "roi": returned / 100,
+            "max_drawdown_yen": 0,
+        }
+        return {
+            "chronological_bankroll": {
+                "race_days": 1,
+                "tickets": 1,
+                "hit_tickets": day["hit_tickets"],
+                "stake_yen": 100,
+                "return_yen": returned,
+                "profit_yen": returned - 100,
+                "roi": returned / 100,
+                "winning_days": int(returned > 100),
+                "daily": [day],
+            }
+        }
+
+    monkeypatch.setattr(market_calibration, "simulate_policy", simulate)
     races = [{
         "race_id": "prior-1",
         "race_date": "2026-07-29",
@@ -161,7 +209,11 @@ def test_v18_selector_attaches_control_without_changing_v17_policy(
     )
 
     assert {key: v18[key] for key in selected} == selected
-    assert v18["v18_ticket_control"]["learned_daily_ticket_limit"] == 14
+    control = v18["v18_ticket_control"]
+    assert control["learned_daily_ticket_limit"] == 14
+    assert control["schedule_quota_rounding"] == "ceil"
+    assert control["schedule_quota_rounding_selection"]["selected"] == "ceil"
+    assert len(control["schedule_quota_rounding_selection"]["candidates"]) == 2
     assert rows == [{"policy": selected}]
 
 

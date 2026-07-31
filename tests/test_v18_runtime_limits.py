@@ -52,6 +52,25 @@ class Connection:
         ])
 
 
+def test_runtime_uses_artifact_selected_ceil_rounding() -> None:
+    model = object.__new__(V18ScheduleQuotaModelAdapter)
+    model._ticket_limit = 3
+    model._quota_rounding = "ceil"
+    model._identity = ModelIdentity("v18_daily", "a" * 64, model.strategy_name)
+    race = RaceWindow(
+        "race-2",
+        "2026-07-30",
+        "01",
+        2,
+        datetime(2026, 7, 30, 9, 10, tzinfo=JST),
+    )
+
+    limits = model._runtime_limits(Connection(), race, bankroll_yen=9_700)
+
+    assert limits["cumulative_ticket_quota"] == 2
+    assert limits["remaining_ticket_quota"] == 0
+
+
 def test_v18_runtime_limits_apply_schedule_and_realized_net_profit_only() -> None:
     model = object.__new__(V18ScheduleQuotaModelAdapter)
     model._ticket_limit = 26
