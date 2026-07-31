@@ -3043,6 +3043,43 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "registered_ev_band_hit_tickets"
                 ),
                 "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
+                "prospective_top5_narrow_ev_status": metrics.get(
+                    "prospective_top5_narrow_ev_status"
+                ),
+                "prospective_top5_narrow_ev_evaluation_days": metrics.get(
+                    "prospective_top5_narrow_ev_evaluation_days"
+                ),
+                "prospective_top5_narrow_ev_tickets": metrics.get(
+                    "prospective_top5_narrow_ev_tickets"
+                ),
+                "prospective_top5_narrow_ev_hit_tickets": metrics.get(
+                    "prospective_top5_narrow_ev_hit_tickets"
+                ),
+                "prospective_top5_narrow_ev_roi": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_roi")
+                ),
+                "top5_narrow_retrospective_status": metrics.get(
+                    "top5_narrow_retrospective_status"
+                ),
+                "top5_narrow_retrospective_evaluation_days": metrics.get(
+                    "top5_narrow_retrospective_evaluation_days"
+                ),
+                "top5_narrow_retrospective_tickets": metrics.get(
+                    "top5_narrow_retrospective_tickets"
+                ),
+                "top5_narrow_retrospective_hit_tickets": metrics.get(
+                    "top5_narrow_retrospective_hit_tickets"
+                ),
+                "top5_narrow_retrospective_roi": _float_or_none(
+                    metrics.get("top5_narrow_retrospective_roi")
+                ),
+                "top5_narrow_retrospective_roi_without_largest_hit": (
+                    _float_or_none(
+                        metrics.get(
+                            "top5_narrow_retrospective_roi_without_largest_hit"
+                        )
+                    )
+                ),
                 "prospective_normalized_ev_status": metrics.get(
                     "prospective_observed_closing_v4_status"
                 ) or metrics.get(
