@@ -12,6 +12,7 @@ from boatrace_ai.ingestion import live
 from boatrace_ai.listwise.market_calibration import odds_data_signature
 from boatrace_ai.odds_quality import (
     TRIFECTA_COMBINATION_KEYS,
+    plausible_trifecta_capture,
     plausible_trifecta_odds,
 )
 
@@ -31,6 +32,16 @@ def test_plausibility_rejects_lane_headers_and_incomplete_tables() -> None:
     assert plausible_trifecta_odds(_odds())
     assert not plausible_trifecta_odds(_lane_markers())
     assert not plausible_trifecta_odds({"1-2-3": 10.0})
+
+
+def test_capture_accepts_official_zero_odds_without_relaxing_inference() -> None:
+    odds = _odds()
+    odds["6-5-4"] = 0.0
+
+    assert plausible_trifecta_capture(odds)
+    assert not plausible_trifecta_odds(odds)
+    assert not plausible_trifecta_capture({key: 0.0 for key in odds})
+    assert not plausible_trifecta_capture(_lane_markers())
 
 
 def test_readers_skip_newer_legacy_and_corrupt_dom_snapshots(tmp_path) -> None:
