@@ -1157,6 +1157,10 @@ def simulate_policy(
                 daily_stake_limit_fraction=1.0,
                 max_daily_tickets=max_daily_tickets,
                 schedule=schedule,
+                schedule_quota_rounding=str(
+                    (ticket_control or {}).get("schedule_quota_rounding")
+                    or "floor"
+                ),
                 max_decision_exposure_fraction=0.30,
                 race_cap_fraction=0.05,
                 ticket_cap_fraction=0.02,
@@ -1172,6 +1176,11 @@ def simulate_policy(
                 allocation_method=(
                     (
                         "chronological_v18_schedule_quota_"
+                        + str(
+                            ticket_control.get("schedule_quota_rounding")
+                            or "floor"
+                        )
+                        + "_"
                         if ticket_control is not None
                         else "chronological_adaptive_"
                     ) + str(staking["allocation_mode"])
@@ -1755,9 +1764,75 @@ def learn_v18_daily_ticket_control(
         "prior_days": len(counts),
         "prior_daily_ticket_counts": counts,
         "learned_daily_ticket_limit": learned_limit,
+        "schedule_quota_rounding": "floor",
         "stake_granularity_yen": STAKE_YEN,
         "result_or_payout_fields_used": False,
     }
+
+
+def select_v18_schedule_quota_rounding(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    policy: dict[str, Any],
+    ticket_control: dict[str, Any],
+    daily_budget_yen: int,
+) -> tuple[str, list[dict[str, Any]]]:
+    diagnostics = []
+    for rounding in ("floor", "ceil"):
+        candidate_control = {
+            **ticket_control,
+            "schedule_quota_rounding": rounding,
+        }
+        candidate_policy = {
+            **policy,
+            "v18_ticket_control": candidate_control,
+        }
+        result = simulate_policy(
+            races,
+            calibrator=calibrator,
+            policy=candidate_policy,
+            daily_budget_yen=daily_budget_yen,
+            include_chronological=True,
+            include_robust_metrics=False,
+        )
+        bankroll = result["chronological_bankroll"]
+        confidence = bootstrap_daily_roi(
+            bankroll["daily"], samples=V17_POLICY_BOOTSTRAP_SAMPLES
+        )
+        race_days = int(bankroll["race_days"])
+        winning_days = int(bankroll["winning_days"])
+        diagnostics.append({
+            "rounding": rounding,
+            "race_days": race_days,
+            "tickets": int(bankroll["tickets"]),
+            "hit_tickets": int(bankroll["hit_tickets"]),
+            "stake_yen": int(bankroll["stake_yen"]),
+            "return_yen": int(bankroll["return_yen"]),
+            "profit_yen": int(bankroll["profit_yen"]),
+            "roi": float(bankroll["roi"]),
+            "winning_days": winning_days,
+            "profitable_day_fraction": (
+                winning_days / race_days if race_days else None
+            ),
+            "roi_ci95_lower": confidence.get("roi_ci95_lower"),
+            "probability_roi_above_one": confidence.get(
+                "probability_roi_above_one"
+            ),
+        })
+
+    selected = max(
+        diagnostics,
+        key=lambda row: (
+            float(row.get("roi_ci95_lower") or 0.0),
+            float(row.get("probability_roi_above_one") or 0.0),
+            float(row.get("profitable_day_fraction") or 0.0),
+            float(row.get("roi") or 0.0),
+            int(row.get("profit_yen") or 0),
+            int(row["rounding"] == "floor"),
+        ),
+    )
+    return str(selected["rounding"]), diagnostics
 
 
 def select_policy_v18(
@@ -1792,10 +1867,29 @@ def select_policy_v18(
         include_chronological=False,
         include_robust_metrics=False,
     )
-    v18_policy = dict(selected)
-    v18_policy["v18_ticket_control"] = learn_v18_daily_ticket_control(
+    ticket_control = learn_v18_daily_ticket_control(
         selected_result["daily"]
     )
+    selected_rounding, rounding_diagnostics = (
+        select_v18_schedule_quota_rounding(
+            prepared_races,
+            calibrator=calibrator,
+            policy=selected,
+            ticket_control=ticket_control,
+            daily_budget_yen=daily_budget_yen,
+        )
+    )
+    ticket_control.update({
+        "schedule_quota_rounding": selected_rounding,
+        "schedule_quota_rounding_selection": {
+            "source": "strict_prior_calibration_days_only",
+            "selected": selected_rounding,
+            "candidates": rounding_diagnostics,
+            "evaluation_or_future_fields_used": False,
+        },
+    })
+    v18_policy = dict(selected)
+    v18_policy["v18_ticket_control"] = ticket_control
     return v18_policy, rows
 
 

@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from .discrete_log_allocation import allocate_discrete_log_day
 
@@ -17,6 +17,24 @@ _RESULT_KEYS = frozenset({
     "profit_yen", "result_available_at", "return_yen", "settlement_at",
 })
 Allocator = Callable[..., dict[str, Any]]
+ScheduleQuotaRounding = Literal["floor", "ceil"]
+
+
+def cumulative_schedule_ticket_quota(
+    *,
+    limit: int,
+    elapsed: int,
+    total: int,
+    rounding: ScheduleQuotaRounding = "floor",
+) -> int:
+    if limit < 0 or total <= 0 or not 0 <= elapsed <= total:
+        raise ValueError("invalid schedule ticket quota inputs")
+    if rounding not in {"floor", "ceil"}:
+        raise ValueError("schedule quota rounding must be floor or ceil")
+    numerator = limit * elapsed
+    if rounding == "ceil" and numerator:
+        return min(limit, (numerator + total - 1) // total)
+    return min(limit, numerator // total)
 
 
 def _timestamp(value: Any, *, field: str) -> datetime:
@@ -136,6 +154,7 @@ def simulate_chronological_bankroll_day(
     max_tickets_per_race: int = 2,
     max_daily_tickets: int | None = None,
     schedule: Iterable[Mapping[str, Any]] | None = None,
+    schedule_quota_rounding: ScheduleQuotaRounding = "floor",
     stake_granularity_yen: int = STAKE_UNIT_YEN,
     allocate_day: Allocator = allocate_discrete_log_day,
     allocator_kwargs: Mapping[str, Any] | None = None,
@@ -148,6 +167,8 @@ def simulate_chronological_bankroll_day(
         raise ValueError("initial_bankroll_yen must be divisible by 100")
     if max_daily_tickets is not None and max_daily_tickets < 0:
         raise ValueError("max_daily_tickets must be non-negative")
+    if schedule_quota_rounding not in {"floor", "ceil"}:
+        raise ValueError("schedule quota rounding must be floor or ceil")
 
     decisions = [dict(candidate) for candidate in candidates]
     by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -269,7 +290,12 @@ def simulate_chronological_bankroll_day(
         )
         schedule_races_total = len(ordered_schedule_times)
         cumulative_ticket_quota = (
-            max_daily_tickets * schedule_races_elapsed // schedule_races_total
+            cumulative_schedule_ticket_quota(
+                limit=max_daily_tickets,
+                elapsed=schedule_races_elapsed,
+                total=schedule_races_total,
+                rounding=schedule_quota_rounding,
+            )
             if max_daily_tickets is not None and schedule_races_total
             else max_daily_tickets
         )
@@ -436,9 +462,12 @@ def simulate_chronological_bankroll_day(
         "daily_stake_limit_fraction": daily_stake_limit_fraction,
         "learned_daily_ticket_limit": max_daily_tickets,
         "schedule_races_total": len(ordered_schedule_times),
+        "schedule_quota_rounding": (
+            schedule_quota_rounding if max_daily_tickets is not None else None
+        ),
         "schedule_quota_rule": (
-            "floor(learned_daily_ticket_limit*scheduled_races_elapsed/"
-            "scheduled_races_total)"
+            f"{schedule_quota_rounding}(learned_daily_ticket_limit*"
+            "scheduled_races_elapsed/scheduled_races_total)"
             if max_daily_tickets is not None else None
         ),
         "gross_stake_allowance_rule": (

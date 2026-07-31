@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 import joblib
 
 from ..adaptive_allocation import allocate_adaptive_day
+from ..chronological_bankroll import cumulative_schedule_ticket_quota
 
 from ..db import connection
 from ..discrete_log_allocation import allocate_discrete_log_day
@@ -1292,11 +1293,16 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             != "strict_prior_daily_ticket_lower_quantile"
             or int(control.get("learned_daily_ticket_limit") or 0) <= 0
             or int(control.get("stake_granularity_yen") or 0) != 100
+            or str(control.get("schedule_quota_rounding") or "floor")
+            not in {"floor", "ceil"}
             or control.get("result_or_payout_fields_used") is not False
             or self._formal_selection.get("no_bet") is not True
         ):
             raise ValueError("V18 fixed policy artifacts are unsafe or inconsistent")
         self._ticket_limit = int(control["learned_daily_ticket_limit"])
+        self._quota_rounding = str(
+            control.get("schedule_quota_rounding") or "floor"
+        )
 
     def _calibrated_head_output(
         self,
@@ -1375,7 +1381,12 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
         if race.race_id not in schedule_ids:
             raise ValueError("V18 race is missing from known daily schedule")
         elapsed = schedule_ids.index(race.race_id) + 1
-        quota = self._ticket_limit * elapsed // len(schedule_ids)
+        quota = cumulative_schedule_ticket_quota(
+            limit=self._ticket_limit,
+            elapsed=elapsed,
+            total=len(schedule_ids),
+            rounding=getattr(self, "_quota_rounding", "floor"),
+        )
         rows = conn.execute(
             """
             SELECT d.selected_candidates, d.total_stake_yen, s.profit_yen
