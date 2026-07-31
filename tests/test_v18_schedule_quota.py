@@ -9,7 +9,7 @@ from boatrace_ai.listwise import market_calibration, market_residual
 DATE = "2026-07-30"
 
 
-def _candidate(index: int) -> dict:
+def _candidate(index: int, *, estimated_ev: float = 2.0) -> dict:
     return {
         "race_id": f"race-{index}",
         "race_date": DATE,
@@ -17,7 +17,7 @@ def _candidate(index: int) -> dict:
         "combination": "1-2-3",
         "probability": 0.25,
         "estimated_odds": 8.0,
-        "estimated_ev": 2.0,
+        "estimated_ev": estimated_ev,
         "decision_at": f"{DATE}T12:{index * 10:02d}:00+09:00",
     }
 
@@ -49,9 +49,20 @@ def _one_ticket_allocator(
 
 
 def _simulate(
-    limit: int, payouts: list[int], *, rounding: str = "floor"
+    limit: int,
+    payouts: list[int],
+    *,
+    rounding: str = "floor",
+    opportunity: dict | None = None,
+    estimated_evs: list[float] | None = None,
 ) -> dict:
-    candidates = [_candidate(index) for index in range(4)]
+    candidates = [
+        _candidate(
+            index,
+            estimated_ev=(estimated_evs or [2.0] * 4)[index],
+        )
+        for index in range(4)
+    ]
     return simulate_chronological_bankroll_day(
         DATE,
         candidates,
@@ -61,6 +72,7 @@ def _simulate(
         ],
         schedule=deepcopy(candidates),
         schedule_quota_rounding=rounding,
+        schedule_quota_opportunity=opportunity,
         max_daily_tickets=limit,
         initial_bankroll_yen=10_000,
         max_decision_exposure_fraction=1.0,
@@ -106,6 +118,71 @@ def test_ceil_schedule_quota_releases_each_slot_before_day_end() -> None:
     assert [row["tickets"] for row in decisions] == [1, 0, 1, 0]
     assert result["schedule_quota_rounding"] == "ceil"
     assert result["schedule_quota_rule"].startswith("ceil(")
+
+
+def test_opportunity_quota_releases_last_slot_for_late_high_score() -> None:
+    result = _simulate(
+        2,
+        [0, 0, 0, 0],
+        opportunity={
+            "after_fraction": 0.75,
+            "score_quantile": 0.75,
+            "reserve_slots": 1,
+            "minimum_score": 1.0,
+        },
+        estimated_evs=[1.2, 1.4, 2.0, 1.1],
+    )
+    decisions = [row for row in result["ledger"] if row["event"] == "decision"]
+
+    assert [row["tickets"] for row in decisions] == [0, 1, 1, 0]
+    assert decisions[2]["opportunity_quota_released"] is True
+    assert decisions[2]["opportunity_candidate_score"] == 2.0
+    assert decisions[2]["opportunity_score_threshold"] == 1.4
+    assert result["schedule_quota_opportunity"]["result_or_payout_fields_used"] is False
+
+
+def test_opportunity_quota_keeps_last_slot_for_late_low_score() -> None:
+    result = _simulate(
+        2,
+        [0, 0, 0, 0],
+        opportunity={
+            "after_fraction": 0.75,
+            "score_quantile": 0.75,
+            "reserve_slots": 1,
+            "minimum_score": 1.0,
+        },
+        estimated_evs=[2.0, 1.8, 1.1, 1.0],
+    )
+    decisions = [row for row in result["ledger"] if row["event"] == "decision"]
+
+    assert [row["tickets"] for row in decisions] == [0, 1, 0, 1]
+    assert decisions[2]["opportunity_quota_released"] is False
+
+
+def test_opportunity_quota_decisions_do_not_use_payouts() -> None:
+    config = {
+        "after_fraction": 0.75,
+        "score_quantile": 0.75,
+        "reserve_slots": 1,
+        "minimum_score": 1.0,
+    }
+    losing = _simulate(2, [0, 0, 0, 0], opportunity=config)
+    winning = _simulate(
+        2,
+        [50_000, 50_000, 50_000, 50_000],
+        opportunity=config,
+    )
+
+    losing_decisions = [
+        row for row in losing["ledger"] if row["event"] == "decision"
+    ]
+    winning_decisions = [
+        row for row in winning["ledger"] if row["event"] == "decision"
+    ]
+    assert [row["selections"] for row in losing_decisions] == [
+        row["selections"] for row in winning_decisions
+    ]
+    assert losing["return_yen"] != winning["return_yen"]
 
 
 def test_v18_zero_ticket_day_is_valid() -> None:
@@ -215,6 +292,69 @@ def test_v18_selector_attaches_control_without_changing_v17_policy(
     assert control["schedule_quota_rounding_selection"]["selected"] == "ceil"
     assert len(control["schedule_quota_rounding_selection"]["candidates"]) == 2
     assert rows == [{"policy": selected}]
+
+
+def test_opportunity_policy_selector_uses_prior_bankroll_only(
+    monkeypatch,
+) -> None:
+    def simulate(*args, **kwargs):
+        control = kwargs["policy"]["v18_ticket_control"]
+        opportunity = control.get("schedule_quota_opportunity") or {}
+        selected = (
+            float(opportunity.get("after_fraction") or 0.0) == 0.95
+            and float(opportunity.get("score_quantile") or 0.0) == 0.90
+        )
+        returned = 300 if selected else 100
+        day = {
+            "race_date": "2026-07-29",
+            "evaluated_races": 1,
+            "tickets": 1,
+            "races_bet": 1,
+            "hit_races": int(selected),
+            "hit_tickets": int(selected),
+            "largest_hit_return_yen": returned,
+            "hit_return_square_sum_yen2": returned * returned,
+            "stake_yen": 100,
+            "return_yen": returned,
+            "profit_yen": returned - 100,
+            "roi": returned / 100,
+            "max_drawdown_yen": 0,
+        }
+        return {
+            "chronological_bankroll": {
+                "race_days": 1,
+                "tickets": 1,
+                "hit_tickets": day["hit_tickets"],
+                "stake_yen": 100,
+                "return_yen": returned,
+                "profit_yen": returned - 100,
+                "roi": returned / 100,
+                "winning_days": int(selected),
+                "daily": [day],
+            }
+        }
+
+    monkeypatch.setattr(market_calibration, "simulate_policy", simulate)
+    control, diagnostics = market_calibration.select_v18_schedule_quota_policy(
+        [],
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={"ev_threshold": 1.05},
+        ticket_control={"learned_daily_ticket_limit": 10},
+        daily_budget_yen=10_000,
+    )
+
+    assert control["schedule_quota_rounding"] == "floor"
+    assert control["schedule_quota_opportunity"] == {
+        "after_fraction": 0.95,
+        "score_quantile": 0.90,
+        "reserve_slots": 1,
+        "minimum_score": 1.05,
+    }
+    assert len(diagnostics) == 6
+    assert all(
+        "actual_combination" not in row and "actual_payout_yen" not in row
+        for row in diagnostics
+    )
 
 
 def test_v18_keeps_original_calibrator_and_v19_opts_in(

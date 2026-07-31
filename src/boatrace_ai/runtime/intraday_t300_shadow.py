@@ -14,7 +14,10 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 import joblib
 
 from ..adaptive_allocation import allocate_adaptive_day
-from ..chronological_bankroll import cumulative_schedule_ticket_quota
+from ..chronological_bankroll import (
+    cumulative_schedule_ticket_quota,
+    opportunity_adjusted_ticket_quota,
+)
 
 from ..db import connection
 from ..discrete_log_allocation import allocate_discrete_log_day
@@ -1303,6 +1306,12 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
         self._quota_rounding = str(
             control.get("schedule_quota_rounding") or "floor"
         )
+        opportunity = control.get("schedule_quota_opportunity")
+        if opportunity is not None and not isinstance(opportunity, Mapping):
+            raise ValueError("V18 opportunity quota policy must be a mapping")
+        self._opportunity_policy = (
+            dict(opportunity) if isinstance(opportunity, Mapping) else None
+        )
 
     def _calibrated_head_output(
         self,
@@ -1389,7 +1398,8 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
         )
         rows = conn.execute(
             """
-            SELECT d.selected_candidates, d.total_stake_yen, s.profit_yen
+            SELECT d.selected_candidates, d.diagnostics,
+                   d.total_stake_yen, s.profit_yen
             FROM intraday_t300_shadow_decisions d
             LEFT JOIN intraday_t300_shadow_settlements s
               ON s.decision_id = d.decision_id
@@ -1398,11 +1408,25 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             (race.race_date, self.identity.model_key),
         ).fetchall()
         used_tickets = gross_stake_yen = realized_profit_yen = 0
+        observed_candidate_scores = []
         for row in rows:
             selected = row["selected_candidates"] or []
             if isinstance(selected, str):
                 selected = json.loads(selected)
             used_tickets += len(selected)
+            diagnostics = (
+                row["diagnostics"]
+                if "diagnostics" in row.keys()
+                else {}
+            ) or {}
+            if isinstance(diagnostics, str):
+                diagnostics = json.loads(diagnostics)
+            quota_diagnostics = diagnostics.get("v18_schedule_quota") or {}
+            observed_score = quota_diagnostics.get(
+                "opportunity_candidate_score"
+            )
+            if observed_score is not None and math.isfinite(float(observed_score)):
+                observed_candidate_scores.append(float(observed_score))
             gross_stake_yen += int(row["total_stake_yen"] or 0)
             if row["profit_yen"] is not None:
                 realized_profit_yen += int(row["profit_yen"])
@@ -1414,6 +1438,7 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             "cumulative_ticket_quota": quota,
             "used_tickets": used_tickets,
             "remaining_ticket_quota": max(0, quota - used_tickets),
+            "observed_candidate_scores": observed_candidate_scores,
             "gross_stake_yen": gross_stake_yen,
             "realized_cumulative_profit_yen": realized_profit_yen,
             "gross_stake_allowance_yen": gross_allowance_yen,
@@ -1430,7 +1455,10 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
                 f"{self.artifact_label} artifacts are not strictly prior to race date"
             )
         limits = self._runtime_limits(conn, race, bankroll_yen=bankroll_yen)
-        if limits["remaining_ticket_quota"] <= 0:
+        if (
+            limits["remaining_ticket_quota"] <= 0
+            and getattr(self, "_opportunity_policy", None) is None
+        ):
             return _no_bet(
                 "v18_schedule_ticket_quota_not_released",
                 diagnostics={"v18_schedule_quota": limits},
@@ -1531,6 +1559,41 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             key=lambda row: (-float(row["estimated_ev"]), -float(row["probability"]), str(row["combination"]))
         )
         candidates = raw_candidates[: int(self._policy["max_tickets_per_race"])]
+        current_candidate_score = max(
+            (float(row["estimated_ev"]) for row in candidates),
+            default=None,
+        )
+        adjusted_quota, score_threshold, quota_released = (
+            opportunity_adjusted_ticket_quota(
+                limit=self._ticket_limit,
+                base_quota=int(limits["cumulative_ticket_quota"]),
+                used_tickets=int(limits["used_tickets"]),
+                elapsed=int(limits["schedule_races_elapsed"]),
+                total=int(limits["schedule_races_total"]),
+                current_score=current_candidate_score,
+                observed_scores=list(
+                    limits.get("observed_candidate_scores") or []
+                ),
+                policy=getattr(self, "_opportunity_policy", None),
+            )
+        )
+        limits.update({
+            "cumulative_ticket_quota": adjusted_quota,
+            "remaining_ticket_quota": max(
+                0, adjusted_quota - int(limits["used_tickets"])
+            ),
+            "opportunity_candidate_score": current_candidate_score,
+            "opportunity_score_threshold": score_threshold,
+            "opportunity_quota_released": quota_released,
+            "schedule_quota_opportunity": getattr(
+                self, "_opportunity_policy", None
+            ),
+        })
+        if limits["remaining_ticket_quota"] <= 0:
+            return _no_bet(
+                "v18_schedule_ticket_quota_not_released",
+                diagnostics={"v18_schedule_quota": limits},
+            )
         allocated = allocate_adaptive_day(
             race.race_date,
             candidates,

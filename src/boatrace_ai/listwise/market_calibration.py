@@ -1161,6 +1161,9 @@ def simulate_policy(
                     (ticket_control or {}).get("schedule_quota_rounding")
                     or "floor"
                 ),
+                schedule_quota_opportunity=(
+                    (ticket_control or {}).get("schedule_quota_opportunity")
+                ),
                 max_decision_exposure_fraction=0.30,
                 race_cap_fraction=0.05,
                 ticket_cap_fraction=0.02,
@@ -1835,6 +1838,100 @@ def select_v18_schedule_quota_rounding(
     return str(selected["rounding"]), diagnostics
 
 
+def select_v18_schedule_quota_policy(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    policy: dict[str, Any],
+    ticket_control: dict[str, Any],
+    daily_budget_yen: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select a quota release rule using strict-prior days only."""
+    minimum_score = float(policy.get("ev_threshold") or 0.0)
+    candidates = [
+        {"name": "floor", "schedule_quota_rounding": "floor"},
+        {"name": "ceil", "schedule_quota_rounding": "ceil"},
+    ]
+    for after_fraction in (0.90, 0.95):
+        for score_quantile in (0.75, 0.90):
+            candidates.append({
+                "name": (
+                    f"opportunity_f{int(after_fraction * 100)}_"
+                    f"q{int(score_quantile * 100)}"
+                ),
+                "schedule_quota_rounding": "floor",
+                "schedule_quota_opportunity": {
+                    "after_fraction": after_fraction,
+                    "score_quantile": score_quantile,
+                    "reserve_slots": 1,
+                    "minimum_score": minimum_score,
+                },
+            })
+
+    diagnostics = []
+    for candidate in candidates:
+        candidate_control = {
+            **ticket_control,
+            "schedule_quota_rounding": candidate["schedule_quota_rounding"],
+            "schedule_quota_opportunity": candidate.get(
+                "schedule_quota_opportunity"
+            ),
+        }
+        result = simulate_policy(
+            races,
+            calibrator=calibrator,
+            policy={**policy, "v18_ticket_control": candidate_control},
+            daily_budget_yen=daily_budget_yen,
+            include_chronological=True,
+            include_robust_metrics=False,
+        )
+        bankroll = result["chronological_bankroll"]
+        confidence = bootstrap_daily_roi(
+            bankroll["daily"], samples=V17_POLICY_BOOTSTRAP_SAMPLES
+        )
+        race_days = int(bankroll["race_days"])
+        winning_days = int(bankroll["winning_days"])
+        diagnostics.append({
+            **candidate,
+            "race_days": race_days,
+            "tickets": int(bankroll["tickets"]),
+            "hit_tickets": int(bankroll["hit_tickets"]),
+            "stake_yen": int(bankroll["stake_yen"]),
+            "return_yen": int(bankroll["return_yen"]),
+            "profit_yen": int(bankroll["profit_yen"]),
+            "roi": float(bankroll["roi"]),
+            "winning_days": winning_days,
+            "profitable_day_fraction": (
+                winning_days / race_days if race_days else None
+            ),
+            "roi_ci95_lower": confidence.get("roi_ci95_lower"),
+            "probability_roi_above_one": confidence.get(
+                "probability_roi_above_one"
+            ),
+        })
+
+    selected = max(
+        diagnostics,
+        key=lambda row: (
+            float(row.get("roi_ci95_lower") or 0.0),
+            float(row.get("probability_roi_above_one") or 0.0),
+            float(row.get("profitable_day_fraction") or 0.0),
+            float(row.get("roi") or 0.0),
+            int(row.get("profit_yen") or 0),
+            int(row["name"] == "floor"),
+        ),
+    )
+    selected_control = {
+        "schedule_quota_rounding": str(
+            selected["schedule_quota_rounding"]
+        ),
+        "schedule_quota_opportunity": selected.get(
+            "schedule_quota_opportunity"
+        ),
+    }
+    return selected_control, diagnostics
+
+
 def select_policy_v18(
     races: list[dict[str, Any]],
     *,
@@ -1870,21 +1967,46 @@ def select_policy_v18(
     ticket_control = learn_v18_daily_ticket_control(
         selected_result["daily"]
     )
-    selected_rounding, rounding_diagnostics = (
-        select_v18_schedule_quota_rounding(
-            prepared_races,
-            calibrator=calibrator,
-            policy=selected,
-            ticket_control=ticket_control,
-            daily_budget_yen=daily_budget_yen,
-        )
+    selected_control, quota_diagnostics = select_v18_schedule_quota_policy(
+        prepared_races,
+        calibrator=calibrator,
+        policy=selected,
+        ticket_control=ticket_control,
+        daily_budget_yen=daily_budget_yen,
     )
+    rounding_diagnostics = [
+        row for row in quota_diagnostics if row["name"] in {"floor", "ceil"}
+    ]
+    selected_rounding = max(
+        rounding_diagnostics,
+        key=lambda row: (
+            float(row.get("roi_ci95_lower") or 0.0),
+            float(row.get("probability_roi_above_one") or 0.0),
+            float(row.get("profitable_day_fraction") or 0.0),
+            float(row.get("roi") or 0.0),
+            int(row.get("profit_yen") or 0),
+            int(row["name"] == "floor"),
+        ),
+    )["name"]
     ticket_control.update({
-        "schedule_quota_rounding": selected_rounding,
+        **selected_control,
         "schedule_quota_rounding_selection": {
             "source": "strict_prior_calibration_days_only",
             "selected": selected_rounding,
             "candidates": rounding_diagnostics,
+            "evaluation_or_future_fields_used": False,
+        },
+        "schedule_quota_policy_selection": {
+            "source": "strict_prior_calibration_days_only",
+            "selected": next(
+                row["name"]
+                for row in quota_diagnostics
+                if row["schedule_quota_rounding"]
+                == selected_control["schedule_quota_rounding"]
+                and row.get("schedule_quota_opportunity")
+                == selected_control["schedule_quota_opportunity"]
+            ),
+            "candidates": quota_diagnostics,
             "evaluation_or_future_fields_used": False,
         },
     })

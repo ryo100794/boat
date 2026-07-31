@@ -89,6 +89,7 @@ def test_v18_runtime_limits_apply_schedule_and_realized_net_profit_only() -> Non
         "cumulative_ticket_quota": 13,
         "used_tickets": 3,
         "remaining_ticket_quota": 10,
+        "observed_candidate_scores": [],
         "gross_stake_yen": 400,
         "realized_cumulative_profit_yen": 300,
         "gross_stake_allowance_yen": 10_300,
