@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from boatrace_ai.listwise.flat_policy import (
     select_flat_policy,
+    simulate_chronological_flat_policy,
     simulate_flat_policy,
 )
+from datetime import datetime, timedelta, timezone
 
 
 def _identity_blend(model, _market, **_kwargs):
@@ -69,6 +71,36 @@ def test_flat_policy_can_restrict_a_preregistered_narrow_ev_band() -> None:
     assert result["tickets"] == 1
     assert result["hit_tickets"] == 1
     assert result["daily"][0]["races_bet"] == 1
+
+
+def test_chronological_flat_policy_enforces_live_gross_capital_rule() -> None:
+    start = datetime(2026, 7, 30, 1, 0, tzinfo=timezone.utc)
+    races = []
+    for index in range(101):
+        decision = start + timedelta(minutes=index)
+        races.append({
+            **_race(index, hit=False),
+            "race_date": "2026-07-30",
+            "race_id": f"2026-07-30-01-{index + 1:03d}",
+            "jcd": "01",
+            "rno": index + 1,
+            "captured_at": decision.isoformat(),
+            "odds_deadline_at": (decision + timedelta(minutes=5)).isoformat(),
+        })
+
+    result = simulate_chronological_flat_policy(
+        races,
+        calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy=_policy(),
+        probability_blender=_identity_blend,
+    )
+
+    assert result["tickets"] == 100
+    assert result["stake_yen"] == 10_000
+    assert result["return_yen"] == 0
+    assert result["daily"][0]["gross_stake_yen"] == 10_000
+    assert result["daily"][0]["final_gross_stake_allowance_yen"] == 10_000
+    assert result["daily"][0]["profit_reinvestment"] is True
 
 
 def test_flat_policy_selection_requires_fifty_tickets_and_multiple_winning_days() -> None:
