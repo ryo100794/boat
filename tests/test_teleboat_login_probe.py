@@ -141,8 +141,8 @@ def test_login_probe_accepts_official_mobile_hosts(url: str) -> None:
     TeleboatLoginProbe._assert_allowed_host(url, "mobile")
 
 
-def test_mobile_probe_starts_at_migrated_agent_endpoint() -> None:
-    assert TeleboatLoginProbe._url("mobile") == "https://mb.brtb.jp/"
+def test_mobile_probe_starts_at_current_mobile_endpoint() -> None:
+    assert TeleboatLoginProbe._url("mobile") == "https://spweb.brtb.jp/"
 
 
 def test_login_probe_rejects_nonofficial_redirect() -> None:
