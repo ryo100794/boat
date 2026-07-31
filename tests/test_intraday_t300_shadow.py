@@ -233,7 +233,7 @@ def test_settlement_is_appended_later_without_changing_decision() -> None:
 @pytest.mark.parametrize(
     ("age", "source_stale", "reason"),
     [(91.0, 20.0, "stale_t300_checkpoint"),
-     (30.0, 121.0, "stale_t300_source_update")],
+     (30.0, 131.0, "stale_t300_source_update")],
 )
 def test_stale_snapshot_is_recorded_as_no_bet_with_actual_ages(
     age: float, source_stale: float, reason: str,
@@ -259,6 +259,19 @@ def test_stale_snapshot_is_recorded_as_no_bet_with_actual_ages(
     assert saved["snapshot_check"].checkpoint_age_before_target_seconds == age
     assert saved["snapshot_check"].source_update_staleness_seconds == source_stale
     assert adapter.calls == 0
+
+
+def test_two_minute_official_update_with_small_poll_jitter_is_accepted() -> None:
+    row = race("2026-07-30")
+    store = MemoryStore(
+        [row], {row.race_id: snapshot(row.target_t300_at, source_stale=122.0)}
+    )
+    adapter = Adapter("v12")
+    run_cycle(store, [adapter], now=row.target_t300_at + timedelta(seconds=90))
+    saved = store.decisions[(row.race_id, "v12")]
+
+    assert saved["decision"].status == "selected"
+    assert adapter.calls == 1
 
 
 def test_exactly_120_combinations_are_required() -> None:
@@ -354,7 +367,7 @@ def test_cycle_reports_backlog_and_only_configured_model_timings(
 def test_default_staleness_limits_and_daemon_cli_are_explicit() -> None:
     assert DEFAULT_MAX_CHECKPOINT_AGE_SECONDS == 90.0
     assert DEFAULT_MAX_DECISION_DELAY_SECONDS == 90.0
-    assert DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS == 120.0
+    assert DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS == 130.0
     args = build_parser().parse_args([
         "--db", "host=localhost dbname=boatrace",
         "--model-spec", "v12:v12_role_t300:bundle.joblib:base.joblib",

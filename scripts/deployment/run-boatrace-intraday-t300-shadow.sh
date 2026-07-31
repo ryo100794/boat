@@ -14,7 +14,7 @@ args=(
   --model-spec "$MODEL_SPEC"
   --interval "${BOATRACE_T300_SHADOW_INTERVAL_SECONDS:-5}"
   --max-checkpoint-age-seconds "${BOATRACE_T300_MAX_CHECKPOINT_AGE_SECONDS:-90}"
-  --max-source-update-staleness-seconds "${BOATRACE_T300_MAX_SOURCE_UPDATE_STALENESS_SECONDS:-120}"
+  --max-source-update-staleness-seconds "${BOATRACE_T300_MAX_SOURCE_UPDATE_STALENESS_SECONDS:-130}"
   --starting-bankroll-yen "${BOATRACE_T300_SHADOW_STARTING_BANKROLL_YEN:-10000}"
 )
 if [[ -n "${BOATRACE_T300_SHADOW_DATE:-}" ]]; then
