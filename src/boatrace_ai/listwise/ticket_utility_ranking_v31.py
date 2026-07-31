@@ -34,7 +34,11 @@ PROBABILITY_REGULARIZATION = 0.03
 POLICY_CALIBRATION_DAYS = 30
 STAKE_YEN = 100
 TOP_K_CHOICES = (1, 3, 5)
-LABEL_SCHEMES = ("winner", "payout_weighted")
+LABEL_SCHEMES = (
+    "winner",
+    "gross_return_poisson_c50",
+    "gross_return_poisson_c100",
+)
 TREE_PRESETS = (
     {"name": "compact", "num_leaves": 15, "max_depth": 5},
     {"name": "balanced", "num_leaves": 31, "max_depth": 7},
@@ -176,6 +180,19 @@ def _ranking_teacher_weights(
     return clipped / float(np.mean(clipped))
 
 
+def _gross_return_cap(label_scheme: str) -> float | None:
+    prefix = "gross_return_poisson_c"
+    if not label_scheme.startswith(prefix):
+        return None
+    try:
+        cap = float(label_scheme.removeprefix(prefix))
+    except ValueError as exc:
+        raise ValueError(f"invalid V31 gross-return scheme: {label_scheme}") from exc
+    if not math.isfinite(cap) or cap <= 1.0:
+        raise ValueError(f"invalid V31 gross-return cap: {cap}")
+    return cap
+
+
 def fit_ticket_utility_ranker(
     races: list[dict[str, Any]],
     *,
@@ -185,7 +202,12 @@ def fit_ticket_utility_ranker(
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("at least one V31 race is required")
-    race_weights = _ranking_teacher_weights(races, label_scheme)
+    gross_return_cap = _gross_return_cap(label_scheme)
+    race_weights = (
+        np.ones(len(races), dtype=np.float64)
+        if gross_return_cap is not None
+        else _ranking_teacher_weights(races, label_scheme)
+    )
     matrices: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     groups: list[int] = []
@@ -195,8 +217,15 @@ def fit_ticket_utility_ranker(
         actual = str(race["actual_combination"])
         if actual not in combinations:
             raise ValueError("actual V31 combination is absent from market tickets")
-        relevance = np.zeros(len(combinations), dtype=np.int32)
-        relevance[combinations.index(actual)] = 1
+        if gross_return_cap is None:
+            relevance = np.zeros(len(combinations), dtype=np.int32)
+            relevance[combinations.index(actual)] = 1
+        else:
+            relevance = np.zeros(len(combinations), dtype=np.float64)
+            realized = float(race["actual_payout_yen"]) / STAKE_YEN
+            relevance[combinations.index(actual)] = min(
+                gross_return_cap, realized
+            )
         matrices.append(matrix)
         labels.append(relevance)
         sample_weights.append(
@@ -207,9 +236,7 @@ def fit_ticket_utility_ranker(
     target = np.concatenate(labels)
     ticket_weights = np.concatenate(sample_weights)
     lightgbm = _lightgbm()
-    estimator = lightgbm.LGBMRanker(
-        objective="lambdarank",
-        metric="ndcg",
+    common_parameters = dict(
         n_estimators=160,
         learning_rate=0.035,
         num_leaves=int(tree_preset["num_leaves"]),
@@ -225,19 +252,37 @@ def fit_ticket_utility_ranker(
         deterministic=True,
         force_col_wise=True,
         verbosity=-1,
-        label_gain=[0, 1, 3, 7, 15],
     )
-    estimator.fit(
-        features,
-        target,
-        group=groups,
-        sample_weight=ticket_weights,
-    )
+    if gross_return_cap is None:
+        estimator = lightgbm.LGBMRanker(
+            objective="lambdarank",
+            metric="ndcg",
+            label_gain=[0, 1, 3, 7, 15],
+            **common_parameters,
+        )
+        estimator.fit(
+            features,
+            target,
+            group=groups,
+            sample_weight=ticket_weights,
+        )
+        learner_objective = "lambdarank_winner"
+    else:
+        estimator = lightgbm.LGBMRegressor(
+            objective="poisson",
+            metric="poisson",
+            max_delta_step=0.7,
+            **common_parameters,
+        )
+        estimator.fit(features, target, sample_weight=ticket_weights)
+        learner_objective = "poisson_expected_gross_return"
     model_text = estimator.booster_.model_to_string()
     return {
         "model": MODEL_NAME,
         "role": "ticket_utility_ranking_only",
         "label_scheme": label_scheme,
+        "learner_objective": learner_objective,
+        "gross_return_cap": gross_return_cap,
         "tree_preset": str(tree_preset["name"]),
         "teacher_weighting": label_scheme,
         "race_weight_minimum": float(np.min(race_weights)),
@@ -492,8 +537,8 @@ def evaluate_temporal_ticket_utility_roles(
         "model": MODEL_NAME,
         "status": "completed",
         "validation_design": (
-            "Ticket-level LightGBM ranking and capped normalized payout query "
-            "weighting are selected on an inner prior-day block. The selected "
+            "Ticket-level LightGBM winner ranking and capped Poisson realized-"
+            "gross-return heads are selected on an inner prior-day block. The selected "
             "rank cutoff limits both empirical-EV calibration and outer purchases; "
             "a separate proper probability head supplies EV."
         ),
