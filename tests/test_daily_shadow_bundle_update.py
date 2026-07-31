@@ -388,7 +388,11 @@ def test_deployment_scripts_are_opt_in_and_shadow_only() -> None:
     v23_wrapper = (
         root / "scripts/deployment/run-boatrace-intraday-v23-shadow.sh"
     ).read_text()
-    assert supervisor.count("autostart=false") == 3
+    v23_supervisor = (
+        root / "scripts/deployment/supervisor-boatrace-intraday-v23-shadow.ini"
+    ).read_text()
+    assert supervisor.count("autostart=false") == 2
+    assert "autostart=true" in v23_supervisor
     assert "REAL_BETTING_ENABLED" in wrapper
     assert "run-boatrace-intraday-t300-shadow.sh" in wrapper
     assert "kill -TERM" in wrapper
