@@ -48,10 +48,13 @@ from .course_interaction_residual import (
 from .pruned_direct_context_evaluation_v27 import (
     evaluate_temporal_pruned_residual,
 )
+from .payout_weighted_ranking import (
+    evaluate_temporal_payout_weighted_roles,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 6
+EVALUATION_VERSION = 7
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -443,6 +446,11 @@ def temporal_residual_diagnostic(
         policies=TEMPORAL_RESIDUAL_POLICIES,
         daily_budget_yen=daily_budget_yen,
     )
+    payout_weighted_roles = evaluate_temporal_payout_weighted_roles(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -465,6 +473,7 @@ def temporal_residual_diagnostic(
         "direct_context_empirical_lcb_v26": direct_context_empirical,
         "pruned_direct_context_market_residual_v27": pruned_direct_context,
         "course_interaction_market_residual_v28": course_interaction,
+        "payout_weighted_role_model_v29": payout_weighted_roles,
     }
 
 

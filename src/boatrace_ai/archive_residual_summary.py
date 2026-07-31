@@ -5,6 +5,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "payout_weighted_role_model_v29",
+        "payout_weighted_role_model_v29",
+        "probability_metrics",
+        "probability_artifact",
+    ),
+    (
         "course_interaction_market_residual_v28",
         "course_interaction_market_residual_v28",
         "metrics",
@@ -110,7 +116,22 @@ def apply_archive_residual_summary(
                 "active_context_feature_count",
                 "feature_dimension",
                 "regularization",
+                "payout_weight_exponent",
                 "converged",
+            )
+        }
+    ranking_metrics = selected.get("ranking_metrics")
+    if isinstance(ranking_metrics, Mapping):
+        summary["residual_ranking_metrics"] = {
+            key: ranking_metrics.get(key)
+            for key in (
+                "evaluated_races",
+                "trifecta_log_loss",
+                "trifecta_top5_hit_rate",
+                "top5_flat_stake_yen",
+                "top5_flat_return_yen",
+                "top5_flat_profit_yen",
+                "top5_flat_roi",
             )
         }
 
