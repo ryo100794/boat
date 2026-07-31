@@ -139,5 +139,19 @@ def apply_archive_residual_summary(
         }]
         calibration = selected.get("empirical_ev_calibration")
         if isinstance(calibration, Mapping):
-            summary["residual_empirical_ev_calibration"] = dict(calibration)
+            summary["residual_empirical_ev_calibration"] = {
+                key: calibration.get(key)
+                for key in (
+                    "ready",
+                    "ready_reasons",
+                    "trained_through_date",
+                    "training_days",
+                    "tickets",
+                    "candidate_days",
+                    "context_ready_cells",
+                    "context_cells",
+                    "excluded_non_past_records",
+                )
+                if calibration.get(key) is not None
+            }
     summary["residual_purchase_policies"] = compact_policies
