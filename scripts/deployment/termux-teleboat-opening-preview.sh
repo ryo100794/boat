@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
+umask 077
 
 readonly TERMUX_PREFIX="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}"
 readonly TERMUX_HOME="${TERMUX_HOME:-/data/data/com.termux/files/home}"

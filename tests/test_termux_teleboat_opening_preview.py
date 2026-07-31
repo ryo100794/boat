@@ -94,6 +94,7 @@ def test_shell_is_valid_and_never_requests_submission():
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
     source = SCRIPT.read_text(encoding="utf-8")
     assert "set -x" not in source
+    assert "umask 077" in source
     assert '"$FLOCK" -n 9' in source
     assert "--execute" not in source
     assert "05730047" not in source
