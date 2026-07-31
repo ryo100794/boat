@@ -11,6 +11,21 @@ def test_compat_row_supports_index_and_column_name() -> None:
     assert list(row.keys()) == ["jcd", "rno"]
 
 
+def test_compat_row_preserves_values_from_dict_row() -> None:
+    row = CompatRow(
+        {"snapshot_id": 162097, "payload": {"source": "official"}},
+        ("snapshot_id", "payload"),
+    )
+
+    assert row[0] == 162097
+    assert row["snapshot_id"] == 162097
+    assert row["payload"] == {"source": "official"}
+    assert dict(row) == {
+        "snapshot_id": 162097,
+        "payload": {"source": "official"},
+    }
+
+
 def test_qmark_and_named_parameters_are_converted() -> None:
     assert convert_sql("SELECT * FROM races WHERE race_date = ?").endswith(
         "race_date = %s"

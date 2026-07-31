@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -140,8 +140,14 @@ def _convert_placeholders(statement: str) -> str:
 
 
 class CompatRow(Sequence[Any]):
-    def __init__(self, values: Sequence[Any], names: Sequence[str]) -> None:
-        self._values = tuple(values)
+    def __init__(
+        self, values: Sequence[Any] | Mapping[str, Any], names: Sequence[str]
+    ) -> None:
+        self._values = (
+            tuple(values[name] for name in names)
+            if isinstance(values, Mapping)
+            else tuple(values)
+        )
         self._positions = {name: index for index, name in enumerate(names)}
 
     def __getitem__(self, key):
