@@ -4,6 +4,7 @@ from boatrace_ai.archive_closing_odds import OFFICIAL_SOURCE_KEY, SOURCE_KEY, pe
 from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.evaluation_queue import build_command, summarize_result
 from boatrace_ai.official_closing_odds import (
+    IncompleteOfficialTrifectaOdds,
     backfill_official_closing_odds,
     official_closing_url,
     parse_official_closing_odds_html,
@@ -100,6 +101,63 @@ def test_official_backfill_is_verified_and_isolated_by_source(tmp_path, monkeypa
                 source_key=SOURCE_KEY,
             )
         ) == 1
+
+
+def test_confirmed_five_boat_odds_are_terminally_excluded(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "official-five-boat.sqlite"
+    init_db(db_path)
+    html = "<html>five boat closing odds</html>"
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-06-01",
+                "jcd": "01",
+                "venue_name": "桐生",
+                "rno": 1,
+                "status": "final",
+            },
+        )
+        conn.execute(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', '1-2-3', 12350)",
+            (race_id,),
+        )
+        for lane in range(1, 6):
+            conn.execute(
+                "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
+                (race_id, lane, lane),
+            )
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.fetch_text",
+            lambda *_args, **_kwargs: (200, html, html.encode()),
+        )
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.parse_official_closing_odds_html",
+            lambda _html: (_ for _ in ()).throw(
+                IncompleteOfficialTrifectaOdds(60)
+            ),
+        )
+
+        result = backfill_official_closing_odds(
+            conn,
+            from_date="2026-06-01",
+            through_date="2026-06-01",
+            sleep_seconds=0.0,
+        )
+
+        assert result["excluded_non_six_boat"] == 1
+        assert result["invalid"] == 0
+        assert result["remaining"] == 0
+        attempt = conn.execute(
+            "SELECT status, error FROM archive_closing_odds_attempts "
+            "WHERE race_id = ? AND source_key = ?",
+            (race_id, OFFICIAL_SOURCE_KEY),
+        ).fetchone()
+        assert attempt["status"] == "excluded_non_six_boat"
+        assert "five-boat" in attempt["error"]
 
 
 def test_archive_queue_selects_official_backfill_module(tmp_path) -> None:

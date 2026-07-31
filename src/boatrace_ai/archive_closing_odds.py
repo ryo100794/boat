@@ -329,6 +329,11 @@ def pending_races(
               AND a.status = 'invalid'
               AND a.attempt_count >= ?
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM archive_closing_odds_attempts a
+            WHERE a.race_id = r.race_id AND a.source_key = ?
+              AND a.status = 'excluded_non_six_boat'
+          )
         ORDER BY r.race_date DESC, r.deadline_at DESC, r.jcd DESC, r.rno DESC
         """,
         (
@@ -337,6 +342,7 @@ def pending_races(
             source_key,
             source_key,
             MAX_INVALID_ATTEMPTS,
+            source_key,
         ),
     ).fetchall()
     return [{key: row[key] for key in row.keys()} for row in rows]
