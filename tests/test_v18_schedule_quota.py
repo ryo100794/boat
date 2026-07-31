@@ -9,6 +9,22 @@ from boatrace_ai.listwise import market_calibration, market_residual
 DATE = "2026-07-30"
 
 
+def test_leave_one_day_out_min_roi_removes_best_day() -> None:
+    daily = [
+        {"race_date": "2026-07-01", "stake_yen": 100, "return_yen": 500},
+        {"race_date": "2026-07-02", "stake_yen": 100, "return_yen": 80},
+        {"race_date": "2026-07-03", "stake_yen": 100, "return_yen": 120},
+    ]
+
+    assert market_calibration._leave_one_day_out_min_roi(daily) == 1.0
+
+
+def test_leave_one_day_out_min_roi_needs_two_days() -> None:
+    assert market_calibration._leave_one_day_out_min_roi([
+        {"race_date": "2026-07-01", "stake_yen": 100, "return_yen": 500},
+    ]) is None
+
+
 def _candidate(index: int, *, estimated_ev: float = 2.0) -> dict:
     return {
         "race_id": f"race-{index}",

@@ -1838,6 +1838,24 @@ def select_v18_schedule_quota_rounding(
     return str(selected["rounding"]), diagnostics
 
 
+def _leave_one_day_out_min_roi(
+    daily: list[dict[str, Any]],
+) -> float | None:
+    """Return the ROI after removing whichever single day helps it most."""
+    if len(daily) < 2:
+        return None
+    total_stake = sum(float(row.get("stake_yen") or 0.0) for row in daily)
+    total_return = sum(float(row.get("return_yen") or 0.0) for row in daily)
+    leave_one_out = []
+    for row in daily:
+        remaining_stake = total_stake - float(row.get("stake_yen") or 0.0)
+        if remaining_stake <= 0.0:
+            continue
+        remaining_return = total_return - float(row.get("return_yen") or 0.0)
+        leave_one_out.append(remaining_return / remaining_stake)
+    return min(leave_one_out) if leave_one_out else None
+
+
 def select_v18_schedule_quota_policy(
     races: list[dict[str, Any]],
     *,
@@ -1967,6 +1985,9 @@ def select_v18_schedule_quota_policy(
             "profit_yen": int(bankroll["profit_yen"]),
             "roi": float(bankroll["roi"]),
             "winning_days": winning_days,
+            "leave_one_day_out_min_roi": _leave_one_day_out_min_roi(
+                bankroll["daily"]
+            ),
             "profitable_day_fraction": (
                 winning_days / race_days if race_days else None
             ),
@@ -1979,6 +2000,7 @@ def select_v18_schedule_quota_policy(
     selected = max(
         diagnostics,
         key=lambda row: (
+            float(row.get("leave_one_day_out_min_roi") or 0.0),
             float(row.get("roi_ci95_lower") or 0.0),
             float(row.get("probability_roi_above_one") or 0.0),
             float(row.get("profitable_day_fraction") or 0.0),
