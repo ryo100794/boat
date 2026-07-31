@@ -48,6 +48,7 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
         "drop_base_pastlog_rolling_history",
         ("base_pastlog", "rolling_history"),
     ),
+    ("full", ()),
 )
 
 RESEARCH_PARTITION_FEATURE_VARIANTS: FeatureVariants = (
