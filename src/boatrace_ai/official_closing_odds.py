@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from .archive_closing_odds import (
     OFFICIAL_PARSER_VERSION,
     OFFICIAL_SOURCE_KEY,
+    ensure_archive_schema,
     pending_races,
     record_attempt,
     store_archive_closing_odds,
@@ -69,6 +70,29 @@ def _confirmed_result_boats(conn: Any, race_id: str) -> int:
     return int(row["boats"] if row is not None else 0)
 
 
+def reclassify_confirmed_non_six_boat_attempts(conn: Any) -> int:
+    ensure_archive_schema(conn)
+    cursor = conn.execute(
+        """
+        UPDATE archive_closing_odds_attempts
+        SET status = 'excluded_non_six_boat'
+        WHERE source_key = ? AND status = 'invalid'
+          AND error = ?
+          AND (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = archive_closing_odds_attempts.race_id
+              AND rr.rank IS NOT NULL
+          ) = 5
+        """,
+        (
+            OFFICIAL_SOURCE_KEY,
+            "ValueError: official trifecta odds are incomplete: 60/120",
+        ),
+    )
+    return max(0, int(cursor.rowcount or 0))
+
+
 def backfill_official_closing_odds(
     conn: Any,
     *,
@@ -77,6 +101,7 @@ def backfill_official_closing_odds(
     sleep_seconds: float = 0.5,
     max_pages: int | None = None,
 ) -> dict[str, Any]:
+    reclassified = reclassify_confirmed_non_six_boat_attempts(conn)
     targets = pending_races(
         conn,
         from_date=from_date,
@@ -97,6 +122,7 @@ def backfill_official_closing_odds(
         "invalid": 0,
         "fetch_failed": 0,
         "excluded_non_six_boat": 0,
+        "reclassified_non_six_boat": reclassified,
     }
     for index, row in enumerate(targets):
         url = official_closing_url(row["race_date"], row["jcd"], int(row["rno"]))
