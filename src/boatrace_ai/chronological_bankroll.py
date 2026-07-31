@@ -39,6 +39,7 @@ def _validate_schedule_quota_opportunity(
     score_quantile = float(configured.get("score_quantile", 0.75))
     reserve_slots = int(configured.get("reserve_slots", 1))
     minimum_score = float(configured.get("minimum_score", 0.0))
+    quota_mode = str(configured.get("quota_mode") or "late_tail_release")
     if not 0.0 <= after_fraction <= 1.0:
         raise ValueError("opportunity after_fraction must be between zero and one")
     if not 0.0 <= score_quantile <= 1.0:
@@ -47,8 +48,11 @@ def _validate_schedule_quota_opportunity(
         raise ValueError("opportunity reserve_slots must be positive")
     if not math.isfinite(minimum_score):
         raise ValueError("opportunity minimum_score must be finite")
+    if quota_mode not in {"late_tail_release", "online_reserve"}:
+        raise ValueError("unsupported opportunity quota mode")
     return {
         "method": "strictly_observed_intraday_score_quantile",
+        "quota_mode": quota_mode,
         "after_fraction": after_fraction,
         "score_quantile": score_quantile,
         "reserve_slots": reserve_slots,
@@ -95,6 +99,16 @@ def opportunity_adjusted_ticket_quota(
         or current_score is None
     ):
         return preserved_quota, None, False
+    if configured["quota_mode"] == "online_reserve":
+        reserve_slots = min(limit, int(configured["reserve_slots"]))
+        ordinary_limit = limit - reserve_slots
+        ordinary_quota = cumulative_schedule_ticket_quota(
+            limit=ordinary_limit,
+            elapsed=elapsed,
+            total=total,
+            rounding="floor",
+        )
+        preserved_quota = max(ordinary_quota, min(used_tickets, limit))
     history_threshold = _empirical_quantile(
         observed_scores, float(configured["score_quantile"])
     )
@@ -103,6 +117,16 @@ def opportunity_adjusted_ticket_quota(
     score_threshold = max(
         float(configured["minimum_score"]), history_threshold
     )
+    if configured["quota_mode"] == "online_reserve":
+        if (
+            elapsed / total >= float(configured["after_fraction"])
+            and preserved_quota < limit
+            and current_score >= score_threshold
+        ):
+            return min(
+                limit, max(preserved_quota, used_tickets + 1)
+            ), score_threshold, True
+        return preserved_quota, score_threshold, False
     reserve_floor = max(0, limit - int(configured["reserve_slots"]))
     if (
         elapsed / total >= float(configured["after_fraction"])
