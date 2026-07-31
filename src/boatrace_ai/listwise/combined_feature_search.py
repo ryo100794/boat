@@ -44,6 +44,20 @@ COMBINED_FEATURE_VARIANTS: FeatureVariants = (
     ("full", ()),
 )
 
+# Resume compatibility for jobs checkpointed before raw equipment ID ablation
+# was removed from the defaults. New searches must not select this variant.
+LEGACY_COMPAT_FEATURE_VARIANTS: FeatureVariants = (
+    (
+        "keep_card_numeric_without_raw_equipment_ids",
+        (
+            "card_identity_context",
+            "card_relative",
+            "raw_equipment_identifiers",
+            "research_correlates",
+        ),
+    ),
+)
+
 RESEARCH_PARTITION_FEATURE_VARIANTS: FeatureVariants = (
     ("drop_speculative_research", ("speculative_research",)),
 )
@@ -51,7 +65,11 @@ RESEARCH_PARTITION_FEATURE_VARIANTS: FeatureVariants = (
 
 def parse_combined_feature_variants(value: str) -> FeatureVariants:
     available = dict(
-        (*COMBINED_FEATURE_VARIANTS, *RESEARCH_PARTITION_FEATURE_VARIANTS)
+        (
+            *COMBINED_FEATURE_VARIANTS,
+            *LEGACY_COMPAT_FEATURE_VARIANTS,
+            *RESEARCH_PARTITION_FEATURE_VARIANTS,
+        )
     )
     names = tuple(dict.fromkeys(
         item.strip() for item in value.split(",") if item.strip()
