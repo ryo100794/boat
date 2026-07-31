@@ -12,6 +12,10 @@ from .closing_odds import (
     fit_closing_odds_model,
     forecast_closing_odds,
 )
+from .closing_odds_contextual import (
+    fit_contextual_closing_odds_model,
+    forecast_contextual_closing_odds,
+)
 
 
 def _momentum_features(
@@ -212,18 +216,22 @@ def select_closing_odds_model(
         by_day.setdefault(str(race["race_date"]), []).append(race)
     dates = sorted(by_day)
     folds = []
-    baseline_error_sum = momentum_error_sum = 0.0
+    baseline_error_sum = momentum_error_sum = contextual_error_sum = 0.0
     evaluation_tickets = 0
     for index in range(1, len(dates)):
         training = [race for day in dates[:index] for race in by_day[day]]
         holdout = by_day[dates[index]]
         fold_baseline = fit_closing_odds_model(training)
         fold_momentum = fit_momentum_closing_odds_model(training)
+        fold_contextual = fit_contextual_closing_odds_model(training)
         baseline_metrics = _forecast_metrics(
-            holdout, baseline_model=fold_baseline, momentum_model=None
+            holdout, baseline_model=fold_baseline
         )
         momentum_metrics = _forecast_metrics(
-            holdout, baseline_model=None, momentum_model=fold_momentum
+            holdout, momentum_model=fold_momentum
+        )
+        contextual_metrics = _forecast_metrics(
+            holdout, contextual_model=fold_contextual
         )
         tickets = int(momentum_metrics["evaluation_tickets"])
         baseline_error_sum += float(
@@ -231,6 +239,9 @@ def select_closing_odds_model(
         ) * tickets
         momentum_error_sum += float(
             momentum_metrics["forecast_mean_absolute_log_error"]
+        ) * tickets
+        contextual_error_sum += float(
+            contextual_metrics["forecast_mean_absolute_log_error"]
         ) * tickets
         evaluation_tickets += tickets
         folds.append(
@@ -241,6 +252,7 @@ def select_closing_odds_model(
                 "evaluation_races": len(holdout),
                 "baseline_metrics": baseline_metrics,
                 "momentum_metrics": momentum_metrics,
+                "contextual_metrics": contextual_metrics,
             }
         )
     baseline_mae = (
@@ -248,6 +260,9 @@ def select_closing_odds_model(
     )
     momentum_mae = (
         momentum_error_sum / evaluation_tickets if evaluation_tickets else None
+    )
+    contextual_mae = (
+        contextual_error_sum / evaluation_tickets if evaluation_tickets else None
     )
     relative_improvement = (
         1.0 - momentum_mae / baseline_mae
@@ -258,11 +273,31 @@ def select_closing_odds_model(
         relative_improvement is not None
         and relative_improvement >= minimum_relative_improvement
     )
+    contextual_over_momentum = (
+        1.0 - contextual_mae / momentum_mae
+        if momentum_mae is not None
+        and momentum_mae > 0.0
+        and contextual_mae is not None
+        else None
+    )
+    use_contextual = bool(
+        use_momentum
+        and contextual_over_momentum is not None
+        and contextual_over_momentum >= minimum_relative_improvement
+    )
+    selected = (
+        "contextual" if use_contextual
+        else "momentum" if use_momentum
+        else "baseline"
+    )
     momentum_model = (
         fit_momentum_closing_odds_model(eligible) if eligible else None
     )
+    contextual_model = (
+        fit_contextual_closing_odds_model(eligible) if eligible else None
+    )
     return {
-        "selected": "momentum" if use_momentum else "baseline",
+        "selected": selected,
         "minimum_relative_improvement": minimum_relative_improvement,
         "eligible_momentum_races": len(eligible),
         "eligible_momentum_days": len(dates),
@@ -273,8 +308,11 @@ def select_closing_odds_model(
         "prequential_baseline_mae": baseline_mae,
         "prequential_momentum_mae": momentum_mae,
         "prequential_relative_improvement": relative_improvement,
+        "prequential_contextual_mae": contextual_mae,
+        "prequential_contextual_over_momentum": contextual_over_momentum,
         "baseline_model": baseline_model,
         "momentum_model": momentum_model,
+        "contextual_model": contextual_model,
         "folds": folds,
     }
 
@@ -284,11 +322,18 @@ def attach_selected_closing_odds(
 ) -> list[dict[str, Any]]:
     result = []
     use_momentum = selection.get("selected") == "momentum"
+    use_contextual = selection.get("selected") == "contextual"
     momentum_model = selection.get("momentum_model")
+    contextual_model = selection.get("contextual_model")
     baseline_model = selection["baseline_model"]
     for race in races:
         item = dict(race)
-        if use_momentum and momentum_model and momentum_price_eligible(race):
+        if use_contextual and contextual_model and momentum_price_eligible(race):
+            forecast = forecast_contextual_closing_odds(
+                race, contextual_model, expected_value=True
+            )
+            source = "contextual"
+        elif use_momentum and momentum_model and momentum_price_eligible(race):
             forecast = forecast_momentum_closing_odds(
                 race, momentum_model, expected_value=True
             )
@@ -347,18 +392,24 @@ def selected_closing_odds_metrics(
 def _forecast_metrics(
     races: list[dict[str, Any]],
     *,
-    baseline_model: dict[str, Any] | None,
-    momentum_model: dict[str, Any] | None,
+    baseline_model: dict[str, Any] | None = None,
+    momentum_model: dict[str, Any] | None = None,
+    contextual_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     errors = []
     evaluated_races = 0
     for race in races:
         closing = race.get("closing_odds") or {}
-        forecast = (
-            forecast_momentum_closing_odds(race, momentum_model)
-            if momentum_model is not None
-            else forecast_closing_odds(race["odds"], baseline_model or {})
-        )
+        if contextual_model is not None:
+            forecast = forecast_contextual_closing_odds(
+                race, contextual_model
+            )
+        elif momentum_model is not None:
+            forecast = forecast_momentum_closing_odds(race, momentum_model)
+        else:
+            forecast = forecast_closing_odds(
+                race["odds"], baseline_model or {}
+            )
         combinations = sorted(set(closing) & set(forecast))
         if len(combinations) != 120:
             continue

@@ -79,7 +79,10 @@ def test_price_model_selection_requires_prior_day_improvement() -> None:
         races, minimum_relative_improvement=0.01
     )
 
-    assert selection["selected"] == "momentum"
+    assert selection["selected"] == "contextual"
+    assert selection["prequential_contextual_mae"] < selection[
+        "prequential_momentum_mae"
+    ]
     assert selection["prequential_evaluation_races"] == 2
     assert selection["prequential_momentum_mae"] < selection[
         "prequential_baseline_mae"
