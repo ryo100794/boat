@@ -187,6 +187,41 @@ def test_external_ranking_changes_rank_without_changing_probability() -> None:
     assert by_combination["1-2-3"]["probability"] == pytest.approx(0.40)
 
 
+def test_external_ranking_cutoff_limits_calibration_and_purchase_candidates() -> None:
+    race = _race("r1")
+    order = ["2-1-3", "1-3-2", "1-2-3"]
+    records = policy_edge_records(
+        [race],
+        CALIBRATOR,
+        _blend,
+        ranking_provider=lambda _race, _probabilities: order,
+        max_rank=1,
+    )
+    result = simulate_empirical_lcb_policy(
+        [race],
+        CALIBRATOR,
+        _blend,
+        _Artifact(),
+        10_000,
+        ranking_provider=lambda _race, _probabilities: order,
+        max_rank=1,
+    )
+
+    assert [row["combination"] for row in records] == ["2-1-3"]
+    assert [
+        row["combination"]
+        for row in result["daily"][0]["eligible_candidate_audit"]
+    ] == ["2-1-3"]
+
+
+@pytest.mark.parametrize("max_rank", [0, -1, True, 1.5])
+def test_external_ranking_cutoff_requires_a_positive_integer(max_rank) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        policy_edge_records(
+            [_race("r1")], CALIBRATOR, _blend, max_rank=max_rank
+        )
+
+
 @pytest.mark.parametrize(
     "invalid_order",
     [

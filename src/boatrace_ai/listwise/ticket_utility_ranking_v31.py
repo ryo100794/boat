@@ -412,6 +412,7 @@ def evaluate_temporal_ticket_utility_roles(
         {"model_weight": 1.0, "temperature": 1.0},
         blend_probabilities,
         _ranking_provider(prior_ranking_artifact),
+        max_rank=int(selected["top_k"]),
     )
     first_evaluation_date = min(str(race["race_date"]) for race in evaluation)
     empirical_artifact = fit_contextual_empirical_ev_calibration(
@@ -450,6 +451,7 @@ def evaluate_temporal_ticket_utility_roles(
         empirical_artifact,
         daily_budget_yen,
         _ranking_provider(final_ranking_artifact),
+        max_rank=int(selected["top_k"]),
     )
     ranking_metrics = ticket_ranking_metrics(evaluation, final_ranking_artifact)
     selected_top_k = str(selected["top_k"])
@@ -462,8 +464,8 @@ def evaluate_temporal_ticket_utility_roles(
         "status": "completed",
         "validation_design": (
             "Ticket-level LightGBM ranking is selected on an inner prior-day "
-            "block. It changes candidate order only; a separate proper probability "
-            "head supplies EV, and empirical EV is calibrated on the next 30 days."
+            "block. The selected rank cutoff limits both empirical-EV calibration "
+            "and outer purchases; a separate proper probability head supplies EV."
         ),
         "ranking_training_from": ranking_dates[0],
         "ranking_training_through": ranking_dates[-1],

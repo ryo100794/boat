@@ -135,4 +135,7 @@ def test_temporal_ticket_roles_keep_all_teacher_windows_prior() -> None:
     assert result["policy_calibration_through"] < result["evaluation_from"]
     assert result["probability_metrics"]["evaluated_races"] == 1
     assert result["ranking_metrics"]["evaluated_races"] == 1
+    assert result["empirical_ev_calibration"]["tickets"] == (
+        30 * int(result["selected_candidate"]["top_k"])
+    )
     assert result["bankroll"]["evaluation_days"] == 1
