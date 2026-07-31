@@ -144,6 +144,50 @@ def test_date_deadline_and_candidate_fail_closed(tmp_path, payload, expected):
     }
 
 
+def test_fetch_guide_uses_explicit_user_agent(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, *_args, **_kwargs):
+            return b'{"date":"2026-07-31","candidates":[]}'
+
+    def fake_urlopen(request, *, timeout):
+        captured["user_agent"] = request.get_header("User-agent")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(preview, "urlopen", fake_urlopen)
+    result = preview._fetch_guide(
+        "https://dashboard.example/api/guide", timeout=3.0
+    )
+    assert result["candidates"] == []
+    assert captured == {
+        "user_agent": preview.GUIDE_USER_AGENT,
+        "timeout": 3.0,
+    }
+
+
+def test_unreachable_guide_is_not_reported_as_no_candidate(tmp_path):
+    secret = tmp_path / "login.json"
+    _secret(secret)
+    args = _args(tmp_path, secret)
+    code = preview.run(
+        args,
+        fetch_guide=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("down")),
+        executor_factory=lambda _settings: pytest.fail("browser must not start"),
+        clock=lambda: NOW,
+        sleeper=lambda _seconds: None,
+    )
+    assert code == preview.EXIT_GUIDE_REJECTED
+    assert json.loads(args.output.read_text())["code"] == "guide_unreachable"
+
+
 def test_invalid_credentials_fail_closed_without_browser(tmp_path):
     secret = tmp_path / "login.json"
     secret.write_text('{"mode":"mobile","member_number":"invalid"}', encoding="utf-8")

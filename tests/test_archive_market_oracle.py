@@ -6,6 +6,7 @@ from boatrace_ai.listwise.archive_market_oracle import (
     PRIMARY_POLICY,
     V23_TOP5_ORACLE_POLICY,
     restrict_probabilities_to_available,
+    temporal_residual_diagnostic,
 )
 
 
@@ -35,3 +36,44 @@ def test_v23_top5_oracle_policy_matches_registered_band() -> None:
     assert V23_TOP5_ORACLE_POLICY["ev_threshold"] == 1.0
     assert V23_TOP5_ORACLE_POLICY["max_estimated_ev"] == 1.05
     assert V23_TOP5_ORACLE_POLICY["stake_per_ticket_yen"] == 100
+
+
+def _residual_race(race_date: str, actual: str) -> dict:
+    return {
+        "race_date": race_date,
+        "actual_combination": actual,
+        "model_probabilities": {"1-2-3": 0.7, "1-3-2": 0.3},
+        "market_probabilities": {"1-2-3": 0.6, "1-3-2": 0.4},
+    }
+
+
+def test_temporal_residual_uses_strictly_earlier_calibration_days() -> None:
+    races = [
+        _residual_race("2026-01-01", "1-2-3"),
+        _residual_race("2026-01-02", "1-3-2"),
+        _residual_race("2026-01-03", "1-2-3"),
+        _residual_race("2026-01-04", "1-2-3"),
+    ]
+    result = temporal_residual_diagnostic(
+        races,
+        calibration_fraction=0.5,
+    )
+    assert result["status"] == "completed"
+    assert result["calibration_from"] == "2026-01-01"
+    assert result["calibration_through"] == "2026-01-02"
+    assert result["evaluation_from"] == "2026-01-03"
+    assert result["evaluation_through"] == "2026-01-04"
+    assert result["calibration_races"] == 2
+    assert result["evaluation_races"] == 2
+    assert result["metrics"]["evaluated_races"] == 2
+
+
+def test_temporal_residual_requires_four_days() -> None:
+    races = [_residual_race("2026-01-01", "1-2-3")]
+    result = temporal_residual_diagnostic(races)
+    assert result == {
+        "status": "insufficient_days",
+        "dates": 1,
+        "calibration_days": 0,
+        "evaluation_days": 0,
+    }

@@ -30,6 +30,7 @@ EXIT_CONFIGURATION = 2
 EXIT_NO_CANDIDATE = 3
 EXIT_GUIDE_REJECTED = 4
 EXIT_PREVIEW_FAILED = 5
+GUIDE_USER_AGENT = "boatrace-opening-preview/1.0"
 
 
 class PreviewFailure(RuntimeError):
@@ -70,7 +71,13 @@ def _guide_url(base_url: str, target_date: date) -> str:
 
 
 def _fetch_guide(url: str, *, timeout: float = 10.0) -> dict[str, Any]:
-    request = Request(url, headers={"Accept": "application/json"})
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": GUIDE_USER_AGENT,
+        },
+    )
     with urlopen(request, timeout=timeout) as response:
         payload = json.load(response)
     if not isinstance(payload, dict):
@@ -342,10 +349,12 @@ def run(
         guide_url = _guide_url(args.dashboard_url, args.date)
         deadline = time.monotonic() + args.timeout_seconds
         candidate = None
+        guide_fetch_succeeded = False
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
             try:
                 payload = fetch_guide(guide_url, timeout=min(10.0, remaining))
+                guide_fetch_succeeded = True
                 candidate = select_candidate(
                     payload, target_date=args.date, now=clock()
                 )
@@ -357,6 +366,8 @@ def run(
                 break
             sleeper(min(args.poll_seconds, max(0.0, deadline - time.monotonic())))
         if candidate is None:
+            if not guide_fetch_succeeded:
+                raise PreviewFailure("guide_unreachable", EXIT_GUIDE_REJECTED)
             raise PreviewFailure("no_eligible_candidate", EXIT_NO_CANDIDATE)
 
         request = build_vote_request(candidate)
