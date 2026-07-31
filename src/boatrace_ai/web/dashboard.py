@@ -4543,6 +4543,76 @@ def day_overview_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, A
     return payload
 
 
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def attach_t300_decisions(
+    conn: Any,
+    payloads: dict[str, dict[str, Any]],
+    *,
+    race_date: str,
+    model_key: str = "v21_daily",
+) -> None:
+    for payload in payloads.values():
+        payload["t300_decision"] = None
+    try:
+        rows = conn.execute(
+            """
+            SELECT race_id, model_key, model_hash, strategy_name,
+                   decision_at, target_t300_at, source_snapshot_id,
+                   source_captured_at, source_update_staleness_seconds,
+                   checkpoint_age_before_target_seconds, decision_status,
+                   no_bet_reason, selected_candidates, total_stake_yen
+            FROM (
+                SELECT d.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY d.race_id
+                           ORDER BY d.decision_at DESC, d.decision_id DESC
+                       ) AS decision_rank
+                FROM intraday_t300_shadow_decisions d
+                WHERE d.race_date = ? AND d.model_key = ?
+            ) ranked
+            WHERE decision_rank = 1
+            """,
+            (race_date, model_key),
+        ).fetchall()
+    except Exception as exc:
+        message = str(exc).lower()
+        if "intraday_t300_shadow_decisions" in message and (
+            "does not exist" in message or "no such table" in message
+        ):
+            return
+        raise
+    for row in rows:
+        payload = payloads.get(str(row["race_id"]))
+        if payload is None:
+            continue
+        payload["t300_decision"] = {
+            "model_key": str(row["model_key"]),
+            "model_hash": str(row["model_hash"]).strip(),
+            "strategy_name": str(row["strategy_name"]),
+            "decision_at": row["decision_at"],
+            "target_t300_at": row["target_t300_at"],
+            "source_snapshot_id": row["source_snapshot_id"],
+            "source_captured_at": row["source_captured_at"],
+            "source_update_staleness_seconds": row["source_update_staleness_seconds"],
+            "checkpoint_age_before_target_seconds": row["checkpoint_age_before_target_seconds"],
+            "decision_status": row["decision_status"],
+            "no_bet_reason": row["no_bet_reason"],
+            "selected_candidates": _json_list(row["selected_candidates"]),
+            "total_stake_yen": int(row["total_stake_yen"] or 0),
+        }
+
+
 def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]:
     race_date = query_race_date(db_path, query)
     before_minutes = int(query.get("before_minutes", ["5"])[0])
@@ -4560,6 +4630,7 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
         rows = [row for row in _day_metric_rows(conn, race_date, include_predictions=False) if _is_active_row(row)]
         payloads = {row["race_id"]: _race_payload_from_row(row, now=now, before_minutes=before_minutes) for row in rows}
         attach_latest_prediction_summaries(conn, payloads.values())
+        attach_t300_decisions(conn, payloads, race_date=race_date)
         candidates = []
         for row in rows:
             item = payloads[row["race_id"]]
@@ -4567,8 +4638,8 @@ def purchase_guide_fast(db_path: Path, query: dict[str, list[str]]) -> dict[str,
                 continue
             if _race_is_final(item):
                 continue
-            buy_until = stored_start_time(item.get("buy_until_at"))
-            if not buy_until or now > buy_until:
+            deadline = stored_start_time(item.get("deadline_at"))
+            if not deadline or now >= deadline:
                 continue
             if item.get("top_prediction"):
                 candidates.append(item)
