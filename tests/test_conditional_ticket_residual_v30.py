@@ -66,7 +66,17 @@ def test_ticket_features_capture_disagreement_and_context_without_results() -> N
 def test_v30_gradient_matches_finite_difference() -> None:
     variant = "race_shape_number"
     active = FEATURE_VARIANTS[variant]
-    prepared = [_prepare(_race(date(2026, 1, 1)), active)]
+    prepared = [
+        _prepare(
+            _race(
+                date(2026, 1, 1) + timedelta(days=index),
+                actual="2-1-3" if index == 1 else "1-2-3",
+                rno=index + 1,
+            ),
+            active,
+        )
+        for index in range(3)
+    ]
     coefficients = np.zeros(_dimension(active), dtype=np.float64)
     _, gradient = _objective_gradient(coefficients, prepared, regularization=0.03)
     epsilon = 1e-6
