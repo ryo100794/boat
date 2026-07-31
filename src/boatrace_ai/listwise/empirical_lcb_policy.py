@@ -6,12 +6,18 @@ from math import isfinite
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..adaptive_allocation import allocate_adaptive_day
+from ..bankroll_bootstrap import bootstrap_daily_roi
 from .closing_odds import decision_odds
 
 
 STAKE_YEN = 100
 MAX_TICKETS_PER_RACE = 3
 MAX_DAILY_TICKETS = 30
+MIN_PROMOTION_EVALUATION_DAYS = 30
+MIN_PROMOTION_TICKETS = 50
+MIN_PROMOTION_ROI = 1.05
+MIN_PROMOTION_ROI_CI95_LOWER = 1.0
+MIN_PROMOTION_PROBABILITY_ROI_ABOVE_ONE = 0.95
 
 
 class EmpiricalEVArtifact(Protocol):
@@ -271,6 +277,23 @@ def _candidate_audit(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def empirical_bankroll_promotion_eligible(
+    bankroll: Mapping[str, Any],
+) -> bool:
+    """Require enough days and day-clustered evidence before promotion."""
+    return bool(
+        bankroll.get("status") == "ready"
+        and int(bankroll.get("evaluation_days") or 0)
+        >= MIN_PROMOTION_EVALUATION_DAYS
+        and int(bankroll.get("tickets") or 0) >= MIN_PROMOTION_TICKETS
+        and float(bankroll.get("roi") or 0.0) >= MIN_PROMOTION_ROI
+        and float(bankroll.get("roi_ci95_lower") or 0.0)
+        > MIN_PROMOTION_ROI_CI95_LOWER
+        and float(bankroll.get("probability_roi_above_one") or 0.0)
+        >= MIN_PROMOTION_PROBABILITY_ROI_ABOVE_ONE
+    )
+
+
 def simulate_empirical_lcb_policy(
     races: list[dict[str, Any]],
     calibrator: Mapping[str, float],
@@ -344,6 +367,14 @@ def simulate_empirical_lcb_policy(
 
     stake_yen = totals["stake_yen"]
     return_yen = totals["return_yen"]
+    confidence = (
+        bootstrap_daily_roi(daily)
+        if daily
+        else {
+            "roi_ci95_lower": None,
+            "probability_roi_above_one": None,
+        }
+    )
     return {
         "status": "ready" if artifact.ready else "calibration_not_ready",
         "calibration": dict(artifact.as_dict()),
@@ -356,6 +387,10 @@ def simulate_empirical_lcb_policy(
         **totals,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else None,
+        "roi_ci95_lower": confidence.get("roi_ci95_lower"),
+        "probability_roi_above_one": confidence.get(
+            "probability_roi_above_one"
+        ),
         "max_drawdown_yen": max_drawdown,
         "daily": daily,
     }

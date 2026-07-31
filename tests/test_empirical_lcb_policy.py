@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from boatrace_ai.listwise.empirical_lcb_policy import (
+    empirical_bankroll_promotion_eligible,
     policy_edge_records,
     simulate_empirical_lcb_policy,
 )
@@ -236,3 +237,28 @@ def test_external_ranking_must_be_a_complete_permutation(invalid_order) -> None:
             [_race("r1")], CALIBRATOR, _blend,
             ranking_provider=lambda _race, _probabilities: invalid_order,
         )
+
+
+def test_promotion_requires_thirty_days_and_roi_confidence() -> None:
+    passing = {
+        "status": "ready",
+        "evaluation_days": 30,
+        "tickets": 50,
+        "roi": 1.05,
+        "roi_ci95_lower": 1.0001,
+        "probability_roi_above_one": 0.95,
+    }
+    assert empirical_bankroll_promotion_eligible(passing)
+
+    failures = (
+        ("status", "calibration_not_ready"),
+        ("evaluation_days", 29),
+        ("tickets", 49),
+        ("roi", 1.0499),
+        ("roi_ci95_lower", 1.0),
+        ("probability_roi_above_one", 0.9499),
+    )
+    for key, value in failures:
+        candidate = dict(passing)
+        candidate[key] = value
+        assert not empirical_bankroll_promotion_eligible(candidate)
