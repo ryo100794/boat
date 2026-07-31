@@ -16,6 +16,10 @@ from ..archive_closing_odds import (
 )
 from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..db import connection, init_db
+from .contextual_market_residual_v24 import (
+    contextual_probabilities,
+    fit_temporal_contextual_residual,
+)
 from .flat_policy import simulate_chronological_flat_policy
 from .market_calibration import (
     _validate_artifact_before_period,
@@ -33,7 +37,7 @@ from .market_residual import (
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 2
+EVALUATION_VERSION = 3
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -263,6 +267,7 @@ def temporal_residual_diagnostic(
     calibration_fraction: float = 0.75,
     regularization: float = 0.01,
     calibration_through: str | None = None,
+    daily_budget_yen: int = 10_000,
 ) -> dict[str, Any]:
     """Fit a market residual on prior days and score untouched later days."""
     dates = sorted({str(race["race_date"]) for race in races})
@@ -311,6 +316,7 @@ def temporal_residual_diagnostic(
             },
             policy=policy,
             probability_blender=blend_probabilities,
+            initial_bankroll_yen=daily_budget_yen,
         )
         bootstrap = (
             bootstrap_daily_roi(simulation["daily"])
@@ -329,6 +335,44 @@ def temporal_residual_diagnostic(
                 "bootstrap": bootstrap,
             }
         )
+    contextual = fit_temporal_contextual_residual(calibration, evaluation)
+    contextual_evaluation = [
+        {
+            **race,
+            "model_probabilities": contextual_probabilities(
+                race,
+                contextual["artifact"],
+            ),
+        }
+        for race in evaluation
+    ]
+    contextual_purchase_diagnostics = []
+    for policy in TEMPORAL_RESIDUAL_POLICIES:
+        simulation = simulate_chronological_flat_policy(
+            contextual_evaluation,
+            calibrator={"model_weight": 1.0, "temperature": 1.0},
+            policy=policy,
+            probability_blender=blend_probabilities,
+            initial_bankroll_yen=daily_budget_yen,
+        )
+        bootstrap = (
+            bootstrap_daily_roi(simulation["daily"])
+            if simulation["daily"]
+            else {
+                "days": 0,
+                "roi": None,
+                "roi_ci95_lower": None,
+                "probability_roi_above_one": None,
+            }
+        )
+        contextual_purchase_diagnostics.append(
+            {
+                "policy": dict(policy),
+                "simulation": simulation,
+                "bootstrap": bootstrap,
+            }
+        )
+    contextual["purchase_diagnostics"] = contextual_purchase_diagnostics
     return {
         "status": "completed",
         "validation_design": (
@@ -346,6 +390,7 @@ def temporal_residual_diagnostic(
         "calibrator": calibrator,
         "metrics": metrics,
         "purchase_diagnostics": purchase_diagnostics,
+        "contextual_market_residual_v24": contextual,
     }
 
 
@@ -411,6 +456,7 @@ def evaluate_archive_oracle(
     temporal_residual = temporal_residual_diagnostic(
         races,
         calibration_through=temporal_calibration_through,
+        daily_budget_yen=daily_budget_yen,
     )
     prediction = probability_metrics(races, calibrator=PRIMARY_CALIBRATOR)
     return {
