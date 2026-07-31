@@ -1857,7 +1857,10 @@ def select_v18_schedule_quota_policy(
         prior_counts[math.floor((len(prior_counts) - 1) * 0.50)]
         if prior_counts else learned_limit
     )
-    budget_limit = max(1, daily_budget_yen // STAKE_YEN)
+    prior_max_limit = min(
+        max(prior_counts, default=learned_limit),
+        daily_budget_yen // STAKE_YEN,
+    )
     candidates = [
         {
             "name": "floor", "schedule_quota_rounding": "floor",
@@ -1897,11 +1900,11 @@ def select_v18_schedule_quota_policy(
                 "learned_daily_ticket_limit": median_limit,
             },
         ])
-    if budget_limit not in {learned_limit, median_limit}:
+    if prior_max_limit not in {learned_limit, median_limit}:
         candidates.append({
-            "name": "budget_cap_ceil",
+            "name": "prior_max_ceil",
             "schedule_quota_rounding": "ceil",
-            "learned_daily_ticket_limit": budget_limit,
+            "learned_daily_ticket_limit": prior_max_limit,
         })
 
     diagnostics = []
