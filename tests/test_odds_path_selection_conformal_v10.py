@@ -119,6 +119,47 @@ def test_daily_cluster_finite_sample_guard_uses_prior_days_as_units() -> None:
     assert artifact["ratio_max"] == pytest.approx(1.10)
 
 
+def test_four_prior_days_are_sufficient_for_eighty_percent_coverage() -> None:
+    observations = [
+        {
+            "race_date": f"2026-07-{20 + day_index:02d}",
+            "race_id": f"r{day_index}-{candidate_index}",
+            "combination": COMBINATIONS[candidate_index],
+            "closing_ratio": 0.4 + day_index * 0.1,
+        }
+        for day_index in range(4)
+        for candidate_index in range(8)
+    ]
+
+    artifact = fit_selection_conformal_haircut(
+        observations, evaluation_date="2026-07-24"
+    )
+
+    assert artifact["ready"] is True
+    assert artifact["training_days"] == 4
+    assert artifact["training_candidates"] == 32
+    assert artifact["minimum_training_days"] == 4
+    assert artifact["finite_sample_rank"] == 1
+    assert artifact["finite_sample_coverage"] == pytest.approx(4 / 5)
+
+
+def test_three_prior_days_remain_below_eighty_percent_requirement() -> None:
+    observations = [
+        {
+            "race_date": f"2026-07-{20 + index // 10:02d}",
+            "race_id": f"r{index}",
+            "combination": COMBINATIONS[index],
+            "closing_ratio": 0.5,
+        }
+        for index in range(30)
+    ]
+
+    artifact = fit_selection_conformal_haircut(
+        observations, evaluation_date="2026-07-23"
+    )
+    assert artifact["ready"] is False
+
+
 def test_conditional_guard_uses_only_post_haircut_allocator_inputs() -> None:
     races = []
     forecasts = {}
@@ -220,7 +261,7 @@ def test_same_or_future_day_calibration_is_rejected() -> None:
 
 @pytest.mark.parametrize(
     ("days", "candidates"),
-    ((4, 30), (5, 29)),
+    ((3, 30), (4, 29)),
 )
 def test_insufficient_prior_selection_sample_forces_no_bet(
     days: int, candidates: int

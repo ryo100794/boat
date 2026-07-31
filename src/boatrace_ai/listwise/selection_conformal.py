@@ -22,7 +22,7 @@ from .edge_conditional_probability_lcb_v13 import probability_lower_bound_detail
 
 
 TARGET_COVERAGE = 0.80
-MIN_TRAINING_DAYS = 5
+MIN_TRAINING_DAYS = 4
 MIN_TRAINING_CANDIDATES = 30
 METHOD = "selected_top2_daily_cluster_finite_sample_lower_conformal_v2"
 
