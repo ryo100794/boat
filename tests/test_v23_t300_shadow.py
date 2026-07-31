@@ -173,3 +173,33 @@ def test_v23_is_registered_with_distinct_model_key(tmp_path: Path) -> None:
     assert isinstance(adapter, V23Top5NarrowModelAdapter)
     assert adapter.identity.model_key == "v23_daily"
     assert adapter.identity.strategy_name == "v23_top5_narrow_t300"
+
+
+def test_prewarm_runs_once_per_adapter_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, base = _artifacts(tmp_path)
+    adapter = V23Top5NarrowModelAdapter(
+        model_key="v23_daily", bundle_path=bundle, base_model_path=base
+    )
+    calls = {"state": 0, "rows": 0}
+
+    def state(conn, *, race_date):
+        calls["state"] += 1
+        return {"race_date": race_date}
+
+    def rows(conn, *, race_date, feature_schema_version):
+        calls["rows"] += 1
+        return {}
+
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.historical_state", state
+    )
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.load_date_races", rows
+    )
+
+    adapter.prewarm(object(), "2026-08-01")
+    adapter.prewarm(object(), "2026-08-01")
+
+    assert calls == {"state": 1, "rows": 1}
