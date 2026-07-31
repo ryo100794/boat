@@ -34,12 +34,13 @@ PROBABILITY_REGULARIZATION = 0.03
 POLICY_CALIBRATION_DAYS = 30
 STAKE_YEN = 100
 TOP_K_CHOICES = (1, 3, 5)
-LABEL_SCHEMES = ("winner", "payout_bucket")
+LABEL_SCHEMES = ("winner", "payout_weighted")
 TREE_PRESETS = (
     {"name": "compact", "num_leaves": 15, "max_depth": 5},
     {"name": "balanced", "num_leaves": 31, "max_depth": 7},
 )
-PAYOUT_BUCKETS = (20.0, 50.0, 101.0)
+MIN_RACE_WEIGHT = 0.5
+MAX_RACE_WEIGHT = 4.0
 EPSILON = 1e-12
 ACTIVE_CONTEXT_FEATURES = FEATURE_VARIANTS["independent_core"]
 _BOOSTER_CACHE: dict[str, Any] = {}
@@ -155,13 +156,24 @@ def ticket_feature_matrix(
     return combinations, matrix
 
 
-def _winner_relevance(race: Mapping[str, Any], label_scheme: str) -> int:
+def _ranking_teacher_weights(
+    races: list[dict[str, Any]], label_scheme: str
+) -> np.ndarray:
     if label_scheme == "winner":
-        return 1
-    if label_scheme != "payout_bucket":
+        return np.ones(len(races), dtype=np.float64)
+    if label_scheme != "payout_weighted":
         raise ValueError(f"unknown V31 label scheme: {label_scheme}")
-    payout_odds = float(race["actual_payout_yen"]) / STAKE_YEN
-    return 1 + sum(payout_odds >= boundary for boundary in PAYOUT_BUCKETS)
+    payout_odds = np.asarray(
+        [
+            max(EPSILON, float(race["actual_payout_yen"]) / STAKE_YEN)
+            for race in races
+        ],
+        dtype=np.float64,
+    )
+    median_odds = max(EPSILON, float(np.median(payout_odds)))
+    raw_weights = np.sqrt(payout_odds / median_odds)
+    clipped = np.clip(raw_weights, MIN_RACE_WEIGHT, MAX_RACE_WEIGHT)
+    return clipped / float(np.mean(clipped))
 
 
 def fit_ticket_utility_ranker(
@@ -173,21 +185,27 @@ def fit_ticket_utility_ranker(
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("at least one V31 race is required")
+    race_weights = _ranking_teacher_weights(races, label_scheme)
     matrices: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     groups: list[int] = []
-    for race in races:
+    sample_weights: list[np.ndarray] = []
+    for race, race_weight in zip(races, race_weights):
         combinations, matrix = ticket_feature_matrix(race)
         actual = str(race["actual_combination"])
         if actual not in combinations:
             raise ValueError("actual V31 combination is absent from market tickets")
         relevance = np.zeros(len(combinations), dtype=np.int32)
-        relevance[combinations.index(actual)] = _winner_relevance(race, label_scheme)
+        relevance[combinations.index(actual)] = 1
         matrices.append(matrix)
         labels.append(relevance)
+        sample_weights.append(
+            np.full(len(combinations), race_weight, dtype=np.float64)
+        )
         groups.append(len(combinations))
     features = np.vstack(matrices)
     target = np.concatenate(labels)
+    ticket_weights = np.concatenate(sample_weights)
     lightgbm = _lightgbm()
     estimator = lightgbm.LGBMRanker(
         objective="lambdarank",
@@ -209,13 +227,23 @@ def fit_ticket_utility_ranker(
         verbosity=-1,
         label_gain=[0, 1, 3, 7, 15],
     )
-    estimator.fit(features, target, group=groups)
+    estimator.fit(
+        features,
+        target,
+        group=groups,
+        sample_weight=ticket_weights,
+    )
     model_text = estimator.booster_.model_to_string()
     return {
         "model": MODEL_NAME,
         "role": "ticket_utility_ranking_only",
         "label_scheme": label_scheme,
         "tree_preset": str(tree_preset["name"]),
+        "teacher_weighting": label_scheme,
+        "race_weight_minimum": float(np.min(race_weights)),
+        "race_weight_maximum": float(np.max(race_weights)),
+        "race_weight_mean": float(np.mean(race_weights)),
+        "race_weight_normalized": True,
         "num_leaves": int(tree_preset["num_leaves"]),
         "max_depth": int(tree_preset["max_depth"]),
         "feature_dimension": int(features.shape[1]),
@@ -464,9 +492,10 @@ def evaluate_temporal_ticket_utility_roles(
         "model": MODEL_NAME,
         "status": "completed",
         "validation_design": (
-            "Ticket-level LightGBM ranking is selected on an inner prior-day "
-            "block. The selected rank cutoff limits both empirical-EV calibration "
-            "and outer purchases; a separate proper probability head supplies EV."
+            "Ticket-level LightGBM ranking and capped normalized payout query "
+            "weighting are selected on an inner prior-day block. The selected "
+            "rank cutoff limits both empirical-EV calibration and outer purchases; "
+            "a separate proper probability head supplies EV."
         ),
         "ranking_training_from": ranking_dates[0],
         "ranking_training_through": ranking_dates[-1],
