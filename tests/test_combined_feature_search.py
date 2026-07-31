@@ -48,15 +48,6 @@ EXPECTED_COMBINED_VARIANTS = (
         ("card_identity_context", "card_relative", "research_correlates"),
     ),
     (
-        "keep_card_numeric_without_raw_equipment_ids",
-        (
-            "card_identity_context",
-            "card_relative",
-            "raw_equipment_identifiers",
-            "research_correlates",
-        ),
-    ),
-    (
         "keep_card_relative",
         ("card_identity_context", "card_numeric", "research_correlates"),
     ),
@@ -145,7 +136,11 @@ def test_combined_variants_are_fixed_and_default_variants_are_unchanged() -> Non
     args = parser.parse_args([])
 
     assert COMBINED_FEATURE_VARIANTS == EXPECTED_COMBINED_VARIANTS
-    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 10
+    assert len({drops for _name, drops in COMBINED_FEATURE_VARIANTS}) == 9
+    assert all(
+        "raw_equipment_identifiers" not in drops
+        for _name, drops in COMBINED_FEATURE_VARIANTS
+    )
     assert ("full", ()) in COMBINED_FEATURE_VARIANTS
     assert ("base_pastlog", "research_correlates") in {
         drops for _name, drops in COMBINED_FEATURE_VARIANTS
@@ -331,9 +326,9 @@ def test_combined_checkpoint_exposes_atomic_candidate_and_variant_progress(
     candidate_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert candidate_payload["progress"] == {
         "completed_candidates": 1,
-        "total_candidates": 40,
+        "total_candidates": 36,
         "completed_variants": 0,
-        "total_variants": 10,
+        "total_variants": 9,
         "last_completed": {
             "kind": "candidate",
             "feature_variant": "drop_base_pastlog",
