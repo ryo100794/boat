@@ -5,6 +5,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "course_interaction_market_residual_v28",
+        "course_interaction_market_residual_v28",
+        "metrics",
+        "artifact",
+    ),
+    (
         "pruned_direct_context_market_residual_v27",
         "pruned_direct_context_market_residual_v27",
         "metrics",
@@ -79,6 +85,8 @@ def apply_archive_residual_summary(
         for key in (
             "feature_dimension",
             "feature_variant",
+            "architecture",
+            "structure_variant",
             "active_context_feature_count",
             "regularization",
             "objective",
@@ -96,6 +104,9 @@ def apply_archive_residual_summary(
             key: selection.get(key)
             for key in (
                 "variant",
+                "structure_variant",
+                "architecture",
+                "feature_variant",
                 "active_context_feature_count",
                 "feature_dimension",
                 "regularization",
