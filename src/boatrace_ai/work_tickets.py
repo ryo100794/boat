@@ -133,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
                 progress=args.progress,
                 note=args.note,
             )
+        if args.command in {"seed", "add", "update"}:
+            conn.commit()
     return 0
 
 
