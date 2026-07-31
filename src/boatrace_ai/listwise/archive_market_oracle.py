@@ -51,10 +51,16 @@ from .pruned_direct_context_evaluation_v27 import (
 from .payout_weighted_ranking import (
     evaluate_temporal_payout_weighted_roles,
 )
+from .conditional_ticket_residual_v30 import (
+    evaluate_temporal_conditional_ticket_residual,
+)
+from .ticket_utility_ranking_v31 import (
+    evaluate_temporal_ticket_utility_roles,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 7
+EVALUATION_VERSION = 9
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -451,6 +457,21 @@ def temporal_residual_diagnostic(
         evaluation,
         daily_budget_yen=daily_budget_yen,
     )
+    conditional_ticket_residual = evaluate_temporal_conditional_ticket_residual(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
+    ticket_utility_roles = evaluate_temporal_ticket_utility_roles(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+        probability_artifact=(
+            payout_weighted_roles.get("probability_artifact")
+            if isinstance(payout_weighted_roles, Mapping)
+            else None
+        ),
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -474,6 +495,8 @@ def temporal_residual_diagnostic(
         "pruned_direct_context_market_residual_v27": pruned_direct_context,
         "course_interaction_market_residual_v28": course_interaction,
         "payout_weighted_role_model_v29": payout_weighted_roles,
+        "conditional_ticket_residual_v30": conditional_ticket_residual,
+        "ticket_utility_meta_ranking_v31": ticket_utility_roles,
     }
 
 

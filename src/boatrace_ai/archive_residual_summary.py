@@ -5,6 +5,18 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "ticket_utility_meta_ranking_v31",
+        "ticket_utility_meta_ranking_v31",
+        "probability_metrics",
+        "probability_artifact",
+    ),
+    (
+        "conditional_ticket_residual_v30",
+        "conditional_ticket_residual_v30",
+        "metrics",
+        "artifact",
+    ),
+    (
         "payout_weighted_role_model_v29",
         "payout_weighted_role_model_v29",
         "probability_metrics",
@@ -94,6 +106,7 @@ def apply_archive_residual_summary(
             "architecture",
             "structure_variant",
             "active_context_feature_count",
+            "active_ticket_feature_count",
             "regularization",
             "objective",
             "gradient_norm",
@@ -114,9 +127,13 @@ def apply_archive_residual_summary(
                 "architecture",
                 "feature_variant",
                 "active_context_feature_count",
+                "active_ticket_feature_count",
                 "feature_dimension",
                 "regularization",
                 "payout_weight_exponent",
+                "label_scheme",
+                "tree_preset",
+                "top_k",
                 "converged",
             )
         }
@@ -134,6 +151,25 @@ def apply_archive_residual_summary(
                 "top5_flat_roi",
             )
         }
+        selected_top_k = ranking_metrics.get("selected_top_k_metrics")
+        if isinstance(selected_top_k, Mapping):
+            summary["residual_ranking_metrics"] = {
+                "selected_top_k": ranking_metrics.get("selected_top_k"),
+                **{
+                    key: selected_top_k.get(key)
+                    for key in (
+                        "evaluated_races",
+                        "hit_races",
+                        "hit_rate",
+                        "stake_yen",
+                        "return_yen",
+                        "profit_yen",
+                        "roi",
+                        "roi_ci95_lower",
+                        "probability_roi_above_one",
+                    )
+                },
+            }
 
     compact_policies = []
     for row in selected.get("purchase_diagnostics") or ():
