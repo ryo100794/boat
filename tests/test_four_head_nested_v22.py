@@ -5,6 +5,8 @@ from dataclasses import FrozenInstanceError, replace
 import numpy as np
 import pytest
 
+import boatrace_ai.listwise.four_head_nested_v22 as v22
+
 from boatrace_ai.listwise.four_head_nested_v22 import (
     MODEL_KEY,
     DecisionRace,
@@ -207,6 +209,29 @@ def test_later_purchase_validation_labels_cannot_change_earlier_oof_inputs() -> 
         original.purchase_threshold_input_sha256
         != changed.purchase_threshold_input_sha256
     )
+
+
+def test_purchase_head_learns_unbiased_capped_unit_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original = v22._fit_ridge
+
+    def capture(matrix, targets, *, alpha, sample_weight=None):
+        captured["sample_weight"] = sample_weight
+        return original(
+            matrix, targets, alpha=alpha, sample_weight=sample_weight
+        )
+
+    monkeypatch.setattr(v22, "_fit_ridge", capture)
+    head = v22._fit_purchase_head(
+        [np.ones((4, 2))],
+        [np.asarray([-1.0, -1.0, 4.0, -1.0])],
+        alpha=0.01,
+    )
+
+    assert head.teacher.startswith("capped_realized_unit_return")
+    assert captured["sample_weight"] is None
 
 
 def test_purchase_selection_uses_learned_return_break_even_not_oof_roi_search() -> None:
