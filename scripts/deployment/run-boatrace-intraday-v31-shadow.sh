@@ -5,6 +5,7 @@ APP_ROOT="${BOATRACE_APP_ROOT:-/workspace/boat}"
 STATE_ROOT="${BOATRACE_DAILY_MODEL_STATE_ROOT:-$APP_ROOT/data/runtime/daily-shadow-models}"
 SPEC_ENV="$STATE_ROOT/active/model-spec.env"
 POLL_SECONDS="${BOATRACE_V31_SHADOW_SPEC_POLL_SECONDS:-10}"
+export PYTHONPATH="$APP_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 while true; do
   if [[ -r "$SPEC_ENV" ]]; then
