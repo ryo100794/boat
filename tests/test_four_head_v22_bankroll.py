@@ -28,7 +28,7 @@ def _head(name: str, size: int) -> LinearHead:
 def _artifact() -> FourHeadArtifact:
     return FourHeadArtifact(
         model_key="four_head_nested_v22",
-        artifact_version=1,
+        artifact_version=2,
         trained_through_date="2026-07-28",
         choice_count=120,
         feature_count=1,
@@ -78,7 +78,12 @@ def _settlement(race: LabeledRace, *, payout: int = 700) -> V22BankrollSettlemen
     )
 
 
-def _prediction(race: DecisionRace, selected: tuple[int, ...]) -> RacePrediction:
+def _prediction(
+    race: DecisionRace,
+    selected: tuple[int, ...],
+    *,
+    purchase_score: float = 1.0,
+) -> RacePrediction:
     probability = np.full(120, 0.5 / 119.0)
     probability[0] = 0.5
     ranking = np.arange(120, 0, -1, dtype=float)
@@ -88,7 +93,7 @@ def _prediction(race: DecisionRace, selected: tuple[int, ...]) -> RacePrediction
         probabilities=tuple(probability),
         ranking_scores=tuple(ranking),
         predicted_closing_odds=tuple(10.0 for _ in range(120)),
-        purchase_scores=tuple(1.0 for _ in range(120)),
+        purchase_scores=tuple(purchase_score for _ in range(120)),
         selected_indices=selected,
     )
 
@@ -117,7 +122,39 @@ def test_uses_existing_chronological_allocator_and_official_settlement(
     ]
     assert decisions[1]["gross_stake_allowance_yen"] > 10_000
     assert result["policy"]["allocation_api"].startswith("simulate_chronological")
+    assert result["policy"]["allocation_signal"] == (
+        "learned_purchase_head_expected_unit_return"
+    )
     assert result["diagnostic_unit_roi_is_formal_roi"] is False
+
+
+def test_learned_purchase_return_controls_stake_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race = _race("race1")
+    monkeypatch.setattr(
+        module,
+        "predict_race",
+        lambda _artifact, source: _prediction(
+            source, (0,), purchase_score=0.2
+        ),
+    )
+    low = evaluate_four_head_v22_bankroll(
+        _artifact(), [race], [_settlement(race)]
+    )
+    monkeypatch.setattr(
+        module,
+        "predict_race",
+        lambda _artifact, source: _prediction(
+            source, (0,), purchase_score=1.0
+        ),
+    )
+    high = evaluate_four_head_v22_bankroll(
+        _artifact(), [race], [_settlement(race)]
+    )
+
+    assert low["stake_yen"] == 100
+    assert high["stake_yen"] == 200
 
 
 def test_allows_zero_tickets_without_forcing_a_purchase(

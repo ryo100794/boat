@@ -169,6 +169,59 @@ def test_cpu_times_are_limited_to_process_affinity(tmp_path: Path) -> None:
     assert evaluation_queue._read_cpu_times(None, stat_path=stat) == (630, 1030)
 
 
+def test_four_head_learned_value_command_records_learning_and_outer_periods(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "four_head_learned_value",
+            {
+                "source_model": "data/models/evaluation_queue/job-00002707.joblib",
+                "training_from": "2026-07-20",
+                "training_through": "2026-07-30",
+                "outer_from": "2026-07-31",
+                "outer_through": "2026-08-01",
+                "projection_dimensions": 16,
+                "alpha": 0.01,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.listwise.four_head_v22_evaluation"]
+    assert command[command.index("--training-through") + 1] == "2026-07-30"
+    assert command[command.index("--outer-from") + 1] == "2026-07-31"
+    assert command[command.index("--projection-dimensions") + 1] == "16"
+    assert command[command.index("--alpha") + 1] == "0.01"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+    assert "four_head_learned_value" in TASK_PROFILES
+
+
+def test_four_head_learned_value_rejects_training_outer_overlap(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    with pytest.raises(ValueError, match="outer period"):
+        build_command(
+            _job(
+                "four_head_learned_value",
+                {
+                    "source_model": "data/models/source.joblib",
+                    "training_from": "2026-07-20",
+                    "training_through": "2026-07-31",
+                    "outer_from": "2026-07-31",
+                    "outer_through": "2026-08-01",
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(

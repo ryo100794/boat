@@ -55,8 +55,8 @@ def _install_sources(monkeypatch, dates: list[str], *, missing_odds: set[str] = 
     race_ids = [f"{date}-01-01" for date in dates]
     monkeypatch.setattr(
         evaluation,
-        "load_complete_race_ids",
-        lambda conn: [
+        "_load_target_complete_race_ids",
+        lambda conn, **kwargs: [
             (race_id, date, "01", 1) for race_id, date in zip(race_ids, dates)
         ],
     )

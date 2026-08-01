@@ -10,7 +10,7 @@ import numpy as np
 
 
 MODEL_KEY = "four_head_nested_v22"
-ARTIFACT_VERSION = 1
+ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -86,9 +86,7 @@ class FourHeadArtifact:
     training_race_ids: tuple[str, ...]
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
-    purchase_threshold_source: str = (
-        "strict_prior_purchase_head_oof_scores_and_realized_unit_returns"
-    )
+    purchase_threshold_source: str = "learned_unit_return_break_even_zero"
     outer_outcomes_used: bool = False
     fixed_after_fit: bool = True
 
@@ -313,30 +311,6 @@ def _oof_payload(
     }
 
 
-def _select_purchase_threshold(
-    scores: np.ndarray,
-    returns: np.ndarray,
-) -> float:
-    candidates = sorted(
-        {float(np.nextafter(scores.max(), math.inf)), *np.quantile(scores, np.linspace(0.5, 0.95, 10)).tolist()}
-    )
-    best: tuple[float, int, float] | None = None
-    selected_threshold = candidates[-1]
-    for threshold in candidates:
-        chosen = scores >= threshold
-        count = int(chosen.sum())
-        if count == 0:
-            objective = 0.0
-        else:
-            gross = float(np.sum(returns[chosen] + 1.0))
-            objective = gross / count
-        key = (objective, -count, threshold)
-        if best is None or key > best:
-            best = key
-            selected_threshold = threshold
-    return float(selected_threshold)
-
-
 def _fit_purchase_head(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
@@ -425,8 +399,6 @@ def fit_four_head_nested_v22(
     purchase_oof_ids: list[str] = []
     purchase_score_payloads: list[dict[str, Any]] = []
     threshold_input_payloads: list[dict[str, Any]] = []
-    purchase_scores: list[np.ndarray] = []
-    purchase_oof_returns: list[np.ndarray] = []
     score_sha_by_date: list[tuple[str, str]] = []
     threshold_sha_by_date: list[tuple[str, str]] = []
     for validation_index in range(
@@ -458,8 +430,6 @@ def fit_four_head_nested_v22(
                 "realized_unit_returns": realized.tolist(),
             }
             purchase_oof_ids.append(race_id)
-            purchase_scores.append(scores)
-            purchase_oof_returns.append(realized)
             purchase_score_payloads.append(score_payload)
             threshold_input_payloads.append(threshold_payload)
             date_score_payloads.append(score_payload)
@@ -482,9 +452,9 @@ def fit_four_head_nested_v22(
                 ),
             )
         )
-    threshold_scores = np.concatenate(purchase_scores)
-    threshold_returns = np.concatenate(purchase_oof_returns)
-    threshold = _select_purchase_threshold(threshold_scores, threshold_returns)
+    # The purchase head predicts net unit return. Zero is its semantic break-even
+    # boundary, not a return-maximizing threshold selected on validation labels.
+    threshold = 0.0
 
     all_base_oof_records = [
         record for date in base_oof_dates for record in base_oof_by_date[date]
