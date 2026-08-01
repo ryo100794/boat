@@ -74,7 +74,7 @@ def _selection_spy(monkeypatch) -> list[tuple[str, ...]]:
     monkeypatch.setattr(
         market_calibration,
         "closing_odds_training_ready",
-        lambda teachers: bool(teachers),
+        lambda teachers, **_kwargs: bool(teachers),
     )
     monkeypatch.setattr(market_calibration, "select_closing_odds_model", select)
     return calls
@@ -132,7 +132,7 @@ def test_unavailable_forecast_explicitly_falls_back_to_observed_t5(
     monkeypatch.setattr(
         market_calibration,
         "closing_odds_training_ready",
-        lambda teachers: False,
+        lambda teachers, **_kwargs: False,
     )
     races = _races(2)
     races[1]["estimated_final_odds"] = {
