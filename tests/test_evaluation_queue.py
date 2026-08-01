@@ -3302,6 +3302,94 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_market_residual_walk_forward_builds_fixed_model_blend_command(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    candidate = root / "data/models/evaluation_queue/candidate.joblib"
+    baseline = root / "data/models/baseline.joblib"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    baseline.write_bytes(b"baseline")
+
+    command, _ = build_command(
+        _job(
+            "market_residual_walk_forward",
+            {
+                "model_input": "data/models/evaluation_queue/candidate.joblib",
+                "baseline_model_input": "data/models/baseline.joblib",
+                "candidate_weight": 0.35,
+                "from_date": "2026-07-18",
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--baseline-model") + 1] == str(baseline)
+    assert command[command.index("--candidate-weight") + 1] == "0.35"
+
+
+@pytest.mark.parametrize(
+    "parameters, message",
+    [
+        ({"baseline_model_input": "data/models/baseline.joblib"}, "provided together"),
+        ({"candidate_weight": 0.5}, "provided together"),
+        (
+            {"baseline_model_input": None, "candidate_weight": None},
+            "non-empty string",
+        ),
+        (
+            {
+                "baseline_model_input": "data/models/baseline.joblib",
+                "candidate_weight": "0.5",
+            },
+            "must be a number",
+        ),
+        (
+            {
+                "baseline_model_input": "data/models/baseline.joblib",
+                "candidate_weight": 1.01,
+            },
+            "finite and in",
+        ),
+        (
+            {
+                "baseline_model_input": "../../baseline.joblib",
+                "candidate_weight": 0.5,
+            },
+            "inside data/models",
+        ),
+    ],
+)
+def test_market_residual_walk_forward_rejects_invalid_fixed_model_blend(
+    tmp_path: Path,
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    root = tmp_path / "boat"
+    candidate = root / "data/models/candidate.joblib"
+    baseline = root / "data/models/baseline.joblib"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    baseline.write_bytes(b"baseline")
+    with pytest.raises(ValueError, match=message):
+        build_command(
+            _job(
+                "market_residual_walk_forward",
+                {
+                    "model_input": "data/models/candidate.joblib",
+                    "from_date": "2026-07-18",
+                    **parameters,
+                },
+            ),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_market_residual_walk_forward_accepts_v18_schedule_quota(
     tmp_path: Path,
 ) -> None:

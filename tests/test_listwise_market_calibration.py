@@ -12,11 +12,13 @@ from boatrace_ai.listwise.market_calibration import (
     artifact_drop_feature_groups,
     artifact_classifier_probabilities_batch,
     artifact_model_probabilities,
+    blend_scored_model_probabilities,
     blend_probabilities,
     build_parser,
     filter_clean_market_days,
     fixed_benchmark_population,
     fit_deployment_configuration,
+    geometric_blend_model_probabilities,
     iter_artifact_feature_rows,
     normalized_market_probabilities,
     probability_metrics,
@@ -37,6 +39,7 @@ from boatrace_ai.listwise.market_calibration import (
     snapshot_age_seconds,
     write_scored_cache,
     walk_forward_evaluate,
+    validate_fixed_model_blend,
 )
 
 
@@ -819,6 +822,71 @@ def test_scored_cache_requires_exact_contract(tmp_path) -> None:
         path,
         contract={**contract, "through_date": "2026-07-22"},
     ) is None
+
+
+def test_fixed_model_geometric_blend_preserves_endpoints_and_normalizes() -> None:
+    candidate = {"1-2-3": 0.8, "2-1-3": 0.2}
+    baseline = {"1-2-3": 0.2, "2-1-3": 0.8}
+
+    assert geometric_blend_model_probabilities(
+        candidate, baseline, candidate_weight=0.0
+    ) == baseline
+    assert geometric_blend_model_probabilities(
+        candidate, baseline, candidate_weight=1.0
+    ) == candidate
+    midpoint = geometric_blend_model_probabilities(
+        candidate, baseline, candidate_weight=0.5
+    )
+    assert midpoint == pytest.approx({"1-2-3": 0.5, "2-1-3": 0.5})
+    assert sum(midpoint.values()) == pytest.approx(1.0)
+
+
+def test_fixed_model_blend_requires_paired_cli_arguments() -> None:
+    assert validate_fixed_model_blend(None, None) is None
+    assert validate_fixed_model_blend("baseline.joblib", 0.25) == 0.25
+    with pytest.raises(ValueError, match="provided together"):
+        validate_fixed_model_blend("baseline.joblib", None)
+    with pytest.raises(ValueError, match="provided together"):
+        validate_fixed_model_blend(None, 0.5)
+    with pytest.raises(ValueError, match="finite and in"):
+        validate_fixed_model_blend("baseline.joblib", float("nan"))
+
+
+def test_fixed_model_scored_blend_validates_full_race_identity() -> None:
+    candidate = _race("2026-07-18", 1)
+    baseline = _race("2026-07-18", 1)
+    baseline["model_probabilities"] = _distribution("2-1-3", 0.40)
+    dataset = {"target_complete_races": 1, "eligible_real_odds_races": 1}
+
+    blended = blend_scored_model_probabilities(
+        [candidate],
+        [baseline],
+        candidate_weight=0.5,
+        candidate_dataset=dataset,
+        baseline_dataset=dict(dataset),
+    )
+    assert blended[0]["race_id"] == candidate["race_id"]
+    assert sum(blended[0]["model_probabilities"].values()) == pytest.approx(1.0)
+    assert candidate["model_probabilities"] != blended[0]["model_probabilities"]
+
+    mismatched_odds = {**baseline, "odds": dict(baseline["odds"])}
+    mismatched_odds["odds"]["1-2-3"] += 0.1
+    with pytest.raises(ValueError, match="race data differ.*odds"):
+        blend_scored_model_probabilities(
+            [candidate], [mismatched_odds], candidate_weight=0.5
+        )
+    with pytest.raises(ValueError, match="race_id sets differ"):
+        blend_scored_model_probabilities(
+            [candidate], [{**baseline, "race_id": "other"}], candidate_weight=0.5
+        )
+    with pytest.raises(ValueError, match="scored datasets differ"):
+        blend_scored_model_probabilities(
+            [candidate],
+            [baseline],
+            candidate_weight=0.5,
+            candidate_dataset=dataset,
+            baseline_dataset={**dataset, "eligible_real_odds_races": 0},
+        )
 
 
 def test_policy_calibration_requires_repeatable_winning_days() -> None:

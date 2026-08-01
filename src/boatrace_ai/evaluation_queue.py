@@ -1796,6 +1796,7 @@ def build_command(
     if task_type == "market_residual_walk_forward":
         allowed = {
             "model_input", "from_date", "through_date", "daily_budget_yen",
+            "baseline_model_input", "candidate_weight",
             "min_calibration_days", "calibrator_strategy",
             "minimum_day_coverage", "timeout_seconds",
             "v12_closing_fallback_policy",
@@ -1826,6 +1827,12 @@ def build_command(
         _integer(params, "timeout_seconds", 3600, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         model_input = (app_root / str(params["model_input"])).resolve()
+        has_baseline = "baseline_model_input" in params
+        has_candidate_weight = "candidate_weight" in params
+        if has_baseline != has_candidate_weight:
+            raise ValueError(
+                "baseline_model_input and candidate_weight must be provided together"
+            )
         cache_period = f"{from_date}_{through_date or 'latest'}"
         scored_cache = (
             app_root
@@ -1838,6 +1845,33 @@ def build_command(
             raise JobDependencyUnavailable(
                 f"market source model is not available yet: {model_input}"
             )
+        baseline_model_input = None
+        candidate_weight = None
+        if has_baseline:
+            raw_baseline = params["baseline_model_input"]
+            if not isinstance(raw_baseline, str) or not raw_baseline.strip():
+                raise ValueError("baseline_model_input must be a non-empty string")
+            raw_weight = params["candidate_weight"]
+            if isinstance(raw_weight, bool) or not isinstance(raw_weight, (int, float)):
+                raise ValueError("candidate_weight must be a number in [0, 1]")
+            candidate_weight = float(raw_weight)
+            if not math.isfinite(candidate_weight) or not 0.0 <= candidate_weight <= 1.0:
+                raise ValueError("candidate_weight must be finite and in [0, 1]")
+            baseline_model_input = (
+                app_root / raw_baseline
+            ).resolve()
+            if (
+                model_root not in baseline_model_input.parents
+                or baseline_model_input.suffix != ".joblib"
+            ):
+                raise ValueError(
+                    "baseline_model_input must be a joblib artifact inside data/models"
+                )
+            if not baseline_model_input.is_file():
+                raise JobDependencyUnavailable(
+                    "market baseline model is not available yet: "
+                    f"{baseline_model_input}"
+                )
         v25_probability_artifact = None
         if params.get("v25_probability_artifact") is not None:
             artifact_root = (
@@ -1915,6 +1949,11 @@ def build_command(
             command.extend([
                 "--v25-probability-artifact",
                 str(v25_probability_artifact),
+            ])
+        if baseline_model_input is not None and candidate_weight is not None:
+            command.extend([
+                "--baseline-model", str(baseline_model_input),
+                "--candidate-weight", str(candidate_weight),
             ])
         if strategy in {
             "odds_path_role_integrated_t300_nonlinear_v12",
