@@ -266,6 +266,39 @@ def _run_with_empirical_spies(monkeypatch, races):
     return result, events
 
 
+def test_bandwise_candidate_forwards_nonmonotonic_shape_constraint(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def fit(records, *, prediction_date, shape_constraint):
+        captured.update({
+            "records": records,
+            "prediction_date": prediction_date,
+            "shape_constraint": shape_constraint,
+        })
+        return _Artifact(())
+
+    monkeypatch.setattr(
+        market_calibration,
+        "fit_contextual_empirical_ev_calibration",
+        fit,
+    )
+
+    artifact = market_calibration._fit_prior_empirical_ev_artifact(
+        [],
+        "2026-01-03",
+        shape_constraint="bandwise",
+    )
+
+    assert artifact.training_dates == ()
+    assert captured == {
+        "records": [],
+        "prediction_date": "2026-01-03",
+        "shape_constraint": "bandwise",
+    }
+
+
 def test_empirical_track_fits_prior_evaluation_folds_then_appends_holdout_teacher(
     monkeypatch,
 ) -> None:

@@ -148,6 +148,26 @@ def test_hierarchical_shrinkage_preserves_raw_ev_monotonicity() -> None:
     assert predictions[0]["empirical_ev_lcb95"] <= predictions[1]["empirical_ev_lcb95"]
 
 
+def test_bandwise_shape_preserves_profitable_middle_band_without_tail_pooling() -> None:
+    records = []
+    for day in range(20):
+        records.extend(
+            _record(day, 1, 12.0, 1.2, raw_ev=1.02) for _ in range(20)
+        )
+        records.extend(
+            _record(day, 1, 12.0, 0.2, raw_ev=1.15) for _ in range(20)
+        )
+
+    isotonic = _fit(records, shape_constraint="isotonic")
+    bandwise = _fit(records, shape_constraint="bandwise")
+
+    assert isotonic.predict(1.02, 1, 12.0)["empirical_ev"] == pytest.approx(0.7)
+    assert bandwise.predict(1.02, 1, 12.0)["empirical_ev"] > 1.0
+    assert bandwise.predict(1.15, 1, 12.0)["empirical_ev"] < 1.0
+    assert bandwise.shape_constraint == "bandwise"
+    assert bandwise.global_calibration.shape_constraint == "bandwise"
+
+
 def test_day_bootstrap_recomputes_shrinkage_from_resampled_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

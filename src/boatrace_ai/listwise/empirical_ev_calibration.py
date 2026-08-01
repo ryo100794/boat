@@ -58,6 +58,7 @@ class EmpiricalEVCalibrationArtifact:
     min_candidate_days: int
     bootstrap_samples: int
     seed: int
+    shape_constraint: str = "isotonic"
 
     def predict(
         self,
@@ -85,6 +86,7 @@ class EmpiricalEVCalibrationArtifact:
             "min_candidate_days": self.min_candidate_days,
             "bootstrap_samples": self.bootstrap_samples,
             "seed": self.seed,
+            "shape_constraint": self.shape_constraint,
             "bins": [bin_.as_dict() for bin_ in self.bins],
         }
 
@@ -224,22 +226,58 @@ def _isotonic_bins(sums: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return result
 
 
+def _bandwise_bins(sums: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    """Estimate each EV band independently while filling unsupported bands."""
+    occupied = np.flatnonzero(counts > 0)
+    result = np.full(len(counts), np.nan, dtype=np.float64)
+    if not len(occupied):
+        return result
+    result[occupied] = sums[occupied] / counts[occupied]
+    first = int(occupied[0])
+    result[:first] = result[first]
+    for left_position, right_position in zip(occupied, occupied[1:]):
+        left = int(left_position)
+        right = int(right_position)
+        result[left + 1 : right] = result[left]
+    result[int(occupied[-1]) + 1 :] = result[int(occupied[-1])]
+    return result
+
+
+def _fit_bins(
+    sums: np.ndarray,
+    counts: np.ndarray,
+    *,
+    shape_constraint: str,
+) -> np.ndarray:
+    if shape_constraint == "isotonic":
+        return _isotonic_bins(sums, counts)
+    if shape_constraint == "bandwise":
+        return _bandwise_bins(sums, counts)
+    raise ValueError("shape_constraint must be isotonic or bandwise")
+
+
 def _bootstrap_lcb(
     day_sums: np.ndarray,
     day_counts: np.ndarray,
     *,
     samples: int,
     seed: int,
+    shape_constraint: str,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     days, bin_count = day_sums.shape
     predictions = np.empty((samples, bin_count), dtype=np.float64)
     for sample in range(samples):
         selected = rng.integers(0, days, size=days)
-        predictions[sample] = _isotonic_bins(
-            day_sums[selected].sum(axis=0),
-            day_counts[selected].sum(axis=0),
+        sampled_sums = day_sums[selected].sum(axis=0)
+        sampled_counts = day_counts[selected].sum(axis=0)
+        predictions[sample] = _fit_bins(
+            sampled_sums,
+            sampled_counts,
+            shape_constraint=shape_constraint,
         )
+        if shape_constraint == "bandwise":
+            predictions[sample, sampled_counts == 0] = 0.0
         if not np.all(np.isfinite(predictions[sample])):
             raise ValueError("bootstrap aggregates exceed float64 range")
     return np.quantile(predictions, 0.05, axis=0)
@@ -255,6 +293,7 @@ def fit_empirical_ev_calibration(
     min_tickets: int = 300,
     min_candidate_days: int = 20,
     candidate_min_raw_ev: float = 1.0,
+    shape_constraint: str = "isotonic",
 ) -> EmpiricalEVCalibrationArtifact:
     """Fit a date-clustered empirical return calibration artifact.
 
@@ -262,6 +301,8 @@ def fit_empirical_ev_calibration(
     The artifact records the latest included date so that boundary can be audited.
     """
     edges = _validate_edges(bin_edges)
+    if shape_constraint not in {"isotonic", "bandwise"}:
+        raise ValueError("shape_constraint must be isotonic or bandwise")
     if bootstrap_samples < 100:
         raise ValueError("bootstrap_samples must be at least 100")
     if min_days < 1 or min_tickets < 1 or min_candidate_days < 1:
@@ -294,9 +335,12 @@ def fit_empirical_ev_calibration(
     if not np.all(np.isfinite(day_sums)):
         raise ValueError("gross return aggregates exceed float64 range")
 
-    point = _isotonic_bins(sums, counts)
+    point = _fit_bins(sums, counts, shape_constraint=shape_constraint)
     lcb = (
-        _bootstrap_lcb(day_sums, day_counts, samples=bootstrap_samples, seed=seed)
+        _bootstrap_lcb(
+            day_sums, day_counts, samples=bootstrap_samples, seed=seed,
+            shape_constraint=shape_constraint,
+        )
         if rows
         else np.full(bin_count, np.nan, dtype=np.float64)
     )
@@ -338,4 +382,5 @@ def fit_empirical_ev_calibration(
         min_candidate_days=min_candidate_days,
         bootstrap_samples=bootstrap_samples,
         seed=int(seed),
+        shape_constraint=shape_constraint,
     )

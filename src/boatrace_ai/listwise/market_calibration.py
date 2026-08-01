@@ -1492,7 +1492,10 @@ def summarize_registered_policy_daily(
 
 
 def _fit_prior_empirical_ev_artifact(
-    records: list[dict[str, Any]], evaluation_date: str
+    records: list[dict[str, Any]],
+    evaluation_date: str,
+    *,
+    shape_constraint: str = "isotonic",
 ):
     teacher_dates = sorted({str(row["race_date"]) for row in records})
     future_dates = [date for date in teacher_dates if date >= evaluation_date]
@@ -1501,9 +1504,14 @@ def _fit_prior_empirical_ev_artifact(
             "empirical EV teachers must precede evaluation_date: "
             f"{future_dates[0]} >= {evaluation_date}"
         )
+    options = (
+        {} if shape_constraint == "isotonic"
+        else {"shape_constraint": shape_constraint}
+    )
     artifact = fit_contextual_empirical_ev_calibration(
         records,
         prediction_date=evaluation_date,
+        **options,
     )
     if (
         artifact.trained_through_date is not None
@@ -3840,6 +3848,9 @@ def walk_forward_evaluate(
     empirical_daily_rows: list[dict[str, Any]] = []
     empirical_fold_rows: list[dict[str, Any]] = []
     empirical_evaluated_races = 0
+    bandwise_empirical_daily_rows: list[dict[str, Any]] = []
+    bandwise_empirical_fold_rows: list[dict[str, Any]] = []
+    bandwise_empirical_evaluated_races = 0
     for calibration_dates, evaluation_date in fold_dates:
         calibration_races = [race for date in calibration_dates for race in by_day[date]]
         holdout = by_day[evaluation_date]
@@ -4145,6 +4156,37 @@ def walk_forward_evaluate(
                 "ready_reasons": list(empirical_artifact.ready_reasons),
             }
         )
+        bandwise_empirical_bankroll = None
+        if calibrator_strategy in TRIPLE_HEAD_STRATEGIES:
+            bandwise_empirical_artifact = _fit_prior_empirical_ev_artifact(
+                empirical_history_records,
+                evaluation_date,
+                shape_constraint="bandwise",
+            )
+            bandwise_empirical_bankroll = simulate_empirical_lcb_policy(
+                holdout_policy_races,
+                purchase_calibrator,
+                blend_probabilities,
+                bandwise_empirical_artifact,
+                daily_budget_yen,
+            )
+            bandwise_empirical_fold_rows.append(
+                {
+                    "fold": len(folds) + 1,
+                    "evaluation_date": evaluation_date,
+                    "shape_constraint": "bandwise",
+                    "calibration_ready": bandwise_empirical_artifact.ready,
+                    "trained_through_date": (
+                        bandwise_empirical_artifact.trained_through_date
+                    ),
+                    "training_days": bandwise_empirical_artifact.training_days,
+                    "training_tickets": bandwise_empirical_artifact.tickets,
+                    "candidate_days": bandwise_empirical_artifact.candidate_days,
+                    "ready_reasons": list(
+                        bandwise_empirical_artifact.ready_reasons
+                    ),
+                }
+            )
         flat_bankroll = simulate_flat_policy(
             holdout_policy_races,
             calibrator=purchase_calibrator,
@@ -4359,6 +4401,15 @@ def walk_forward_evaluate(
                     for key, value in empirical_bankroll.items()
                     if key != "daily"
                 },
+                "bandwise_empirical_lcb_bankroll": (
+                    {
+                        key: value
+                        for key, value in bandwise_empirical_bankroll.items()
+                        if key != "daily"
+                    }
+                    if bandwise_empirical_bankroll is not None
+                    else None
+                ),
             }
         )
         daily_rows.extend(bankroll["daily"])
@@ -4424,6 +4475,11 @@ def walk_forward_evaluate(
         evaluation_policy_races.extend(holdout_policy_races)
         empirical_daily_rows.extend(empirical_bankroll["daily"])
         empirical_evaluated_races += len(holdout_policy_races)
+        if bandwise_empirical_bankroll is not None:
+            bandwise_empirical_daily_rows.extend(
+                bandwise_empirical_bankroll["daily"]
+            )
+            bandwise_empirical_evaluated_races += len(holdout_policy_races)
         current_empirical_records = policy_edge_records(
             holdout_policy_races,
             purchase_calibrator,
@@ -4678,6 +4734,20 @@ def walk_forward_evaluate(
         evaluated_races=empirical_evaluated_races,
         folds=empirical_fold_rows,
     )
+    bandwise_empirical_lcb_walk_forward = (
+        _summarize_empirical_lcb_walk_forward(
+            bandwise_empirical_daily_rows,
+            evaluated_races=bandwise_empirical_evaluated_races,
+            folds=bandwise_empirical_fold_rows,
+        )
+    )
+    bandwise_empirical_lcb_walk_forward.update({
+        "comparison_role": (
+            "prior_only_nonmonotonic_bandwise_empirical_ev_lcb95_candidate"
+        ),
+        "shape_constraint": "bandwise",
+        "promotion_eligible": False,
+    })
     prospective_architecture = summarize_registered_policy_daily(
         prospective_architecture_daily_rows,
         evaluated_races=prospective_architecture_evaluated_races,
@@ -4996,6 +5066,15 @@ def walk_forward_evaluate(
             "daily": flat_daily_rows,
         },
         "empirical_lcb_walk_forward": empirical_lcb_walk_forward,
+        **(
+            {
+                "bandwise_empirical_lcb_walk_forward": (
+                    bandwise_empirical_lcb_walk_forward
+                )
+            }
+            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
+            else {}
+        ),
         "registered_ev_band_walk_forward": summarize_registered_policy_daily(
             registered_daily_rows,
             evaluated_races=registered_evaluated_races,
