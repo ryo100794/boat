@@ -127,11 +127,9 @@ function render(data){
     {},
     data.stable_cell_prospective_evidence
   );
-  renderProspectiveEvidence(
-    "quotaCeilProspective",
-    "V21 固定ceil quota 購入ヘッド 未見証跡",
-    {},
-    data.quota_ceil_prospective_evidence
+  renderQuotaCeilEvidence(
+    data.quota_ceil_prospective_evidence,
+    data.quota_ceil_retrospective_audit
   );
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
@@ -160,6 +158,21 @@ function render(data){
 function renderV21Prospective(activation,evidence){
   renderProspectiveEvidence(
     "v21Prospective","V21 未見期間・本番昇格証跡",activation,evidence
+  );
+}
+function renderQuotaCeilEvidence(evidence,audit){
+  renderProspectiveEvidence(
+    "quotaCeilProspective",
+    "V21 固定ceil quota 購入ヘッド 未見証跡",
+    {},
+    evidence
+  );
+  if(!audit) return;
+  const b=audit.chronological_bankroll||{};
+  const line="<div class=\"mono\">固定方策再生 8日 / "+fmt(b.evaluated_races)+"R / "+fmt(b.tickets)+"点 / 損益 "+yen(b.profit_yen)+" / ROI "+ratio(b.roi)+" / 最大配当除外 "+ratio(b.roi_without_largest_hit)+" / 片側95%下限 "+ratio(b.daily_cluster_bootstrap_roi_lower_95)+"</div>";
+  document.getElementById("quotaCeilProspective").insertAdjacentHTML(
+    "beforeend",
+    line+"<div class=\"muted\">登録時のROI 1.389は日別動的方策の値で固定方策の性能ではない。固定方策は完全未見証跡のみで昇格判定する。</div>"
   );
 }
 function renderProspectiveEvidence(target,title,activation,evidence){
