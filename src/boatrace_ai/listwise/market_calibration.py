@@ -2615,6 +2615,16 @@ def waiting_walk_forward_result(
             "status": "diagnostic_only_not_promotion_evidence",
             "promotion_evidence": False,
         },
+        "v33_v25_top1_narrow_forecast_only_diagnostic": {
+            **summarize_registered_policy_daily(
+                [],
+                evaluated_races=0,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "promotion_evidence": False,
+        },
         "v33_v25_top1_narrow_prospective_walk_forward": (
             summarize_registered_policy_daily(
                 [],
@@ -3495,6 +3505,8 @@ def walk_forward_evaluate(
     v33_retrospective_evaluated_races = 0
     v33_prospective_daily_rows = []
     v33_prospective_evaluated_races = 0
+    v33_forecast_daily_rows = []
+    v33_forecast_evaluated_races = 0
     prospective_architecture_daily_rows = []
     prospective_architecture_evaluated_races = 0
     prospective_architecture_config = {
@@ -4079,6 +4091,12 @@ def walk_forward_evaluate(
                 v33_retrospective_bankroll["daily"]
             )
             v33_retrospective_evaluated_races += len(holdout_policy_races)
+            if (
+                closing_odds_policy_input
+                == "oof_forecast_final_from_real_t5"
+            ):
+                v33_forecast_daily_rows.extend(v33_retrospective_bankroll["daily"])
+                v33_forecast_evaluated_races += len(holdout_policy_races)
         if v33_prospective_bankroll is not None:
             v33_prospective_daily_rows.extend(v33_prospective_bankroll["daily"])
             v33_prospective_evaluated_races += len(holdout_policy_races)
@@ -4720,6 +4738,19 @@ def walk_forward_evaluate(
             "comparison_role": (
                 "fixed V25 probability artifact with strict-prior T-5 closing-odds "
                 "forecasts across all evaluation days"
+            ),
+            "promotion_evidence": False,
+        },
+        "v33_v25_top1_narrow_forecast_only_diagnostic": {
+            **summarize_registered_policy_daily(
+                v33_forecast_daily_rows,
+                evaluated_races=v33_forecast_evaluated_races,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "comparison_role": (
+                "only folds using strictly-prior final-odds forecasts from real T-5"
             ),
             "promotion_evidence": False,
         },

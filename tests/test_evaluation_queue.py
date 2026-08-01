@@ -3967,3 +3967,28 @@ def test_v12_result_summary_preserves_closing_model_identity() -> None:
     assert summary["closing_v12_adopted_folds"] == 1
     assert summary["prospective_v12_roi"] == 1.05
     assert summary["prospective_v12_closing_model_identity"] == identity
+
+
+def test_result_summary_exposes_v33_forecast_only_metrics() -> None:
+    summary = summarize_result({
+        "v33_v25_top1_narrow_retrospective_diagnostic": {
+            "evaluation_days": 7,
+            "tickets": 119,
+            "roi": 0.9958,
+            "profit_yen": -50,
+            "promotion_evidence": False,
+        },
+        "v33_v25_top1_narrow_forecast_only_diagnostic": {
+            "evaluation_days": 2,
+            "tickets": 23,
+            "roi": 0.8217,
+            "profit_yen": -410,
+            "promotion_evidence": False,
+        },
+    })
+
+    assert summary["v33_v25_top1_narrow_retrospective_roi"] == 0.9958
+    assert summary["v33_v25_top1_narrow_retrospective_tickets"] == 119
+    assert summary["v33_v25_top1_narrow_forecast_only_roi"] == 0.8217
+    assert summary["v33_v25_top1_narrow_forecast_only_evaluation_days"] == 2
+    assert summary["v33_v25_top1_narrow_forecast_only_promotion_evidence"] is False

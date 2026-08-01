@@ -3151,6 +3151,31 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"top5_narrow_retrospective_{key}"] = (
                     retrospective_top5[key]
                 )
+    for payload_key, prefix in (
+        (
+            "v33_v25_top1_narrow_retrospective_diagnostic",
+            "v33_v25_top1_narrow_retrospective",
+        ),
+        (
+            "v33_v25_top1_narrow_forecast_only_diagnostic",
+            "v33_v25_top1_narrow_forecast_only",
+        ),
+        (
+            "v33_v25_top1_narrow_prospective_walk_forward",
+            "v33_v25_top1_narrow_prospective",
+        ),
+    ):
+        diagnostic = payload.get(payload_key)
+        if not isinstance(diagnostic, dict):
+            continue
+        for key in (
+            "status", "evaluation_days", "evaluated_races", "tickets",
+            "hit_tickets", "stake_yen", "return_yen", "roi", "profit_yen",
+            "roi_without_largest_hit", "effective_hit_count",
+            "promotion_evidence",
+        ):
+            if key in diagnostic:
+                summary[f"{prefix}_{key}"] = diagnostic[key]
     prospective_v4 = payload.get(
         "prospective_observed_closing_return_v4_walk_forward"
     )
