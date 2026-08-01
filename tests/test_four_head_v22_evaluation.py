@@ -116,6 +116,33 @@ def _install_sources(monkeypatch, dates: list[str], *, missing_odds: set[str] = 
     return race_ids, snapshots
 
 
+def test_evaluation_data_cache_builds_once_and_checks_signature(tmp_path):
+    path = tmp_path / "v22-data.joblib"
+    first = evaluation.V22EvaluationData((), (), (), {"generation": 1})
+    calls = []
+
+    loaded = evaluation.load_or_build_v22_evaluation_data(
+        path,
+        signature={"period": "a"},
+        builder=lambda: calls.append("first") or first,
+    )
+    reused = evaluation.load_or_build_v22_evaluation_data(
+        path,
+        signature={"period": "a"},
+        builder=lambda: pytest.fail("matching cache must be reused"),
+    )
+    second = evaluation.V22EvaluationData((), (), (), {"generation": 2})
+    rebuilt = evaluation.load_or_build_v22_evaluation_data(
+        path,
+        signature={"period": "b"},
+        builder=lambda: calls.append("second") or second,
+    )
+
+    assert loaded == reused == first
+    assert rebuilt == second
+    assert calls == ["first", "second"]
+
+
 def test_loader_builds_120_choices_and_audits_snapshot_before_target(monkeypatch):
     race_ids, snapshots = _install_sources(
         monkeypatch, ["2026-07-01", "2026-07-02"]

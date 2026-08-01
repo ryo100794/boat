@@ -1855,10 +1855,29 @@ def build_command(
             raise ValueError(
                 "source_model must be a joblib artifact inside data/models"
             )
+        cache_identity = {
+            "source_model": str(source_model),
+            "training_from": training_from,
+            "training_through": training_through,
+            "outer_from": outer_from,
+            "outer_through": outer_through,
+            "projection_dimensions": projection_dimensions,
+            "max_snapshot_age_seconds": max_snapshot_age,
+            "max_races_per_day": params.get("max_races_per_day"),
+            "parent_job_id": job.get("parent_job_id"),
+        }
+        cache_digest = hashlib.sha256(
+            _json(cache_identity).encode("utf-8")
+        ).hexdigest()[:20]
+        data_cache = (
+            app_root / "data" / "models" / "evaluation_cache"
+            / "four_head_v22" / f"{cache_digest}.joblib"
+        )
         command = [
             str(python), "-m", "boatrace_ai.listwise.four_head_v22_evaluation",
             "--db", db,
             "--source-model", str(source_model),
+            "--data-cache", str(data_cache),
             "--training-from", training_from,
             "--training-through", training_through,
             "--outer-from", outer_from,
