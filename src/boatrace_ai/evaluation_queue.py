@@ -1907,6 +1907,7 @@ def build_command(
             "odds_path_observed_closing_return_schedule_quota_raw_nonregression_v19",
             "odds_path_observed_closing_return_schedule_quota_dual_head_v20",
             "odds_path_observed_closing_return_schedule_quota_triple_head_v21",
+            "odds_path_observed_closing_return_stable_policy_triple_head_v35",
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
