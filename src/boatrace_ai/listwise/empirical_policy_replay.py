@@ -25,6 +25,7 @@ from .market_edge_diagnostics import (
     summarize_edge_records,
     summarize_edge_stability_grid,
 )
+from .stable_cell_policy import evaluate_walk_forward_stable_cells
 
 
 def _canonical_sha256(value: object) -> str:
@@ -212,6 +213,11 @@ def replay_bandwise_empirical_policy(
             "promotion_eligible": False,
         }
     )
+    stability_grid = summarize_edge_stability_grid(replay_edges)
+    stable_cell_policy = evaluate_walk_forward_stable_cells(
+        replay_edges,
+        daily_budget_yen=daily_budget_yen,
+    )
     result.update(
         {
             "comparison_role": (
@@ -224,9 +230,8 @@ def replay_bandwise_empirical_policy(
             "source_edge_diagnostics_sha256": expected_hash,
             "replayed_edge_diagnostics_sha256": actual_hash,
             "source_edge_diagnostics_match": True,
-            "retrospective_stability_grid": summarize_edge_stability_grid(
-                replay_edges
-            ),
+            "retrospective_stability_grid": stability_grid,
+            "strict_prior_stable_cell_diagnostic": stable_cell_policy,
             "normalized_kelly_min10_diagnostic": normalized_result,
         }
     )
