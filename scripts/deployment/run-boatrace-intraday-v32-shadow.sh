@@ -4,9 +4,9 @@ set -Eeuo pipefail
 APP_ROOT="${BOATRACE_APP_ROOT:-/workspace/boat}"
 STATE_ROOT="${BOATRACE_DAILY_MODEL_STATE_ROOT:-$APP_ROOT/data/runtime/daily-shadow-models}"
 SPEC_ENV="$STATE_ROOT/active/model-spec.env"
-POLL_SECONDS="${BOATRACE_V31_SHADOW_SPEC_POLL_SECONDS:-10}"
+POLL_SECONDS="${BOATRACE_V32_SHADOW_SPEC_POLL_SECONDS:-10}"
 export PYTHONPATH="$APP_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-SHADOW_RUNNER="$APP_ROOT/scripts/deployment/run-boatrace-intraday-v31-cycle.sh"
+SHADOW_RUNNER="$APP_ROOT/scripts/deployment/run-boatrace-intraday-v32-cycle.sh"
 
 child_pid=""
 active_identity=""
@@ -56,7 +56,7 @@ while true; do
   fi
   if [[ "$identity" != "$active_identity" ]]; then
     stop_child
-    export BOATRACE_T300_SHADOW_MODEL_SPEC="v31_daily:v31_uncertainty_adjusted_top5_t300:${v21_spec#v21_daily:v21_triple_head_t300:}"
+    export BOATRACE_T300_SHADOW_MODEL_SPEC="v32_daily:v32_uncertainty_adjusted_top5_t300:${v21_spec#v21_daily:v21_triple_head_t300:}"
     export BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=""
     export BOATRACE_T300_SHADOW_DATE
     export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0

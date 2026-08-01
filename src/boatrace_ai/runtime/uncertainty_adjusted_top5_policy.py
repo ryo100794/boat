@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-POLICY_NAME = "registered_dual_head_top5_conservative_ev_v31"
+POLICY_NAME = "registered_dual_head_top5_conservative_ev_v32"
 REGISTERED_AFTER = "2026-08-01"
 MAX_RANK = 5
 MIN_CONSERVATIVE_EV = 1.0
@@ -35,7 +35,7 @@ def select_uncertainty_adjusted_top5_candidates(
         or combinations != set(probabilities)
         or combinations != set(lower_forecast_odds)
     ):
-        raise ValueError("V31 requires aligned 120-outcome model outputs and odds")
+        raise ValueError("V32 requires aligned 120-outcome model outputs and odds")
     for name, values in (
         ("ranking scores", ranking_scores),
         ("probabilities", probabilities),
@@ -45,10 +45,10 @@ def select_uncertainty_adjusted_top5_candidates(
             any(not math.isfinite(value) or value <= 0.0 for value in numeric)
             or not math.isclose(sum(numeric), 1.0, abs_tol=1e-8)
         ):
-            raise ValueError(f"V31 {name} are invalid")
+            raise ValueError(f"V32 {name} are invalid")
     odds_values = [float(lower_forecast_odds[key]) for key in combinations]
     if any(not math.isfinite(value) or value <= 0.0 for value in odds_values):
-        raise ValueError("V31 lower forecast odds are invalid")
+        raise ValueError("V32 lower forecast odds are invalid")
 
     ranked = sorted(
         combinations,
@@ -81,7 +81,7 @@ def select_uncertainty_adjusted_top5_candidates(
                 "real_odds_snapshot_id": int(snapshot_id),
                 "real_odds_captured_at": captured_at,
                 "real_odds_combinations": 120,
-                "odds_source": "strict_prior_t300_conformal_lower_v31",
+                "odds_source": "strict_prior_t300_conformal_lower_v32",
                 "policy_name": POLICY_NAME,
             }
         )
