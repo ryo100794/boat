@@ -1,4 +1,7 @@
 from boatrace_ai.listwise import market_calibration, market_residual
+from boatrace_ai.listwise.direct_context_market_residual_v25 import (
+    FEATURE_DIMENSION,
+)
 
 
 def _race(race_date: str, actual: str) -> dict:
@@ -360,11 +363,19 @@ def test_v21_routes_three_heads_without_outer_holdout_selection(monkeypatch) -> 
         )
 
     monkeypatch.setattr(market_calibration, "simulate_policy", simulate_policy)
+    monkeypatch.setattr(
+        market_calibration,
+        "simulate_dual_head_conformal_policy_v32",
+        lambda *args, **kwargs: {"daily": [], "tickets": 0},
+    )
 
     result = market_calibration.walk_forward_evaluate(
         races,
         min_calibration_days=2,
         calibrator_strategy=market_calibration.V21_STRATEGY_NAME,
+        v25_probability_artifact={
+            "coefficients": [0.0] * FEATURE_DIMENSION,
+        },
     )
 
     assert routed["selection_race_dates"][0] == ["2026-07-20", "2026-07-21"]
@@ -386,6 +397,10 @@ def test_v21_routes_three_heads_without_outer_holdout_selection(monkeypatch) -> 
     assert fold["market_logloss_comparison_head"] == "probability_head"
     assert fold["market_top5_comparison_head"] == "ranking_head"
     assert fold["chronological_bankroll_head"] == "purchase_head"
+    assert (
+        result["v33_v25_top1_narrow_forecast_only_diagnostic"]["tickets"]
+        == 0
+    )
     assert result["triple_head_architecture"]["outer_holdout_used"] is False
     assert result["market_comparison"]["logloss_difference_source"] == (
         "probability_head"
