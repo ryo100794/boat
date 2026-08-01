@@ -1,3 +1,5 @@
+from boatrace_ai.runtime.intraday_t300_shadow import V23Top5NarrowModelAdapter
+from boatrace_ai.runtime.stable_cell_shadow import StableCellTop5ModelAdapter
 from boatrace_ai.runtime.stable_cell_shadow_policy import (
     POLICY_NAME,
     registration,
@@ -56,3 +58,8 @@ def test_registration_discloses_development_look_and_disables_betting() -> None:
     assert value["development_holdout_used_to_choose_policy"] is True
     assert value["promotion_evidence_start_date"] == "2026-08-02"
     assert value["real_betting_enabled"] is False
+
+
+def test_stable_adapter_allows_only_registered_contextual_closing_model() -> None:
+    assert V23Top5NarrowModelAdapter.allowed_closing_forecasts == frozenset({"baseline", "momentum"})
+    assert StableCellTop5ModelAdapter.allowed_closing_forecasts == frozenset({"contextual"})

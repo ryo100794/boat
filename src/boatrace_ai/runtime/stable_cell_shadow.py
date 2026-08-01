@@ -32,6 +32,7 @@ class StableCellTop5ModelAdapter(V23Top5NarrowModelAdapter):
     registered_after = REGISTERED_AFTER
     candidate_selector = staticmethod(select_stable_cell_candidates)
     no_candidate_reason = "stable_cell_no_candidate"
+    allowed_closing_forecasts = frozenset({"contextual"})
 
     def __init__(
         self,
