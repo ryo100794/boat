@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from boatrace_ai.runtime.intraday_t300_shadow import RaceWindow, T300Snapshot
-from boatrace_ai.runtime.v31_uncertainty_adjusted_shadow import (
-    V31UncertaintyAdjustedTop5ModelAdapter,
+from boatrace_ai.runtime.v32_uncertainty_adjusted_shadow import (
+    V32UncertaintyAdjustedTop5ModelAdapter,
 )
 
 
@@ -27,10 +27,10 @@ def distribution(top: list[str], top_value: float) -> dict[str, float]:
     return values
 
 
-def test_v31_keeps_ranking_order_and_ev_probability_separate(
+def test_v32_keeps_ranking_order_and_ev_probability_separate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter = object.__new__(V31UncertaintyAdjustedTop5ModelAdapter)
+    adapter = object.__new__(V32UncertaintyAdjustedTop5ModelAdapter)
     adapter._bundle = {"trained_through_date": "2026-07-31"}
     adapter._closing_v12_model = {
         "ready": True,
@@ -70,7 +70,7 @@ def test_v31_keeps_ranking_order_and_ev_probability_separate(
     for combination in ranked:
         lower[combination] = 70.0
     monkeypatch.setattr(
-        "boatrace_ai.runtime.v31_uncertainty_adjusted_shadow."
+        "boatrace_ai.runtime.v32_uncertainty_adjusted_shadow."
         "forecast_closing_odds_t300_nonlinear_v12",
         lambda transformed, model, prediction_date: {
             "ready": True,
@@ -97,14 +97,14 @@ def test_v31_keeps_ranking_order_and_ev_probability_separate(
             probability_output[combination] * lower[combination]
         )
     assert decision.closing_lower_odds == lower
-    diagnostic = decision.diagnostics["v31_uncertainty_adjusted_top5"]
+    diagnostic = decision.diagnostics["v32_uncertainty_adjusted_top5"]
     assert diagnostic["ranking_head_usage"] == "top5_order_only"
     assert diagnostic["probability_head_usage"] == "ticket_probability_and_ev"
     assert diagnostic["real_betting_enabled"] is False
 
 
-def test_v31_rejects_future_closing_artifact() -> None:
-    adapter = object.__new__(V31UncertaintyAdjustedTop5ModelAdapter)
+def test_v32_rejects_future_closing_artifact() -> None:
+    adapter = object.__new__(V32UncertaintyAdjustedTop5ModelAdapter)
     adapter._bundle = {"trained_through_date": "2026-07-31"}
     adapter._closing_v12_model = {"trained_through_date": "2026-08-02"}
     race = RaceWindow(

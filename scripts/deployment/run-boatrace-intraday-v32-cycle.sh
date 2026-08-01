@@ -24,4 +24,4 @@ fi
 exec env \
   PGPASSFILE="${BOATRACE_PGPASSFILE:-/workspace/postgresql/conf/databases/boatrace.pgpass}" \
   PYTHONPATH="$APP_ROOT/src" \
-  "$PYTHON" -m boatrace_ai.runtime.v31_uncertainty_adjusted_shadow "${args[@]}"
+  "$PYTHON" -m boatrace_ai.runtime.v32_uncertainty_adjusted_shadow "${args[@]}"
