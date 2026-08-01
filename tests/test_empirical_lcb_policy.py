@@ -165,6 +165,31 @@ def test_policy_passes_probability_rank_and_forecast_odds_to_artifact():
     assert all(odds == pytest.approx(4.0) for _raw_ev, _rank, odds in calls)
 
 
+def test_candidate_audit_carries_calibration_stability_metadata():
+    class _StableArtifact(_Artifact):
+        def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
+            return {
+                "empirical_ev": 1.20,
+                "empirical_ev_lcb95": 1.05,
+                "calibration_level": "rank_group",
+                "positive_return_days": 4,
+                "return_hhi": 0.30,
+                "rank_support": 120,
+                "rank_support_days": 6,
+            }
+
+    result = simulate_empirical_lcb_policy(
+        [_race("r1")], CALIBRATOR, _blend, _StableArtifact(), 10_000
+    )
+    audit = result["daily"][0]["eligible_candidate_audit"][0]
+
+    assert audit["calibration_level"] == "rank_group"
+    assert audit["positive_return_days"] == 4
+    assert audit["return_hhi"] == pytest.approx(0.30)
+    assert audit["rank_support"] == 120
+    assert audit["rank_support_days"] == 6
+
+
 def test_simulator_contract_has_no_calibration_records_argument():
     with pytest.raises(TypeError):
         simulate_empirical_lcb_policy(

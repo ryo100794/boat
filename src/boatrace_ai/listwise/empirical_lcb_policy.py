@@ -246,18 +246,28 @@ def _race_candidates(
             continue
         if point <= 1.0 or lcb95 <= 1.0:
             continue
-        candidates.append(
-            _eligible_candidate(
-                race,
-                str(combination),
-                float(probability),
-                raw_ev,
-                point,
-                lcb95,
-                price,
-                return_multiplier,
-            )
+        candidate = _eligible_candidate(
+            race,
+            str(combination),
+            float(probability),
+            raw_ev,
+            point,
+            lcb95,
+            price,
+            return_multiplier,
         )
+        for key in (
+            "calibration_level",
+            "positive_return_days",
+            "return_hhi",
+            "cell_support",
+            "cell_support_days",
+            "rank_support",
+            "rank_support_days",
+        ):
+            if key in prediction:
+                candidate[key] = prediction[key]
+        candidates.append(candidate)
     return sorted(candidates, key=_candidate_sort_key, reverse=True)[
         :MAX_TICKETS_PER_RACE
     ]
@@ -274,6 +284,13 @@ def _candidate_audit(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "empirical_ev": float(candidate["empirical_ev"]),
         "empirical_ev_lcb95": float(candidate["empirical_ev_lcb95"]),
         "allocation_ev": float(candidate["estimated_ev"]),
+        "calibration_level": candidate.get("calibration_level"),
+        "positive_return_days": candidate.get("positive_return_days"),
+        "return_hhi": candidate.get("return_hhi"),
+        "cell_support": candidate.get("cell_support"),
+        "cell_support_days": candidate.get("cell_support_days"),
+        "rank_support": candidate.get("rank_support"),
+        "rank_support_days": candidate.get("rank_support_days"),
     }
 
 

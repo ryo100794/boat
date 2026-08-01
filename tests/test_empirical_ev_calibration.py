@@ -104,6 +104,8 @@ def test_predict_reports_fixed_bin_bounds_and_support() -> None:
     assert prediction["upper"] == 1.05
     assert prediction["support"] == 2
     assert prediction["support_days"] == 1
+    assert prediction["positive_return_days"] == 1
+    assert prediction["return_hhi"] == pytest.approx(1.0)
     assert prediction["empirical_ev"] == pytest.approx(1.0)
 
 

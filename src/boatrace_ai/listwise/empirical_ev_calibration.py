@@ -30,6 +30,8 @@ class EmpiricalEVBin:
     empirical_ev_lcb95: float | None
     support: int
     support_days: int
+    positive_return_days: int
+    return_hhi: float | None
 
     def as_dict(self) -> dict[str, int | float | None]:
         return {
@@ -40,6 +42,8 @@ class EmpiricalEVBin:
             "empirical_ev_lcb95": self.empirical_ev_lcb95,
             "support": self.support,
             "support_days": self.support_days,
+            "positive_return_days": self.positive_return_days,
+            "return_hhi": self.return_hhi,
         }
 
 
@@ -365,6 +369,14 @@ def fit_empirical_ev_calibration(
                 empirical_ev_lcb95=None if np.isnan(lcb[index]) else float(lcb[index]),
                 support=int(counts[index]),
                 support_days=int(np.count_nonzero(day_counts[:, index])),
+                positive_return_days=int(
+                    np.count_nonzero(day_sums[:, index] > 0.0)
+                ),
+                return_hhi=(
+                    float(np.square(day_sums[:, index]).sum() / sums[index] ** 2)
+                    if sums[index] > 0.0
+                    else None
+                ),
             )
         )
 
