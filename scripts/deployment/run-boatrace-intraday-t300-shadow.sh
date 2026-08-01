@@ -5,6 +5,7 @@ APP_ROOT="${BOATRACE_APP_ROOT:-/workspace/boat}"
 PYTHON="${BOATRACE_PYTHON:-$APP_ROOT/.venv/bin/python}"
 DSN="${BOATRACE_POSTGRES_DSN:-host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app}"
 MODEL_SPEC="${BOATRACE_T300_SHADOW_MODEL_SPEC:?set MODEL_KEY:STRATEGY:BUNDLE_JOBLIB:BASE_MODEL_JOBLIB}"
+SHADOW_MODULE="${BOATRACE_T300_SHADOW_MODULE:-boatrace_ai.runtime.intraday_t300_shadow}"
 PG_BIN=/workspace/postgresql/runtime/bin
 export LD_LIBRARY_PATH="$PG_BIN/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -27,4 +28,4 @@ done
 exec env \
   PGPASSFILE="${BOATRACE_PGPASSFILE:-/workspace/postgresql/conf/databases/boatrace.pgpass}" \
   PYTHONPATH="$APP_ROOT/src" \
-  "$PYTHON" -m boatrace_ai.runtime.intraday_t300_shadow "${args[@]}"
+  "$PYTHON" -m "$SHADOW_MODULE" "${args[@]}"
