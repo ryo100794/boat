@@ -6779,6 +6779,16 @@ def main(argv: list[str] | None = None) -> int:
         for race in formal_races
     )
     benchmark["benchmark_evaluated_races"] = benchmark_evaluated
+    benchmark_race_ids = sorted({
+        str(race["race_id"])
+        for race in formal_races
+        if str(race["race_date"]) in set(benchmark["benchmark_dates"])
+    })
+    if len(benchmark_race_ids) != benchmark_evaluated:
+        raise ValueError("benchmark evaluation race IDs are not unique")
+    benchmark["benchmark_evaluation_races_sha256"] = (
+        _stable_signature_fingerprint(benchmark_race_ids)
+    )
     benchmark["benchmark_evaluation_coverage"] = (
         benchmark_evaluated / benchmark["benchmark_population_races"]
         if benchmark["benchmark_population_races"] else 0.0
