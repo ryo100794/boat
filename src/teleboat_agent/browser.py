@@ -56,6 +56,10 @@ def verify_confirmation_text(
     compact = re.sub(r"\s+", " ", text).strip()
     count_match = re.search(r"合計ベット数\s*([0-9,]+)ベット", compact)
     amount_match = re.search(r"購入金額\s*([0-9,]+)円", compact)
+    if amount_match is None:
+        amount_match = re.search(
+            r"合計ベット数.*?([0-9][0-9,]*)円", compact
+        )
     if not count_match or not amount_match:
         raise VoteExecutionError("confirmation totals were not found")
     tickets = int(count_match.group(1).replace(",", ""))
@@ -88,7 +92,10 @@ def verify_confirmation_text(
         )
         if "フォーメーション" not in compact or source not in compact:
             raise VoteExecutionError("confirmation formation selection mismatch")
-    unfinished = "本画面では投票未完了です" in compact
+    unfinished = any(marker in compact for marker in (
+        "本画面では投票未完了です",
+        "投票はまだ完了していません",
+    ))
     if not unfinished:
         raise VoteExecutionError("official unfinished-wager marker was not found")
     if not final_button_ready:
@@ -193,7 +200,7 @@ class PlaywrightVoteExecutor:
                     }
                     if submit:
                         stage = "final_amount"
-                        amount = self._visible(page, 'input[name="buyAmtSumInput"]')
+                        amount = self._final_amount_input(page)
                         amount_units = purchase_amount_units(request.total_stake_yen)
                         amount.fill(str(amount_units))
                         if amount.input_value() != str(amount_units):
@@ -261,13 +268,39 @@ class PlaywrightVoteExecutor:
             raise VoteExecutionError("live credentials are invalid or incomplete") from exc
 
     def _open_vote_menu(self, page, probe: TeleboatLoginProbe, request: VoteRequest) -> None:
-        self._visible_from_locator(page.get_by_text(request.stadium.name, exact=True)).click()
-        page.wait_for_timeout(400)
-        self._visible_from_locator(page.get_by_text("投票する", exact=True)).click()
+        self._dismiss_visible_overlays(page)
+        names = page.locator(".jyo-list .jyo-panel-name")
+        venue = self._visible_exact_text(names, request.stadium.name)
+        venue.locator("xpath=parent::*").click()
         page.wait_for_timeout(400)
         probe._assert_allowed_host(page.url, "mobile")
 
+    @staticmethod
+    def _dismiss_visible_overlays(page) -> None:
+        page.wait_for_timeout(500)
+        closes = page.locator(".modal-close")
+        for index in range(closes.count() - 1, -1, -1):
+            close = closes.nth(index)
+            if close.is_visible():
+                close.click(force=True)
+                page.wait_for_timeout(200)
+
     def _select_mode(self, page, request: VoteRequest) -> None:
+        if self._is_spa_vote_page(page):
+            race = self._visible(page, "button.btn-select-race")
+            race_text = re.sub(r"\s+", " ", race.inner_text()).strip()
+            if not race_text.startswith(f"{request.race_number}R"):
+                raise VoteExecutionError("official SPA race selection mismatch")
+            self._visible_exact_text(
+                page.locator("button.btn-nav-font"), request.bet_type.label
+            )
+            method_label = {
+                BetMethod.REGULAR: "通常投票",
+                BetMethod.BOX: "ボックス",
+                BetMethod.FORMATION: "フォーメーション",
+            }[request.method]
+            self._visible_exact_text(page.locator("button.btn-nav-font"), method_label)
+            return
         decision = self._visible(page, 'input[type="submit"][value="決定"]')
         form = decision.locator("xpath=ancestor::form[1]")
         self._set_radio(form, "raceNo", str(request.race_number))
@@ -277,6 +310,10 @@ class PlaywrightVoteExecutor:
         page.wait_for_timeout(800)
 
     def _add_regular(self, page, request: VoteRequest) -> None:
+        if self._is_spa_vote_page(page):
+            self._add_regular_spa(page, request)
+            return
+
         batches = tuple(request.batches(10))
         for batch_index, batch in enumerate(batches):
             if batch_index:
@@ -302,6 +339,35 @@ class PlaywrightVoteExecutor:
                 )
             form.locator('input[name="on1"]').click()
             self._wait_for_confirmation(page)
+
+    def _add_regular_spa(self, page, request: VoteRequest) -> None:
+        self._select_mode(page, request)
+        for ticket_index, ticket in enumerate(request.tickets):
+            for position, lane in enumerate(ticket.betting_number.value, start=1):
+                field = page.locator(f"#bet{position}-{lane}")
+                label = page.locator(f'label[for="bet{position}-{lane}"]')
+                if field.count() != 1 or label.count() != 1:
+                    raise VoteExecutionError("official SPA lane input was not unique")
+                label.click()
+                if not field.is_checked():
+                    raise VoteExecutionError("official SPA lane input verification failed")
+            amount = self._visible(page, 'input[type="tel"].textbox')
+            amount.fill(str(ticket.quantity))
+            self._verify_input(amount, str(ticket.quantity), "SPA ticket quantity")
+            action = (
+                "投票へ進む"
+                if ticket_index == len(request.tickets) - 1
+                else "入力を続ける"
+            )
+            self._visible_exact_text(page.get_by_text(action, exact=True), action).click()
+            page.wait_for_timeout(400)
+        review = re.sub(r"\s+", " ", page.locator("body").inner_text())
+        if (
+            "投票はまだ完了していません" not in review
+            or f"{request.expanded_ticket_count}ベット" not in review
+            or f"{request.total_stake_yen:,}円" not in review
+        ):
+            raise VoteExecutionError("official SPA review totals did not match")
 
     def _add_box(self, page, request: VoteRequest) -> None:
         self._select_mode(page, request)
@@ -346,6 +412,12 @@ class PlaywrightVoteExecutor:
         page,
         request: VoteRequest,
     ) -> ConfirmationSummary:
+        if self._is_spa_vote_page(page):
+            next_button = page.get_by_text("次へ", exact=True)
+            self._visible_exact_text(next_button, "次へ").click()
+            page.wait_for_timeout(500)
+            page.get_by_text("投票確認", exact=True).wait_for(state="visible")
+
         final = self._final_button(page)
         summary = verify_confirmation_text(
             page.locator("body").inner_text(),
@@ -353,14 +425,24 @@ class PlaywrightVoteExecutor:
             final_button_ready=final.is_visible() and final.is_enabled(),
         )
         displayed_total = page.locator('input[name="buyAmtSumDisp"]')
-        if displayed_total.count() != 1:
-            raise VoteExecutionError("official hidden purchase total was not unique")
-        self._verify_input(
-            displayed_total,
-            str(request.total_stake_yen),
-            "official purchase total",
-        )
+        if self._is_spa_vote_page(page):
+            if displayed_total.count() != 0:
+                raise VoteExecutionError("unexpected legacy total on official SPA")
+        else:
+            if displayed_total.count() != 1:
+                raise VoteExecutionError("official hidden purchase total was not unique")
+            self._verify_input(
+                displayed_total,
+                str(request.total_stake_yen),
+                "official purchase total",
+            )
         return summary
+
+    @staticmethod
+    def _is_spa_vote_page(page) -> bool:
+        return page.locator(
+            "button.btn-select-race, button.btn-purchase"
+        ).count() > 0
 
     @staticmethod
     def _wait_for_confirmation(page) -> None:
@@ -410,10 +492,24 @@ class PlaywrightVoteExecutor:
         if not field.is_checked():
             raise VoteExecutionError(f"official checkbox verification failed: {name}[{index}]")
 
+    def _final_amount_input(self, page):
+        legacy = page.locator('input[name="buyAmtSumInput"]')
+        if legacy.count() == 1:
+            return legacy
+        return self._visible(page, 'input[type="tel"].textbox')
+
     def _final_button(self, page):
         by_id = page.locator(f"#{self.VOTE_BUTTON_ID}")
         if by_id.count() == 1:
             return by_id
+        spa = page.locator("button.btn-purchase")
+        matches = []
+        for index in range(spa.count()):
+            candidate = spa.nth(index)
+            if candidate.is_visible() and candidate.inner_text().strip() == "投票":
+                matches.append(candidate)
+        if len(matches) == 1:
+            return matches[0]
         return self._visible(page, 'input[name="forward_bet"]')
 
     @staticmethod
@@ -431,6 +527,20 @@ class PlaywrightVoteExecutor:
     @classmethod
     def _visible(cls, page, selector: str):
         return cls._visible_from_locator(page.locator(selector), selector)
+
+    @staticmethod
+    def _visible_exact_text(candidates, expected: str):
+        matches = []
+        for index in range(candidates.count()):
+            candidate = candidates.nth(index)
+            text = re.sub(r"\s+", " ", candidate.inner_text()).strip()
+            if candidate.is_visible() and text == expected:
+                matches.append(candidate)
+        if len(matches) != 1:
+            raise VoteExecutionError(
+                f"visible exact element was not unique: {expected}"
+            )
+        return matches[0]
 
     @staticmethod
     def _visible_from_locator(candidates, selector: str = "locator"):

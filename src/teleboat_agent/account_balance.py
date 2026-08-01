@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,9 +13,13 @@ from .login_secrets import LoginSecrets, load_login_secrets
 
 DEFAULT_SECRET_PATH = Path(".secrets/teleboat-login.json")
 _BALANCE_PATTERNS = (
-    re.compile(r"(?:投票可能(?:残高|金額|額)|購入可能(?:残高|金額|額)|購入限度額)\s*[:：]?\s*[￥¥]?\s*([0-9][0-9,]*)\s*円"),
+    re.compile(r"(?:投票可能(?:残高|金額|額)|購入可能(?:残高|金額|額)|購入残高|購入限度額)\s*[:：]?\s*[￥¥]?\s*([0-9][0-9,]*)\s*円"),
     re.compile(r"(?:口座)?残高\s*[:：]?\s*[￥¥]?\s*([0-9][0-9,]*)\s*円"),
 )
+_BALANCE_LABEL = re.compile(
+    r"(?:投票可能(?:残高|金額|額)|購入可能(?:残高|金額|額)|購入残高|購入限度額|(?:口座)?残高)"
+)
+_YEN_AMOUNT = re.compile(r"[￥¥]?\s*([0-9][0-9,]*)\s*円")
 
 
 class AccountBalanceError(LoginProbeError):
@@ -33,11 +38,26 @@ class AccountBalanceResult:
 
 
 def parse_available_balance(text: str) -> int:
-    compact = re.sub(r"\s+", " ", text).strip()
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = "".join(
+        character for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    compact = re.sub(r"\s+", " ", normalized).strip()
     for pattern in _BALANCE_PATTERNS:
         match = pattern.search(compact)
         if match:
             return int(match.group(1).replace(",", ""))
+    lines = [re.sub(r"\s+", " ", line).strip() for line in normalized.splitlines()]
+    for index, line in enumerate(lines):
+        if not _BALANCE_LABEL.search(line):
+            continue
+        # The official mobile DOM inserts a display-control row between the
+        # balance label and value, so inspect only the next three rows.
+        for candidate in lines[index:index + 4]:
+            amount = _YEN_AMOUNT.search(candidate)
+            if amount:
+                return int(amount.group(1).replace(",", ""))
     context = []
     for raw in text.splitlines():
         line = " ".join(raw.split())

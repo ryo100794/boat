@@ -8,7 +8,7 @@ from teleboat_agent.account_balance import AccountBalanceError, TeleboatBalanceP
 from teleboat_agent.login_secrets import LoginSecrets
 
 
-@pytest.mark.parametrize(("text", "expected"), [("投票可能残高 10,000円", 10_000), ("購入可能金額：￥12,300 円", 12_300), ("購入限度額 0円", 0), ("口座残高 1,234円", 1_234)])
+@pytest.mark.parametrize(("text", "expected"), [("投票可能残高 10,000円", 10_000), ("購入可能金額：￥12,300 円", 12_300), ("購入\u200b残高\n１０，０００ 円", 10_000), ("購入残高\n表示\n10,000 円", 10_000), ("購入限度額 0円", 0), ("口座残高 1,234円", 1_234)])
 def test_parse_available_balance(text: str, expected: int) -> None:
     assert parse_available_balance(text) == expected
 
@@ -19,6 +19,11 @@ def test_balance_parser_fails_closed_and_checks_required_stake() -> None:
     with pytest.raises(AccountBalanceError, match="insufficient"):
         verify_available_balance("投票可能残高 9,900円", required_yen=10_000)
     assert verify_available_balance("投票可能残高 10,000円", required_yen=10_000) == 10_000
+
+
+def test_balance_parser_does_not_scan_unrelated_amounts() -> None:
+    with pytest.raises(AccountBalanceError, match="not found"):
+        parse_available_balance("購入残高\n表示\n残ベット数\n9,998ベット\n購入金額 100円")
 
 
 class _Body:

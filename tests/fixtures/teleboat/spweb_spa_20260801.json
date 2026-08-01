@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "source": "official_authenticated_live_capture",
+  "source_host": "spweb.brtb.jp",
+  "captured_date_jst": "2026-08-01",
+  "path": "/bet",
+  "request": {
+    "venue": "三国",
+    "race": "3R",
+    "bet_type": "3連単",
+    "combination": "1-3-5",
+    "quantity_units": "1",
+    "stake_yen": 100
+  },
+  "stages": {
+    "menu": {
+      "forms": 0,
+      "controls": [
+        {"tag": "button", "class": "btn-select btn-select-m", "text": "三国"},
+        {"tag": "button", "class": "btn-select btn-select-race", "text": "3R 9:24"},
+        {"tag": "button", "class": "btn-nav btn-nav-font", "text": "3連単"},
+        {"tag": "button", "class": "btn-nav btn-nav-font", "text": "通常投票"}
+      ]
+    },
+    "input": {
+      "checked_ids": ["bet1-1", "bet2-3", "bet3-5"],
+      "amount_selector": "input[type=tel].textbox",
+      "amount_units": "1",
+      "continue_control": {"tag": "div", "class": "btn btn-inverse btn-break btn-bold", "text": "ベットリストに追加して 投票へ進む"}
+    },
+    "review": {
+      "safe_text": [
+        "投票はまだ完了していません",
+        "1 三国 3R 3連単 4.0",
+        "1-3-5",
+        "合計ベット数",
+        "1ベット",
+        "100円"
+      ],
+      "next_control": {"tag": "button", "class": "btn btn-inverse btn-purchase", "text": "次へ"}
+    },
+    "final_confirmation": {
+      "safe_text": [
+        "投票確認",
+        "投票はまだ完了していません",
+        "合計金額を入力し、投票を押して下さい",
+        "1 三国3R 3連単 4.0 100円",
+        "1-3-5",
+        "合計ベット数",
+        "1ベット",
+        "100円"
+      ],
+      "amount_selector": "input[type=tel].textbox",
+      "amount_initial_value": "",
+      "submit_control": {"tag": "button", "class": "btn btn-inverse btn-purchase", "text": "投票"}
+    }
+  }
+}
