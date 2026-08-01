@@ -598,6 +598,7 @@ def run_v22_smoke_evaluation(
     minimum_inner_training_dates: int = 2,
     minimum_purchase_training_dates: int = 2,
     alpha: float = 1e-3,
+    purchase_loss: str = "ridge_capped_net",
 ) -> dict[str, Any]:
     loaded = load_v22_evaluation_data(
         conn,
@@ -619,6 +620,7 @@ def run_v22_smoke_evaluation(
         minimum_inner_training_dates=minimum_inner_training_dates,
         minimum_purchase_training_dates=minimum_purchase_training_dates,
         alpha=alpha,
+        purchase_loss=purchase_loss,
     )
     settlements = _build_outer_settlements(
         conn, loaded.outer_races, loaded.decision_audit
@@ -631,6 +633,7 @@ def run_v22_smoke_evaluation(
     return {
         "model_key": artifact.model_key,
         "artifact_sha256": artifact_fingerprint(artifact),
+        "purchase_loss": purchase_loss,
         "periods": {
             "training_from": training_from_date,
             "training_through": training_through_date,
@@ -681,6 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-inner-training-dates", type=int, default=2)
     parser.add_argument("--minimum-purchase-training-dates", type=int, default=2)
     parser.add_argument("--alpha", type=float, default=1e-3)
+    parser.add_argument(
+        "--purchase-loss",
+        choices=("ridge_capped_net", "poisson_capped_gross"),
+        default="ridge_capped_net",
+    )
     return parser
 
 
@@ -701,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
             minimum_inner_training_dates=args.minimum_inner_training_dates,
             minimum_purchase_training_dates=args.minimum_purchase_training_dates,
             alpha=args.alpha,
+            purchase_loss=args.purchase_loss,
         )
     encoded = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
     if args.output:

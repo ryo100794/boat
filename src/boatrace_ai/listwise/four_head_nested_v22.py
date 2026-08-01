@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+from sklearn.linear_model import PoissonRegressor
 
 
 MODEL_KEY = "four_head_nested_v22"
@@ -316,18 +317,40 @@ def _fit_purchase_head(
     realized_returns: Sequence[np.ndarray],
     *,
     alpha: float,
+    purchase_loss: str,
 ) -> LinearHead:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
-    return _head(
-        "purchase_head",
-        "capped_realized_unit_return_from_strict_prior_base_head_oof_inputs",
-        _fit_ridge(
-            matrix,
-            np.clip(returns, -1.0, 50.0),
+    if purchase_loss == "ridge_capped_net":
+        return _head(
+            "purchase_head",
+            "capped_realized_unit_return_from_strict_prior_base_head_oof_inputs",
+            _fit_ridge(
+                matrix,
+                np.clip(returns, -1.0, 50.0),
+                alpha=alpha,
+            ),
+        )
+    if purchase_loss == "poisson_capped_gross":
+        target = np.clip(returns + 1.0, 0.0, 51.0)
+        fitted = PoissonRegressor(
             alpha=alpha,
-        ),
-    )
+            fit_intercept=True,
+            max_iter=500,
+            tol=1e-8,
+        ).fit(matrix, target)
+        return _head(
+            "purchase_head",
+            (
+                "poisson_expected_capped_gross_return_from_"
+                "strict_prior_base_head_oof_inputs"
+            ),
+            (
+                np.asarray(fitted.coef_, dtype=np.float64),
+                float(fitted.intercept_),
+            ),
+        )
+    raise ValueError(f"unsupported purchase_loss: {purchase_loss}")
 
 
 def fit_four_head_nested_v22(
@@ -336,6 +359,7 @@ def fit_four_head_nested_v22(
     minimum_inner_training_dates: int = 2,
     minimum_purchase_training_dates: int = 2,
     alpha: float = 1e-3,
+    purchase_loss: str = "ridge_capped_net",
 ) -> FourHeadArtifact:
     """Fit four heads with base-head OOF nested inside purchase-head OOF."""
 
@@ -411,6 +435,7 @@ def fit_four_head_nested_v22(
             [record[1] for record in training_records],
             [record[2] for record in training_records],
             alpha=alpha,
+            purchase_loss=purchase_loss,
         )
         date_score_payloads: list[dict[str, Any]] = []
         date_threshold_payloads: list[dict[str, Any]] = []
@@ -461,6 +486,7 @@ def fit_four_head_nested_v22(
         [record[1] for record in all_base_oof_records],
         [record[2] for record in all_base_oof_records],
         alpha=alpha,
+        purchase_loss=purchase_loss,
     )
     probability_head, ranking_head, closing_head = _fit_base_heads(
         ordered, alpha=alpha
@@ -558,6 +584,12 @@ def predict_race(
         artifact.purchase_head,
         _purchase_matrix(decision, probability, ranking, closing),
     )
+    if artifact.purchase_head.teacher.startswith(
+        "poisson_expected_capped_gross"
+    ):
+        purchase = np.exp(
+            np.clip(purchase, -30.0, math.log(51.0))
+        ) - 1.0
     selected = tuple(
         int(index)
         for index in np.flatnonzero(purchase >= artifact.purchase_threshold)

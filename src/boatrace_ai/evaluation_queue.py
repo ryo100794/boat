@@ -1801,7 +1801,7 @@ def build_command(
             "minimum_inner_training_dates",
             "minimum_purchase_training_dates", "alpha",
             "max_races_per_day", "max_snapshot_age_seconds",
-            "timeout_seconds", "purchase_teacher_version",
+            "timeout_seconds", "purchase_teacher_version", "purchase_loss",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1818,7 +1818,15 @@ def build_command(
                 "missing four_head_learned_value parameters: "
                 + ", ".join(sorted(missing))
             )
-        _integer(params, "purchase_teacher_version", 3, 3, 3)
+        purchase_loss = str(params.get("purchase_loss", "ridge_capped_net"))
+        if purchase_loss not in {"ridge_capped_net", "poisson_capped_gross"}:
+            raise ValueError("unsupported four-head purchase_loss")
+        teacher_version = _integer(
+            params, "purchase_teacher_version", 3, 3, 4
+        )
+        expected_version = 4 if purchase_loss == "poisson_capped_gross" else 3
+        if teacher_version != expected_version:
+            raise ValueError("purchase_teacher_version does not match purchase_loss")
         training_from = _date(params, "training_from")
         training_through = _date(params, "training_through")
         outer_from = _date(params, "outer_from")
@@ -1859,6 +1867,7 @@ def build_command(
             "--minimum-inner-training-dates", str(minimum_inner),
             "--minimum-purchase-training-dates", str(minimum_purchase),
             "--alpha", str(alpha),
+            "--purchase-loss", purchase_loss,
             "--max-snapshot-age-seconds", str(max_snapshot_age),
             "--output", str(output),
         ]

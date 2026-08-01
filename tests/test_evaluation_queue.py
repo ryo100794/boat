@@ -184,6 +184,7 @@ def test_four_head_learned_value_command_records_learning_and_outer_periods(
                 "outer_through": "2026-08-01",
                 "projection_dimensions": 16,
                 "purchase_teacher_version": 3,
+                "purchase_loss": "ridge_capped_net",
                 "alpha": 0.01,
             },
         ),
@@ -197,8 +198,39 @@ def test_four_head_learned_value_command_records_learning_and_outer_periods(
     assert command[command.index("--outer-from") + 1] == "2026-07-31"
     assert command[command.index("--projection-dimensions") + 1] == "16"
     assert command[command.index("--alpha") + 1] == "0.01"
+    assert command[command.index("--purchase-loss") + 1] == "ridge_capped_net"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
     assert "four_head_learned_value" in TASK_PROFILES
+
+
+def test_four_head_poisson_purchase_loss_requires_teacher_version_four(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    params = {
+        "source_model": "data/models/source.joblib",
+        "training_from": "2026-07-20",
+        "training_through": "2026-07-30",
+        "outer_from": "2026-07-31",
+        "outer_through": "2026-08-01",
+        "purchase_loss": "poisson_capped_gross",
+        "purchase_teacher_version": 4,
+    }
+    command, _output = build_command(
+        _job("four_head_learned_value", params),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+    assert command[command.index("--purchase-loss") + 1] == "poisson_capped_gross"
+    params["purchase_teacher_version"] = 3
+    with pytest.raises(ValueError, match="does not match"):
+        build_command(
+            _job("four_head_learned_value", params),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 def test_four_head_learned_value_rejects_training_outer_overlap(
