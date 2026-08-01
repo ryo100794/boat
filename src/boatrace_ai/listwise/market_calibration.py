@@ -132,6 +132,7 @@ MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
 MIN_EMPIRICAL_LCB_EVALUATION_DAYS = 30
 MIN_EMPIRICAL_LCB_TICKETS = 300
+BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS = 5
 BLEND_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 TEMPERATURES = (0.75, 1.0, 1.25)
 EV_THRESHOLDS = (1.05, 1.10, 1.15, 1.20, 1.30, 1.50)
@@ -1504,10 +1505,15 @@ def _fit_prior_empirical_ev_artifact(
             "empirical EV teachers must precede evaluation_date: "
             f"{future_dates[0]} >= {evaluation_date}"
         )
-    options = (
-        {} if shape_constraint == "isotonic"
-        else {"shape_constraint": shape_constraint}
-    )
+    options = {}
+    if shape_constraint != "isotonic":
+        options = {
+            "shape_constraint": shape_constraint,
+            "min_days": BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS,
+            "min_candidate_days": BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS,
+            "min_rank_days": BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS,
+            "min_cell_days": BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS,
+        }
     artifact = fit_contextual_empirical_ev_calibration(
         records,
         prediction_date=evaluation_date,
@@ -4746,6 +4752,8 @@ def walk_forward_evaluate(
             "prior_only_nonmonotonic_bandwise_empirical_ev_lcb95_candidate"
         ),
         "shape_constraint": "bandwise",
+        "evaluation_mode": "provisional_prior_only_diagnostic",
+        "minimum_training_days": BANDWISE_DIAGNOSTIC_MIN_TRAINING_DAYS,
         "promotion_eligible": False,
     })
     prospective_architecture = summarize_registered_policy_daily(
