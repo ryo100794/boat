@@ -4222,6 +4222,7 @@ def reconcile_refined_market_evaluations(
         FROM model_evaluation_jobs AS refined
         WHERE refined.task_type = 'listwise_newton_refine'
           AND refined.status = 'completed'
+          AND refined.completed_at >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
           AND NOT EXISTS (
             SELECT 1
             FROM model_evaluation_jobs AS child

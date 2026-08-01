@@ -2983,6 +2983,7 @@ def test_reconcile_recovers_refinement_completed_before_worker_reload(
     class Connection:
         def execute(self, sql):
             assert "NOT EXISTS" in sql
+            assert "INTERVAL '48 hours'" in sql
             assert "market_residual_walk_forward" in sql
             return Result()
 
