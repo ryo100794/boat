@@ -116,6 +116,7 @@ def replay_bandwise_empirical_policy(
     teacher_history: list[dict[str, Any]] = []
     replay_edges: list[dict[str, Any]] = []
     daily_rows: list[dict[str, Any]] = []
+    normalized_daily_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
     evaluated_races = 0
     for fold_number, fold in enumerate(folds, start=1):
@@ -148,7 +149,17 @@ def replay_bandwise_empirical_policy(
             artifact,
             daily_budget_yen,
         )
+        normalized_bankroll = simulate_empirical_lcb_policy(
+            policy_races,
+            purchase_calibrator,
+            blend_probabilities,
+            artifact,
+            daily_budget_yen,
+            allocation_mode="normalized_kelly",
+            min_daily_exposure_fraction=0.10,
+        )
         daily_rows.extend(bankroll["daily"])
+        normalized_daily_rows.extend(normalized_bankroll["daily"])
         evaluated_races += len(policy_races)
         fold_rows.append(
             {
@@ -184,6 +195,19 @@ def replay_bandwise_empirical_policy(
         evaluated_races=evaluated_races,
         folds=fold_rows,
     )
+    normalized_result = _summarize_empirical_lcb_walk_forward(
+        normalized_daily_rows,
+        evaluated_races=evaluated_races,
+        folds=fold_rows,
+    )
+    normalized_result.update(
+        {
+            "comparison_role": "bandwise_lcb_normalized_kelly_min10_diagnostic",
+            "allocation_mode": "normalized_kelly",
+            "min_daily_exposure_fraction": 0.10,
+            "promotion_eligible": False,
+        }
+    )
     result.update(
         {
             "comparison_role": (
@@ -196,6 +220,7 @@ def replay_bandwise_empirical_policy(
             "source_edge_diagnostics_sha256": expected_hash,
             "replayed_edge_diagnostics_sha256": actual_hash,
             "source_edge_diagnostics_match": True,
+            "normalized_kelly_min10_diagnostic": normalized_result,
         }
     )
     return result

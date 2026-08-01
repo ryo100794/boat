@@ -98,6 +98,30 @@ def test_lcb_drives_kelly_and_point_estimate_is_audited():
     assert not selected or selected[0]["estimated_ev"] == pytest.approx(1.05)
 
 
+def test_normalized_kelly_can_measure_minimum_stake_portfolio_diagnostic():
+    race = _race("r1")
+    default = simulate_empirical_lcb_policy(
+        [race], CALIBRATOR, _blend, _Artifact(point=1.20, lcb=1.05), 10_000
+    )
+    normalized = simulate_empirical_lcb_policy(
+        [race],
+        CALIBRATOR,
+        _blend,
+        _Artifact(point=1.20, lcb=1.05),
+        10_000,
+        allocation_mode="normalized_kelly",
+        min_daily_exposure_fraction=0.10,
+    )
+
+    assert default["tickets"] == 0
+    assert normalized["tickets"] > 0
+    assert normalized["allocation_policy"] == {
+        "allocation_mode": "normalized_kelly",
+        "min_daily_exposure_fraction": 0.10,
+        "max_daily_exposure_fraction": 0.30,
+    }
+
+
 class _RankArtifact(_Artifact):
     def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
         return {
