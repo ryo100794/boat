@@ -768,12 +768,16 @@ def test_v21_later_date_fails_closed_without_canonical_bundle(
         )
 
 
-def test_shadow_runner_uses_intraday_module_with_static_v21_registration() -> None:
+def test_shadow_runner_defaults_to_intraday_module_and_allows_registered_adapter() -> None:
     root = Path(__file__).resolve().parents[1]
     runner = (
         root / "scripts" / "deployment" / "run-boatrace-intraday-t300-shadow.sh"
     ).read_text()
-    assert "-m boatrace_ai.runtime.intraday_t300_shadow" in runner
+    assert (
+        'SHADOW_MODULE="${BOATRACE_T300_SHADOW_MODULE:-boatrace_ai.runtime.intraday_t300_shadow}"'
+        in runner
+    )
+    assert '"$PYTHON" -m "$SHADOW_MODULE"' in runner
     assert "register_v21_shadow_adapter" not in runner
 
 
@@ -804,3 +808,42 @@ def test_main_persists_dependency_failure_and_retries_without_activation(
     assert recovery["identity_freeze_preserved"] is True
     assert recovery["real_betting_enabled"] is False
     assert not (state_root / "active").exists()
+
+
+def test_stable_cell_evidence_uses_frozen_identity_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = {}
+
+    def collect(connection, *, config, output_path):
+        observed.update(
+            connection=connection,
+            config=config,
+            output_path=output_path,
+        )
+        return {"promotion_ready": False, "clean_days": 0}
+
+    monkeypatch.setattr(updater, "collect_v21_prospective_evidence", collect)
+    raw_connection = object()
+    result = updater.collect_stable_cell_prospective_evidence(
+        raw_connection,
+        state_root=tmp_path,
+        through_date="2026-08-02",
+    )
+
+    config = observed["config"]
+    assert result == {"promotion_ready": False, "clean_days": 0}
+    assert observed["connection"]._raw is raw_connection
+    assert observed["output_path"] == (
+        tmp_path / "stable-cell-prospective-evidence.json"
+    )
+    assert str(config.start_date) == updater.STABLE_CELL_PROSPECTIVE_START_DATE
+    assert str(config.through_date) == "2026-08-02"
+    assert config.model_key == updater.STABLE_CELL_MODEL_KEY
+    assert config.expected_strategy_name == updater.STABLE_CELL_STRATEGY
+    assert config.diagnostic_key == updater.STABLE_CELL_DIAGNOSTIC_KEY
+    assert (
+        config.evidence_kind
+        == "stable_cell_fixed_identity_fully_unseen_prospective"
+    )
+    assert config.expected_model_hash is None
