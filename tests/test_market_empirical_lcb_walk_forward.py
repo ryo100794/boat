@@ -271,11 +271,10 @@ def test_bandwise_candidate_forwards_nonmonotonic_shape_constraint(
 ) -> None:
     captured = {}
 
-    def fit(records, *, prediction_date, shape_constraint):
+    def fit(records, **options):
         captured.update({
             "records": records,
-            "prediction_date": prediction_date,
-            "shape_constraint": shape_constraint,
+            **options,
         })
         return _Artifact(())
 
@@ -296,7 +295,40 @@ def test_bandwise_candidate_forwards_nonmonotonic_shape_constraint(
         "records": [],
         "prediction_date": "2026-01-03",
         "shape_constraint": "bandwise",
+        "min_days": 5,
+        "min_candidate_days": 5,
+        "min_rank_days": 5,
+        "min_cell_days": 5,
     }
+
+
+def test_bandwise_candidate_becomes_evaluable_after_five_strict_prior_days() -> None:
+    records = []
+    for day_offset in range(5):
+        race_date = (date(2026, 1, 1) + timedelta(days=day_offset)).isoformat()
+        records.extend(
+            {
+                "race_date": race_date,
+                "raw_estimated_ev": 1.02,
+                "gross_return_per_yen": 1.10,
+                "probability_rank": 1,
+                "forecast_odds": 4.0,
+            }
+            for _ in range(60)
+        )
+
+    artifact = market_calibration._fit_prior_empirical_ev_artifact(
+        records,
+        "2026-01-06",
+        shape_constraint="bandwise",
+    )
+
+    assert artifact.ready is True
+    assert artifact.training_days == 5
+    assert artifact.trained_through_date == "2026-01-05"
+    assert artifact.shape_constraint == "bandwise"
+    assert artifact.global_calibration.min_days == 5
+    assert artifact.global_calibration.min_candidate_days == 5
 
 
 def test_empirical_track_fits_prior_evaluation_folds_then_appends_holdout_teacher(
