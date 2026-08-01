@@ -302,6 +302,10 @@ def simulate_empirical_lcb_policy(
     daily_budget_yen: int,
     ranking_provider: RankingProvider | None = None,
     max_rank: int | None = None,
+    *,
+    allocation_mode: str = "kelly_floor",
+    min_daily_exposure_fraction: float = 0.0,
+    max_daily_exposure_fraction: float = 0.30,
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
@@ -344,12 +348,12 @@ def simulate_empirical_lcb_policy(
             {str(race["race_id"]) for race in day_races},
             daily_budget_yen=daily_budget_yen,
             fractional_kelly=0.25,
-            max_daily_exposure_fraction=0.30,
-            min_daily_exposure_fraction=0.0,
+            max_daily_exposure_fraction=max_daily_exposure_fraction,
+            min_daily_exposure_fraction=min_daily_exposure_fraction,
             race_cap_fraction=0.05,
             ticket_cap_fraction=0.02,
             max_daily_tickets=MAX_DAILY_TICKETS,
-            allocation_mode="kelly_floor",
+            allocation_mode=allocation_mode,
             stake_granularity_yen=STAKE_YEN,
             min_stake_yen=STAKE_YEN,
         )
@@ -377,6 +381,11 @@ def simulate_empirical_lcb_policy(
     )
     return {
         "status": "ready" if artifact.ready else "calibration_not_ready",
+        "allocation_policy": {
+            "allocation_mode": allocation_mode,
+            "min_daily_exposure_fraction": min_daily_exposure_fraction,
+            "max_daily_exposure_fraction": max_daily_exposure_fraction,
+        },
         "calibration": dict(artifact.as_dict()),
         "evaluation_days": len(daily),
         "evaluated_races": len(races),
