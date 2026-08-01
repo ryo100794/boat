@@ -2914,6 +2914,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     else status_labels.get(status, status or "-")
                 ),
                 "decision": row.get("decision"),
+                "improvement_audit": _json_mapping(
+                    row.get("improvement_audit")
+                ),
                 "valid_for_comparison": not invalid_data_source,
                 "parameters": parameters,
                 "cohort": parameters.get("cohort") or metrics.get("genetic_cohort"),

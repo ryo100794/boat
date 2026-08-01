@@ -112,6 +112,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "変異率" in MODEL_REPORT_HTML
     assert "投機fitnessは候補削減専用" in MODEL_REPORT_HTML
     assert "promotion_gate_passed" in MODEL_REPORT_HTML
+    assert "pairedAuditText" in MODEL_REPORT_HTML
+    assert "bootstrap_daily_profit_difference_lower_yen" in MODEL_REPORT_HTML
     assert "gateTitle" in MODEL_REPORT_HTML
     assert "minimum_fold_roi" in MODEL_REPORT_HTML
     assert "largest_hit_excluded_roi" in MODEL_REPORT_HTML
