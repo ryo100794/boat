@@ -429,12 +429,28 @@ def aggregate_v21_prospective_evidence(
     )
 
     clean: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     observations: list[dict[str, float | int]] = []
     hit_returns: list[int] = []
     selected_event_probabilities: list[float] = []
     for day in sorted(race_days):
-        race_ids = [str(row.get("race_id") or "") for row in race_days[day]]
+        day_races = race_days[day]
+        race_ids = [str(row.get("race_id") or "") for row in day_races]
+        status_counts: dict[str, int] = defaultdict(int)
+        for race in day_races:
+            status_counts[str(race.get("status") or "final").lower()] += 1
+        if set(status_counts) != {"final"}:
+            pending.append(
+                {
+                    "race_date": day,
+                    "reason": "race_day_not_final",
+                    "races": len(race_ids),
+                    "status_counts": dict(sorted(status_counts.items())),
+                    "model_decisions": len(decision_days.get(day, [])),
+                }
+            )
+            continue
         day_decisions = decision_days.get(day, [])
         decision_races = [str(row.get("race_id") or "") for row in day_decisions]
         reasons: set[str] = set()
@@ -695,6 +711,7 @@ def aggregate_v21_prospective_evidence(
             "real_betting_enabled": False,
         },
         "daily": clean,
+        "pending_days": pending,
         "excluded_days": excluded,
         "bankroll": bankroll,
         "purchase_probability_calibration": purchase_probability_calibration,
@@ -746,10 +763,12 @@ def collect_v21_prospective_evidence(
     period = (_date_text(config.start_date, "start_date"), through)
     race_rows = _fetch(
         conn.execute(
-            """SELECT r.race_id, r.race_date, COUNT(DISTINCT e.lane) AS lane_count
+            """SELECT r.race_id, r.race_date, r.status,
+                      COUNT(DISTINCT e.lane) AS lane_count
                FROM races r LEFT JOIN entries e ON e.race_id = r.race_id
                WHERE r.race_date >= ? AND r.race_date <= ?
-               GROUP BY r.race_id, r.race_date ORDER BY r.race_date, r.race_id""",
+               GROUP BY r.race_id, r.race_date, r.status
+               ORDER BY r.race_date, r.race_id""",
             period,
         )
     )
