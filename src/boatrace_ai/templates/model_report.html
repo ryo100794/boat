@@ -89,6 +89,7 @@
     <div class="section-intro"><span><b>目的</b> 本番差替え可否</span><span><b>必須条件</b> 精度非劣化・オッズ品質・ROI片側95%下限&gt;1・損益&gt;0・DD監査</span><span><b>結論</b> 確率精度と資金成績を同時評価 / 全必須gate接続・合格時だけ昇格 / 未接続または未評価なら追加評価待ち</span></div>
     <div id="v21Prospective" class="panel"></div>
     <div id="v23Prospective" class="panel"></div>
+    <div id="stableCellProspective" class="panel"></div>
     <div id="standardProtocol" class="panel"></div>
     <div class="panel"><h2><span>統一365日 複合判定</span><span class="muted">行タップで日次詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
     <span id="selectedModelGroup" aria-hidden="true"></span>
@@ -118,6 +119,12 @@ function render(data){
     "V23 上位5点・終値予測EV帯 未見昇格証跡",
     {},
     data.v23_prospective_evidence
+  );
+  renderProspectiveEvidence(
+    "stableCellProspective",
+    "Stable-cell 低オッズEV帯 固定未見証跡",
+    {},
+    data.stable_cell_prospective_evidence
   );
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
