@@ -86,6 +86,7 @@ class FourHeadArtifact:
     purchase_threshold_input_sha256_by_date: tuple[tuple[str, str], ...]
     training_race_ids: tuple[str, ...]
     purchase_payout_head: LinearHead | None = None
+    purchase_calibration_head: LinearHead | None = None
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
     purchase_threshold_source: str = "learned_unit_return_break_even_zero"
@@ -381,7 +382,10 @@ def _fit_purchase_heads(
             ),
             None,
         )
-    if purchase_loss == "hurdle_logistic_lognormal":
+    if purchase_loss in {
+        "hurdle_logistic_lognormal",
+        "hurdle_logistic_lognormal_calibrated",
+    }:
         hit = returns >= 0.0
         fitted_hit = LogisticRegression(
             C=1.0 / max(float(alpha), 1e-9),
@@ -512,6 +516,8 @@ def fit_four_head_nested_v22(
     threshold_input_payloads: list[dict[str, Any]] = []
     score_sha_by_date: list[tuple[str, str]] = []
     threshold_sha_by_date: list[tuple[str, str]] = []
+    purchase_oof_scores_for_calibration: list[float] = []
+    purchase_oof_returns_for_calibration: list[float] = []
     for validation_index in range(
         minimum_purchase_training_dates, len(base_oof_dates)
     ):
@@ -533,6 +539,8 @@ def fit_four_head_nested_v22(
             scores = _purchase_net_scores(
                 fold_head, fold_payout_head, matrix
             )
+            purchase_oof_scores_for_calibration.extend(scores.tolist())
+            purchase_oof_returns_for_calibration.extend(realized.tolist())
             score_payload = {
                 "race_id": race_id,
                 "race_date": validation_date,
@@ -565,6 +573,32 @@ def fit_four_head_nested_v22(
                 ),
             )
         )
+    purchase_calibration_head = None
+    if purchase_loss == "hurdle_logistic_lognormal_calibrated":
+        calibration_matrix = np.asarray(
+            purchase_oof_scores_for_calibration, dtype=np.float64
+        ).reshape(-1, 1)
+        calibration_target = np.clip(
+            np.asarray(purchase_oof_returns_for_calibration, dtype=np.float64)
+            + 1.0,
+            0.0,
+            51.0,
+        )
+        fitted_calibration = PoissonRegressor(
+            alpha=alpha,
+            fit_intercept=True,
+            max_iter=500,
+            tol=1e-8,
+        ).fit(calibration_matrix, calibration_target)
+        purchase_calibration_head = _head(
+            "purchase_calibration_head",
+            "poisson_calibration_of_strict_purchase_head_oof_gross_return",
+            (
+                np.asarray(fitted_calibration.coef_, dtype=np.float64),
+                float(fitted_calibration.intercept_),
+            ),
+        )
+
     # The purchase head predicts net unit return. Zero is its semantic break-even
     # boundary, not a return-maximizing threshold selected on validation labels.
     threshold = 0.0
@@ -595,6 +629,7 @@ def fit_four_head_nested_v22(
         closing_odds_head=closing_head,
         purchase_head=purchase_head,
         purchase_payout_head=purchase_payout_head,
+        purchase_calibration_head=purchase_calibration_head,
         purchase_threshold=threshold,
         inner_oof_folds=tuple(folds),
         inner_oof_race_ids=oof_ids,
@@ -634,6 +669,11 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
             "purchase_payout_head": (
                 head_payload(artifact.purchase_payout_head)
                 if artifact.purchase_payout_head is not None
+                else None
+            ),
+            "purchase_calibration_head": (
+                head_payload(artifact.purchase_calibration_head)
+                if artifact.purchase_calibration_head is not None
                 else None
             ),
             "purchase_threshold": artifact.purchase_threshold,
@@ -683,6 +723,17 @@ def predict_race(
         artifact.purchase_payout_head,
         _purchase_matrix(decision, probability, ranking, closing),
     )
+    if artifact.purchase_calibration_head is not None:
+        purchase = np.exp(
+            np.clip(
+                _scores(
+                    artifact.purchase_calibration_head,
+                    purchase.reshape(-1, 1),
+                ),
+                -30.0,
+                math.log(51.0),
+            )
+        ) - 1.0
     selected = tuple(
         int(index)
         for index in np.flatnonzero(purchase >= artifact.purchase_threshold)
