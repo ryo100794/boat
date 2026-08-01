@@ -117,7 +117,7 @@ def summarize_edge_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 
-RANK_GROUPS = (("top5", 1, 5), ("6-20", 6, 20), ("21+", 21, None))
+RANK_GROUPS = (("top5", 1, 6), ("6-20", 6, 21), ("21+", 21, None))
 ODDS_BANDS = (
     ("lt_20", None, 20.0),
     ("20_50", 20.0, 50.0),

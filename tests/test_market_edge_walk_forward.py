@@ -86,6 +86,31 @@ def test_stability_grid_reports_daily_portfolio_risk_and_concentration() -> None
     assert cell["hit_return_hhi"] == 1.0
 
 
+def test_stability_grid_includes_rank_group_boundaries() -> None:
+    records = [
+        {
+            "race_date": "2026-07-20",
+            "race_id": f"r{rank}",
+            "combination": "1-2-3",
+            "probability_rank": rank,
+            "probability": 0.01,
+            "forecast_odds": 30.0,
+            "expected_value": 0.30,
+            "ev_bin": "lt_0.80",
+            "hit": False,
+            "return_yen": 0,
+        }
+        for rank in (5, 6, 20, 21)
+    ]
+
+    report = summarize_edge_stability_grid(records)
+    tickets_by_group = {
+        cell["rank_group"]: cell["tickets"] for cell in report["cells"]
+    }
+
+    assert tickets_by_group == {"top5": 1, "6-20": 2, "21+": 1}
+
+
 def test_walk_forward_edge_diagnostics_can_keep_real_t5_prices() -> None:
     report = walk_forward_edge_diagnostics(
         [_race("2026-07-20"), _race("2026-07-21"), _race("2026-07-22")],
