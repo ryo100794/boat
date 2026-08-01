@@ -1,5 +1,6 @@
 from boatrace_ai.fast_math import TRIFECTA_COMBINATIONS
 from boatrace_ai.listwise.market_edge_diagnostics import (
+    summarize_edge_stability_grid,
     walk_forward_edge_diagnostics,
 )
 
@@ -35,6 +36,54 @@ def test_walk_forward_edge_diagnostics_scores_only_later_days() -> None:
     assert sum(row["tickets"] for row in report["all_tickets"]) == 240
     assert sum(row["tickets"] for row in report["top5_tickets"]) == 10
 
+
+
+def test_stability_grid_reports_daily_portfolio_risk_and_concentration() -> None:
+    records = []
+    for day, hit in (("2026-07-20", True), ("2026-07-21", False)):
+        records.extend(
+            [
+                {
+                    "race_date": day,
+                    "race_id": f"{day}-01-01",
+                    "combination": "1-2-3",
+                    "probability_rank": 1,
+                    "probability": 0.30,
+                    "forecast_odds": 10.0,
+                    "expected_value": 3.0,
+                    "ev_bin": "gte_1.20",
+                    "hit": hit,
+                    "return_yen": 500 if hit else 0,
+                },
+                {
+                    "race_date": day,
+                    "race_id": f"{day}-01-01",
+                    "combination": "1-3-2",
+                    "probability_rank": 2,
+                    "probability": 0.20,
+                    "forecast_odds": 10.0,
+                    "expected_value": 2.0,
+                    "ev_bin": "gte_1.20",
+                    "hit": False,
+                    "return_yen": 0,
+                },
+            ]
+        )
+
+    report = summarize_edge_stability_grid(records)
+    cell = report["cells"][0]
+
+    assert cell["rank_group"] == "top5"
+    assert cell["odds_band"] == "lt_20"
+    assert cell["tickets"] == 4
+    assert cell["hits"] == 1
+    assert cell["hit_days"] == 1
+    assert cell["expected_hits"] == 1.0
+    assert cell["mean_daily_no_hit_probability"] == 0.5
+    assert cell["profitable_day_fraction"] == 0.5
+    assert cell["realized_roi"] == 1.25
+    assert cell["roi_without_largest_hit"] == 0.0
+    assert cell["hit_return_hhi"] == 1.0
 
 
 def test_walk_forward_edge_diagnostics_can_keep_real_t5_prices() -> None:
