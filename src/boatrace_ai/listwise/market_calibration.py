@@ -58,6 +58,15 @@ from .dual_head_conformal_policy_v32 import (
     simulate_dual_head_conformal_policy_v32,
 )
 from .market_edge_diagnostics import edge_records, summarize_edge_records
+from .direct_context_market_residual_v25 import (
+    FEATURE_DIMENSION,
+    extract_lane_context,
+)
+from .v25_top1_narrow_policy_v33 import (
+    POLICY as V33_V25_TOP1_NARROW_POLICY,
+    REGISTERED_AFTER as V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+    simulate_v25_top1_narrow_v33,
+)
 from .odds_path_operational import (
     attach_odds_path_model,
     fit_odds_path_model,
@@ -99,7 +108,7 @@ CLOSING_ODDS_SOURCE_PRIORITY = (OFFICIAL_SOURCE_KEY, SOURCE_KEY)
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 32
+MARKET_EVALUATION_VERSION = 33
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
@@ -116,7 +125,7 @@ CLEAN_DAY_CALIBRATOR_STRATEGIES = frozenset({
 ODDS_CHECKPOINT_SCHEMA_VERSION = 1
 ODDS_CHECKPOINT_OFFSETS_SECONDS = (300, 120, 60, 30, 10)
 PREFETCH_CHECKPOINTS_KEY = "odds_checkpoints"
-SCORED_CACHE_VERSION = 13
+SCORED_CACHE_VERSION = 14
 MIN_CLOSING_ODDS_TRAINING_DAYS = 7
 MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
@@ -2596,6 +2605,24 @@ def waiting_walk_forward_result(
                 registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
             )
         ),
+        "v33_v25_top1_narrow_retrospective_diagnostic": {
+            **summarize_registered_policy_daily(
+                [],
+                evaluated_races=0,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "promotion_evidence": False,
+        },
+        "v33_v25_top1_narrow_prospective_walk_forward": (
+            summarize_registered_policy_daily(
+                [],
+                evaluated_races=0,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            )
+        ),
         "market_offset_registered_policy_walk_forward": {
             "comparison_role": "market_offset_with_registered_policy_challenger",
             "status": "waiting_for_clean_evaluation_day",
@@ -3208,6 +3235,7 @@ def walk_forward_evaluate(
     calibrator_strategy: str = "grid",
     evaluation_dates: Iterable[str] | None = None,
     v12_closing_fallback_policy: str = "v11",
+    v25_probability_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
@@ -3463,6 +3491,10 @@ def walk_forward_evaluate(
     v32_retrospective_evaluated_races = 0
     v32_prospective_daily_rows = []
     v32_prospective_evaluated_races = 0
+    v33_retrospective_daily_rows = []
+    v33_retrospective_evaluated_races = 0
+    v33_prospective_daily_rows = []
+    v33_prospective_evaluated_races = 0
     prospective_architecture_daily_rows = []
     prospective_architecture_evaluated_races = 0
     prospective_architecture_config = {
@@ -3734,6 +3766,8 @@ def walk_forward_evaluate(
         )
         v32_retrospective_bankroll = None
         v32_prospective_bankroll = None
+        v33_retrospective_bankroll = None
+        v33_prospective_bankroll = None
         if calibrator_strategy == V21_STRATEGY_NAME:
             v32_retrospective_bankroll = simulate_dual_head_conformal_policy_v32(
                 holdout_conformal_lower_races,
@@ -3744,6 +3778,14 @@ def walk_forward_evaluate(
             )
             if evaluation_date > V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER:
                 v32_prospective_bankroll = v32_retrospective_bankroll
+            if v25_probability_artifact is not None:
+                v33_retrospective_bankroll = simulate_v25_top1_narrow_v33(
+                    holdout_policy_races,
+                    probability_artifact=v25_probability_artifact,
+                    initial_bankroll_yen=daily_budget_yen,
+                )
+                if evaluation_date > V33_V25_TOP1_NARROW_REGISTERED_AFTER:
+                    v33_prospective_bankroll = v33_retrospective_bankroll
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
             calibrator=purchase_calibrator,
@@ -3962,6 +4004,24 @@ def walk_forward_evaluate(
                     if v32_prospective_bankroll is not None
                     else None
                 ),
+                "v33_v25_top1_narrow_retrospective_bankroll": (
+                    {
+                        key: value
+                        for key, value in v33_retrospective_bankroll.items()
+                        if key != "daily"
+                    }
+                    if v33_retrospective_bankroll is not None
+                    else None
+                ),
+                "v33_v25_top1_narrow_prospective_bankroll": (
+                    {
+                        key: value
+                        for key, value in v33_prospective_bankroll.items()
+                        if key != "daily"
+                    }
+                    if v33_prospective_bankroll is not None
+                    else None
+                ),
                 "empirical_lcb_bankroll": {
                     key: value
                     for key, value in empirical_bankroll.items()
@@ -4014,6 +4074,14 @@ def walk_forward_evaluate(
             v32_prospective_evaluated_races += len(
                 holdout_conformal_lower_races
             )
+        if v33_retrospective_bankroll is not None:
+            v33_retrospective_daily_rows.extend(
+                v33_retrospective_bankroll["daily"]
+            )
+            v33_retrospective_evaluated_races += len(holdout_policy_races)
+        if v33_prospective_bankroll is not None:
+            v33_prospective_daily_rows.extend(v33_prospective_bankroll["daily"])
+            v33_prospective_evaluated_races += len(holdout_policy_races)
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
         empirical_daily_rows.extend(empirical_bankroll["daily"])
@@ -4641,6 +4709,28 @@ def walk_forward_evaluate(
                 registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
             )
         ),
+        "v33_v25_top1_narrow_retrospective_diagnostic": {
+            **summarize_registered_policy_daily(
+                v33_retrospective_daily_rows,
+                evaluated_races=v33_retrospective_evaluated_races,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "comparison_role": (
+                "fixed V25 probability artifact with strict-prior T-5 closing-odds "
+                "forecasts across all evaluation days"
+            ),
+            "promotion_evidence": False,
+        },
+        "v33_v25_top1_narrow_prospective_walk_forward": (
+            summarize_registered_policy_daily(
+                v33_prospective_daily_rows,
+                evaluated_races=v33_prospective_evaluated_races,
+                policy=V33_V25_TOP1_NARROW_POLICY,
+                registered_after=V33_V25_TOP1_NARROW_REGISTERED_AFTER,
+            )
+        ),
         **(
             {
                 str(prospective_architecture_config["output_key"]): (
@@ -4934,6 +5024,7 @@ def score_real_odds_races(
                 "rno": int(meta_rows[0]["rno"]),
                 "actual_combination": str(payout["combination"]),
                 "actual_payout_yen": int(payout["payout_yen"]),
+                "lane_context": extract_lane_context(feature_rows),
                 "model_probabilities": model_probabilities,
                 "market_probabilities": market_probabilities,
                 "odds": odds,
@@ -6203,6 +6294,39 @@ def scored_cache_build_lock(path: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def load_v25_probability_artifact(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+    temporal = payload.get("temporal_residual_diagnostic")
+    if not isinstance(temporal, dict):
+        raise ValueError("V25 source is missing temporal_residual_diagnostic")
+    candidate = temporal.get("direct_context_market_residual_v25")
+    if not isinstance(candidate, dict):
+        raise ValueError("V25 source is missing direct_context_market_residual_v25")
+    artifact = candidate.get("artifact")
+    if not isinstance(artifact, dict):
+        raise ValueError("V25 source is missing its probability artifact")
+    coefficients = artifact.get("coefficients")
+    if not isinstance(coefficients, list) or len(coefficients) != FEATURE_DIMENSION:
+        raise ValueError(
+            f"V25 coefficients must contain exactly {FEATURE_DIMENSION} values"
+        )
+    if not all(math.isfinite(float(value)) for value in coefficients):
+        raise ValueError("V25 coefficients must all be finite")
+    audit = {
+        "source": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "calibration_through": temporal.get("calibration_through"),
+        "evaluation_from": temporal.get("evaluation_from"),
+        "evaluation_through": temporal.get("evaluation_through"),
+        "inner_fit_through": candidate.get("inner_fit_through"),
+        "training_races": artifact.get("training_races"),
+        "feature_dimension": len(coefficients),
+    }
+    return artifact, audit
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Leakage-safe market calibration and bankroll shadow evaluation."
@@ -6252,6 +6376,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("v11", "no_bet"),
         default="v11",
     )
+    parser.add_argument("--v25-probability-artifact")
     parser.add_argument("--scored-cache")
     parser.add_argument(
         "--max-snapshot-age-seconds",
@@ -6273,6 +6398,12 @@ def main(argv: list[str] | None = None) -> int:
         else output_path.with_suffix(".races.joblib")
     )
     artifact = joblib.load(model_path)
+    v25_probability_artifact = None
+    v25_artifact_audit = None
+    if args.v25_probability_artifact:
+        v25_probability_artifact, v25_artifact_audit = (
+            load_v25_probability_artifact(Path(args.v25_probability_artifact))
+        )
     with connection(args.db) as conn:
         odds_signature = odds_data_signature(
             conn,
@@ -6361,6 +6492,7 @@ def main(argv: list[str] | None = None) -> int:
         calibrator_strategy=args.calibrator_strategy,
         evaluation_dates=formal_dates,
         v12_closing_fallback_policy=args.v12_closing_fallback_policy,
+        v25_probability_artifact=v25_probability_artifact,
     )
     benchmark_evaluated = sum(
         str(race["race_date"]) in set(benchmark["benchmark_dates"])
@@ -6381,6 +6513,7 @@ def main(argv: list[str] | None = None) -> int:
             "source_model": str(args.model),
             "source_model_sha256": contract["model_sha256"],
             "source_model_trained_through": artifact.get("trained_through"),
+            "v25_probability_artifact": v25_artifact_audit,
             "from_date": args.from_date,
             "through_date": args.through_date,
             "dataset": dataset,

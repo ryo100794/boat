@@ -1807,6 +1807,7 @@ def build_command(
             "min_calibration_days", "calibrator_strategy",
             "minimum_day_coverage", "timeout_seconds",
             "v12_closing_fallback_policy",
+            "v25_probability_artifact",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1843,6 +1844,27 @@ def build_command(
             raise JobDependencyUnavailable(
                 f"market source model is not available yet: {model_input}"
             )
+        v25_probability_artifact = None
+        if params.get("v25_probability_artifact") is not None:
+            artifact_root = (
+                app_root / "data" / "models" / "evaluation_queue"
+            ).resolve()
+            v25_probability_artifact = (
+                app_root / str(params["v25_probability_artifact"])
+            ).resolve()
+            if (
+                artifact_root not in v25_probability_artifact.parents
+                or v25_probability_artifact.suffix != ".json"
+            ):
+                raise ValueError(
+                    "v25_probability_artifact must be a JSON artifact inside "
+                    "data/models/evaluation_queue"
+                )
+            if not v25_probability_artifact.is_file():
+                raise JobDependencyUnavailable(
+                    "V25 probability artifact is not available yet: "
+                    f"{v25_probability_artifact}"
+                )
         strategy = str(params.get("calibrator_strategy", "newton_residual"))
         if strategy not in {
             "grid",
@@ -1889,6 +1911,11 @@ def build_command(
                 _number(params, "minimum_day_coverage", 1.0, 0.5, 1.0)
             ),
         ]
+        if v25_probability_artifact is not None:
+            command.extend([
+                "--v25-probability-artifact",
+                str(v25_probability_artifact),
+            ])
         if strategy in {
             "odds_path_role_integrated_t300_nonlinear_v12",
             "odds_path_role_integrated_edge_conditional_lcb_v13",

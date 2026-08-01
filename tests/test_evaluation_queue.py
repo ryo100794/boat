@@ -3109,6 +3109,8 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     model = root / "data/models/evaluation_queue/job-00002606.joblib"
     model.parent.mkdir(parents=True)
     model.write_bytes(b"artifact")
+    v25_artifact = model.with_suffix(".json")
+    v25_artifact.write_text("{}", encoding="utf-8")
     python = root / ".venv/bin/python"
 
     command, output = build_command(
@@ -3119,6 +3121,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "from_date": "2026-07-18",
                 "through_date": "2026-07-24",
                 "calibrator_strategy": "newton_residual",
+                "v25_probability_artifact": "data/models/evaluation_queue/job-00002606.json",
             },
         ),
         app_root=root,
@@ -3145,6 +3148,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[command.index("--scored-cache") + 1] == str(expected_cache)
     assert command[command.index("--model") + 1] == str(model)
     assert command[command.index("--calibrator-strategy") + 1] == "newton_residual"
+    assert command[command.index("--v25-probability-artifact") + 1] == str(
+        v25_artifact
+    )
     assert command[command.index("--through-date") + 1] == "2026-07-24"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
