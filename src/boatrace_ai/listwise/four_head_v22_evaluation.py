@@ -740,6 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
             "ridge_capped_net",
             "poisson_capped_gross",
             "tweedie_capped_gross",
+            "hurdle_logistic_lognormal",
         ),
         default="ridge_capped_net",
     )

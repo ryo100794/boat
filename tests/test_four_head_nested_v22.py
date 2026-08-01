@@ -295,6 +295,43 @@ def test_nested_tweedie_artifact_predicts_finite_net_returns() -> None:
     assert all(-1.0 < value <= 50.0 for value in prediction.purchase_scores)
 
 
+def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
+    matrix = np.asarray(
+        [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64
+    )
+    returns = np.asarray([-1.0, -1.0, -1.0, 2.0, 8.0])
+    hit_head, payout_head = v22._fit_purchase_heads(
+        [matrix],
+        [returns],
+        alpha=0.01,
+        purchase_loss="hurdle_logistic_lognormal",
+    )
+    scores = v22._purchase_net_scores(hit_head, payout_head, matrix)
+
+    assert payout_head is not None
+    assert hit_head.teacher.startswith("logistic_hit_probability")
+    assert payout_head.teacher.startswith("log_capped_gross_return")
+    assert np.isfinite(scores).all()
+    assert scores[-1] > scores[0]
+
+
+def test_nested_hurdle_artifact_predicts_finite_net_returns() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="hurdle_logistic_lognormal",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_payout_head is not None
+    assert np.isfinite(prediction.purchase_scores).all()
+    assert all(-1.0 < value <= 50.0 for value in prediction.purchase_scores)
+
+
 def test_purchase_selection_uses_learned_return_break_even_not_oof_roi_search() -> None:
     artifact = fit_four_head_nested_v22(
         labeled_races(start_day=1, days=8, races_per_day=3),
