@@ -2979,6 +2979,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             value = chronological.get(key)
             if not isinstance(value, (dict, list)):
                 summary[f"chronological_{key}"] = value
+    purchase_value = payload.get("purchase_value_diagnostics")
+    if isinstance(purchase_value, dict):
+        summary["purchase_value_diagnostics"] = dict(purchase_value)
+        for key in (
+            "tickets", "predicted_mean", "observed_mean",
+            "pearson_correlation", "calibration_mae",
+            "positive_predicted_tickets", "positive_predicted_fraction",
+            "positive_predicted_mean", "positive_observed_capped_roi",
+        ):
+            if key in purchase_value:
+                summary[f"purchase_value_{key}"] = purchase_value[key]
     purchase_diagnostics = payload.get("purchase_decision_diagnostics")
     if isinstance(purchase_diagnostics, dict):
         preserved = dict(purchase_diagnostics)
