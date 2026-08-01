@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
-from sklearn.linear_model import PoissonRegressor, TweedieRegressor
+from sklearn.linear_model import LogisticRegression, PoissonRegressor, TweedieRegressor
 
 
 MODEL_KEY = "four_head_nested_v22"
@@ -85,6 +85,7 @@ class FourHeadArtifact:
     purchase_oof_score_sha256_by_date: tuple[tuple[str, str], ...]
     purchase_threshold_input_sha256_by_date: tuple[tuple[str, str], ...]
     training_race_ids: tuple[str, ...]
+    purchase_payout_head: LinearHead | None = None
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
     purchase_threshold_source: str = "learned_unit_return_break_even_zero"
@@ -312,24 +313,27 @@ def _oof_payload(
     }
 
 
-def _fit_purchase_head(
+def _fit_purchase_heads(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
     *,
     alpha: float,
     purchase_loss: str,
-) -> LinearHead:
+) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
     if purchase_loss == "ridge_capped_net":
-        return _head(
-            "purchase_head",
-            "capped_realized_unit_return_from_strict_prior_base_head_oof_inputs",
-            _fit_ridge(
-                matrix,
-                np.clip(returns, -1.0, 50.0),
-                alpha=alpha,
+        return (
+            _head(
+                "purchase_head",
+                "capped_realized_unit_return_from_strict_prior_base_head_oof_inputs",
+                _fit_ridge(
+                    matrix,
+                    np.clip(returns, -1.0, 50.0),
+                    alpha=alpha,
+                ),
             ),
+            None,
         )
     if purchase_loss == "poisson_capped_gross":
         target = np.clip(returns + 1.0, 0.0, 51.0)
@@ -339,16 +343,19 @@ def _fit_purchase_head(
             max_iter=500,
             tol=1e-8,
         ).fit(matrix, target)
-        return _head(
-            "purchase_head",
-            (
-                "poisson_expected_capped_gross_return_from_"
-                "strict_prior_base_head_oof_inputs"
+        return (
+            _head(
+                "purchase_head",
+                (
+                    "poisson_expected_capped_gross_return_from_"
+                    "strict_prior_base_head_oof_inputs"
+                ),
+                (
+                    np.asarray(fitted.coef_, dtype=np.float64),
+                    float(fitted.intercept_),
+                ),
             ),
-            (
-                np.asarray(fitted.coef_, dtype=np.float64),
-                float(fitted.intercept_),
-            ),
+            None,
         )
     if purchase_loss == "tweedie_capped_gross":
         target = np.clip(returns + 1.0, 0.0, 51.0)
@@ -360,18 +367,80 @@ def _fit_purchase_head(
             max_iter=500,
             tol=1e-8,
         ).fit(matrix, target)
-        return _head(
-            "purchase_head",
-            (
-                "tweedie_expected_capped_gross_return_from_"
-                "strict_prior_base_head_oof_inputs"
+        return (
+            _head(
+                "purchase_head",
+                (
+                    "tweedie_expected_capped_gross_return_from_"
+                    "strict_prior_base_head_oof_inputs"
+                ),
+                (
+                    np.asarray(fitted.coef_, dtype=np.float64),
+                    float(fitted.intercept_),
+                ),
             ),
+            None,
+        )
+    if purchase_loss == "hurdle_logistic_lognormal":
+        hit = returns >= 0.0
+        fitted_hit = LogisticRegression(
+            C=1.0 / max(float(alpha), 1e-9),
+            fit_intercept=True,
+            max_iter=500,
+            tol=1e-8,
+        ).fit(matrix, hit.astype(np.int8))
+        hit_head = _head(
+            "purchase_hit_head",
+            "logistic_hit_probability_from_strict_prior_base_head_oof_inputs",
             (
-                np.asarray(fitted.coef_, dtype=np.float64),
-                float(fitted.intercept_),
+                np.asarray(fitted_hit.coef_[0], dtype=np.float64),
+                float(fitted_hit.intercept_[0]),
             ),
         )
+        payout_head = _head(
+            "purchase_payout_head",
+            "log_capped_gross_return_conditional_on_hit_from_strict_prior_oof",
+            _fit_ridge(
+                matrix[hit],
+                np.log(np.clip(returns[hit] + 1.0, 1.0, 51.0)),
+                alpha=alpha,
+            ),
+        )
+        return hit_head, payout_head
     raise ValueError(f"unsupported purchase_loss: {purchase_loss}")
+
+
+def _fit_purchase_head(
+    matrices: Sequence[np.ndarray],
+    realized_returns: Sequence[np.ndarray],
+    *,
+    alpha: float,
+    purchase_loss: str,
+) -> LinearHead:
+    head, _payout_head = _fit_purchase_heads(
+        matrices,
+        realized_returns,
+        alpha=alpha,
+        purchase_loss=purchase_loss,
+    )
+    return head
+
+
+def _purchase_net_scores(
+    head: LinearHead,
+    payout_head: LinearHead | None,
+    matrix: np.ndarray,
+) -> np.ndarray:
+    linear = _scores(head, matrix)
+    if payout_head is not None:
+        hit_probability = 1.0 / (1.0 + np.exp(-np.clip(linear, -40.0, 40.0)))
+        conditional_payout = np.exp(
+            np.clip(_scores(payout_head, matrix), 0.0, math.log(51.0))
+        )
+        return hit_probability * conditional_payout - 1.0
+    if "_expected_capped_gross" in head.teacher:
+        return np.exp(np.clip(linear, -30.0, math.log(51.0))) - 1.0
+    return linear
 
 
 def fit_four_head_nested_v22(
@@ -452,7 +521,7 @@ def fit_four_head_nested_v22(
             record for date in prior_dates for record in base_oof_by_date[date]
         ]
         validation_records = base_oof_by_date[validation_date]
-        fold_head = _fit_purchase_head(
+        fold_head, fold_payout_head = _fit_purchase_heads(
             [record[1] for record in training_records],
             [record[2] for record in training_records],
             alpha=alpha,
@@ -461,7 +530,9 @@ def fit_four_head_nested_v22(
         date_score_payloads: list[dict[str, Any]] = []
         date_threshold_payloads: list[dict[str, Any]] = []
         for race_id, matrix, realized in validation_records:
-            scores = _scores(fold_head, matrix)
+            scores = _purchase_net_scores(
+                fold_head, fold_payout_head, matrix
+            )
             score_payload = {
                 "race_id": race_id,
                 "race_date": validation_date,
@@ -503,7 +574,7 @@ def fit_four_head_nested_v22(
     ]
     # Threshold selection is complete before the deployable purchase head sees all
     # base OOF rows. The final refit cannot feed back into threshold selection.
-    purchase_head = _fit_purchase_head(
+    purchase_head, purchase_payout_head = _fit_purchase_heads(
         [record[1] for record in all_base_oof_records],
         [record[2] for record in all_base_oof_records],
         alpha=alpha,
@@ -523,6 +594,7 @@ def fit_four_head_nested_v22(
         ranking_head=ranking_head,
         closing_odds_head=closing_head,
         purchase_head=purchase_head,
+        purchase_payout_head=purchase_payout_head,
         purchase_threshold=threshold,
         inner_oof_folds=tuple(folds),
         inner_oof_race_ids=oof_ids,
@@ -559,6 +631,11 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
             "ranking_head": head_payload(artifact.ranking_head),
             "closing_odds_head": head_payload(artifact.closing_odds_head),
             "purchase_head": head_payload(artifact.purchase_head),
+            "purchase_payout_head": (
+                head_payload(artifact.purchase_payout_head)
+                if artifact.purchase_payout_head is not None
+                else None
+            ),
             "purchase_threshold": artifact.purchase_threshold,
             "inner_oof_folds": [fold.__dict__ for fold in artifact.inner_oof_folds],
             "inner_oof_race_ids": artifact.inner_oof_race_ids,
@@ -601,14 +678,11 @@ def predict_race(
         artifact.ranking_head,
         artifact.closing_odds_head,
     )
-    purchase = _scores(
+    purchase = _purchase_net_scores(
         artifact.purchase_head,
+        artifact.purchase_payout_head,
         _purchase_matrix(decision, probability, ranking, closing),
     )
-    if "_expected_capped_gross" in artifact.purchase_head.teacher:
-        purchase = np.exp(
-            np.clip(purchase, -30.0, math.log(51.0))
-        ) - 1.0
     selected = tuple(
         int(index)
         for index in np.flatnonzero(purchase >= artifact.purchase_threshold)
