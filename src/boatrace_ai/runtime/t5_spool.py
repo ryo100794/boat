@@ -13,7 +13,7 @@ from ..db import race_id, trifecta_odds_signature, upsert_race
 from ..features import MODEL_DECISION_LEAD_MINUTES
 from ..http import fetch_text, sha256_bytes
 from ..official import race_page_url
-from ..odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
+from ..odds_quality import TRIFECTA_PARSER_VERSION, describe_trifecta_market
 from ..storage import record_raw_page
 from ..ingestion.parsers import parse_odds3t_html, result_page_is_cancelled
 from .time_semantics import estimated_deadline_from_start, stored_start_time
@@ -341,12 +341,14 @@ def fetch_t5_capture(
     if status_code != 200 or result_page_is_cancelled(html):
         return None
     parsed = parse_odds3t_html(html)
+    market_shape = describe_trifecta_market(parsed.get("odds") or {})
     if (
         parsed.get("parser_version") != TRIFECTA_PARSER_VERSION
         or parsed.get("parsed_count") != 120
-        or not plausible_trifecta_odds(parsed.get("odds") or {})
+        or market_shape is None
     ):
         return None
+    parsed["market_shape"] = market_shape
     captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return (
         build_capture(
@@ -423,6 +425,7 @@ def persist_capture(conn: Any, event: dict[str, Any]) -> int:
         [
             (snapshot_id, event["race_id"], combination, odds)
             for combination, odds in event["odds"].items()
+            if odds is not None
         ],
     )
     return snapshot_id
