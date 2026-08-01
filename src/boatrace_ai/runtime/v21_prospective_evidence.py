@@ -48,6 +48,7 @@ class V21ProspectiveEvidenceConfig:
     minimum_effective_hits: float = 20.0
     minimum_profitable_day_fraction: float = 0.60
     minimum_market_confidence: float = 0.95
+    minimum_selected_probability_calibration_pvalue: float = 0.05
 
     def __post_init__(self) -> None:
         start = _date_text(self.start_date, "start_date")
@@ -85,6 +86,10 @@ class V21ProspectiveEvidenceConfig:
         for value, name in (
             (self.minimum_profitable_day_fraction, "minimum_profitable_day_fraction"),
             (self.minimum_market_confidence, "minimum_market_confidence"),
+            (
+                self.minimum_selected_probability_calibration_pvalue,
+                "minimum_selected_probability_calibration_pvalue",
+            ),
         ):
             if not 0 <= float(value) <= 1:
                 raise ValueError(f"{name} must be between zero and one")
@@ -356,6 +361,23 @@ def _evaluate_settlement(
     return {"actual": actual, "stake_yen": stake, "return_yen": returned}
 
 
+def _poisson_binomial_cdf(probabilities: Sequence[float], observed: int) -> float:
+    """Return P(X <= observed) for independent race-level selected outcomes."""
+    if observed < 0:
+        return 0.0
+    if not probabilities or observed >= len(probabilities):
+        return 1.0
+    distribution = [1.0] + [0.0] * observed
+    for probability in probabilities:
+        for hits in range(observed, 0, -1):
+            distribution[hits] = (
+                distribution[hits] * (1.0 - probability)
+                + distribution[hits - 1] * probability
+            )
+        distribution[0] *= 1.0 - probability
+    return min(max(sum(distribution), 0.0), 1.0)
+
+
 def aggregate_v21_prospective_evidence(
     *,
     config: V21ProspectiveEvidenceConfig,
@@ -410,6 +432,7 @@ def aggregate_v21_prospective_evidence(
     excluded: list[dict[str, Any]] = []
     observations: list[dict[str, float | int]] = []
     hit_returns: list[int] = []
+    selected_event_probabilities: list[float] = []
     for day in sorted(race_days):
         race_ids = [str(row.get("race_id") or "") for row in race_days[day]]
         day_decisions = decision_days.get(day, [])
@@ -476,6 +499,12 @@ def aggregate_v21_prospective_evidence(
         returned = sum(result["return_yen"] for _, result in evaluated)
         day_hits = [result["return_yen"] for _, result in evaluated if result["return_yen"] > 0]
         hit_returns.extend(day_hits)
+        day_selected_probabilities = [
+            sum(item["probabilities"][ticket["combination"]] for ticket in item["selected"])
+            for item, _ in evaluated
+            if item["selected"]
+        ]
+        selected_event_probabilities.extend(day_selected_probabilities)
         clean.append(
             {
                 "race_date": day,
@@ -484,6 +513,10 @@ def aggregate_v21_prospective_evidence(
                 "hit_tickets": sum(
                     sum(ticket["combination"] == result["actual"] for ticket in item["selected"])
                     for item, result in evaluated
+                ),
+                "expected_hit_tickets": sum(day_selected_probabilities),
+                "expected_no_hit_probability": math.prod(
+                    1.0 - probability for probability in day_selected_probabilities
                 ),
                 "stake_yen": stake,
                 "return_yen": returned,
@@ -538,6 +571,35 @@ def aggregate_v21_prospective_evidence(
         "daily_cluster_bootstrap_roi_lower_95": bootstrap["roi_ci95_lower"] if bootstrap else None,
         "effective_hit_count": effective_hits,
         "bootstrap": bootstrap,
+    }
+    observed_selected_hits = len(hit_returns)
+    expected_selected_hits = sum(selected_event_probabilities)
+    selected_variance = sum(
+        probability * (1.0 - probability)
+        for probability in selected_event_probabilities
+    )
+    purchase_probability_calibration = {
+        "selected_races": len(selected_event_probabilities),
+        "observed_hits": observed_selected_hits,
+        "expected_hits": expected_selected_hits,
+        "observed_to_expected_hit_ratio": (
+            observed_selected_hits / expected_selected_hits
+            if expected_selected_hits > 0
+            else None
+        ),
+        "expected_no_hit_probability": math.prod(
+            1.0 - probability for probability in selected_event_probabilities
+        ),
+        "standardized_hit_residual": (
+            (observed_selected_hits - expected_selected_hits)
+            / math.sqrt(selected_variance)
+            if selected_variance > 0
+            else None
+        ),
+        "probability_at_most_observed_hits": _poisson_binomial_cdf(
+            selected_event_probabilities, observed_selected_hits
+        ),
+        "method": "exact_poisson_binomial_lower_tail_over_disjoint_race_selections",
     }
     if observations:
         loss_diff = [row["model_loss"] - row["market_loss"] for row in observations]
@@ -602,10 +664,16 @@ def aggregate_v21_prospective_evidence(
             market["top5_improvement_confidence"] is not None
             and market["top5_improvement_confidence"] >= config.minimum_market_confidence
         ),
+        "selected_probability_not_overconfident": (
+            purchase_probability_calibration[
+                "probability_at_most_observed_hits"
+            ]
+            >= config.minimum_selected_probability_calibration_pvalue
+        ),
     }
     failed = [name for name, passed in checks.items() if not passed]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "evidence_kind": config.evidence_kind,
         "model_key": config.model_key,
         "start_date": start,
@@ -629,6 +697,7 @@ def aggregate_v21_prospective_evidence(
         "daily": clean,
         "excluded_days": excluded,
         "bankroll": bankroll,
+        "purchase_probability_calibration": purchase_probability_calibration,
         "market": market,
         "promotion_gate": {
             "thresholds": {
@@ -641,6 +710,9 @@ def aggregate_v21_prospective_evidence(
                 "daily_cluster_bootstrap_lower_95_strictly_above": 1.0,
                 "profitable_day_fraction": config.minimum_profitable_day_fraction,
                 "market_confidence": config.minimum_market_confidence,
+                "selected_probability_calibration_pvalue": (
+                    config.minimum_selected_probability_calibration_pvalue
+                ),
             },
             "checks": checks,
             "failed_checks": failed,
