@@ -627,6 +627,7 @@ def run_v22_smoke_evaluation(
         artifact, loaded.outer_races, settlements,
         max_t5_snapshot_age_seconds=max_snapshot_age_seconds,
     )
+    outer_evaluation = evaluate_outer_outcomes(artifact, loaded.outer_races)
     return {
         "model_key": artifact.model_key,
         "artifact_sha256": artifact_fingerprint(artifact),
@@ -638,7 +639,10 @@ def run_v22_smoke_evaluation(
         },
         "coverage": dict(loaded.diagnostics),
         "decision_audit": [audit.__dict__ for audit in loaded.decision_audit],
-        "evaluation": evaluate_outer_outcomes(artifact, loaded.outer_races),
+        "evaluation": outer_evaluation,
+        "purchase_value_diagnostics": outer_evaluation[
+            "purchase_value_diagnostics"
+        ],
         "formal_bankroll": formal_bankroll,
         "roi": formal_bankroll["roi"],
         "stake_yen": formal_bankroll["stake_yen"],
