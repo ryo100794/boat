@@ -189,6 +189,31 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
     assert result["promotion_gate"]["pass"] is True
 
 
+def test_scheduled_day_is_pending_instead_of_excluded() -> None:
+    rows = evidence_rows()
+    for race in rows["races"]:
+        race["status"] = "scheduled"
+    rows["decisions"].clear()
+    rows["settlements"].clear()
+    rows["source_odds"].clear()
+    rows["payouts"].clear()
+
+    result = aggregate(rows)
+
+    assert result["daily"] == []
+    assert result["excluded_days"] == []
+    assert result["pending_days"] == [
+        {
+            "race_date": "2026-07-31",
+            "reason": "race_day_not_final",
+            "races": 2,
+            "status_counts": {"scheduled": 2},
+            "model_decisions": 0,
+        }
+    ]
+    assert result["promotion_gate"]["pass"] is False
+
+
 def test_missing_settlement_excludes_whole_day_with_coverage_reason() -> None:
     rows = evidence_rows()
     rows["settlements"].pop()
