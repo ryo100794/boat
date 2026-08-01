@@ -84,6 +84,8 @@ def test_stability_grid_reports_daily_portfolio_risk_and_concentration() -> None
     assert cell["realized_roi"] == 1.25
     assert cell["roi_without_largest_hit"] == 0.0
     assert cell["hit_return_hhi"] == 1.0
+    assert [day["profit_yen"] for day in cell["daily"]] == [300, -200]
+    assert [day["no_hit_probability"] for day in cell["daily"]] == [0.5, 0.5]
 
 
 def test_stability_grid_includes_rank_group_boundaries() -> None:

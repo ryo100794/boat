@@ -171,11 +171,26 @@ def summarize_edge_stability_grid(records: list[dict[str, Any]]) -> dict[str, An
         by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for value in values:
             by_day[str(value["race_date"])].append(value)
-        daily_no_hit = [_daily_no_hit_probability(day) for day in by_day.values()]
-        winning_days = sum(
-            int(sum(int(row["return_yen"]) for row in day) > len(day) * STAKE_YEN)
-            for day in by_day.values()
-        )
+        daily = []
+        for race_date, day_values in sorted(by_day.items()):
+            day_stake = len(day_values) * STAKE_YEN
+            day_return = sum(int(row["return_yen"]) for row in day_values)
+            daily.append(
+                {
+                    "race_date": race_date,
+                    "tickets": len(day_values),
+                    "hits": sum(int(bool(row["hit"])) for row in day_values),
+                    "expected_hits": sum(
+                        float(row["probability"]) for row in day_values
+                    ),
+                    "no_hit_probability": _daily_no_hit_probability(day_values),
+                    "stake_yen": day_stake,
+                    "return_yen": day_return,
+                    "profit_yen": day_return - day_stake,
+                    "roi": day_return / day_stake if day_stake else None,
+                }
+            )
+        winning_days = sum(int(day["profit_yen"] > 0) for day in daily)
         rows.append(
             {
                 "rank_group": rank_group,
@@ -192,7 +207,9 @@ def summarize_edge_stability_grid(records: list[dict[str, Any]]) -> dict[str, An
                     float(value["probability"]) for value in values
                 ),
                 "mean_daily_no_hit_probability": (
-                    sum(daily_no_hit) / len(daily_no_hit) if daily_no_hit else None
+                    sum(day["no_hit_probability"] for day in daily) / len(daily)
+                    if daily
+                    else None
                 ),
                 "winning_days": winning_days,
                 "profitable_day_fraction": (
@@ -209,6 +226,7 @@ def summarize_edge_stability_grid(records: list[dict[str, Any]]) -> dict[str, An
                 "hit_return_hhi": (
                     return_square_sum / return_yen**2 if return_yen > 0 else None
                 ),
+                "daily": daily,
             }
         )
     return {
