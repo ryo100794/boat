@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import math
+import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import joblib
 import numpy as np
@@ -60,6 +63,51 @@ class V22EvaluationData:
     outer_races: tuple[LabeledRace, ...]
     decision_audit: tuple[DecisionAudit, ...]
     diagnostics: Mapping[str, Any]
+
+
+def load_or_build_v22_evaluation_data(
+    cache_path: Path,
+    *,
+    signature: Mapping[str, Any],
+    builder: Callable[[], V22EvaluationData],
+) -> V22EvaluationData:
+    """Reuse immutable period inputs while serializing concurrent builders."""
+
+    path = cache_path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if path.is_file():
+            try:
+                envelope = joblib.load(path)
+            except Exception:
+                envelope = None
+            if (
+                isinstance(envelope, dict)
+                and envelope.get("schema_version") == 1
+                and envelope.get("signature") == dict(signature)
+                and isinstance(envelope.get("data"), V22EvaluationData)
+            ):
+                return envelope["data"]
+        data = builder()
+        if not isinstance(data, V22EvaluationData):
+            raise TypeError("V22 evaluation data builder returned an invalid value")
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            joblib.dump(
+                {
+                    "schema_version": 1,
+                    "signature": dict(signature),
+                    "data": data,
+                },
+                temporary,
+                compress=3,
+            )
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return data
 
 
 def _as_aware_datetime(value: Any) -> datetime:
@@ -599,8 +647,9 @@ def run_v22_smoke_evaluation(
     minimum_purchase_training_dates: int = 2,
     alpha: float = 1e-3,
     purchase_loss: str = "ridge_capped_net",
+    loaded_data: V22EvaluationData | None = None,
 ) -> dict[str, Any]:
-    loaded = load_v22_evaluation_data(
+    loaded = loaded_data or load_v22_evaluation_data(
         conn,
         source_artifact=source_artifact,
         training_from_date=training_from_date,
@@ -672,6 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--outer-from", required=True)
     parser.add_argument("--outer-through", required=True)
     parser.add_argument("--output")
+    parser.add_argument("--data-cache")
     parser.add_argument("--max-races-per-day", type=int)
     parser.add_argument(
         "--max-snapshot-age-seconds",
@@ -694,8 +744,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    source_artifact = joblib.load(Path(args.source_model))
+    source_path = Path(args.source_model)
+    source_artifact = joblib.load(source_path)
+    with source_path.open("rb") as source_file:
+        source_sha256 = hashlib.file_digest(source_file, "sha256").hexdigest()
+    cache_signature = {
+        "source_sha256": source_sha256,
+        "training_from": args.training_from,
+        "training_through": args.training_through,
+        "outer_from": args.outer_from,
+        "outer_through": args.outer_through,
+        "max_snapshot_age_seconds": args.max_snapshot_age_seconds,
+        "projection_dimensions": args.projection_dimensions,
+        "max_races_per_day": args.max_races_per_day,
+    }
     with connection(args.db) as conn:
+        loaded_data = None
+        if args.data_cache:
+            loaded_data = load_or_build_v22_evaluation_data(
+                Path(args.data_cache),
+                signature=cache_signature,
+                builder=lambda: load_v22_evaluation_data(
+                    conn,
+                    source_artifact=source_artifact,
+                    training_from_date=args.training_from,
+                    training_through_date=args.training_through,
+                    outer_from_date=args.outer_from,
+                    outer_through_date=args.outer_through,
+                    max_snapshot_age_seconds=args.max_snapshot_age_seconds,
+                    projection_dimensions=args.projection_dimensions,
+                    max_races_per_day=args.max_races_per_day,
+                ),
+            )
         result = run_v22_smoke_evaluation(
             conn,
             source_artifact=source_artifact,
@@ -710,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
             minimum_purchase_training_dates=args.minimum_purchase_training_dates,
             alpha=args.alpha,
             purchase_loss=args.purchase_loss,
+            loaded_data=loaded_data,
         )
     encoded = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
     if args.output:

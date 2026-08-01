@@ -199,6 +199,9 @@ def test_four_head_learned_value_command_records_learning_and_outer_periods(
     assert command[command.index("--projection-dimensions") + 1] == "16"
     assert command[command.index("--alpha") + 1] == "0.01"
     assert command[command.index("--purchase-loss") + 1] == "ridge_capped_net"
+    assert command[command.index("--data-cache") + 1].startswith(
+        str(root / "data/models/evaluation_cache/four_head_v22")
+    )
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
     assert "four_head_learned_value" in TASK_PROFILES
 
