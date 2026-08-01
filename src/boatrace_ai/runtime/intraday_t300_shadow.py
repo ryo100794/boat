@@ -1910,6 +1910,7 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
     registered_after = V23_REGISTERED_AFTER
     candidate_selector = staticmethod(select_top5_narrow_candidates)
     no_candidate_reason = "v23_no_top5_candidate_in_registered_ev_band"
+    allowed_closing_forecasts = frozenset({"baseline", "momentum"})
 
     def __init__(
         self,
@@ -1925,7 +1926,7 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
         )
         self._closing_selection = self._component("closing_odds_selection")
         if (
-            self._closing_selection.get("selected") not in {"baseline", "momentum"}
+            self._closing_selection.get("selected") not in self.allowed_closing_forecasts
             or not isinstance(self._closing_selection.get("baseline_model"), Mapping)
             or self._bundle.get("real_betting_enabled") is not False
         ):
