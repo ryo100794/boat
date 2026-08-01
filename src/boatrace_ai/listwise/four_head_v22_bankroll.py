@@ -247,16 +247,21 @@ def evaluate_four_head_v22_bankroll(
                 }
             )
             for index in prediction.selected_indices:
-                probability = float(prediction.probabilities[index])
                 t5_odds = float(race.decision.current_odds[index])
+                learned_net_return = float(prediction.purchase_scores[index])
+                learned_net_return = min(
+                    max(learned_net_return, 0.0), t5_odds - 1.0
+                )
+                learned_ev = 1.0 + learned_net_return
+                allocation_probability = learned_ev / t5_odds
                 candidates.append(
                     {
                         "race_id": race_id,
                         "race_date": race_date,
                         "combination": COMBINATIONS[index],
-                        "probability": probability,
+                        "probability": allocation_probability,
                         "estimated_odds": t5_odds,
-                        "estimated_ev": probability * t5_odds,
+                        "estimated_ev": learned_ev,
                         "purchase_score": float(prediction.purchase_scores[index]),
                         "decision_at": decision_at,
                         "odds_source": "official_trifecta_t5_snapshot",
@@ -322,6 +327,7 @@ def evaluate_four_head_v22_bankroll(
             "allocation_api": (
                 "simulate_chronological_bankroll_day+allocate_adaptive_day"
             ),
+            "allocation_signal": "learned_purchase_head_expected_unit_return",
         },
         "diagnostic_unit_roi_is_formal_roi": False,
         "real_betting_enabled": False,

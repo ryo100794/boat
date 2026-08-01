@@ -5,7 +5,6 @@ from dataclasses import FrozenInstanceError, replace
 import numpy as np
 import pytest
 
-import boatrace_ai.listwise.four_head_nested_v22 as v22
 from boatrace_ai.listwise.four_head_nested_v22 import (
     MODEL_KEY,
     DecisionRace,
@@ -81,9 +80,8 @@ def test_four_heads_execute_and_artifact_is_fixed_and_deterministic() -> None:
     assert first.outer_outcomes_used is False
     assert first.fixed_after_fit is True
     assert first.purchase_teacher_source == "strict_prior_base_head_oof_predictions"
-    assert first.purchase_threshold_source == (
-        "strict_prior_purchase_head_oof_scores_and_realized_unit_returns"
-    )
+    assert first.purchase_threshold_source == "learned_unit_return_break_even_zero"
+    assert first.purchase_threshold == 0.0
     assert {
         first.probability_head.name,
         first.ranking_head.name,
@@ -211,29 +209,15 @@ def test_later_purchase_validation_labels_cannot_change_earlier_oof_inputs() -> 
     )
 
 
-def test_threshold_selector_receives_only_purchase_level_oof_rows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, np.ndarray] = {}
-    original_selector = v22._select_purchase_threshold
-
-    def capture(scores: np.ndarray, returns: np.ndarray) -> float:
-        captured["scores"] = scores.copy()
-        captured["returns"] = returns.copy()
-        return original_selector(scores, returns)
-
-    monkeypatch.setattr(v22, "_select_purchase_threshold", capture)
+def test_purchase_selection_uses_learned_return_break_even_not_oof_roi_search() -> None:
     artifact = fit_four_head_nested_v22(
         labeled_races(start_day=1, days=8, races_per_day=3),
         minimum_inner_training_dates=2,
         minimum_purchase_training_dates=2,
     )
 
-    expected_rows = len(artifact.purchase_oof_race_ids) * artifact.choice_count
-    base_oof_rows = len(artifact.inner_oof_race_ids) * artifact.choice_count
-    assert captured["scores"].shape == (expected_rows,)
-    assert captured["returns"].shape == (expected_rows,)
-    assert expected_rows < base_oof_rows
+    assert artifact.purchase_threshold == 0.0
+    assert artifact.purchase_threshold_source == "learned_unit_return_break_even_zero"
 
 
 def test_outer_outcomes_cannot_change_predictions_or_artifact() -> None:

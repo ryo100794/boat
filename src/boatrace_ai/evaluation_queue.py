@@ -64,6 +64,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
+    "four_head_learned_value": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 512},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
@@ -1793,6 +1794,79 @@ def build_command(
             "--output",
             str(output),
         ], output
+    if task_type == "four_head_learned_value":
+        allowed = {
+            "source_model", "training_from", "training_through",
+            "outer_from", "outer_through", "projection_dimensions",
+            "minimum_inner_training_dates",
+            "minimum_purchase_training_dates", "alpha",
+            "max_races_per_day", "max_snapshot_age_seconds",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported four_head_learned_value parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        missing = {
+            "source_model", "training_from", "training_through",
+            "outer_from", "outer_through",
+        } - set(params)
+        if missing:
+            raise ValueError(
+                "missing four_head_learned_value parameters: "
+                + ", ".join(sorted(missing))
+            )
+        training_from = _date(params, "training_from")
+        training_through = _date(params, "training_through")
+        outer_from = _date(params, "outer_from")
+        outer_through = _date(params, "outer_through")
+        if training_from > training_through or outer_from > outer_through:
+            raise ValueError("four-head evaluation periods must be chronological")
+        if training_through >= outer_from:
+            raise ValueError("four-head outer period must follow training")
+        projection_dimensions = _integer(
+            params, "projection_dimensions", 8, 1, 128
+        )
+        minimum_inner = _integer(
+            params, "minimum_inner_training_dates", 2, 1, 60
+        )
+        minimum_purchase = _integer(
+            params, "minimum_purchase_training_dates", 2, 1, 60
+        )
+        alpha = _number(params, "alpha", 1e-3, 1e-9, 1000.0)
+        max_snapshot_age = _number(
+            params, "max_snapshot_age_seconds", 300.0, 0.0, 300.0
+        )
+        _integer(params, "timeout_seconds", 7200, 300, 86400)
+        model_root = (app_root / "data" / "models").resolve()
+        source_model = (app_root / str(params["source_model"])).resolve()
+        if model_root not in source_model.parents or source_model.suffix != ".joblib":
+            raise ValueError(
+                "source_model must be a joblib artifact inside data/models"
+            )
+        command = [
+            str(python), "-m", "boatrace_ai.listwise.four_head_v22_evaluation",
+            "--db", db,
+            "--source-model", str(source_model),
+            "--training-from", training_from,
+            "--training-through", training_through,
+            "--outer-from", outer_from,
+            "--outer-through", outer_through,
+            "--projection-dimensions", str(projection_dimensions),
+            "--minimum-inner-training-dates", str(minimum_inner),
+            "--minimum-purchase-training-dates", str(minimum_purchase),
+            "--alpha", str(alpha),
+            "--max-snapshot-age-seconds", str(max_snapshot_age),
+            "--output", str(output),
+        ]
+        if params.get("max_races_per_day") is not None:
+            command.extend([
+                "--max-races-per-day",
+                str(_integer(params, "max_races_per_day", 144, 1, 1000)),
+            ])
+        return command, output
     if task_type == "market_residual_walk_forward":
         allowed = {
             "model_input", "from_date", "through_date", "daily_budget_yen",
