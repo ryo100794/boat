@@ -20,7 +20,11 @@ from .market_calibration import (
     blend_probabilities,
     verifiable_closing_odds_races,
 )
-from .market_edge_diagnostics import edge_records, summarize_edge_records
+from .market_edge_diagnostics import (
+    edge_records,
+    summarize_edge_records,
+    summarize_edge_stability_grid,
+)
 
 
 def _canonical_sha256(value: object) -> str:
@@ -220,6 +224,9 @@ def replay_bandwise_empirical_policy(
             "source_edge_diagnostics_sha256": expected_hash,
             "replayed_edge_diagnostics_sha256": actual_hash,
             "source_edge_diagnostics_match": True,
+            "retrospective_stability_grid": summarize_edge_stability_grid(
+                replay_edges
+            ),
             "normalized_kelly_min10_diagnostic": normalized_result,
         }
     )

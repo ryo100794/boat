@@ -117,6 +117,107 @@ def summarize_edge_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 
+RANK_GROUPS = (("top5", 1, 5), ("6-20", 6, 20), ("21+", 21, None))
+ODDS_BANDS = (
+    ("lt_20", None, 20.0),
+    ("20_50", 20.0, 50.0),
+    ("50_101", 50.0, 101.0),
+    ("gte_101", 101.0, None),
+)
+
+
+def _bounded_group(
+    value: float,
+    groups: tuple[tuple[str, float | None, float | None], ...],
+) -> str:
+    for name, lower, upper in groups:
+        if (lower is None or value >= lower) and (upper is None or value < upper):
+            return name
+    raise ValueError(f"unhandled grouped value: {value}")
+
+
+def _daily_no_hit_probability(values: list[dict[str, Any]]) -> float:
+    probability_by_race: dict[str, float] = defaultdict(float)
+    for value in values:
+        probability_by_race[str(value["race_id"])] += float(value["probability"])
+    result = 1.0
+    for probability in probability_by_race.values():
+        result *= 1.0 - min(max(probability, 0.0), 1.0)
+    return result
+
+
+def summarize_edge_stability_grid(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe retrospective rank, odds, and EV cells without selecting a policy."""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        rank_group = _bounded_group(
+            float(record["probability_rank"]), RANK_GROUPS
+        )
+        odds_band = _bounded_group(
+            float(record["forecast_odds"]), ODDS_BANDS
+        )
+        grouped[(rank_group, odds_band, str(record["ev_bin"]))].append(record)
+
+    rows = []
+    for (rank_group, odds_band, ev_bin), values in sorted(grouped.items()):
+        tickets = len(values)
+        stake_yen = tickets * STAKE_YEN
+        return_yen = sum(int(value["return_yen"]) for value in values)
+        hit_returns = [
+            int(value["return_yen"]) for value in values if value["hit"]
+        ]
+        largest_hit = max(hit_returns, default=0)
+        return_square_sum = sum(value * value for value in hit_returns)
+        by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for value in values:
+            by_day[str(value["race_date"])].append(value)
+        daily_no_hit = [_daily_no_hit_probability(day) for day in by_day.values()]
+        winning_days = sum(
+            int(sum(int(row["return_yen"]) for row in day) > len(day) * STAKE_YEN)
+            for day in by_day.values()
+        )
+        rows.append(
+            {
+                "rank_group": rank_group,
+                "odds_band": odds_band,
+                "ev_bin": ev_bin,
+                "days": len(by_day),
+                "tickets": tickets,
+                "races": len({str(value["race_id"]) for value in values}),
+                "hits": len(hit_returns),
+                "hit_days": len(
+                    {str(value["race_date"]) for value in values if value["hit"]}
+                ),
+                "expected_hits": sum(
+                    float(value["probability"]) for value in values
+                ),
+                "mean_daily_no_hit_probability": (
+                    sum(daily_no_hit) / len(daily_no_hit) if daily_no_hit else None
+                ),
+                "winning_days": winning_days,
+                "profitable_day_fraction": (
+                    winning_days / len(by_day) if by_day else None
+                ),
+                "stake_yen": stake_yen,
+                "return_yen": return_yen,
+                "profit_yen": return_yen - stake_yen,
+                "realized_roi": return_yen / stake_yen if stake_yen else None,
+                "largest_hit_return_yen": largest_hit,
+                "roi_without_largest_hit": (
+                    (return_yen - largest_hit) / stake_yen if stake_yen else None
+                ),
+                "hit_return_hhi": (
+                    return_square_sum / return_yen**2 if return_yen > 0 else None
+                ),
+            }
+        )
+    return {
+        "comparison_role": "retrospective_outer_holdout_diagnostic_not_policy_selection",
+        "dimensions": ["probability_rank", "forecast_odds", "predicted_ev"],
+        "cells": rows,
+    }
+
+
 def walk_forward_edge_diagnostics(
     races: list[dict[str, Any]],
     *,
