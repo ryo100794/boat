@@ -340,6 +340,12 @@ def test_outer_metrics_cover_all_four_heads() -> None:
     assert 0.0 <= metrics["ranking_top5_hit_rate"] <= 1.0
     assert metrics["closing_odds_log_mae"] >= 0.0
     assert metrics["production_bankroll_evaluated"] is False
+    value = metrics["purchase_value_diagnostics"]
+    assert value["schema_version"] == 1
+    assert value["tickets"] == 6 * artifact.choice_count
+    assert len(value["calibration_deciles"]) == 10
+    assert 0.0 <= value["positive_predicted_fraction"] <= 1.0
+    assert value["calibration_mae"] >= 0.0
     diagnostic = metrics["diagnostic_unit_stake"]
     assert diagnostic["label"] == (
         "equal_one_unit_per_selected_ticket_not_production_bankroll"

@@ -577,6 +577,68 @@ def prediction_fingerprint(predictions: Sequence[RacePrediction]) -> str:
     return _payload_sha256([prediction.__dict__ for prediction in predictions])
 
 
+def _purchase_value_diagnostics(
+    races: Sequence[LabeledRace],
+    predictions: Sequence[RacePrediction],
+) -> dict[str, Any]:
+    predicted_rows: list[np.ndarray] = []
+    observed_rows: list[np.ndarray] = []
+    for race, prediction in zip(races, predictions, strict=True):
+        predicted_rows.append(
+            np.asarray(prediction.purchase_scores, dtype=np.float64)
+        )
+        observed = np.full(len(prediction.purchase_scores), -1.0)
+        winner = int(race.outcome.winner_index)
+        observed[winner] = min(
+            float(race.outcome.closing_odds[winner]) - 1.0,
+            50.0,
+        )
+        observed_rows.append(observed)
+    predicted = np.concatenate(predicted_rows)
+    observed = np.concatenate(observed_rows)
+    positive = predicted >= 0.0
+    correlation = None
+    if float(np.std(predicted)) > 0.0 and float(np.std(observed)) > 0.0:
+        correlation = float(np.corrcoef(predicted, observed)[0, 1])
+
+    bins: list[dict[str, Any]] = []
+    absolute_error_sum = 0.0
+    for index, indices in enumerate(
+        np.array_split(np.argsort(predicted, kind="stable"), 10), start=1
+    ):
+        predicted_mean = float(np.mean(predicted[indices]))
+        observed_mean = float(np.mean(observed[indices]))
+        absolute_error_sum += len(indices) * abs(predicted_mean - observed_mean)
+        bins.append(
+            {
+                "quantile": index,
+                "tickets": int(len(indices)),
+                "predicted_net_unit_return": predicted_mean,
+                "observed_capped_net_unit_return": observed_mean,
+                "observed_capped_roi": observed_mean + 1.0,
+            }
+        )
+    positive_count = int(np.sum(positive))
+    return {
+        "schema_version": 1,
+        "teacher": "capped_realized_unit_return_max_50",
+        "tickets": int(len(predicted)),
+        "predicted_mean": float(np.mean(predicted)),
+        "observed_mean": float(np.mean(observed)),
+        "pearson_correlation": correlation,
+        "calibration_mae": absolute_error_sum / len(predicted),
+        "positive_predicted_tickets": positive_count,
+        "positive_predicted_fraction": positive_count / len(predicted),
+        "positive_predicted_mean": (
+            float(np.mean(predicted[positive])) if positive_count else None
+        ),
+        "positive_observed_capped_roi": (
+            float(np.mean(observed[positive] + 1.0)) if positive_count else None
+        ),
+        "calibration_deciles": bins,
+    }
+
+
 def evaluate_outer_outcomes(
     artifact: FourHeadArtifact, outer_races: Iterable[LabeledRace]
 ) -> dict[str, Any]:
@@ -628,6 +690,9 @@ def evaluate_outer_outcomes(
         "ranking_top5_hit_rate": top5_hits / len(races),
         "closing_odds_log_mae": float(np.mean(closing_absolute_log_errors)),
         "production_bankroll_evaluated": False,
+        "purchase_value_diagnostics": _purchase_value_diagnostics(
+            races, predictions
+        ),
         "diagnostic_unit_stake": {
             "label": "equal_one_unit_per_selected_ticket_not_production_bankroll",
             "stake_units": tickets,
