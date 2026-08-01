@@ -62,6 +62,29 @@ def test_replay_uses_each_fold_calibrator_and_fixed_policy(monkeypatch) -> None:
         lambda _all, holdout, _fold: holdout,
     )
 
+    def candidate_index(races, _calibrator, _policy):
+        race_id = races[0]["race_id"]
+        return {
+            (race_id, "1-2-3"): {
+                "race_id": race_id,
+                "combination": "1-2-3",
+                "probability": 0.1,
+                "model_probability": 0.11,
+                "market_probability": 0.08,
+                "model_market_ratio": 1.25,
+                "decision_odds": 20.0,
+                "estimated_ev": 2.0,
+                "historical_return_multiplier": 1.0,
+                "odds_source": "real_t5",
+                "actual_combination": (
+                    "1-2-3" if race_id == "a" else "2-1-3"
+                ),
+                "actual_payout_yen": 2000,
+            }
+        }
+
+    monkeypatch.setattr(replay, "_fixed_policy_candidate_index", candidate_index)
+
     def simulate(races, *, calibrator, policy, **_kwargs):
         observed.append((races[0]["race_date"], calibrator, copy.deepcopy(policy)))
         returned = 200 if races[0]["race_date"] == "2026-07-31" else 0
@@ -78,6 +101,16 @@ def test_replay_uses_each_fold_calibrator_and_fixed_policy(monkeypatch) -> None:
             "max_drawdown_yen": int(returned == 0) * 100,
             "largest_hit_return_yen": returned,
             "hit_return_square_sum_yen2": returned * returned,
+            "ledger": [
+                {
+                    "event": "decision",
+                    "race_id": races[0]["race_id"],
+                    "at": races[0]["race_date"] + "T12:00:00+09:00",
+                    "selections": [
+                        {"combination": "1-2-3", "stake_yen": 100}
+                    ],
+                }
+            ],
         }
         return {"chronological_bankroll": {"daily": [daily]}}
 
@@ -94,6 +127,10 @@ def test_replay_uses_each_fold_calibrator_and_fixed_policy(monkeypatch) -> None:
     assert bankroll["roi"] == 1.0
     assert bankroll["roi_without_largest_hit"] == 0.0
     assert result["information_boundary"]["outer_holdout_used_to_fit_or_select_policy"] is False
+    assert len(result["selection_diagnostics"]) == 2
+    assert result["selection_diagnostics"][0]["decision"]["estimated_ev"] == 2.0
+    assert result["selection_diagnostics"][0]["settlement"]["hit"] is True
+    assert result["selection_diagnostics"][1]["settlement"]["hit"] is False
 
 
 def test_replay_rejects_holdout_count_mismatch(monkeypatch) -> None:
