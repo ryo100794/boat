@@ -6,6 +6,7 @@ STATE_ROOT="${BOATRACE_DAILY_MODEL_STATE_ROOT:-$APP_ROOT/data/runtime/daily-shad
 SPEC_ENV="$STATE_ROOT/active/model-spec.env"
 POLL_SECONDS="${BOATRACE_V31_SHADOW_SPEC_POLL_SECONDS:-10}"
 export PYTHONPATH="$APP_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+SHADOW_RUNNER="$APP_ROOT/scripts/deployment/run-boatrace-intraday-v31-cycle.sh"
 
 child_pid=""
 active_identity=""
@@ -59,7 +60,7 @@ while true; do
     export BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=""
     export BOATRACE_T300_SHADOW_DATE
     export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0
-    "$APP_ROOT/.venv/bin/python" -m boatrace_ai.runtime.v31_uncertainty_adjusted_shadow &
+    "$SHADOW_RUNNER" &
     child_pid=$!
     active_identity="$identity"
   fi
