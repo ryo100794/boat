@@ -93,6 +93,7 @@ class ContextualEmpiricalEVCalibrationArtifact:
     cell_prior_tickets: float
     bootstrap_samples: int
     seed: int
+    shape_constraint: str = "isotonic"
     calibration_version: int = CONTEXTUAL_CALIBRATION_VERSION
 
     @property
@@ -150,6 +151,7 @@ class ContextualEmpiricalEVCalibrationArtifact:
             "cell_prior_tickets": self.cell_prior_tickets,
             "bootstrap_samples": self.bootstrap_samples,
             "seed": self.seed,
+            "shape_constraint": self.shape_constraint,
             "global_calibration": self.global_calibration.as_dict(),
             "cells": [cell.as_dict() for cell in self.cells],
         }
@@ -334,6 +336,35 @@ def _isotonic_bins(sums: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return result
 
 
+def _bandwise_bins(sums: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    occupied = np.flatnonzero(counts > 0)
+    result = np.full(len(counts), np.nan, dtype=np.float64)
+    if not len(occupied):
+        return result
+    result[occupied] = sums[occupied] / counts[occupied]
+    first = int(occupied[0])
+    result[:first] = result[first]
+    for left_position, right_position in zip(occupied, occupied[1:]):
+        left = int(left_position)
+        right = int(right_position)
+        result[left + 1 : right] = result[left]
+    result[int(occupied[-1]) + 1 :] = result[int(occupied[-1])]
+    return result
+
+
+def _fit_bins(
+    sums: np.ndarray,
+    counts: np.ndarray,
+    *,
+    shape_constraint: str,
+) -> np.ndarray:
+    if shape_constraint == "isotonic":
+        return _isotonic_bins(sums, counts)
+    if shape_constraint == "bandwise":
+        return _bandwise_bins(sums, counts)
+    raise ValueError("shape_constraint must be isotonic or bandwise")
+
+
 def _context_reasons(
     support: int,
     support_days: int,
@@ -356,13 +387,14 @@ def _add_finite(array: np.ndarray, index: object, value: float) -> None:
     array[index] = updated
 
 
-def _shrunken_isotonic(
+def _shrunken_bins(
     sums: np.ndarray,
     counts: np.ndarray,
     parent: np.ndarray,
     prior_tickets: float,
+    shape_constraint: str,
 ) -> np.ndarray:
-    """Fit one monotone child curve with the parent as finite pseudo-support."""
+    """Fit one child curve with the parent as finite pseudo-support."""
     if not np.all(np.isfinite(parent)):
         return np.array(parent, dtype=np.float64, copy=True)
     local = np.divide(
@@ -374,7 +406,11 @@ def _shrunken_isotonic(
     local_weight = counts / (counts + prior_tickets)
     targets = local_weight * local + (1.0 - local_weight) * parent
     weights = counts.astype(np.float64) + prior_tickets
-    return _weighted_pava(targets, weights)
+    if shape_constraint == "isotonic":
+        return _weighted_pava(targets, weights)
+    if shape_constraint == "bandwise":
+        return targets
+    raise ValueError("shape_constraint must be isotonic or bandwise")
 
 
 def fit_contextual_empirical_ev_calibration(
@@ -394,14 +430,17 @@ def fit_contextual_empirical_ev_calibration(
     min_cell_tickets: int = 50,
     rank_prior_tickets: float = 100.0,
     cell_prior_tickets: float = 50.0,
+    shape_constraint: str = "isotonic",
 ) -> ContextualEmpiricalEVCalibrationArtifact:
     """Fit leakage-safe rank/odds contextual empirical EV calibration.
 
     Records on or after ``prediction_date`` are excluded before every aggregate,
     bootstrap sample, and readiness calculation. Context estimates shrink through
-    rank group estimates to the existing global raw-EV isotonic calibration.
+    rank group estimates to the configured global raw-EV shape constraint.
     """
     edges = _validate_edges(bin_edges)
+    if shape_constraint not in {"isotonic", "bandwise"}:
+        raise ValueError("shape_constraint must be isotonic or bandwise")
     boundary = _normalize_date(prediction_date, "prediction_date")
     if bootstrap_samples < 100:
         raise ValueError("bootstrap_samples must be at least 100")
@@ -441,6 +480,7 @@ def fit_contextual_empirical_ev_calibration(
         min_tickets=min_tickets,
         min_candidate_days=min_candidate_days,
         candidate_min_raw_ev=candidate_min_raw_ev,
+        shape_constraint=shape_constraint,
     )
 
     dates = sorted({row.race_date for row in rows})
@@ -492,11 +532,12 @@ def fit_contextual_empirical_ev_calibration(
         )
         rank_ready[rank_index] = not reasons
         if rank_ready[rank_index]:
-            rank_point[rank_index] = _shrunken_isotonic(
+            rank_point[rank_index] = _shrunken_bins(
                 rank_sums[rank_index],
                 rank_counts[rank_index],
                 global_point,
                 rank_prior_tickets,
+                shape_constraint,
             )
             rank_weights[rank_index] = rank_counts[rank_index] / (
                 rank_counts[rank_index] + rank_prior_tickets
@@ -518,11 +559,12 @@ def fit_contextual_empirical_ev_calibration(
             )
             cell_ready[rank_index, odds_index] = not reasons
             if cell_ready[rank_index, odds_index]:
-                cell_point[rank_index, odds_index] = _shrunken_isotonic(
+                cell_point[rank_index, odds_index] = _shrunken_bins(
                     sums[rank_index, odds_index],
                     counts[rank_index, odds_index],
                     rank_point[rank_index],
                     cell_prior_tickets,
+                    shape_constraint,
                 )
                 cell_weights[rank_index, odds_index] = counts[
                     rank_index, odds_index
@@ -540,18 +582,24 @@ def fit_contextual_empirical_ev_calibration(
             sampled_counts = day_counts[selected].sum(axis=0)
             if not np.all(np.isfinite(sampled_sums)):
                 raise ValueError("bootstrap aggregates exceed float64 range")
-            sampled_global = _isotonic_bins(
-                sampled_sums.sum(axis=(0, 1)),
-                sampled_counts.sum(axis=(0, 1)),
+            sampled_global_sums = sampled_sums.sum(axis=(0, 1))
+            sampled_global_counts = sampled_counts.sum(axis=(0, 1))
+            sampled_global = _fit_bins(
+                sampled_global_sums,
+                sampled_global_counts,
+                shape_constraint=shape_constraint,
             )
+            if shape_constraint == "bandwise":
+                sampled_global[sampled_global_counts == 0] = 0.0
             sampled_rank = np.tile(sampled_global, (len(RANK_GROUPS), 1))
             for rank_index in range(len(RANK_GROUPS)):
                 if rank_ready[rank_index]:
-                    sampled_rank[rank_index] = _shrunken_isotonic(
+                    sampled_rank[rank_index] = _shrunken_bins(
                         sampled_sums[rank_index].sum(axis=0),
                         sampled_counts[rank_index].sum(axis=0),
                         sampled_global,
                         rank_prior_tickets,
+                        shape_constraint,
                     )
             sample_cells = np.repeat(
                 sampled_rank[:, None, :],
@@ -561,11 +609,12 @@ def fit_contextual_empirical_ev_calibration(
             for rank_index in range(len(RANK_GROUPS)):
                 for odds_index in range(len(ODDS_BANDS)):
                     if cell_ready[rank_index, odds_index]:
-                        sample_cells[rank_index, odds_index] = _shrunken_isotonic(
+                        sample_cells[rank_index, odds_index] = _shrunken_bins(
                             sampled_sums[rank_index, odds_index],
                             sampled_counts[rank_index, odds_index],
                             sampled_rank[rank_index],
                             cell_prior_tickets,
+                            shape_constraint,
                         )
             cell_samples[sample] = sample_cells
         cell_lcb = np.quantile(cell_samples, 0.05, axis=0)
@@ -658,4 +707,5 @@ def fit_contextual_empirical_ev_calibration(
         cell_prior_tickets=float(cell_prior_tickets),
         bootstrap_samples=bootstrap_samples,
         seed=int(seed),
+        shape_constraint=shape_constraint,
     )
