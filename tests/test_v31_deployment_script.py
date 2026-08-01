@@ -14,4 +14,4 @@ def test_v31_shadow_wrapper_reloads_daily_specs_and_stays_shadow_only() -> None:
     assert 'wait "$child_pid"' in script
     assert "v31_daily:v31_uncertainty_adjusted_top5_t300" in script
     assert "BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0" in script
-    assert "boatrace_ai.runtime.v31_uncertainty_adjusted_shadow" in script
+    assert "run-boatrace-intraday-v31-cycle.sh" in script
