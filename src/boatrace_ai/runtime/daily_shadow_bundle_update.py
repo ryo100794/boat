@@ -43,6 +43,10 @@ V18_SHADOW_STRATEGY = "v18_schedule_quota_t300"
 V20_SHADOW_STRATEGY = "v20_dual_head_t300"
 V21_SHADOW_STRATEGY = "v21_triple_head_t300"
 V23_PROSPECTIVE_START_DATE = "2026-08-01"
+STABLE_CELL_PROSPECTIVE_START_DATE = "2026-08-02"
+STABLE_CELL_MODEL_KEY = "stable_cell_daily"
+STABLE_CELL_STRATEGY = "stable_cell_top5_lt20_t300"
+STABLE_CELL_DIAGNOSTIC_KEY = "stable_cell_top5_lt20"
 FAMILIES = ("v12", "v14", "v16")
 ALL_FAMILIES = (*FAMILIES, "v18")
 BUNDLE_FAMILIES = (*ALL_FAMILIES, "v20", "v21")
@@ -1465,6 +1469,26 @@ def promote(
     return extension_status or "activated"
 
 
+def collect_stable_cell_prospective_evidence(
+    conn: Any,
+    *,
+    state_root: Path,
+    through_date: str,
+) -> dict[str, Any]:
+    return collect_v21_prospective_evidence(
+        PostgresqlConnection(conn),
+        config=V21ProspectiveEvidenceConfig(
+            start_date=STABLE_CELL_PROSPECTIVE_START_DATE,
+            through_date=through_date,
+            model_key=STABLE_CELL_MODEL_KEY,
+            expected_strategy_name=STABLE_CELL_STRATEGY,
+            diagnostic_key=STABLE_CELL_DIAGNOSTIC_KEY,
+            evidence_kind="stable_cell_fixed_identity_fully_unseen_prospective",
+        ),
+        output_path=state_root / "stable-cell-prospective-evidence.json",
+    )
+
+
 def run_once(
     conn: Any,
     *,
@@ -1565,6 +1589,7 @@ def run_once(
     )
     evidence = None
     v23_evidence = None
+    stable_cell_evidence = None
     current_active = _active_state(state_root)
     if (
         now.date().isoformat() >= V21_PROSPECTIVE_START_DATE
@@ -1598,6 +1623,12 @@ def run_once(
                 ),
                 output_path=state_root / "v23-prospective-evidence.json",
             )
+        if now.date().isoformat() >= STABLE_CELL_PROSPECTIVE_START_DATE:
+            stable_cell_evidence = collect_stable_cell_prospective_evidence(
+                conn,
+                state_root=state_root,
+                through_date=now.date().isoformat(),
+            )
     return {
         "status": status, "through_date": through, "prediction_date": prediction,
         "jobs": {family: job.job_id for family, job in jobs.items()},
@@ -1606,6 +1637,7 @@ def run_once(
         "activation_recovery": recovery,
         "v21_prospective_evidence": evidence,
         "v23_prospective_evidence": v23_evidence,
+        "stable_cell_prospective_evidence": stable_cell_evidence,
     }
 
 
