@@ -3072,6 +3072,61 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"top5_narrow_retrospective_{key}"] = (
                     retrospective_top5[key]
                 )
+    v33_forecast_diagnostic = payload.get(
+        "v33_v25_top1_narrow_forecast_only_diagnostic"
+    )
+    if not isinstance(v33_forecast_diagnostic, dict):
+        forecast_rows = []
+        for fold in payload.get("folds") or []:
+            if (
+                not isinstance(fold, dict)
+                or fold.get("closing_odds_policy_input")
+                != "oof_forecast_final_from_real_t5"
+            ):
+                continue
+            bankroll = fold.get(
+                "v33_v25_top1_narrow_retrospective_bankroll"
+            )
+            if isinstance(bankroll, dict):
+                forecast_rows.append(bankroll)
+        if forecast_rows:
+            stake_yen = sum(int(row.get("stake_yen") or 0) for row in forecast_rows)
+            return_yen = sum(
+                int(row.get("return_yen") or 0) for row in forecast_rows
+            )
+            largest_hit = max(
+                int(row.get("largest_hit_return_yen") or 0)
+                for row in forecast_rows
+            )
+            hit_square_sum = sum(
+                int(row.get("hit_return_square_sum_yen2") or 0)
+                for row in forecast_rows
+            )
+            hit_hhi = (
+                hit_square_sum / (return_yen * return_yen)
+                if return_yen else None
+            )
+            v33_forecast_diagnostic = {
+                "status": "diagnostic_only_not_promotion_evidence",
+                "evaluation_days": len(forecast_rows),
+                "evaluated_races": sum(
+                    int(row.get("evaluated_races") or 0) for row in forecast_rows
+                ),
+                "tickets": sum(int(row.get("tickets") or 0) for row in forecast_rows),
+                "hit_tickets": sum(
+                    int(row.get("hit_tickets") or 0) for row in forecast_rows
+                ),
+                "stake_yen": stake_yen,
+                "return_yen": return_yen,
+                "profit_yen": return_yen - stake_yen,
+                "roi": return_yen / stake_yen if stake_yen else 0.0,
+                "roi_without_largest_hit": (
+                    (return_yen - largest_hit) / stake_yen
+                    if stake_yen else None
+                ),
+                "effective_hit_count": 1.0 / hit_hhi if hit_hhi else None,
+                "promotion_evidence": False,
+            }
     for payload_key, prefix in (
         (
             "v33_v25_top1_narrow_retrospective_diagnostic",
@@ -3086,7 +3141,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "v33_v25_top1_narrow_prospective",
         ),
     ):
-        diagnostic = payload.get(payload_key)
+        diagnostic = (
+            v33_forecast_diagnostic
+            if payload_key == "v33_v25_top1_narrow_forecast_only_diagnostic"
+            else payload.get(payload_key)
+        )
         if not isinstance(diagnostic, dict):
             continue
         for key in (
