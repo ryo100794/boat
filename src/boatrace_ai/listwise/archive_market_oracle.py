@@ -123,6 +123,42 @@ TEMPORAL_RESIDUAL_POLICIES: tuple[dict[str, Any], ...] = (
         "stake_per_ticket_yen": 100,
     },
 )
+
+
+def narrow_ev_diagnostic_policies() -> tuple[dict[str, Any], ...]:
+    """Build the fixed research grid around break-even estimated EV.
+
+    These policies are evaluated only on the untouched temporal split. Their
+    results are diagnostic and cannot be used as promotion evidence.
+    """
+    policies: list[dict[str, Any]] = []
+    for max_rank in (1, 3, 5):
+        for lower, upper in (
+            (0.95, 1.00),
+            (1.00, 1.025),
+            (1.025, 1.05),
+            (1.05, 1.10),
+            (1.10, 1.20),
+        ):
+            policies.append(
+                {
+                    "name": (
+                        f"diagnostic_v25_top{max_rank}_"
+                        f"ev{lower:.3f}_{upper:.3f}_odds80_flat100"
+                    ),
+                    "max_model_rank": max_rank,
+                    "min_odds": None,
+                    "max_odds": 80.0,
+                    "ev_threshold": lower,
+                    "max_estimated_ev": upper,
+                    "min_model_market_ratio": 0.0,
+                    "stake_per_ticket_yen": 100,
+                }
+            )
+    return tuple(policies)
+
+
+NARROW_EV_DIAGNOSTIC_POLICIES = narrow_ev_diagnostic_policies()
 DIAGNOSTIC_CONFIGS: tuple[tuple[str, dict[str, float], dict[str, Any]], ...] = (
     ("model_only_conservative", {"model_weight": 1.0, "temperature": 1.0}, {
         **PRIMARY_POLICY, "name": "model_only_ev120_odds80_r3", "ev_threshold": 1.20,
@@ -409,7 +445,7 @@ def temporal_residual_diagnostic(
         for race in evaluation
     ]
     direct_context_purchase_diagnostics = []
-    for policy in TEMPORAL_RESIDUAL_POLICIES:
+    for policy in (*TEMPORAL_RESIDUAL_POLICIES, *NARROW_EV_DIAGNOSTIC_POLICIES):
         simulation = simulate_chronological_flat_policy(
             direct_context_evaluation,
             calibrator={"model_weight": 1.0, "temperature": 1.0},
@@ -435,6 +471,10 @@ def temporal_residual_diagnostic(
             }
         )
     direct_context["purchase_diagnostics"] = direct_context_purchase_diagnostics
+    direct_context["purchase_diagnostic_role"] = (
+        "retrospective untouched-split research only; selected rows require "
+        "registration and later prospective evaluation"
+    )
     direct_context_empirical = evaluate_temporal_direct_context_empirical(
         calibration,
         evaluation,
