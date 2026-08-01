@@ -90,9 +90,12 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "<th>資金診断</th>" in MODEL_REPORT_HTML
     assert "top5_flat_roi" in MODEL_REPORT_HTML
     assert "<th>EV帯 証拠/診断</th>" in MODEL_REPORT_HTML
-    assert "registered_ev_band_evaluation_days" in MODEL_REPORT_HTML
-    assert "prospective_normalized_ev_evaluation_days" in MODEL_REPORT_HTML
-    assert "prospective_normalized_ev_evaluation_days" in MODEL_REPORT_HTML
+    assert "policyEvidence" in MODEL_REPORT_HTML
+    assert 'policyEvidence(x,"registered_ev_band","R")' in MODEL_REPORT_HTML
+    assert '_roi_without_largest_hit"' in MODEL_REPORT_HTML
+    assert '_daily_cluster_bootstrap_roi_lower_95"' in MODEL_REPORT_HTML
+    assert '"prospective_top5_narrow_ev","T5"' in MODEL_REPORT_HTML
+    assert 'policyEvidence(x,"prospective_normalized_ev","N")' in MODEL_REPORT_HTML
     assert "registeredSummary" in MODEL_REPORT_HTML
     assert "winner_log_loss" in MODEL_REPORT_HTML
     assert "候補損益" in MODEL_REPORT_HTML
@@ -171,6 +174,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "roi_ci95_lower": 0.97,
         "roi_ci95_upper": 1.09,
         "probability_roi_above_one": 0.91,
+        "registered_ev_band_status": "evaluating",
+        "registered_ev_band_evaluation_days": 3,
+        "registered_ev_band_tickets": 15,
+        "registered_ev_band_hit_tickets": 5,
+        "registered_ev_band_roi": 1.889,
+        "registered_ev_band_profit_yen": 1690,
+        "registered_ev_band_roi_without_largest_hit": 1.342,
+        "registered_ev_band_daily_cluster_bootstrap_roi_lower_95": 0.88,
+        "registered_ev_band_probability_roi_above_one": 0.74,
         "prospective_top5_narrow_ev_status": "evaluating",
         "prospective_top5_narrow_ev_evaluation_days": 2,
         "prospective_top5_narrow_ev_tickets": 112,
@@ -222,6 +234,12 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["largest_hit_excluded_roi"] == 1.01
     assert status["jobs"][0]["roi_ci95_lower"] == 0.97
     assert status["jobs"][0]["probability_roi_above_one"] == 0.91
+    assert status["jobs"][0]["registered_ev_band_profit_yen"] == 1690
+    assert status["jobs"][0]["registered_ev_band_roi_without_largest_hit"] == 1.342
+    assert (
+        status["jobs"][0]["registered_ev_band_daily_cluster_bootstrap_roi_lower_95"]
+        == 0.88
+    )
     assert status["jobs"][0]["prospective_top5_narrow_ev_evaluation_days"] == 2
     assert status["jobs"][0]["prospective_top5_narrow_ev_roi"] == 1.298
     assert status["jobs"][0]["top5_narrow_retrospective_evaluation_days"] == 8

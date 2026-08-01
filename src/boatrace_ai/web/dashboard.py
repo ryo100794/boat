@@ -3043,6 +3043,38 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "registered_ev_band_hit_tickets"
                 ),
                 "registered_ev_band_roi": _float_or_none(metrics.get("registered_ev_band_roi")),
+                "registered_ev_band_stake_yen": metrics.get(
+                    "registered_ev_band_stake_yen"
+                ),
+                "registered_ev_band_return_yen": metrics.get(
+                    "registered_ev_band_return_yen"
+                ),
+                "registered_ev_band_profit_yen": metrics.get(
+                    "registered_ev_band_profit_yen"
+                ),
+                "registered_ev_band_winning_days": metrics.get(
+                    "registered_ev_band_winning_days"
+                ),
+                "registered_ev_band_profitable_day_fraction": _float_or_none(
+                    metrics.get("registered_ev_band_profitable_day_fraction")
+                ),
+                "registered_ev_band_largest_hit_return_share": _float_or_none(
+                    metrics.get("registered_ev_band_largest_hit_return_share")
+                ),
+                "registered_ev_band_effective_hit_count": _float_or_none(
+                    metrics.get("registered_ev_band_effective_hit_count")
+                ),
+                "registered_ev_band_roi_without_largest_hit": _float_or_none(
+                    metrics.get("registered_ev_band_roi_without_largest_hit")
+                ),
+                "registered_ev_band_daily_cluster_bootstrap_roi_lower_95": (
+                    _float_or_none(metrics.get(
+                        "registered_ev_band_daily_cluster_bootstrap_roi_lower_95"
+                    ))
+                ),
+                "registered_ev_band_probability_roi_above_one": _float_or_none(
+                    metrics.get("registered_ev_band_probability_roi_above_one")
+                ),
                 "prospective_top5_narrow_ev_status": metrics.get(
                     "prospective_top5_narrow_ev_status"
                 ),
@@ -3057,6 +3089,38 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "prospective_top5_narrow_ev_roi": _float_or_none(
                     metrics.get("prospective_top5_narrow_ev_roi")
+                ),
+                "prospective_top5_narrow_ev_stake_yen": metrics.get(
+                    "prospective_top5_narrow_ev_stake_yen"
+                ),
+                "prospective_top5_narrow_ev_return_yen": metrics.get(
+                    "prospective_top5_narrow_ev_return_yen"
+                ),
+                "prospective_top5_narrow_ev_profit_yen": metrics.get(
+                    "prospective_top5_narrow_ev_profit_yen"
+                ),
+                "prospective_top5_narrow_ev_winning_days": metrics.get(
+                    "prospective_top5_narrow_ev_winning_days"
+                ),
+                "prospective_top5_narrow_ev_profitable_day_fraction": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_profitable_day_fraction")
+                ),
+                "prospective_top5_narrow_ev_largest_hit_return_share": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_largest_hit_return_share")
+                ),
+                "prospective_top5_narrow_ev_effective_hit_count": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_effective_hit_count")
+                ),
+                "prospective_top5_narrow_ev_roi_without_largest_hit": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_roi_without_largest_hit")
+                ),
+                "prospective_top5_narrow_ev_daily_cluster_bootstrap_roi_lower_95": (
+                    _float_or_none(metrics.get(
+                        "prospective_top5_narrow_ev_daily_cluster_bootstrap_roi_lower_95"
+                    ))
+                ),
+                "prospective_top5_narrow_ev_probability_roi_above_one": _float_or_none(
+                    metrics.get("prospective_top5_narrow_ev_probability_roi_above_one")
                 ),
                 "top5_narrow_retrospective_status": metrics.get(
                     "top5_narrow_retrospective_status"
@@ -3116,6 +3180,55 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     if metrics.get("prospective_observed_closing_v4_status")
                     is not None
                     else metrics.get("prospective_normalized_ev_roi")
+                ),
+                "prospective_normalized_ev_stake_yen": metrics.get(
+                    "prospective_normalized_ev_stake_yen"
+                ),
+                "prospective_normalized_ev_return_yen": metrics.get(
+                    "prospective_normalized_ev_return_yen"
+                ),
+                "prospective_normalized_ev_profit_yen": metrics.get(
+                    "prospective_normalized_ev_profit_yen"
+                ),
+                "prospective_normalized_ev_winning_days": metrics.get(
+                    "prospective_normalized_ev_winning_days"
+                ),
+                "prospective_normalized_ev_profitable_day_fraction": _float_or_none(
+                    metrics.get("prospective_normalized_ev_profitable_day_fraction")
+                ),
+                "prospective_normalized_ev_largest_hit_return_share": _float_or_none(
+                    metrics.get("prospective_normalized_ev_largest_hit_return_share")
+                ),
+                "prospective_normalized_ev_effective_hit_count": _float_or_none(
+                    metrics.get("prospective_normalized_ev_effective_hit_count")
+                ),
+                "prospective_normalized_ev_roi_without_largest_hit": _float_or_none(
+                    metrics.get("prospective_observed_closing_v4_roi_without_largest_hit")
+                    if metrics.get("prospective_observed_closing_v4_status")
+                    is not None
+                    else metrics.get("prospective_normalized_ev_roi_without_largest_hit")
+                ),
+                "prospective_normalized_ev_daily_cluster_bootstrap_roi_lower_95": (
+                    _float_or_none(
+                        metrics.get(
+                            "prospective_observed_closing_v4_daily_cluster_bootstrap_roi_lower_95"
+                        )
+                        if metrics.get("prospective_observed_closing_v4_status")
+                        is not None
+                        else metrics.get(
+                            "prospective_normalized_ev_daily_cluster_bootstrap_roi_lower_95"
+                        )
+                    )
+                ),
+                "prospective_normalized_ev_probability_roi_above_one": _float_or_none(
+                    metrics.get(
+                        "prospective_observed_closing_v4_probability_roi_above_one"
+                    )
+                    if metrics.get("prospective_observed_closing_v4_status")
+                    is not None
+                    else metrics.get(
+                        "prospective_normalized_ev_probability_roi_above_one"
+                    )
                 ),
                 "prospective_observed_closing_v4_status": metrics.get(
                     "prospective_observed_closing_v4_status"
