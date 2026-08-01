@@ -18,7 +18,7 @@ from boatrace_ai.listwise.empirical_ev_calibration import (
 
 RANK_GROUPS = ("top5", "6-20", "21+")
 ODDS_BANDS = ("<20", "20-50", "50-101", ">=101")
-CONTEXTUAL_CALIBRATION_VERSION = 2
+CONTEXTUAL_CALIBRATION_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,8 @@ class ContextualEVBin:
     rank_support: int
     rank_support_days: int
     shrinkage_weight: float
+    positive_return_days: int
+    return_hhi: float | None
 
     def as_dict(self) -> dict[str, int | float | str | None]:
         return {
@@ -48,6 +50,8 @@ class ContextualEVBin:
             "rank_support": self.rank_support,
             "rank_support_days": self.rank_support_days,
             "shrinkage_weight": self.shrinkage_weight,
+            "positive_return_days": self.positive_return_days,
+            "return_hhi": self.return_hhi,
         }
 
 
@@ -639,15 +643,32 @@ def fit_contextual_empirical_ev_calibration(
                     level = "rank_odds_cell"
                     weight = cell_weight
                     lcb_value = cell_lcb[rank_index, odds_index, bin_index]
+                    stability_sums = day_sums[:, rank_index, odds_index, bin_index]
                 elif rank_ready[rank_index]:
                     level = "rank_group"
                     weight = rank_weight
                     lcb_value = cell_lcb[rank_index, odds_index, bin_index]
+                    stability_sums = day_sums[:, rank_index, :, bin_index].sum(
+                        axis=1
+                    )
                 else:
                     level = "global"
                     weight = 0.0
-                    global_lcb = global_artifact.bins[bin_index].empirical_ev_lcb95
+                    global_bin = global_artifact.bins[bin_index]
+                    global_lcb = global_bin.empirical_ev_lcb95
                     lcb_value = np.nan if global_lcb is None else global_lcb
+                    stability_sums = day_sums[:, :, :, bin_index].sum(
+                        axis=(1, 2)
+                    )
+                stability_total = float(stability_sums.sum())
+                positive_return_days = int(
+                    np.count_nonzero(stability_sums > 0.0)
+                )
+                return_hhi = (
+                    float(np.square(stability_sums).sum() / stability_total**2)
+                    if stability_total > 0.0
+                    else None
+                )
                 point_value = cell_point[rank_index, odds_index, bin_index]
                 bins.append(
                     ContextualEVBin(
@@ -674,6 +695,8 @@ def fit_contextual_empirical_ev_calibration(
                             )
                         ),
                         shrinkage_weight=weight,
+                        positive_return_days=positive_return_days,
+                        return_hhi=return_hhi,
                     )
                 )
             cells.append(

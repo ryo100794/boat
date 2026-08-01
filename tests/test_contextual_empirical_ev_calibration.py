@@ -64,6 +64,9 @@ def test_top5_and_non_top5_contexts_can_calibrate_differently() -> None:
     assert non_top5["rank_group"] == "6-20"
     assert top5["calibration_level"] == "rank_odds_cell"
     assert non_top5["calibration_level"] == "rank_odds_cell"
+    assert top5["positive_return_days"] == 6
+    assert top5["return_hhi"] == pytest.approx(1.0 / 6.0)
+    assert artifact.calibration_version == 3
     assert top5["empirical_ev"] > non_top5["empirical_ev"]
 
 
