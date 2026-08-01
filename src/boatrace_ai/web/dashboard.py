@@ -1084,6 +1084,19 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             runtime_reports[key] = None
             errors.append({"file": str(path), "error": str(exc)})
 
+    quota_ceil_audit = model_dir / "policy_replays" / (
+        "job-10730-quota-ceil-job9906.json"
+    )
+    try:
+        runtime_reports["quota_ceil_retrospective_audit"] = json.loads(
+            quota_ceil_audit.read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        runtime_reports["quota_ceil_retrospective_audit"] = None
+    except Exception as exc:
+        runtime_reports["quota_ceil_retrospective_audit"] = None
+        errors.append({"file": str(quota_ceil_audit), "error": str(exc)})
+
     for path in sorted(model_dir.glob("*.json")):
         try:
             data = _read_json_artifact(path)
