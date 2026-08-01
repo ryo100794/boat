@@ -7,19 +7,62 @@ SPEC_ENV="$STATE_ROOT/active/model-spec.env"
 POLL_SECONDS="${BOATRACE_V31_SHADOW_SPEC_POLL_SECONDS:-10}"
 export PYTHONPATH="$APP_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-while true; do
-  if [[ -r "$SPEC_ENV" ]]; then
-    unset BOATRACE_T300_SHADOW_MODEL_SPEC BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS
-    unset BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED
-    source "$SPEC_ENV"
-    for spec in ${BOATRACE_T300_SHADOW_MODEL_SPEC:-} ${BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS:-}; do
-      if [[ "$spec" == v21_daily:v21_triple_head_t300:* ]]; then
-        export BOATRACE_T300_SHADOW_MODEL_SPEC="v31_daily:v31_uncertainty_adjusted_top5_t300:${spec#v21_daily:v21_triple_head_t300:}"
-        export BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=""
-        export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0
-        exec "$APP_ROOT/.venv/bin/python" -m boatrace_ai.runtime.v31_uncertainty_adjusted_shadow
-      fi
-    done
+child_pid=""
+active_identity=""
+
+stop_child() {
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill -TERM "$child_pid"
+    wait "$child_pid" || true
   fi
-  sleep "$POLL_SECONDS"
+  child_pid=""
+}
+
+shutdown() {
+  stop_child
+  exit 0
+}
+trap shutdown TERM INT
+
+while true; do
+  if [[ ! -r "$SPEC_ENV" ]]; then
+    sleep "$POLL_SECONDS" & wait $!
+    continue
+  fi
+
+  read -r spec_hash _ < <(sha256sum "$SPEC_ENV")
+  unset BOATRACE_T300_SHADOW_MODEL_SPEC BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS
+  unset BOATRACE_T300_SHADOW_DATE BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED
+  source "$SPEC_ENV"
+  v21_spec=""
+  for spec in ${BOATRACE_T300_SHADOW_MODEL_SPEC:-} ${BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS:-}; do
+    if [[ "$spec" == v21_daily:v21_triple_head_t300:* ]]; then
+      v21_spec="$spec"
+      break
+    fi
+  done
+  if [[ -z "$v21_spec" || "${BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED:-1}" != 0 ]]; then
+    stop_child
+    sleep "$POLL_SECONDS" & wait $!
+    continue
+  fi
+
+  identity="${BOATRACE_T300_SHADOW_DATE:-}:${spec_hash}"
+  if [[ -n "$child_pid" ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+    wait "$child_pid" || true
+    child_pid=""
+    active_identity=""
+  fi
+  if [[ "$identity" != "$active_identity" ]]; then
+    stop_child
+    export BOATRACE_T300_SHADOW_MODEL_SPEC="v31_daily:v31_uncertainty_adjusted_top5_t300:${v21_spec#v21_daily:v21_triple_head_t300:}"
+    export BOATRACE_T300_SHADOW_EXTRA_MODEL_SPECS=""
+    export BOATRACE_T300_SHADOW_DATE
+    export BOATRACE_T300_SHADOW_REAL_BETTING_ENABLED=0
+    "$APP_ROOT/.venv/bin/python" -m boatrace_ai.runtime.v31_uncertainty_adjusted_shadow &
+    child_pid=$!
+    active_identity="$identity"
+  fi
+
+  sleep "$POLL_SECONDS" & wait $!
 done
