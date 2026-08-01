@@ -21,6 +21,7 @@ from boatrace_ai.evaluation_queue import (
     dedupe_key,
     defer_job,
     enqueue_job,
+    enqueue_refined_market_evaluation,
     ensure_schema,
     fail_job,
     prepare_standardized_workspace,
@@ -3086,6 +3087,68 @@ def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None
         "combined_feature_search",
         {"roi": 1.2, "profit_yen": 2000, "promotion_eligible": True},
     ) == "refine_selected_candidate"
+
+
+def test_newton_refinement_enqueues_market_evaluation_from_its_artifact(
+    monkeypatch, tmp_path: Path
+) -> None:
+    result = (
+        tmp_path
+        / "data/models/evaluation_queue/job-00009840.json"
+    )
+    result.parent.mkdir(parents=True)
+    result.write_text(
+        json.dumps({"as_of_date": "2026-07-31"}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return 10440
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+
+    job_id = enqueue_refined_market_evaluation(
+        object(),
+        {
+            "job_id": 10027,
+            "task_type": "listwise_newton_refine",
+            "model_key": "listwise_combined_8192:newton",
+            "priority": 86,
+            "parameters": {
+                "search_result": (
+                    "data/models/evaluation_queue/job-00009840.json"
+                )
+            },
+        },
+        app_root=tmp_path,
+    )
+
+    assert job_id == 10440
+    assert calls == [{
+        "task_type": "market_residual_walk_forward",
+        "model_key": (
+            "listwise_combined_8192:newton:v21_market:20260718-31"
+        ),
+        "parameters": {
+            "model_input": (
+                "data/models/evaluation_queue/job-00010027.joblib"
+            ),
+            "from_date": "2026-07-18",
+            "through_date": "2026-07-31",
+            "daily_budget_yen": 10000,
+            "calibrator_strategy": (
+                "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+            ),
+            "min_calibration_days": 2,
+            "minimum_day_coverage": 1.0,
+            "timeout_seconds": 7200,
+        },
+        "priority": 88,
+        "max_attempts": 2,
+        "parent_job_id": 10027,
+    }]
 
 
 def test_listwise_feature_search_command_preserves_fixed_loss_blend(tmp_path) -> None:
