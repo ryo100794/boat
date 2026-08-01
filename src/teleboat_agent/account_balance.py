@@ -32,8 +32,16 @@ class AccountBalanceResult:
         return asdict(self)
 
 
+_BALANCE_UNAVAILABLE_MARKERS = (
+    "残高情報の取得ができませんでした",
+    "残高情報を取得できませんでした",
+)
+
+
 def parse_available_balance(text: str) -> int:
     compact = re.sub(r"\s+", " ", text).strip()
+    if any(marker in compact for marker in _BALANCE_UNAVAILABLE_MARKERS):
+        raise AccountBalanceError("official available balance was unavailable")
     for pattern in _BALANCE_PATTERNS:
         match = pattern.search(compact)
         if match:
@@ -67,6 +75,12 @@ class TeleboatBalanceProbe(TeleboatLoginProbe):
         try:
             return parse_available_balance(text)
         except AccountBalanceError as initial_error:
+            balance_links = page.get_by_text("残高確認", exact=True)
+            if self._any_visible(balance_links):
+                self._visible_from_locator(balance_links).evaluate("el => el.click()")
+                page.wait_for_timeout(500)
+                self._assert_allowed_host(page.url, mode)
+                return parse_available_balance(page.locator("body").inner_text())
             top_links = page.get_by_text("トップへ", exact=True)
             if not self._any_visible(top_links):
                 raise initial_error
