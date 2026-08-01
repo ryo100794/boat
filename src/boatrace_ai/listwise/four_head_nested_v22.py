@@ -87,6 +87,7 @@ class FourHeadArtifact:
     training_race_ids: tuple[str, ...]
     purchase_payout_head: LinearHead | None = None
     purchase_calibration_head: LinearHead | None = None
+    purchase_feature_map: str = "base_outputs_v1"
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
     purchase_threshold_source: str = "learned_unit_return_break_even_zero"
@@ -275,12 +276,14 @@ def _purchase_matrix(
     probability: np.ndarray,
     ranking: np.ndarray,
     predicted_closing: np.ndarray,
+    *,
+    feature_map: str = "base_outputs_v1",
 ) -> np.ndarray:
     current = np.asarray(decision.current_odds, dtype=np.float64)
     market = 1.0 / current
     market /= market.sum()
     ranking_probability = _softmax(ranking)
-    return np.column_stack(
+    base = np.column_stack(
         (
             probability,
             ranking_probability,
@@ -290,6 +293,11 @@ def _purchase_matrix(
             np.log(current),
         )
     )
+    if feature_map == "base_outputs_v1":
+        return base
+    if feature_map == "decision_context_v2":
+        return np.column_stack((base, _array(decision.features)))
+    raise ValueError(f"unsupported purchase feature map: {feature_map}")
 
 
 def _payload_sha256(payload: Any) -> str:
@@ -385,6 +393,7 @@ def _fit_purchase_heads(
     if purchase_loss in {
         "hurdle_logistic_lognormal",
         "hurdle_logistic_lognormal_calibrated",
+        "hurdle_contextual_lognormal",
     }:
         hit = returns >= 0.0
         fitted_hit = LogisticRegression(
@@ -464,6 +473,11 @@ def fit_four_head_nested_v22(
     if minimum_purchase_training_dates < 1:
         raise ValueError("minimum_purchase_training_dates must be positive")
     dates = sorted({race.decision.race_date for race in ordered})
+    purchase_feature_map = (
+        "decision_context_v2"
+        if purchase_loss == "hurdle_contextual_lognormal"
+        else "base_outputs_v1"
+    )
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")
     by_date = {
@@ -489,7 +503,11 @@ def fit_four_head_nested_v22(
                 race.decision, probability_head, ranking_head, closing_head
             )
             purchase_matrix = _purchase_matrix(
-                race.decision, probability, ranking, closing
+                race.decision,
+                probability,
+                ranking,
+                closing,
+                feature_map=purchase_feature_map,
             )
             realized = np.full(choices, -1.0, dtype=np.float64)
             realized[race.outcome.winner_index] = (
@@ -630,6 +648,7 @@ def fit_four_head_nested_v22(
         purchase_head=purchase_head,
         purchase_payout_head=purchase_payout_head,
         purchase_calibration_head=purchase_calibration_head,
+        purchase_feature_map=purchase_feature_map,
         purchase_threshold=threshold,
         inner_oof_folds=tuple(folds),
         inner_oof_race_ids=oof_ids,
@@ -676,6 +695,7 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
                 if artifact.purchase_calibration_head is not None
                 else None
             ),
+            "purchase_feature_map": artifact.purchase_feature_map,
             "purchase_threshold": artifact.purchase_threshold,
             "inner_oof_folds": [fold.__dict__ for fold in artifact.inner_oof_folds],
             "inner_oof_race_ids": artifact.inner_oof_race_ids,
@@ -721,7 +741,13 @@ def predict_race(
     purchase = _purchase_net_scores(
         artifact.purchase_head,
         artifact.purchase_payout_head,
-        _purchase_matrix(decision, probability, ranking, closing),
+        _purchase_matrix(
+            decision,
+            probability,
+            ranking,
+            closing,
+            feature_map=artifact.purchase_feature_map,
+        ),
     )
     if artifact.purchase_calibration_head is not None:
         purchase = np.exp(
