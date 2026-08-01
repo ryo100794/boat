@@ -52,6 +52,11 @@ from .flat_policy import (
     simulate_flat_policy,
     summarize_flat_candidates,
 )
+from .dual_head_conformal_policy_v32 import (
+    POLICY as V32_DUAL_HEAD_CONFORMAL_POLICY,
+    REGISTERED_AFTER as V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
+    simulate_dual_head_conformal_policy_v32,
+)
 from .market_edge_diagnostics import edge_records, summarize_edge_records
 from .odds_path_operational import (
     attach_odds_path_model,
@@ -2573,6 +2578,24 @@ def waiting_walk_forward_result(
             policy=PROSPECTIVE_TOP5_NARROW_EV_POLICY,
             registered_after=PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER,
         ),
+        "v32_dual_head_conformal_retrospective_diagnostic": {
+            **summarize_registered_policy_daily(
+                [],
+                evaluated_races=0,
+                policy=V32_DUAL_HEAD_CONFORMAL_POLICY,
+                registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "promotion_evidence": False,
+        },
+        "v32_dual_head_conformal_prospective_walk_forward": (
+            summarize_registered_policy_daily(
+                [],
+                evaluated_races=0,
+                policy=V32_DUAL_HEAD_CONFORMAL_POLICY,
+                registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
+            )
+        ),
         "market_offset_registered_policy_walk_forward": {
             "comparison_role": "market_offset_with_registered_policy_challenger",
             "status": "waiting_for_clean_evaluation_day",
@@ -3336,6 +3359,9 @@ def walk_forward_evaluate(
             races, conformal_lower_inputs
         )
     )
+    conformal_lower_policy_races_by_id = {
+        str(race["race_id"]): race for race in conformal_lower_policy_races
+    }
     trend_point_policy_races = apply_prequential_trend_point_odds_policy_inputs(
         races, conformal_lower_inputs
     )
@@ -3433,6 +3459,10 @@ def walk_forward_evaluate(
     prospective_top5_evaluated_races = 0
     top5_narrow_retrospective_daily_rows = []
     top5_narrow_retrospective_evaluated_races = 0
+    v32_retrospective_daily_rows = []
+    v32_retrospective_evaluated_races = 0
+    v32_prospective_daily_rows = []
+    v32_prospective_evaluated_races = 0
     prospective_architecture_daily_rows = []
     prospective_architecture_evaluated_races = 0
     prospective_architecture_config = {
@@ -3633,6 +3663,16 @@ def walk_forward_evaluate(
         holdout_policy_races = apply_prequential_closing_odds_policy_inputs(
             holdout, closing_policy_inputs
         )
+        holdout_conformal_lower_races = [
+            conformal_lower_policy_races_by_id[str(race["race_id"])]
+            for race in holdout
+            if str(race["race_id"]) in conformal_lower_policy_races_by_id
+        ]
+        if len(holdout_conformal_lower_races) != len(holdout):
+            raise ValueError(
+                "V32 diagnostic requires a strict-prior conformal lower forecast "
+                "for every holdout race"
+            )
         closing_training_races = verifiable_closing_odds_races(calibration_races)
         closing_holdout_races = verifiable_closing_odds_races(holdout)
         closing_policy_fold = closing_policy_inputs["folds"][evaluation_date]
@@ -3692,6 +3732,18 @@ def walk_forward_evaluate(
             if evaluation_date > PROSPECTIVE_TOP5_NARROW_EV_REGISTERED_AFTER
             else None
         )
+        v32_retrospective_bankroll = None
+        v32_prospective_bankroll = None
+        if calibrator_strategy == V21_STRATEGY_NAME:
+            v32_retrospective_bankroll = simulate_dual_head_conformal_policy_v32(
+                holdout_conformal_lower_races,
+                probability_calibrator=probability_calibrator,
+                ranking_calibrator=ranking_calibrator,
+                probability_blender=blend_probabilities,
+                initial_bankroll_yen=daily_budget_yen,
+            )
+            if evaluation_date > V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER:
+                v32_prospective_bankroll = v32_retrospective_bankroll
         flat_policy, flat_policy_grid = select_flat_policy(
             calibration_policy_races,
             calibrator=purchase_calibrator,
@@ -3892,6 +3944,24 @@ def walk_forward_evaluate(
                     for key, value in top5_narrow_retrospective_bankroll.items()
                     if key != "daily"
                 },
+                "v32_dual_head_conformal_retrospective_bankroll": (
+                    {
+                        key: value
+                        for key, value in v32_retrospective_bankroll.items()
+                        if key != "daily"
+                    }
+                    if v32_retrospective_bankroll is not None
+                    else None
+                ),
+                "v32_dual_head_conformal_prospective_bankroll": (
+                    {
+                        key: value
+                        for key, value in v32_prospective_bankroll.items()
+                        if key != "daily"
+                    }
+                    if v32_prospective_bankroll is not None
+                    else None
+                ),
                 "empirical_lcb_bankroll": {
                     key: value
                     for key, value in empirical_bankroll.items()
@@ -3932,6 +4002,18 @@ def walk_forward_evaluate(
             top5_narrow_retrospective_bankroll["daily"]
         )
         top5_narrow_retrospective_evaluated_races += len(holdout_policy_races)
+        if v32_retrospective_bankroll is not None:
+            v32_retrospective_daily_rows.extend(
+                v32_retrospective_bankroll["daily"]
+            )
+            v32_retrospective_evaluated_races += len(
+                holdout_conformal_lower_races
+            )
+        if v32_prospective_bankroll is not None:
+            v32_prospective_daily_rows.extend(v32_prospective_bankroll["daily"])
+            v32_prospective_evaluated_races += len(
+                holdout_conformal_lower_races
+            )
         evaluation_races.extend(holdout)
         evaluation_policy_races.extend(holdout_policy_races)
         empirical_daily_rows.extend(empirical_bankroll["daily"])
@@ -4537,6 +4619,28 @@ def walk_forward_evaluate(
             ),
             "promotion_evidence": False,
         },
+        "v32_dual_head_conformal_retrospective_diagnostic": {
+            **summarize_registered_policy_daily(
+                v32_retrospective_daily_rows,
+                evaluated_races=v32_retrospective_evaluated_races,
+                policy=V32_DUAL_HEAD_CONFORMAL_POLICY,
+                registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
+            ),
+            "status": "diagnostic_only_not_promotion_evidence",
+            "comparison_role": (
+                "strict-prior fold probability and ranking heads with date-OOF "
+                "conformal lower closing odds across all evaluation days"
+            ),
+            "promotion_evidence": False,
+        },
+        "v32_dual_head_conformal_prospective_walk_forward": (
+            summarize_registered_policy_daily(
+                v32_prospective_daily_rows,
+                evaluated_races=v32_prospective_evaluated_races,
+                policy=V32_DUAL_HEAD_CONFORMAL_POLICY,
+                registered_after=V32_DUAL_HEAD_CONFORMAL_REGISTERED_AFTER,
+            )
+        ),
         **(
             {
                 str(prospective_architecture_config["output_key"]): (
