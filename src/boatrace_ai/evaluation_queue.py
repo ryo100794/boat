@@ -1819,12 +1819,17 @@ def build_command(
                 + ", ".join(sorted(missing))
             )
         purchase_loss = str(params.get("purchase_loss", "ridge_capped_net"))
-        if purchase_loss not in {"ridge_capped_net", "poisson_capped_gross"}:
+        teacher_versions = {
+            "ridge_capped_net": 3,
+            "poisson_capped_gross": 4,
+            "tweedie_capped_gross": 5,
+        }
+        if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 4
+            params, "purchase_teacher_version", 3, 3, 5
         )
-        expected_version = 4 if purchase_loss == "poisson_capped_gross" else 3
+        expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:
             raise ValueError("purchase_teacher_version does not match purchase_loss")
         training_from = _date(params, "training_from")

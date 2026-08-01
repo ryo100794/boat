@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
-from sklearn.linear_model import PoissonRegressor
+from sklearn.linear_model import PoissonRegressor, TweedieRegressor
 
 
 MODEL_KEY = "four_head_nested_v22"
@@ -350,6 +350,27 @@ def _fit_purchase_head(
                 float(fitted.intercept_),
             ),
         )
+    if purchase_loss == "tweedie_capped_gross":
+        target = np.clip(returns + 1.0, 0.0, 51.0)
+        fitted = TweedieRegressor(
+            power=1.5,
+            alpha=alpha,
+            link="log",
+            fit_intercept=True,
+            max_iter=500,
+            tol=1e-8,
+        ).fit(matrix, target)
+        return _head(
+            "purchase_head",
+            (
+                "tweedie_expected_capped_gross_return_from_"
+                "strict_prior_base_head_oof_inputs"
+            ),
+            (
+                np.asarray(fitted.coef_, dtype=np.float64),
+                float(fitted.intercept_),
+            ),
+        )
     raise ValueError(f"unsupported purchase_loss: {purchase_loss}")
 
 
@@ -584,9 +605,7 @@ def predict_race(
         artifact.purchase_head,
         _purchase_matrix(decision, probability, ranking, closing),
     )
-    if artifact.purchase_head.teacher.startswith(
-        "poisson_expected_capped_gross"
-    ):
+    if "_expected_capped_gross" in artifact.purchase_head.teacher:
         purchase = np.exp(
             np.clip(purchase, -30.0, math.log(51.0))
         ) - 1.0
