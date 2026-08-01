@@ -3027,8 +3027,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "evaluated_races",
             "tickets",
             "hit_tickets",
+            "stake_yen",
+            "return_yen",
             "roi",
             "profit_yen",
+            "winning_days",
+            "profitable_day_fraction",
+            "largest_hit_return_share",
+            "effective_hit_count",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "probability_roi_above_one",
         ):
             if key in registered_policy:
                 summary[f"registered_ev_band_{key}"] = registered_policy[key]
@@ -3041,8 +3050,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "evaluated_races",
             "tickets",
             "hit_tickets",
+            "stake_yen",
+            "return_yen",
             "roi",
             "profit_yen",
+            "winning_days",
+            "profitable_day_fraction",
+            "largest_hit_return_share",
+            "effective_hit_count",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "probability_roi_above_one",
         ):
             if key in prospective_policy:
                 summary[f"prospective_normalized_ev_{key}"] = prospective_policy[key]
@@ -3055,8 +3073,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "evaluated_races",
             "tickets",
             "hit_tickets",
+            "stake_yen",
+            "return_yen",
             "roi",
             "profit_yen",
+            "winning_days",
+            "profitable_day_fraction",
+            "largest_hit_return_share",
+            "effective_hit_count",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "probability_roi_above_one",
         ):
             if key in prospective_top5:
                 summary[f"prospective_top5_narrow_ev_{key}"] = (

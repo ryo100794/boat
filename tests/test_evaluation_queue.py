@@ -3536,8 +3536,17 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
             "evaluated_races": 132,
             "tickets": 4,
             "hit_tickets": 1,
+            "stake_yen": 400,
+            "return_yen": 500,
             "roi": 1.25,
             "profit_yen": 100,
+            "winning_days": 1,
+            "profitable_day_fraction": 1.0,
+            "largest_hit_return_share": 0.8,
+            "effective_hit_count": 1.5,
+            "roi_without_largest_hit": 0.25,
+            "daily_cluster_bootstrap_roi_lower_95": 1.25,
+            "probability_roi_above_one": 1.0,
         },
         "prospective_normalized_ev_walk_forward": {
             "status": "waiting_for_first_unseen_day",
@@ -3587,6 +3596,15 @@ def test_result_summary_exposes_registered_ev_band_separately() -> None:
     assert summary["roi"] == 0.33
     assert summary["registered_ev_band_roi"] == 1.25
     assert summary["registered_ev_band_evaluation_days"] == 1
+    assert summary["registered_ev_band_stake_yen"] == 400
+    assert summary["registered_ev_band_return_yen"] == 500
+    assert summary["registered_ev_band_winning_days"] == 1
+    assert summary["registered_ev_band_profitable_day_fraction"] == 1.0
+    assert summary["registered_ev_band_largest_hit_return_share"] == 0.8
+    assert summary["registered_ev_band_effective_hit_count"] == 1.5
+    assert summary["registered_ev_band_roi_without_largest_hit"] == 0.25
+    assert summary["registered_ev_band_daily_cluster_bootstrap_roi_lower_95"] == 1.25
+    assert summary["registered_ev_band_probability_roi_above_one"] == 1.0
     assert summary["prospective_normalized_ev_status"] == (
         "waiting_for_first_unseen_day"
     )

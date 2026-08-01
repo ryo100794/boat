@@ -1057,6 +1057,49 @@ def test_empty_registered_policy_summary_waits_for_unseen_day() -> None:
     assert result["status"] == "waiting_for_first_unseen_day"
     assert result["evaluation_days"] == 0
     assert result["evaluated_races"] == 0
+    assert result["winning_days"] == 0
+    assert result["profitable_day_fraction"] is None
+    assert result["daily_cluster_bootstrap_roi_lower_95"] is None
+    assert result["probability_roi_above_one"] is None
+
+
+def test_registered_policy_summary_exposes_daily_robustness() -> None:
+    daily = [
+        {
+            "race_date": "2026-07-26",
+            "tickets": 2,
+            "hit_tickets": 1,
+            "races_bet": 1,
+            "hit_races": 1,
+            "stake_yen": 200,
+            "return_yen": 300,
+            "profit_yen": 100,
+            "largest_hit_return_yen": 300,
+            "hit_return_square_sum_yen2": 90_000,
+        },
+        {
+            "race_date": "2026-07-27",
+            "tickets": 1,
+            "hit_tickets": 0,
+            "races_bet": 1,
+            "hit_races": 0,
+            "stake_yen": 100,
+            "return_yen": 0,
+            "profit_yen": -100,
+            "largest_hit_return_yen": 0,
+            "hit_return_square_sum_yen2": 0,
+        },
+    ]
+
+    result = summarize_registered_policy_daily(daily, evaluated_races=4)
+
+    assert result["winning_days"] == 1
+    assert result["profitable_day_fraction"] == 0.5
+    assert result["stake_yen"] == 300
+    assert result["return_yen"] == 300
+    assert result["roi_without_largest_hit"] == 0.0
+    assert result["daily_cluster_bootstrap_roi_lower_95"] == 0.0
+    assert 0.0 < result["probability_roi_above_one"] < 1.0
 
 
 def test_registered_ev_band_uses_only_days_after_hypothesis_registration() -> None:
