@@ -886,3 +886,31 @@ def test_quota_ceil_evidence_uses_frozen_identity_contract(
         == "quota_ceil_fixed_identity_fully_unseen_prospective"
     )
     assert config.expected_model_hash is None
+
+
+def test_raw_guard_evidence_uses_frozen_identity_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = {}
+
+    def collect(connection, *, config, output_path):
+        observed.update(connection=connection, config=config, output_path=output_path)
+        return {"promotion_ready": False, "clean_days": 0}
+
+    monkeypatch.setattr(updater, "collect_v21_prospective_evidence", collect)
+    raw_connection = object()
+    result = updater.collect_raw_guard_prospective_evidence(
+        raw_connection, state_root=tmp_path, through_date="2026-08-02"
+    )
+
+    config = observed["config"]
+    assert result == {"promotion_ready": False, "clean_days": 0}
+    assert observed["connection"]._raw is raw_connection
+    assert observed["output_path"] == (
+        tmp_path / "raw-guard-prospective-evidence.json"
+    )
+    assert str(config.start_date) == updater.RAW_GUARD_PROSPECTIVE_START_DATE
+    assert config.model_key == updater.RAW_GUARD_MODEL_KEY
+    assert config.expected_strategy_name == updater.RAW_GUARD_STRATEGY
+    assert config.diagnostic_key == updater.RAW_GUARD_DIAGNOSTIC_KEY
+    assert config.evidence_kind == "raw_guard_fixed_identity_fully_unseen_prospective"
