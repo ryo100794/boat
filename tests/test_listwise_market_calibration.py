@@ -257,6 +257,45 @@ def test_vectorized_policy_candidates_match_reference_simulation() -> None:
     assert vectorized == reference
 
 
+def test_min_raw_ev_rejects_return_multiplier_only_edges() -> None:
+    race = _race("2026-07-18", 1)
+    race["_policy_calibrated_probabilities"] = dict(
+        race["market_probabilities"]
+    )
+    race["historical_return_multipliers"] = {
+        combination: 2.0 for combination in COMBINATIONS
+    }
+    policy = {
+        "name": "adjusted-only-edge",
+        "ev_threshold": 1.5,
+        "max_estimated_ev": None,
+        "max_odds": None,
+        "max_tickets_per_race": 1,
+        "min_model_market_ratio": 1.0,
+        "staking_mode": "kelly_100",
+    }
+
+    adjusted_only = simulate_policy(
+        [race], calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy=policy, daily_budget_yen=10_000,
+    )
+    raw_guarded = simulate_policy(
+        [race], calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={**policy, "min_raw_ev": 1.0}, daily_budget_yen=10_000,
+    )
+    vectorized = simulate_policy(
+        [race], calibrator={"model_weight": 1.0, "temperature": 1.0},
+        policy={**policy, "min_raw_ev": 1.0}, daily_budget_yen=10_000,
+        prepared_policy_matrix=prepare_policy_matrix(
+            [race], {"model_weight": 1.0, "temperature": 1.0}
+        ),
+    )
+
+    assert adjusted_only["tickets"] == 1
+    assert raw_guarded["tickets"] == 0
+    assert vectorized == raw_guarded
+
+
 def test_walk_forward_uses_only_strictly_earlier_dates_for_selection() -> None:
     races = [
         _race(race_date, rno)

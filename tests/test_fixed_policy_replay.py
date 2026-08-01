@@ -148,3 +148,10 @@ def test_replay_rejects_policy_using_results() -> None:
     policy["v18_ticket_control"]["result_or_payout_fields_used"] = True
     with pytest.raises(ValueError, match="exclude result and payout"):
         replay.replay_fixed_policy(_evaluation(), {"races": []}, policy)
+
+
+def test_replay_rejects_nonpositive_min_raw_ev() -> None:
+    policy = copy.deepcopy(POLICY)
+    policy["min_raw_ev"] = 0.0
+    with pytest.raises(ValueError, match="min_raw_ev must be positive"):
+        replay.replay_fixed_policy(_evaluation(), {"races": []}, policy)

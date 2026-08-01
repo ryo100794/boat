@@ -1517,6 +1517,11 @@ class V18ScheduleQuotaModelAdapter(V12RoleModelAdapter):
             ratio = probability / max(1e-12, market_probability)
             if estimated_ev < float(self._policy["ev_threshold"]):
                 continue
+            if (
+                self._policy.get("min_raw_ev") is not None
+                and probability * odds < float(self._policy["min_raw_ev"])
+            ):
+                continue
             if self._policy.get("max_estimated_ev") is not None and estimated_ev > float(
                 self._policy["max_estimated_ev"]
             ):
