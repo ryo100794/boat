@@ -4299,6 +4299,40 @@ def enqueue_refined_market_evaluation(
     )
 
 
+def reconcile_refined_market_evaluations(
+    conn: Any,
+    *,
+    app_root: Path,
+) -> list[int]:
+    """Recover market evaluations missed across worker code reloads."""
+    rows = conn.execute(
+        """
+        SELECT refined.*
+        FROM model_evaluation_jobs AS refined
+        WHERE refined.task_type = 'listwise_newton_refine'
+          AND refined.status = 'completed'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM model_evaluation_jobs AS child
+            WHERE child.parent_job_id = refined.job_id
+              AND child.task_type = 'market_residual_walk_forward'
+              AND child.status IN ('queued', 'running', 'completed')
+          )
+        ORDER BY refined.completed_at, refined.job_id
+        """
+    ).fetchall()
+    inserted: list[int] = []
+    for row in rows:
+        job_id = enqueue_refined_market_evaluation(
+            conn,
+            dict(row),
+            app_root=app_root,
+        )
+        if job_id is not None:
+            inserted.append(job_id)
+    return inserted
+
+
 def advance_genetic_islands(
     conn: Any,
     job: dict[str, Any],
@@ -5428,6 +5462,10 @@ def run_worker(args: argparse.Namespace) -> int:
                         app_root=app_root,
                     )
                     reconcile_queue_state(conn)
+                    reconcile_refined_market_evaluations(
+                        conn,
+                        app_root=app_root,
+                    )
                     record_overdue_work_ticket_events(conn)
                 seed_defaults_now = (
                     args.seed_defaults

@@ -24,6 +24,7 @@ from boatrace_ai.evaluation_queue import (
     enqueue_refined_market_evaluation,
     ensure_schema,
     fail_job,
+    reconcile_refined_market_evaluations,
     prepare_standardized_workspace,
     result_decision,
     seed_default_jobs,
@@ -2180,6 +2181,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_refined_market_evaluations",
+        lambda *_a, **_k: events.append("reconcile-refined"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "record_overdue_work_ticket_events",
         lambda *_a, **_k: events.append("audit-overdue"),
     )
@@ -3149,6 +3155,50 @@ def test_newton_refinement_enqueues_market_evaluation_from_its_artifact(
         "max_attempts": 2,
         "parent_job_id": 10027,
     }]
+
+
+def test_reconcile_recovers_refinement_completed_before_worker_reload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    completed = {
+        "job_id": 10463,
+        "task_type": "listwise_newton_refine",
+        "model_key": "candidate:newton",
+        "priority": 81,
+        "parameters": {
+            "search_result": (
+                "data/models/evaluation_queue/job-00009837.json"
+            )
+        },
+    }
+
+    class Result:
+        def fetchall(self):
+            return [completed]
+
+    class Connection:
+        def execute(self, sql):
+            assert "NOT EXISTS" in sql
+            assert "market_residual_walk_forward" in sql
+            return Result()
+
+    calls = []
+
+    def fake_enqueue(conn, job, *, app_root):
+        calls.append((conn, job, app_root))
+        return 10470
+
+    monkeypatch.setattr(
+        evaluation_queue,
+        "enqueue_refined_market_evaluation",
+        fake_enqueue,
+    )
+    conn = Connection()
+
+    assert reconcile_refined_market_evaluations(
+        conn, app_root=tmp_path
+    ) == [10470]
+    assert calls == [(conn, completed, tmp_path)]
 
 
 def test_listwise_feature_search_command_preserves_fixed_loss_blend(tmp_path) -> None:
