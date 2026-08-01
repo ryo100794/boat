@@ -91,6 +91,7 @@
     <div id="v23Prospective" class="panel"></div>
     <div id="stableCellProspective" class="panel"></div>
     <div id="quotaCeilProspective" class="panel"></div>
+    <div id="rawGuardProspective" class="panel"></div>
     <div id="standardProtocol" class="panel"></div>
     <div class="panel"><h2><span>統一365日 複合判定</span><span class="muted">行タップで日次詳細選択</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>モデル</th><th>母数</th><th>艇Entry LL</th><th>1着</th><th>3T5</th><th>ROI</th><th>損益</th><th>最大DD</th><th>判定</th></tr></thead><tbody id="compositeSummaryRows"></tbody></table></div></div>
     <span id="selectedModelGroup" aria-hidden="true"></span>
@@ -130,6 +131,10 @@ function render(data){
   renderQuotaCeilEvidence(
     data.quota_ceil_prospective_evidence,
     data.quota_ceil_retrospective_audit
+  );
+  renderRawGuardEvidence(
+    data.raw_guard_prospective_evidence,
+    data.raw_guard_retrospective_audit
   );
   const v2Bank=bank.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Bank=bank.filter(x=>x.evaluation_scope==="standard_365d");
   const v2Tests=tests.filter(x=>x.evaluation_scope==="standard_365d_v2"), v1Tests=tests.filter(x=>x.evaluation_scope==="standard_365d");
@@ -173,6 +178,21 @@ function renderQuotaCeilEvidence(evidence,audit){
   document.getElementById("quotaCeilProspective").insertAdjacentHTML(
     "beforeend",
     line+"<div class=\"muted\">登録時のROI 1.389は日別動的方策の値で固定方策の性能ではない。固定方策は完全未見証跡のみで昇格判定する。</div>"
+  );
+}
+function renderRawGuardEvidence(evidence,audit){
+  renderProspectiveEvidence(
+    "rawGuardProspective",
+    "V21 生EV下限0.95 購入ヘッド 未見証跡",
+    {},
+    evidence
+  );
+  if(!audit) return;
+  const b=audit.chronological_bankroll||{};
+  const line="<div class=\"mono\">開発診断 8日 / "+fmt(b.evaluated_races)+"R / "+fmt(b.tickets)+"点 / 損益 "+yen(b.profit_yen)+" / ROI "+ratio(b.roi)+" / 最大配当除外 "+ratio(b.roi_without_largest_hit)+" / 片側95%下限 "+ratio(b.daily_cluster_bootstrap_roi_lower_95)+" / DD "+yen(b.max_drawdown_yen)+"</div>";
+  document.getElementById("rawGuardProspective").insertAdjacentHTML(
+    "beforeend",
+    line+"<div class=\"muted\">8日結果を使って生EV下限0.95を選定したため、昇格判定は8月2日以降の固定未見証跡だけを使用する。</div>"
   );
 }
 function renderProspectiveEvidence(target,title,activation,evidence){

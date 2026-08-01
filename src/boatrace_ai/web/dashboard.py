@@ -1074,6 +1074,10 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             "quota_ceil_prospective_evidence",
             "quota-ceil-prospective-evidence.json",
         ),
+        (
+            "raw_guard_prospective_evidence",
+            "raw-guard-prospective-evidence.json",
+        ),
     ):
         path = runtime_state_dir / filename
         try:
@@ -1096,6 +1100,19 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     except Exception as exc:
         runtime_reports["quota_ceil_retrospective_audit"] = None
         errors.append({"file": str(quota_ceil_audit), "error": str(exc)})
+
+    raw_guard_audit = model_dir / "policy_replays" / (
+        "job-10730-quota-ceil-raw095.json"
+    )
+    try:
+        runtime_reports["raw_guard_retrospective_audit"] = json.loads(
+            raw_guard_audit.read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        runtime_reports["raw_guard_retrospective_audit"] = None
+    except Exception as exc:
+        runtime_reports["raw_guard_retrospective_audit"] = None
+        errors.append({"file": str(raw_guard_audit), "error": str(exc)})
 
     for path in sorted(model_dir.glob("*.json")):
         try:
