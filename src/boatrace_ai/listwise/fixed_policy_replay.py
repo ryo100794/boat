@@ -45,6 +45,11 @@ def _validate_fixed_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     missing = [key for key in required if key not in policy]
     if missing:
         raise ValueError(f"fixed policy is missing {missing[0]}")
+    if (
+        policy.get("min_raw_ev") is not None
+        and float(policy["min_raw_ev"]) <= 0.0
+    ):
+        raise ValueError("fixed policy min_raw_ev must be positive")
     control = policy.get("v18_ticket_control")
     if not isinstance(control, Mapping):
         raise ValueError("fixed policy requires v18_ticket_control")
@@ -85,6 +90,11 @@ def _fixed_policy_candidate_index(
             estimated_ev = probability * odds * multiplier
             ratio = probability / max(EPSILON, market_probability)
             if estimated_ev < float(policy["ev_threshold"]):
+                continue
+            if (
+                policy.get("min_raw_ev") is not None
+                and probability * odds < float(policy["min_raw_ev"])
+            ):
                 continue
             if policy.get("max_odds") is not None and odds > float(
                 policy["max_odds"]
@@ -286,6 +296,7 @@ def main() -> int:
     parser.add_argument("--scored-cache", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
+    parser.add_argument("--min-raw-ev", type=float)
     args = parser.parse_args()
 
     evaluation = _load_json(args.evaluation_result)
@@ -296,6 +307,11 @@ def main() -> int:
     candidate_policy = deployment.get("candidate_policy")
     if not isinstance(candidate_policy, dict):
         raise ValueError("policy source candidate policy is missing")
+    candidate_policy = copy.deepcopy(candidate_policy)
+    if args.min_raw_ev is not None:
+        if args.min_raw_ev <= 0.0:
+            raise ValueError("min_raw_ev must be positive")
+        candidate_policy["min_raw_ev"] = args.min_raw_ev
     cache_path = args.scored_cache or Path(str(evaluation.get("scored_cache") or ""))
     if not str(cache_path):
         raise ValueError("scored cache path is missing")

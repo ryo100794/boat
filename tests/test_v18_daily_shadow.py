@@ -212,6 +212,58 @@ def test_v18_decision_uses_only_t300_features_and_fixed_quota(
     assert all(row["odds_path_points"] == 1 for row in seen)
 
 
+def test_v18_runtime_applies_min_raw_ev_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = deployment()
+    configured["candidate_policy"]["min_raw_ev"] = 1.1
+    bundle = tmp_path / "v18-raw-guard.joblib"
+    base = tmp_path / "base-raw-guard.joblib"
+    joblib.dump({"deployment": configured}, bundle)
+    joblib.dump({"feature_schema_version": 1}, base)
+    model = V18ScheduleQuotaModelAdapter(
+        model_key="v18_raw_guard", bundle_path=bundle, base_model_path=base
+    )
+    race, source = race_snapshot()
+    snapshot = T300Snapshot(
+        source.snapshot_id, source.captured_at, source.source_update_time, {},
+        {combination: 50.0 for combination in COMBINATIONS},
+    )
+    probabilities = {
+        combination: (0.02 if index == 0 else 0.98 / 119)
+        for index, combination in enumerate(COMBINATIONS)
+    }
+    monkeypatch.setattr(model, "_base_probabilities", lambda conn, row: probabilities)
+    monkeypatch.setattr(
+        "boatrace_ai.runtime.intraday_t300_shadow.attach_odds_path_model",
+        lambda rows, operational: [{
+            **copy.deepcopy(rows[0]),
+            "model_probabilities": probabilities,
+            "historical_return_multipliers": {
+                combination: 2.0 for combination in COMBINATIONS
+            },
+        }],
+    )
+    monkeypatch.setattr(model, "_runtime_limits", lambda conn, row, bankroll_yen: {
+        "schedule_races_elapsed": 100,
+        "schedule_races_total": 100,
+        "cumulative_ticket_quota": 1,
+        "used_tickets": 0,
+        "remaining_ticket_quota": 1,
+        "observed_candidate_scores": [],
+        "gross_stake_yen": 0,
+        "realized_cumulative_profit_yen": 0,
+        "gross_stake_allowance_yen": 10_000,
+        "remaining_gross_stake_allowance_yen": 10_000,
+        "allocatable_bankroll_yen": 10_000,
+    })
+
+    decision = model.decide(object(), race, snapshot, bankroll_yen=10_000)
+
+    assert decision.selected_candidates == ()
+    assert decision.no_bet_reason == "no_safe_ev_threshold_candidate"
+
+
 def test_v18_registry_and_quota_zero_are_no_bet(tmp_path: Path, monkeypatch) -> None:
     model = adapter(tmp_path)
     bundle = tmp_path / "v18.joblib"
