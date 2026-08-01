@@ -71,11 +71,19 @@ def test_model_report_exposes_v21_runtime_evidence(tmp_path) -> None:
         "bankroll": {"clean_days": 1, "races": 132, "roi": 1.1},
         "promotion_gate": {"pass": False, "failed_checks": ["minimum_clean_days"]},
     }
+    stable_evidence = {
+        "model_key": "stable_cell_daily",
+        "bankroll": {"clean_days": 0, "races": 0, "roi": None},
+        "promotion_gate": {"pass": False, "failed_checks": ["identity_fixed"]},
+    }
     (state_dir / "activation-recovery.json").write_text(
         json.dumps(activation), encoding="utf-8"
     )
     (state_dir / "v21-prospective-evidence.json").write_text(
         json.dumps(evidence), encoding="utf-8"
+    )
+    (state_dir / "stable-cell-prospective-evidence.json").write_text(
+        json.dumps(stable_evidence), encoding="utf-8"
     )
     dashboard._MODEL_REPORT_CACHE.clear()
 
@@ -86,9 +94,11 @@ def test_model_report_exposes_v21_runtime_evidence(tmp_path) -> None:
 
     assert report["v21_activation_recovery"] == activation
     assert report["v21_prospective_evidence"] == evidence
+    assert report["stable_cell_prospective_evidence"] == stable_evidence
     public = dashboard.model_performance_public_report(report)
     assert public["v21_activation_recovery"] == activation
     assert public["v21_prospective_evidence"] == evidence
+    assert public["stable_cell_prospective_evidence"] == stable_evidence
 
 
 def test_model_report_exposes_direct_shadow_bankroll_components(tmp_path) -> None:
@@ -220,3 +230,16 @@ def test_model_report_template_distinguishes_empirical_lcb_track() -> None:
         "母数判定",
     ):
         assert label in source
+
+
+def test_model_report_renders_stable_cell_prospective_evidence() -> None:
+    template = (
+        Path(__file__).parents[1]
+        / "src"
+        / "boatrace_ai"
+        / "templates"
+        / "model_report.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="stableCellProspective"' in template
+    assert "data.stable_cell_prospective_evidence" in template
