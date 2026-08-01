@@ -5,6 +5,7 @@ import pytest
 from boatrace_ai.listwise.archive_market_oracle import (
     PRIMARY_POLICY,
     V23_TOP5_ORACLE_POLICY,
+    narrow_ev_diagnostic_policies,
     restrict_probabilities_to_available,
     temporal_residual_diagnostic,
 )
@@ -36,6 +37,20 @@ def test_v23_top5_oracle_policy_matches_registered_band() -> None:
     assert V23_TOP5_ORACLE_POLICY["ev_threshold"] == 1.0
     assert V23_TOP5_ORACLE_POLICY["max_estimated_ev"] == 1.05
     assert V23_TOP5_ORACLE_POLICY["stake_per_ticket_yen"] == 100
+
+
+def test_v25_narrow_ev_diagnostic_grid_is_fixed_and_non_overlapping() -> None:
+    policies = narrow_ev_diagnostic_policies()
+    assert len(policies) == 15
+    assert {policy["max_model_rank"] for policy in policies} == {1, 3, 5}
+    assert {
+        (policy["ev_threshold"], policy["max_estimated_ev"])
+        for policy in policies
+    } == {
+        (0.95, 1.00), (1.00, 1.025), (1.025, 1.05),
+        (1.05, 1.10), (1.10, 1.20),
+    }
+    assert all(policy["max_odds"] == 80.0 for policy in policies)
 
 
 def _residual_race(race_date: str, actual: str) -> dict:
