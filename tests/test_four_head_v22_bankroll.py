@@ -28,7 +28,7 @@ def _head(name: str, size: int) -> LinearHead:
 def _artifact() -> FourHeadArtifact:
     return FourHeadArtifact(
         model_key="four_head_nested_v22",
-        artifact_version=2,
+        artifact_version=3,
         trained_through_date="2026-07-28",
         choice_count=120,
         feature_count=1,

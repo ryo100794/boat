@@ -10,7 +10,7 @@ import numpy as np
 
 
 MODEL_KEY = "four_head_nested_v22"
-ARTIFACT_VERSION = 2
+ARTIFACT_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -315,20 +315,17 @@ def _fit_purchase_head(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
     *,
-    choices: int,
     alpha: float,
 ) -> LinearHead:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
-    winner_weight = np.where(returns > -1.0, choices - 1.0, 1.0)
     return _head(
         "purchase_head",
-        "realized_unit_return_from_strict_prior_base_head_oof_inputs",
+        "capped_realized_unit_return_from_strict_prior_base_head_oof_inputs",
         _fit_ridge(
             matrix,
             np.clip(returns, -1.0, 50.0),
             alpha=alpha,
-            sample_weight=winner_weight,
         ),
     )
 
@@ -413,7 +410,6 @@ def fit_four_head_nested_v22(
         fold_head = _fit_purchase_head(
             [record[1] for record in training_records],
             [record[2] for record in training_records],
-            choices=choices,
             alpha=alpha,
         )
         date_score_payloads: list[dict[str, Any]] = []
@@ -464,7 +460,6 @@ def fit_four_head_nested_v22(
     purchase_head = _fit_purchase_head(
         [record[1] for record in all_base_oof_records],
         [record[2] for record in all_base_oof_records],
-        choices=choices,
         alpha=alpha,
     )
     probability_head, ranking_head, closing_head = _fit_base_heads(
