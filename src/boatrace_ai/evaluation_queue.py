@@ -1801,7 +1801,7 @@ def build_command(
             "minimum_inner_training_dates",
             "minimum_purchase_training_dates", "alpha",
             "max_races_per_day", "max_snapshot_age_seconds",
-            "timeout_seconds",
+            "timeout_seconds", "purchase_teacher_version",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1811,13 +1811,14 @@ def build_command(
             )
         missing = {
             "source_model", "training_from", "training_through",
-            "outer_from", "outer_through",
+            "outer_from", "outer_through", "purchase_teacher_version",
         } - set(params)
         if missing:
             raise ValueError(
                 "missing four_head_learned_value parameters: "
                 + ", ".join(sorted(missing))
             )
+        _integer(params, "purchase_teacher_version", 3, 3, 3)
         training_from = _date(params, "training_from")
         training_through = _date(params, "training_through")
         outer_from = _date(params, "outer_from")
