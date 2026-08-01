@@ -736,7 +736,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=1e-3)
     parser.add_argument(
         "--purchase-loss",
-        choices=("ridge_capped_net", "poisson_capped_gross"),
+        choices=(
+            "ridge_capped_net",
+            "poisson_capped_gross",
+            "tweedie_capped_gross",
+        ),
         default="ridge_capped_net",
     )
     return parser
