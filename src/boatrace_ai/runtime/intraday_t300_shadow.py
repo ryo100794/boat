@@ -1778,6 +1778,7 @@ class V21TripleHeadModelAdapter(V18ScheduleQuotaModelAdapter):
     )
     allowed_deployment_modes = ("evaluation_only",)
     artifact_label = "V21"
+    source_evaluation_job_id = 8666
 
     def __init__(
         self,
@@ -1799,7 +1800,7 @@ class V21TripleHeadModelAdapter(V18ScheduleQuotaModelAdapter):
         ranking_head = triple.get("ranking_head")
         purchase_head = triple.get("purchase_head")
         if (
-            self._bundle.get("source_evaluation_job_id") != 8666
+            self._bundle.get("source_evaluation_job_id") != self.source_evaluation_job_id
             or self._bundle.get("winner_and_logloss_head") != "probability_head"
             or self._bundle.get("trifecta_top5_head") != "ranking_head"
             or self._bundle.get("market_logloss_comparison_head") != "probability_head"
@@ -1864,7 +1865,7 @@ class V21TripleHeadModelAdapter(V18ScheduleQuotaModelAdapter):
             "status": "recorded",
             "checkpoint": "t300",
             "source_snapshot_id": snapshot.snapshot_id,
-            "source_evaluation_job_id": 8666,
+            "source_evaluation_job_id": self.source_evaluation_job_id,
             "probability_output_head": "probability_head",
             "ranking_output_head": "ranking_head",
             "candidate_selection_head": "purchase_head",
@@ -1904,6 +1905,11 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
 
     strategy_name = "v23_top5_narrow_t300"
     artifact_label = "V23"
+    diagnostic_key = "v23_top5_narrow"
+    policy_name = V23_POLICY_NAME
+    registered_after = V23_REGISTERED_AFTER
+    candidate_selector = staticmethod(select_top5_narrow_candidates)
+    no_candidate_reason = "v23_no_top5_candidate_in_registered_ev_band"
 
     def __init__(
         self,
@@ -2041,7 +2047,7 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
         if len(forecast_odds) != 120 or set(forecast_odds) != set(ranking_output):
             return _no_bet("invalid_v23_closing_odds_forecast")
         limits = self._capital_limits(conn, race, bankroll_yen=bankroll_yen)
-        selected = select_top5_narrow_candidates(
+        selected = self.candidate_selector(
             ranking_output,
             forecast_odds,
             race_id=race.race_id,
@@ -2053,14 +2059,14 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
             available_capital_yen=limits["allocatable_bankroll_yen"],
         )
         diagnostics = {
-            "v23_top5_narrow": {
+            self.diagnostic_key: {
                 **limits,
                 "status": "selected" if selected else "no_bet",
-                "policy_name": V23_POLICY_NAME,
-                "registered_after": V23_REGISTERED_AFTER,
+                "policy_name": self.policy_name,
+                "registered_after": self.registered_after,
                 "checkpoint": "t300",
                 "source_snapshot_id": snapshot.snapshot_id,
-                "source_evaluation_job_id": 8666,
+                "source_evaluation_job_id": self.source_evaluation_job_id,
                 "ranking_top5": sorted(
                     ranking_output,
                     key=lambda combination: (-ranking_output[combination], combination),
@@ -2081,7 +2087,7 @@ class V23Top5NarrowModelAdapter(V21TripleHeadModelAdapter):
         if limits["allocatable_bankroll_yen"] < V23_STAKE_YEN:
             reason = "v23_daily_capital_exhausted"
         else:
-            reason = None if selected else "v23_no_top5_candidate_in_registered_ev_band"
+            reason = None if selected else self.no_candidate_reason
         return ShadowDecision(
             probability_output, forecast_odds, selected, reason, diagnostics
         )
