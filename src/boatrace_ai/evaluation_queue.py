@@ -1285,22 +1285,14 @@ def _drop_feature_groups(params: dict[str, Any]) -> str:
     raw = params.get("drop_feature_groups", "research_correlates")
     if not isinstance(raw, str):
         raise ValueError("drop_feature_groups must be a comma-separated string")
-    allowed = (
-        "base_pastlog",
-        "raw_equipment_identifiers",
-        "research_correlates",
-        "speculative_research",
-        "live_official_context",
-        "series_cached",
-        "series_relative",
-        "rolling_history",
-        "legacy_composites",
-    )
-    requested = {value.strip() for value in raw.split(",") if value.strip()}
-    unknown = sorted(requested.difference(allowed))
-    if unknown:
-        raise ValueError("unknown drop_feature_groups: " + ", ".join(unknown))
-    selected = [value for value in allowed if value in requested]
+    from .feature_tuning import normalize_drop_feature_groups
+
+    try:
+        selected = normalize_drop_feature_groups(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "unknown drop_feature_groups: " + str(exc)
+        ) from exc
     if not selected:
         raise ValueError("drop_feature_groups must contain at least one group")
     return ",".join(selected)

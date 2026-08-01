@@ -3149,6 +3149,33 @@ def test_lightgbm_recency_search_command_is_fixed(tmp_path: Path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_lightgbm_recency_search_accepts_card_feature_ablation(
+    tmp_path: Path,
+) -> None:
+    command, _ = build_command(
+        _job(
+            "lightgbm_recency_search",
+            {
+                "evaluation_date": "2026-07-31",
+                "drop_feature_groups": (
+                    "card_identity_context,card_relative,"
+                    "research_correlates"
+                ),
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--drop-feature-groups") + 1] == (
+        "card_identity_context,card_relative,research_correlates"
+    )
+    assert command[command.index("--feature-cache") + 1].endswith(
+        "drop_card_identity_context_card_relative_research_correlates"
+    )
+
+
 def test_lightgbm_structural_presets_are_forwarded(tmp_path: Path) -> None:
     root = tmp_path / "boat"
     incumbent = root / "data/models/evaluation_queue/job-00002707.json"
