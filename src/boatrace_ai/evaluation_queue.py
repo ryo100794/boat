@@ -4161,6 +4161,63 @@ def enqueue_refinement(
     )
 
 
+def enqueue_refined_market_evaluation(
+    conn: Any,
+    job: dict[str, Any],
+    *,
+    app_root: Path,
+) -> int | None:
+    """Evaluate a refined historical model only after its artifact exists."""
+    if job.get("task_type") != "listwise_newton_refine":
+        return None
+    parameters = job.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        try:
+            parameters = json.loads(str(parameters))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    search_result = parameters.get("search_result")
+    if not isinstance(search_result, str):
+        return None
+    search_path = (app_root / search_result).resolve()
+    result_root = (app_root / "data/models/evaluation_queue").resolve()
+    if result_root not in search_path.parents or search_path.suffix != ".json":
+        return None
+    try:
+        search_payload = json.loads(search_path.read_text(encoding="utf-8"))
+        through = datetime.strptime(
+            str(search_payload["as_of_date"]), "%Y-%m-%d"
+        ).date()
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    source_job_id = int(job["job_id"])
+    model_input = (
+        f"data/models/evaluation_queue/job-{source_job_id:08d}.joblib"
+    )
+    from_date = through - timedelta(days=13)
+    range_key = f"{from_date:%Y%m%d}-{through.day:02d}"
+    return enqueue_job(
+        conn,
+        task_type="market_residual_walk_forward",
+        model_key=f"{job['model_key']}:v21_market:{range_key}",
+        parameters={
+            "model_input": model_input,
+            "from_date": from_date.isoformat(),
+            "through_date": through.isoformat(),
+            "daily_budget_yen": 10000,
+            "calibrator_strategy": (
+                "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+            ),
+            "min_calibration_days": 2,
+            "minimum_day_coverage": 1.0,
+            "timeout_seconds": 7200,
+        },
+        priority=int(job["priority"]) + 2,
+        max_attempts=2,
+        parent_job_id=source_job_id,
+    )
+
+
 def advance_genetic_islands(
     conn: Any,
     job: dict[str, Any],
@@ -5373,6 +5430,11 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         job,
                         decision,
+                        app_root=app_root,
+                    )
+                    enqueue_refined_market_evaluation(
+                        conn,
+                        job,
                         app_root=app_root,
                     )
                     advance_genetic_islands(
