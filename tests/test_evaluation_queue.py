@@ -298,6 +298,38 @@ def test_four_head_hurdle_purchase_loss_requires_teacher_version_six(
         )
 
 
+def test_four_head_calibrated_hurdle_requires_teacher_version_seven(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    params = {
+        "source_model": "data/models/source.joblib",
+        "training_from": "2026-07-20",
+        "training_through": "2026-07-30",
+        "outer_from": "2026-07-31",
+        "outer_through": "2026-08-01",
+        "purchase_loss": "hurdle_logistic_lognormal_calibrated",
+        "purchase_teacher_version": 7,
+    }
+    command, _output = build_command(
+        _job("four_head_learned_value", params),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+    assert command[command.index("--purchase-loss") + 1] == (
+        "hurdle_logistic_lognormal_calibrated"
+    )
+    params["purchase_teacher_version"] = 6
+    with pytest.raises(ValueError, match="does not match"):
+        build_command(
+            _job("four_head_learned_value", params),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_four_head_learned_value_rejects_training_outer_overlap(
     tmp_path: Path,
 ) -> None:
