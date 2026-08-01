@@ -12,7 +12,13 @@ import joblib
 from ..bankroll_bootstrap import bootstrap_daily_roi
 from ..chronological_bankroll import summarize_chronological_bankroll_days
 from .empirical_policy_replay import _reconstruct_policy_races
-from .market_calibration import bankroll_reliability_metrics, simulate_policy
+from .market_calibration import (
+    EPSILON,
+    bankroll_reliability_metrics,
+    blend_probabilities,
+    decision_odds,
+    simulate_policy,
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -51,6 +57,76 @@ def _validate_fixed_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(dict(policy))
 
 
+def _fixed_policy_candidate_index(
+    races: list[dict[str, Any]],
+    calibrator: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    for race in races:
+        calibrated = race.get("_policy_calibrated_probabilities")
+        if calibrated is None:
+            calibrated = blend_probabilities(
+                race["model_probabilities"],
+                race["market_probabilities"],
+                model_weight=float(calibrator["model_weight"]),
+                temperature=float(calibrator["temperature"]),
+            )
+        candidates = []
+        odds_by_combination = decision_odds(race)
+        multipliers = race.get("historical_return_multipliers") or {}
+        for combination, probability_value in calibrated.items():
+            probability = float(probability_value)
+            odds = float(odds_by_combination[combination])
+            market_probability = float(
+                race["market_probabilities"][combination]
+            )
+            multiplier = float(multipliers.get(combination, 1.0))
+            estimated_ev = probability * odds * multiplier
+            ratio = probability / max(EPSILON, market_probability)
+            if estimated_ev < float(policy["ev_threshold"]):
+                continue
+            if policy.get("max_odds") is not None and odds > float(
+                policy["max_odds"]
+            ):
+                continue
+            if ratio < float(policy["min_model_market_ratio"]):
+                continue
+            if policy.get("max_estimated_ev") is not None and estimated_ev > float(
+                policy["max_estimated_ev"]
+            ):
+                continue
+            candidates.append(
+                {
+                    "race_id": str(race["race_id"]),
+                    "combination": str(combination),
+                    "probability": probability,
+                    "model_probability": float(
+                        race["model_probabilities"][combination]
+                    ),
+                    "market_probability": market_probability,
+                    "model_market_ratio": ratio,
+                    "decision_odds": odds,
+                    "estimated_ev": estimated_ev,
+                    "historical_return_multiplier": multiplier,
+                    "odds_source": (
+                        "forecast_final_from_real_t5"
+                        if race.get("estimated_final_odds")
+                        else "real_t5"
+                    ),
+                    "actual_combination": str(race["actual_combination"]),
+                    "actual_payout_yen": int(race["actual_payout_yen"]),
+                }
+            )
+        candidates.sort(
+            key=lambda row: (row["estimated_ev"], row["probability"]),
+            reverse=True,
+        )
+        for row in candidates[: int(policy["max_tickets_per_race"])]:
+            index[(row["race_id"], row["combination"])] = row
+    return index
+
+
 def replay_fixed_policy(
     evaluation_result: Mapping[str, Any],
     scored_cache: Mapping[str, Any],
@@ -74,6 +150,7 @@ def replay_fixed_policy(
 
     daily_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
+    selection_diagnostics: list[dict[str, Any]] = []
     for fold_number, fold in enumerate(folds, start=1):
         if not isinstance(fold, dict):
             raise ValueError("evaluation folds must be objects")
@@ -96,6 +173,41 @@ def replay_fixed_policy(
         fold_daily = chronological.get("daily") or []
         if len(fold_daily) != 1 or fold_daily[0].get("race_date") != evaluation_date:
             raise ValueError(f"{evaluation_date}: chronological daily result mismatch")
+        candidate_index = _fixed_policy_candidate_index(
+            policy_races, calibrator, policy
+        )
+        for event in fold_daily[0].get("ledger") or []:
+            if event.get("event") != "decision":
+                continue
+            race_id = str(event["race_id"])
+            for selection in event.get("selections") or []:
+                combination = str(selection["combination"])
+                candidate = candidate_index.get((race_id, combination))
+                if candidate is None:
+                    raise ValueError(
+                        f"{evaluation_date}: selected ticket is absent from "
+                        "the decision-time candidate index"
+                    )
+                decision = {
+                    key: value
+                    for key, value in candidate.items()
+                    if key not in {"actual_combination", "actual_payout_yen"}
+                }
+                selection_diagnostics.append(
+                    {
+                        "evaluation_date": evaluation_date,
+                        "decision_at": event.get("at"),
+                        "decision": {
+                            **decision,
+                            "stake_yen": int(selection["stake_yen"]),
+                        },
+                        "settlement": {
+                            "actual_combination": candidate["actual_combination"],
+                            "actual_payout_yen": candidate["actual_payout_yen"],
+                            "hit": combination == candidate["actual_combination"],
+                        },
+                    }
+                )
         daily_rows.extend(fold_daily)
         fold_rows.append(
             {
@@ -156,6 +268,11 @@ def replay_fixed_policy(
             "outer_holdout_used_to_fit_or_select_policy": False,
         },
         "folds": fold_rows,
+        "selection_diagnostics": selection_diagnostics,
+        "selection_diagnostics_boundary": {
+            "decision": "available_before_purchase",
+            "settlement": "joined_after_purchase_for_diagnostics_only",
+        },
         "chronological_bankroll": aggregate,
     }
 
