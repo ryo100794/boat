@@ -353,6 +353,50 @@ def test_nested_calibrated_hurdle_artifact_uses_oof_return_calibration() -> None
     assert all(-1.0 < value <= 50.0 for value in prediction.purchase_scores)
 
 
+def test_contextual_purchase_map_retains_decision_features() -> None:
+    race = labeled_races(start_day=1, days=1)[0]
+    choices = len(race.decision.current_odds)
+    probability = np.full(choices, 1.0 / choices)
+    ranking = np.linspace(1.0, 0.0, choices)
+    closing = np.asarray(race.outcome.closing_odds)
+
+    base = v22._purchase_matrix(
+        race.decision, probability, ranking, closing
+    )
+    contextual = v22._purchase_matrix(
+        race.decision,
+        probability,
+        ranking,
+        closing,
+        feature_map="decision_context_v2",
+    )
+
+    assert base.shape == (choices, 6)
+    assert contextual.shape == (
+        choices,
+        6 + len(race.decision.features[0]),
+    )
+    assert np.allclose(contextual[:, 6:], race.decision.features)
+
+
+def test_nested_contextual_hurdle_uses_decision_feature_map() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="hurdle_contextual_lognormal",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_feature_map == "decision_context_v2"
+    assert artifact.purchase_payout_head is not None
+    assert len(artifact.purchase_head.coefficients) > 6
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_purchase_selection_uses_learned_return_break_even_not_oof_roi_search() -> None:
     artifact = fit_four_head_nested_v22(
         labeled_races(start_day=1, days=8, races_per_day=3),
