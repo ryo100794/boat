@@ -1037,8 +1037,14 @@ def simulate_policy(
             evaluated_by_day[str(race["race_date"])].add(str(race["race_id"]))
         estimated_ev = prepared_policy_matrix["estimated_ev"]
         odds_matrix = prepared_policy_matrix["odds"]
+        probability_matrix = prepared_policy_matrix["probabilities"]
         ratio_matrix = prepared_policy_matrix["model_market_ratio"]
         mask = estimated_ev >= float(policy["ev_threshold"])
+        if policy.get("min_raw_ev") is not None:
+            mask &= (
+                probability_matrix * odds_matrix
+                >= float(policy["min_raw_ev"])
+            )
         if policy.get("max_odds") is not None:
             mask &= odds_matrix <= float(policy["max_odds"])
         mask &= ratio_matrix >= float(policy["min_model_market_ratio"])
@@ -1109,6 +1115,11 @@ def simulate_policy(
                 )
                 estimated_ev = probability * odds * return_multiplier
                 if estimated_ev < float(policy["ev_threshold"]):
+                    continue
+                if (
+                    policy.get("min_raw_ev") is not None
+                    and probability * odds < float(policy["min_raw_ev"])
+                ):
                     continue
                 if policy.get("max_odds") is not None and odds > float(policy["max_odds"]):
                     continue
