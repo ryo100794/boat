@@ -4092,7 +4092,7 @@ def walk_forward_evaluate(
             )
             v33_retrospective_evaluated_races += len(holdout_policy_races)
             if (
-                closing_odds_policy_input
+                closing_policy_fold["policy_input"]
                 == "oof_forecast_final_from_real_t5"
             ):
                 v33_forecast_daily_rows.extend(v33_retrospective_bankroll["daily"])
