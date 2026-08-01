@@ -1070,6 +1070,10 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
             "stable_cell_prospective_evidence",
             "stable-cell-prospective-evidence.json",
         ),
+        (
+            "quota_ceil_prospective_evidence",
+            "quota-ceil-prospective-evidence.json",
+        ),
     ):
         path = runtime_state_dir / filename
         try:
