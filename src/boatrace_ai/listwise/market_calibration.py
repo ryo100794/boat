@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+from statistics import NormalDist
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -211,6 +212,19 @@ V21_MODEL_NAME = V21_STRATEGY_NAME
 V21_COMPARISON_ROLE = (
     "strict_prior_triple_head_probability_v19_ranking_v18_purchase_v18_evaluation_only"
 )
+V35_STRATEGY_NAME = (
+    "odds_path_observed_closing_return_stable_policy_triple_head_v35"
+)
+V35_MODEL_NAME = V35_STRATEGY_NAME
+V35_COMPARISON_ROLE = (
+    "strict_prior_triple_head_v21_stable_paired_policy_v35_evaluation_only"
+)
+V35_MIN_ADAPTIVE_POLICY_DAYS = 7
+V35_MIN_ADAPTIVE_QUOTA_DAYS = 30
+V35_FIXED_DAILY_TICKET_LIMIT = 10
+V35_MIN_DAILY_TICKET_LIMIT = 5
+V35_MAX_DAILY_TICKET_LIMIT = 20
+V35_FAMILY_WISE_ALPHA = 0.05
 V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
@@ -219,6 +233,7 @@ SCHEDULE_QUOTA_STRATEGIES = frozenset({
     V19_STRATEGY_NAME,
     V20_STRATEGY_NAME,
     V21_STRATEGY_NAME,
+    V35_STRATEGY_NAME,
 })
 ROBUST_POLICY_STRATEGIES = frozenset({
     V17_STRATEGY_NAME,
@@ -228,10 +243,15 @@ ROBUST_POLICY_STRATEGIES = frozenset({
 EVALUATION_ONLY_STRATEGIES = frozenset({
     V20_STRATEGY_NAME,
     V21_STRATEGY_NAME,
+    V35_STRATEGY_NAME,
 })
 CHRONOLOGICAL_BANKROLL_STRATEGIES = frozenset({
     *ROBUST_POLICY_STRATEGIES,
     *EVALUATION_ONLY_STRATEGIES,
+})
+TRIPLE_HEAD_STRATEGIES = frozenset({
+    V21_STRATEGY_NAME,
+    V35_STRATEGY_NAME,
 })
 MIN_PROSPECTIVE_ARCHITECTURE_TICKETS = 300
 V6_RETURN_HIT_PRIORS = (0.0, 1.0, 2.0, 5.0, 10.0, 20.0)
@@ -261,6 +281,8 @@ PROSPECTIVE_TOP5_NARROW_EV_POLICY: dict[str, Any] = {
 
 
 def robust_policy_comparison_role(calibrator_strategy: str) -> str:
+    if calibrator_strategy == V35_STRATEGY_NAME:
+        return V35_COMPARISON_ROLE
     if calibrator_strategy == V21_STRATEGY_NAME:
         return V21_COMPARISON_ROLE
     if calibrator_strategy == V20_STRATEGY_NAME:
@@ -385,6 +407,8 @@ def odds_path_model_name(calibrator_strategy: str) -> str:
         return "odds_path_closing_return_v3"
     if calibrator_strategy == "odds_path_observed_closing_return":
         return "odds_path_observed_closing_return_v4"
+    if calibrator_strategy == V35_STRATEGY_NAME:
+        return V35_MODEL_NAME
     if calibrator_strategy == V21_STRATEGY_NAME:
         return V21_MODEL_NAME
     if calibrator_strategy == V20_STRATEGY_NAME:
@@ -2135,6 +2159,261 @@ def select_policy_v18(
     return v18_policy, rows
 
 
+def v35_registered_policy_candidates() -> list[dict[str, Any]]:
+    """Return the pre-registered anchor and one-axis V35 challengers."""
+    anchor = dict(PROSPECTIVE_NORMALIZED_EV_POLICY)
+    specifications = (
+        ("ev_threshold", 1.05, "ev_threshold_105"),
+        ("max_estimated_ev", 1.20, "max_estimated_ev_120"),
+        ("max_odds", 40.0, "max_odds_40"),
+        ("max_tickets_per_race", 1, "max_tickets_per_race_1"),
+        ("min_model_market_ratio", 1.05, "min_model_market_ratio_105"),
+        ("staking_mode", "kelly_025", "staking_kelly_025"),
+    )
+    candidates = [anchor]
+    for field, value, suffix in specifications:
+        candidate = dict(anchor)
+        candidate[field] = value
+        candidate["name"] = f"v35_{suffix}"
+        candidates.append(candidate)
+    if len(candidates) > 8:
+        raise AssertionError("V35 registered candidate set exceeds eight policies")
+    return candidates
+
+
+def _v35_ticket_control(
+    anchor_daily: list[dict[str, Any]],
+    *,
+    prior_days: int,
+) -> dict[str, Any]:
+    learned = learn_v18_daily_ticket_control(anchor_daily)
+    empirical_limit = min(
+        V35_MAX_DAILY_TICKET_LIMIT,
+        max(
+            V35_MIN_DAILY_TICKET_LIMIT,
+            int(learned["learned_daily_ticket_limit"]),
+        ),
+    )
+    alpha = min(
+        1.0,
+        max(
+            0.0,
+            (prior_days - V35_MIN_ADAPTIVE_POLICY_DAYS)
+            / (
+                V35_MIN_ADAPTIVE_QUOTA_DAYS
+                - V35_MIN_ADAPTIVE_POLICY_DAYS
+            ),
+        ),
+    )
+    if prior_days < V35_MIN_ADAPTIVE_QUOTA_DAYS:
+        daily_limit = V35_FIXED_DAILY_TICKET_LIMIT
+        quota_regime = "fixed_10_floor_before_30_prior_days"
+    else:
+        daily_limit = math.floor(
+            (1.0 - alpha) * V35_FIXED_DAILY_TICKET_LIMIT
+            + alpha * empirical_limit
+        )
+        daily_limit = min(
+            V35_MAX_DAILY_TICKET_LIMIT,
+            max(V35_MIN_DAILY_TICKET_LIMIT, daily_limit),
+        )
+        quota_regime = "strict_prior_q25_shrunk_and_bounded_floor"
+    return {
+        **learned,
+        "method": "v35_strict_prior_stable_daily_ticket_limit",
+        "learned_daily_ticket_limit": daily_limit,
+        "empirical_q25_daily_ticket_limit": empirical_limit,
+        "shrinkage_alpha": alpha,
+        "quota_regime": quota_regime,
+        "schedule_quota_rounding": "floor",
+        "schedule_quota_opportunity": None,
+        "result_or_payout_fields_used": False,
+    }
+
+
+def _v35_daily_profits(
+    result: dict[str, Any],
+) -> dict[str, float]:
+    chronological = result["chronological_bankroll"]
+    return {
+        str(row["race_date"]): float(row.get("profit_yen") or 0.0)
+        for row in chronological["daily"]
+    }
+
+
+def _v35_paired_profit_lcb(
+    anchor_daily: dict[str, float],
+    candidate_daily: dict[str, float],
+    *,
+    comparison_count: int,
+) -> tuple[float | None, float | None, float | None]:
+    dates = sorted(set(anchor_daily) | set(candidate_daily))
+    differences = np.asarray(
+        [
+            candidate_daily.get(date, 0.0) - anchor_daily.get(date, 0.0)
+            for date in dates
+        ],
+        dtype=np.float64,
+    )
+    if differences.size < 2 or comparison_count < 1:
+        return None, None, None
+    mean_difference = float(np.mean(differences))
+    standard_error = float(
+        np.std(differences, ddof=1) / math.sqrt(differences.size)
+    )
+    critical_value = NormalDist().inv_cdf(
+        1.0 - V35_FAMILY_WISE_ALPHA / comparison_count
+    )
+    stability_penalty = critical_value * standard_error
+    return (
+        mean_difference - stability_penalty,
+        stability_penalty,
+        mean_difference,
+    )
+
+
+def select_policy_v35(
+    races: list[dict[str, Any]],
+    *,
+    calibrator: dict[str, float],
+    daily_budget_yen: int,
+    policies: Iterable[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select a V21-path policy using strict-prior paired daily stability."""
+    registered = [
+        dict(policy)
+        for policy in (
+            policies if policies is not None else v35_registered_policy_candidates()
+        )
+    ]
+    if not registered:
+        raise ValueError("V35 requires its registered anchor policy")
+    if len(registered) > 8:
+        raise ValueError("V35 allows at most eight pre-registered policies")
+    anchor = dict(registered[0])
+    prior_days = len({str(race["race_date"]) for race in races})
+    prepared_races = []
+    for race in races:
+        item = dict(race)
+        item["_policy_calibrated_probabilities"] = blend_probabilities(
+            race["model_probabilities"],
+            race["market_probabilities"],
+            model_weight=float(calibrator["model_weight"]),
+            temperature=float(calibrator["temperature"]),
+        )
+        prepared_races.append(item)
+    prepared_matrix = (
+        prepare_policy_matrix(prepared_races, calibrator)
+        if prepared_races
+        else None
+    )
+    anchor_unconstrained = simulate_policy(
+        prepared_races,
+        calibrator=calibrator,
+        policy=anchor,
+        daily_budget_yen=daily_budget_yen,
+        prepared_policy_matrix=prepared_matrix,
+        include_chronological=False,
+        include_robust_metrics=False,
+    )
+    ticket_control = _v35_ticket_control(
+        anchor_unconstrained["daily"],
+        prior_days=prior_days,
+    )
+    evaluated_policies = (
+        registered
+        if prior_days >= V35_MIN_ADAPTIVE_POLICY_DAYS
+        else [anchor]
+    )
+    rows = []
+    results = []
+    for candidate in evaluated_policies:
+        controlled = {
+            **candidate,
+            "v18_ticket_control": dict(ticket_control),
+        }
+        result = simulate_policy(
+            prepared_races,
+            calibrator=calibrator,
+            policy=controlled,
+            daily_budget_yen=daily_budget_yen,
+            prepared_policy_matrix=prepared_matrix,
+            include_chronological=True,
+            include_robust_metrics=False,
+        )
+        bankroll = result["chronological_bankroll"]
+        results.append(result)
+        rows.append({
+            "policy": dict(candidate),
+            "eligible": True,
+            "tickets": int(bankroll["tickets"]),
+            "hit_tickets": int(bankroll["hit_tickets"]),
+            "stake_yen": int(bankroll["stake_yen"]),
+            "return_yen": int(bankroll["return_yen"]),
+            "profit_yen": int(bankroll["profit_yen"]),
+            "roi": float(bankroll["roi"]),
+            "max_drawdown_yen": int(bankroll["max_drawdown_yen"]),
+            "winning_days": int(bankroll["winning_days"]),
+            "race_days": int(bankroll["race_days"]),
+            "paired_profit_lcb_yen": 0.0 if not rows else None,
+            "stability_penalty_yen": 0.0 if not rows else None,
+            "paired_profit_mean_difference_yen": 0.0 if not rows else None,
+        })
+
+    selected_index = 0
+    fallback_reason = None
+    selection_regime = "fixed_anchor_warmup"
+    comparison_count = max(0, len(evaluated_policies) - 1)
+    if prior_days < V35_MIN_ADAPTIVE_POLICY_DAYS:
+        fallback_reason = "strict_prior_days_below_7"
+    else:
+        selection_regime = "paired_stability_selection"
+        anchor_daily = _v35_daily_profits(results[0])
+        qualified = []
+        for index in range(1, len(results)):
+            lower, penalty, mean_difference = _v35_paired_profit_lcb(
+                anchor_daily,
+                _v35_daily_profits(results[index]),
+                comparison_count=comparison_count,
+            )
+            rows[index].update({
+                "paired_profit_lcb_yen": lower,
+                "stability_penalty_yen": penalty,
+                "paired_profit_mean_difference_yen": mean_difference,
+            })
+            if lower is not None and lower > 0.0:
+                qualified.append(index)
+        if qualified:
+            selected_index = min(
+                qualified,
+                key=lambda index: (
+                    -float(rows[index]["paired_profit_lcb_yen"]),
+                    -float(rows[index]["paired_profit_mean_difference_yen"]),
+                    str(rows[index]["policy"]["name"]),
+                ),
+            )
+        else:
+            selection_regime = "paired_stability_fallback"
+            fallback_reason = "no_candidate_positive_bonferroni_lcb"
+
+    selected_row = rows[selected_index]
+    diagnostics = {
+        "selection_regime": selection_regime,
+        "prior_days": prior_days,
+        "fixed_anchor_policy": anchor,
+        "adaptive_candidate_count": comparison_count,
+        "paired_profit_lcb_yen": selected_row["paired_profit_lcb_yen"],
+        "stability_penalty_yen": selected_row["stability_penalty_yen"],
+        "fallback_reason": fallback_reason,
+    }
+    selected_policy = {
+        **evaluated_policies[selected_index],
+        "v18_ticket_control": ticket_control,
+        "v35_selection_diagnostics": diagnostics,
+    }
+    return selected_policy, rows
+
+
 def policy_calibration_eligible(
     result: dict[str, Any],
     *,
@@ -3029,6 +3308,7 @@ def fit_deployment_configuration(
         V19_STRATEGY_NAME,
         V20_STRATEGY_NAME,
         V21_STRATEGY_NAME,
+        V35_STRATEGY_NAME,
         "odds_path_hit_shrunk_return",
         "odds_path_prequential_shrinkage_return",
     }:
@@ -3052,6 +3332,7 @@ def fit_deployment_configuration(
                         V19_STRATEGY_NAME,
                         V20_STRATEGY_NAME,
                         V21_STRATEGY_NAME,
+                        V35_STRATEGY_NAME,
                         "odds_path_hit_shrunk_return",
                     }
                     else "decision_t5"
@@ -3076,10 +3357,11 @@ def fit_deployment_configuration(
         if calibrator_strategy in {
             V20_STRATEGY_NAME,
             V21_STRATEGY_NAME,
+            V35_STRATEGY_NAME,
         }:
             dual_head_calibration = (
                 fit_v21_triple_head_calibrators(races)
-                if calibrator_strategy == V21_STRATEGY_NAME
+                if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                 else fit_v20_dual_head_calibrators(races)
             )
             probability_calibrator_selection = dual_head_calibration[
@@ -3171,7 +3453,9 @@ def fit_deployment_configuration(
         for race in policy_races
     )
     policy_selector = (
-        select_policy_v18
+        select_policy_v35
+        if calibrator_strategy == V35_STRATEGY_NAME
+        else select_policy_v18
         if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES
         else select_policy_v17
         if calibrator_strategy == V17_STRATEGY_NAME
@@ -3185,7 +3469,7 @@ def fit_deployment_configuration(
     return {
         "role": (
             "evaluation_only_triple_head_refit"
-            if calibrator_strategy == V21_STRATEGY_NAME
+            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
             else "evaluation_only_dual_head_refit"
             if calibrator_strategy == V20_STRATEGY_NAME
             else "next_day_refit_not_evaluation"
@@ -3223,7 +3507,7 @@ def fit_deployment_configuration(
             {
                 (
                     "triple_head_calibration"
-                    if calibrator_strategy == V21_STRATEGY_NAME
+                    if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                     else "dual_head_calibration"
                 ): dual_head_calibration,
                 "probability_calibrator": probability_calibrator,
@@ -3233,7 +3517,7 @@ def fit_deployment_configuration(
                         "ranking_calibrator": ranking_calibrator,
                         "ranking_calibrator_selection": ranking_calibrator_selection,
                     }
-                    if calibrator_strategy == V21_STRATEGY_NAME
+                    if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                     else {}
                 ),
                 "purchase_calibrator": purchase_calibrator,
@@ -3578,6 +3862,7 @@ def walk_forward_evaluate(
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
             V21_STRATEGY_NAME,
+            V35_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }:
@@ -3598,6 +3883,7 @@ def walk_forward_evaluate(
                 V19_STRATEGY_NAME,
                 V20_STRATEGY_NAME,
                 V21_STRATEGY_NAME,
+                V35_STRATEGY_NAME,
                 "odds_path_hit_shrunk_return",
             }:
                 calibration_races = attach_observed_closing_return_prices(
@@ -3620,6 +3906,7 @@ def walk_forward_evaluate(
                             V19_STRATEGY_NAME,
                             V20_STRATEGY_NAME,
                             V21_STRATEGY_NAME,
+                            V35_STRATEGY_NAME,
                             "odds_path_hit_shrunk_return",
                         }
                         else "decision_t5"
@@ -3647,10 +3934,11 @@ def walk_forward_evaluate(
             if calibrator_strategy in {
                 V20_STRATEGY_NAME,
                 V21_STRATEGY_NAME,
+                V35_STRATEGY_NAME,
             }:
                 dual_head_calibration = (
                     fit_v21_triple_head_calibrators(calibration_races)
-                    if calibrator_strategy == V21_STRATEGY_NAME
+                    if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                     else fit_v20_dual_head_calibrators(calibration_races)
                 )
                 probability_calibrator_selection = dual_head_calibration[
@@ -3754,7 +4042,9 @@ def walk_forward_evaluate(
         closing_odds_model = closing_policy_fold["model"]
         closing_odds_evaluation = closing_policy_fold["evaluation"]
         policy_selector = (
-            select_policy_v18
+            select_policy_v35
+            if calibrator_strategy == V35_STRATEGY_NAME
+            else select_policy_v18
             if calibrator_strategy in SCHEDULE_QUOTA_STRATEGIES
             else select_policy_v17
             if calibrator_strategy == V17_STRATEGY_NAME
@@ -3792,7 +4082,7 @@ def walk_forward_evaluate(
             )
         top5_narrow_simulator = (
             simulate_chronological_flat_policy
-            if calibrator_strategy == V21_STRATEGY_NAME
+            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
             else simulate_flat_policy
         )
         top5_narrow_retrospective_bankroll = top5_narrow_simulator(
@@ -3810,7 +4100,7 @@ def walk_forward_evaluate(
         v32_prospective_bankroll = None
         v33_retrospective_bankroll = None
         v33_prospective_bankroll = None
-        if calibrator_strategy == V21_STRATEGY_NAME:
+        if calibrator_strategy in TRIPLE_HEAD_STRATEGIES:
             v32_retrospective_bankroll = simulate_dual_head_conformal_policy_v32(
                 holdout_conformal_lower_races,
                 probability_calibrator=probability_calibrator,
@@ -3867,7 +4157,7 @@ def walk_forward_evaluate(
                 probability_calibrator=probability_calibrator,
                 ranking_calibrator=ranking_calibrator,
             )
-            if calibrator_strategy == V21_STRATEGY_NAME
+            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
             else probability_metrics(
                 holdout, calibrator=probability_calibrator
             )
@@ -3879,7 +4169,7 @@ def walk_forward_evaluate(
                 probability_blender=blend_probabilities,
             )
         )
-        if calibrator_strategy == V21_STRATEGY_NAME:
+        if calibrator_strategy in TRIPLE_HEAD_STRATEGIES:
             (
                 fold_loss_differences,
                 fold_top5_differences,
@@ -3915,7 +4205,7 @@ def walk_forward_evaluate(
                     {
                         (
                             "triple_head_calibration"
-                            if calibrator_strategy == V21_STRATEGY_NAME
+                            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                             else "dual_head_calibration"
                         ): dual_head_calibration,
                         "probability_calibrator": probability_calibrator,
@@ -3929,7 +4219,7 @@ def walk_forward_evaluate(
                                     ranking_calibrator_selection
                                 ),
                             }
-                            if calibrator_strategy == V21_STRATEGY_NAME
+                            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                             else {}
                         ),
                         "purchase_calibrator": purchase_calibrator,
@@ -3945,7 +4235,7 @@ def walk_forward_evaluate(
                                 ),
                                 "market_top5_comparison_head": "ranking_head",
                             }
-                            if calibrator_strategy == V21_STRATEGY_NAME
+                            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
                             else {}
                         ),
                         "chronological_bankroll_head": "purchase_head",
@@ -4372,7 +4662,7 @@ def walk_forward_evaluate(
         market_top5_differences,
         cluster_labels=market_cluster_labels,
     )
-    if calibrator_strategy == V21_STRATEGY_NAME:
+    if calibrator_strategy in TRIPLE_HEAD_STRATEGIES:
         market_comparison.update({
             "logloss_difference_source": "probability_head",
             "top5_difference_source": "ranking_head",
@@ -4491,6 +4781,7 @@ def walk_forward_evaluate(
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
             V21_STRATEGY_NAME,
+            V35_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
         }
@@ -4606,7 +4897,7 @@ def walk_forward_evaluate(
             "selected_policy": {"name": "no_bet", "no_bet": True},
             "operational_status": "evaluation_only_challenger",
         })
-    if calibrator_strategy == V21_STRATEGY_NAME:
+    if calibrator_strategy in TRIPLE_HEAD_STRATEGIES:
         candidate_policy = deployment_configuration.get(
             "candidate_policy",
             deployment_configuration["selected_policy"],
@@ -4865,7 +5156,7 @@ def walk_forward_evaluate(
                     "chronological_bankroll_source": "purchase_head",
                 }
             }
-            if calibrator_strategy == V21_STRATEGY_NAME
+            if calibrator_strategy in TRIPLE_HEAD_STRATEGIES
             else {}
         ),
         "promotion_gate": promotion_gate,
@@ -6594,6 +6885,7 @@ def build_parser() -> argparse.ArgumentParser:
             V19_STRATEGY_NAME,
             V20_STRATEGY_NAME,
             V21_STRATEGY_NAME,
+            V35_STRATEGY_NAME,
             "odds_path_hit_shrunk_return",
             "odds_path_prequential_shrinkage_return",
             "odds_path_crossfit_conservative_ev",
