@@ -8,7 +8,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from ..adaptive_allocation import allocate_adaptive_day
+from ..discrete_log_allocation import allocate_discrete_log_day
 from ..chronological_bankroll import (
     simulate_chronological_bankroll_day,
     summarize_chronological_bankroll_days,
@@ -285,16 +285,12 @@ def evaluate_four_head_v22_bankroll(
             max_decision_exposure_fraction=0.30,
             race_cap_fraction=0.05,
             ticket_cap_fraction=0.02,
+            max_tickets_per_race=2,
             max_daily_tickets=None,
             schedule=schedule,
             stake_granularity_yen=stake_unit_yen,
-            allocate_day=allocate_adaptive_day,
-            allocator_kwargs={
-                "fractional_kelly": 0.25,
-                "min_daily_exposure_fraction": 0.0,
-                "allocation_mode": "normalized_kelly",
-            },
-            allocation_method="v22_four_head_chronological_adaptive_kelly",
+            allocate_day=allocate_discrete_log_day,
+            allocation_method="v22_four_head_chronological_discrete_log",
         )
         daily.append(day_result)
 
@@ -325,7 +321,7 @@ def evaluate_four_head_v22_bankroll(
             "official_payout_role": "post_allocation_settlement_only",
             "result_available_at_source": RESULT_AVAILABLE_AT_PROVENANCE,
             "allocation_api": (
-                "simulate_chronological_bankroll_day+allocate_adaptive_day"
+                "simulate_chronological_bankroll_day+allocate_discrete_log_day"
             ),
             "allocation_signal": "learned_purchase_head_expected_unit_return",
         },
