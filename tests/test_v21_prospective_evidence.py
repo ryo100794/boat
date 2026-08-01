@@ -152,6 +152,8 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
             "races": 2,
             "tickets": 2,
             "hit_tickets": 2,
+            "expected_hit_tickets": 1.0,
+            "expected_no_hit_probability": 0.25,
             "stake_yen": 200,
             "return_yen": 600,
             "profit_yen": 400,
@@ -169,6 +171,16 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
     assert result["bankroll"]["daily_cluster_bootstrap_roi_lower_95"] == 3.0
     assert result["bankroll"]["profitable_day_fraction"] == 1.0
     assert result["bankroll"]["effective_hit_count"] == 2.0
+    assert result["purchase_probability_calibration"] == {
+        "selected_races": 2,
+        "observed_hits": 2,
+        "expected_hits": 1.0,
+        "observed_to_expected_hit_ratio": 2.0,
+        "expected_no_hit_probability": 0.25,
+        "standardized_hit_residual": pytest.approx(2**0.5),
+        "probability_at_most_observed_hits": 1.0,
+        "method": "exact_poisson_binomial_lower_tail_over_disjoint_race_selections",
+    }
     assert result["market"]["model_trifecta_log_loss"] < result["market"]["market_trifecta_log_loss"]
     assert result["market"]["model_trifecta_top5"] == 1.0
     assert result["market"]["market_trifecta_top5"] == 0.0
@@ -264,6 +276,43 @@ def test_outer_outcomes_change_only_evaluation_not_decision_boundary() -> None:
         "outer_payout_used_as_decision_feature": False,
         "real_betting_enabled": False,
     }
+
+
+def test_overconfident_selected_probabilities_block_promotion() -> None:
+    rows = evidence_rows(races_per_day=20)
+    for index, decision in enumerate(rows["decisions"]):
+        selected = decision["selected_candidates"][0]["combination"]
+        probabilities = probability_vector(selected, mass=0.9)
+        decision["probabilities"] = probabilities
+        decision["diagnostics"]["v21_triple_head"][
+            "ranking_probabilities"
+        ] = probabilities
+        if index < 2:
+            rows["settlements"][index].update(
+                payout_yen_per_100=3000,
+                return_yen=3000,
+                profit_yen=2900,
+            )
+            rows["payouts"][index]["payout_yen"] = 3000
+            continue
+        actual = next(item for item in COMBINATIONS if item != selected)
+        rows["settlements"][index].update(
+            actual_combination=actual,
+            return_yen=0,
+            profit_yen=-100,
+        )
+        rows["payouts"][index].update(combination=actual)
+
+    result = aggregate(rows, minimum_races=20, minimum_tickets=20)
+
+    calibration = result["purchase_probability_calibration"]
+    assert calibration["observed_hits"] == 2
+    assert calibration["expected_hits"] == pytest.approx(18.0)
+    assert calibration["probability_at_most_observed_hits"] < 0.05
+    assert result["promotion_gate"]["checks"][
+        "selected_probability_not_overconfident"
+    ] is False
+    assert result["promotion_gate"]["pass"] is False
 
 
 class FakeCursor:
