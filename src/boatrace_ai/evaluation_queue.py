@@ -1808,6 +1808,8 @@ def build_command(
             "minimum_day_coverage", "timeout_seconds",
             "v12_closing_fallback_policy",
             "v25_probability_artifact",
+            "closing_odds_min_training_days",
+            "closing_odds_min_training_races",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1905,6 +1907,12 @@ def build_command(
             ),
             "--min-calibration-days", str(
                 _integer(params, "min_calibration_days", 2, 1, 365)
+            ),
+            "--closing-odds-min-training-days", str(
+                _integer(params, "closing_odds_min_training_days", 7, 2, 30)
+            ),
+            "--closing-odds-min-training-races", str(
+                _integer(params, "closing_odds_min_training_races", 500, 100, 5000)
             ),
             "--calibrator-strategy", strategy,
             "--minimum-day-coverage", str(

@@ -3122,6 +3122,8 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "through_date": "2026-07-24",
                 "calibrator_strategy": "newton_residual",
                 "v25_probability_artifact": "data/models/evaluation_queue/job-00002606.json",
+                "closing_odds_min_training_days": 4,
+                "closing_odds_min_training_races": 250,
             },
         ),
         app_root=root,
@@ -3151,6 +3153,12 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[command.index("--v25-probability-artifact") + 1] == str(
         v25_artifact
     )
+    assert command[
+        command.index("--closing-odds-min-training-days") + 1
+    ] == "4"
+    assert command[
+        command.index("--closing-odds-min-training-races") + 1
+    ] == "250"
     assert command[command.index("--through-date") + 1] == "2026-07-24"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 

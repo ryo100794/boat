@@ -2695,12 +2695,17 @@ def verifiable_closing_odds_races(
     ]
 
 
-def closing_odds_training_ready(races: Iterable[dict[str, Any]]) -> bool:
+def closing_odds_training_ready(
+    races: Iterable[dict[str, Any]],
+    *,
+    min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
+    min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
+) -> bool:
     eligible = list(races)
     return bool(
-        len(eligible) >= MIN_CLOSING_ODDS_TRAINING_RACES
+        len(eligible) >= min_training_races
         and len({str(race["race_date"]) for race in eligible})
-        >= MIN_CLOSING_ODDS_TRAINING_DAYS
+        >= min_training_days
     )
 
 
@@ -2774,6 +2779,9 @@ def _attach_oof_closing_odds_forecast(
 
 def prequential_closing_odds_policy_inputs(
     races: list[dict[str, Any]],
+    *,
+    min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
+    min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
 ) -> dict[str, Any]:
     """Build date-OOF policy prices using strictly earlier closing teachers."""
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -2798,7 +2806,11 @@ def prequential_closing_odds_policy_inputs(
         fallback_reason = None
         if not teachers:
             fallback_reason = "no_strictly_prior_closing_odds_teachers"
-        elif not closing_odds_training_ready(teachers):
+        elif not closing_odds_training_ready(
+            teachers,
+            min_training_days=min_training_days,
+            min_training_races=min_training_races,
+        ):
             fallback_reason = "insufficient_strictly_prior_closing_odds_teachers"
         else:
             try:
@@ -3246,6 +3258,8 @@ def walk_forward_evaluate(
     evaluation_dates: Iterable[str] | None = None,
     v12_closing_fallback_policy: str = "v11",
     v25_probability_artifact: dict[str, Any] | None = None,
+    closing_odds_min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
+    closing_odds_min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
 ) -> dict[str, Any]:
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
@@ -3381,7 +3395,11 @@ def walk_forward_evaluate(
             calibrator_strategy=calibrator_strategy,
         )
 
-    closing_policy_inputs = prequential_closing_odds_policy_inputs(races)
+    closing_policy_inputs = prequential_closing_odds_policy_inputs(
+        races,
+        min_training_days=closing_odds_min_training_days,
+        min_training_races=closing_odds_min_training_races,
+    )
     conformal_lower_inputs = prequential_conformal_lower_odds_policy_inputs(races)
     closing_odds_forecast = {
         key: value
@@ -6414,6 +6432,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=MARKET_MAX_SNAPSHOT_AGE_SECONDS,
     )
+    parser.add_argument(
+        "--closing-odds-min-training-days",
+        type=int,
+        default=MIN_CLOSING_ODDS_TRAINING_DAYS,
+    )
+    parser.add_argument(
+        "--closing-odds-min-training-races",
+        type=int,
+        default=MIN_CLOSING_ODDS_TRAINING_RACES,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -6524,6 +6552,8 @@ def main(argv: list[str] | None = None) -> int:
         evaluation_dates=formal_dates,
         v12_closing_fallback_policy=args.v12_closing_fallback_policy,
         v25_probability_artifact=v25_probability_artifact,
+        closing_odds_min_training_days=args.closing_odds_min_training_days,
+        closing_odds_min_training_races=args.closing_odds_min_training_races,
     )
     benchmark_evaluated = sum(
         str(race["race_date"]) in set(benchmark["benchmark_dates"])
@@ -6549,6 +6579,10 @@ def main(argv: list[str] | None = None) -> int:
             "through_date": args.through_date,
             "dataset": dataset,
             "evaluation_version": MARKET_EVALUATION_VERSION,
+            "closing_odds_training_gate": {
+                "minimum_days": args.closing_odds_min_training_days,
+                "minimum_races": args.closing_odds_min_training_races,
+            },
             "odds_data_signature": odds_signature,
             "coverage_gate": coverage_gate,
             "scored_cache": str(cache_path),

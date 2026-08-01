@@ -44,6 +44,11 @@ def test_policy_gate_requires_seven_days_and_500_verified_races() -> None:
 
     assert closing_odds_training_ready(too_few) is False
     assert closing_odds_training_ready(enough) is True
+    assert closing_odds_training_ready(
+        too_few[:250],
+        min_training_days=4,
+        min_training_races=250,
+    ) is True
 
 
 def test_quantile_research_metrics_use_daily_walk_forward_only() -> None:
