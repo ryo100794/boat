@@ -125,6 +125,9 @@ def test_uses_existing_chronological_allocator_and_official_settlement(
     assert result["policy"]["allocation_signal"] == (
         "learned_purchase_head_expected_unit_return"
     )
+    assert result["daily"][0]["allocation_method"] == (
+        "v22_four_head_chronological_discrete_log"
+    )
     assert result["diagnostic_unit_roi_is_formal_roi"] is False
 
 
@@ -136,7 +139,7 @@ def test_learned_purchase_return_controls_stake_size(
         module,
         "predict_race",
         lambda _artifact, source: _prediction(
-            source, (0,), purchase_score=0.2
+            source, (0,), purchase_score=0.05
         ),
     )
     low = evaluate_four_head_v22_bankroll(
