@@ -3992,3 +3992,43 @@ def test_result_summary_exposes_v33_forecast_only_metrics() -> None:
     assert summary["v33_v25_top1_narrow_forecast_only_roi"] == 0.8217
     assert summary["v33_v25_top1_narrow_forecast_only_evaluation_days"] == 2
     assert summary["v33_v25_top1_narrow_forecast_only_promotion_evidence"] is False
+
+
+def test_result_summary_derives_v33_forecast_only_metrics_from_folds() -> None:
+    summary = summarize_result({
+        "folds": [
+            {
+                "closing_odds_policy_input": "observed_t5_fallback",
+                "v33_v25_top1_narrow_retrospective_bankroll": {
+                    "evaluated_races": 100,
+                    "tickets": 10,
+                    "hit_tickets": 2,
+                    "stake_yen": 1000,
+                    "return_yen": 1500,
+                    "largest_hit_return_yen": 900,
+                    "hit_return_square_sum_yen2": 1170000,
+                },
+            },
+            {
+                "closing_odds_policy_input": "oof_forecast_final_from_real_t5",
+                "v33_v25_top1_narrow_retrospective_bankroll": {
+                    "evaluated_races": 120,
+                    "tickets": 20,
+                    "hit_tickets": 3,
+                    "stake_yen": 2000,
+                    "return_yen": 1800,
+                    "largest_hit_return_yen": 800,
+                    "hit_return_square_sum_yen2": 1080000,
+                },
+            },
+        ],
+    })
+
+    prefix = "v33_v25_top1_narrow_forecast_only"
+    assert summary[f"{prefix}_evaluation_days"] == 1
+    assert summary[f"{prefix}_evaluated_races"] == 120
+    assert summary[f"{prefix}_tickets"] == 20
+    assert summary[f"{prefix}_roi"] == 0.9
+    assert summary[f"{prefix}_profit_yen"] == -200
+    assert summary[f"{prefix}_roi_without_largest_hit"] == 0.5
+    assert summary[f"{prefix}_promotion_evidence"] is False
