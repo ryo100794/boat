@@ -429,8 +429,10 @@ def test_race_contract_keeps_local_and_official_closing_separate(
                     "race_date": "2026-07-22",
                     "jcd": "01",
                     "rno": 1,
+                    "lane": lane,
                 }
             }
+            for lane in range(1, 7)
         ]
         monkeypatch.setattr(
             "boatrace_ai.listwise.market_calibration."

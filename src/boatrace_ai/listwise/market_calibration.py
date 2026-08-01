@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import joblib
 import numpy as np
@@ -6343,6 +6343,181 @@ def write_scored_cache(
         temporary.unlink(missing_ok=True)
 
 
+def load_or_build_scored_cache(
+    path: Path,
+    *,
+    contract: dict[str, Any],
+    builder: Callable[[], tuple[list[dict[str, Any]], dict[str, int]]],
+) -> tuple[list[dict[str, Any]], dict[str, int], str]:
+    cached = load_scored_cache(path, contract=contract)
+    if cached is not None:
+        races, dataset = cached
+        return races, dataset, "disk"
+    with scored_cache_build_lock(path):
+        cached = load_scored_cache(path, contract=contract)
+        if cached is not None:
+            races, dataset = cached
+            return races, dataset, "disk_after_wait"
+        races, dataset = builder()
+        write_scored_cache(
+            path,
+            contract=contract,
+            races=races,
+            dataset=dataset,
+        )
+        return races, dataset, "built"
+
+
+def baseline_scored_cache_path(
+    candidate_cache_path: Path,
+    *,
+    baseline_model_path: Path,
+    baseline_model_sha256: str,
+) -> Path:
+    suffix = ".races.joblib"
+    name = candidate_cache_path.name
+    prefix = name[:-len(suffix)] if name.endswith(suffix) else candidate_cache_path.stem
+    return candidate_cache_path.with_name(
+        f"{prefix}.baseline-{baseline_model_path.stem}-"
+        f"{baseline_model_sha256[:16]}{suffix}"
+    )
+
+
+def geometric_blend_model_probabilities(
+    candidate: dict[str, float],
+    baseline: dict[str, float],
+    *,
+    candidate_weight: float,
+) -> dict[str, float]:
+    weight = float(candidate_weight)
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("candidate_weight must be finite and in [0, 1]")
+    if not candidate or set(candidate) != set(baseline):
+        raise ValueError("candidate and baseline probability combinations must match")
+    ordered_keys = list(candidate)
+    candidate_values = {key: float(candidate[key]) for key in ordered_keys}
+    baseline_values = {key: float(baseline[key]) for key in ordered_keys}
+    if any(
+        not math.isfinite(value) or value < 0.0
+        for value in (*candidate_values.values(), *baseline_values.values())
+    ):
+        raise ValueError("model probabilities must be finite and non-negative")
+    candidate_total = sum(candidate_values.values())
+    baseline_total = sum(baseline_values.values())
+    if not math.isclose(candidate_total, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+        raise ValueError("candidate model probabilities must sum to one")
+    if not math.isclose(baseline_total, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+        raise ValueError("baseline model probabilities must sum to one")
+    if weight == 0.0:
+        return dict(baseline)
+    if weight == 1.0:
+        return dict(candidate)
+    blended = {
+        key: math.pow(candidate_values[key], weight)
+        * math.pow(baseline_values[key], 1.0 - weight)
+        for key in ordered_keys
+    }
+    total = sum(blended.values())
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError("geometric probability blend has no finite positive mass")
+    return {key: value / total for key, value in blended.items()}
+
+
+def validate_fixed_model_blend(
+    baseline_model: str | None,
+    candidate_weight: float | None,
+) -> float | None:
+    if (baseline_model is None) != (candidate_weight is None):
+        raise ValueError(
+            "--baseline-model and --candidate-weight must be provided together"
+        )
+    if baseline_model is None:
+        return None
+    if not str(baseline_model).strip():
+        raise ValueError("--baseline-model must not be empty")
+    weight = float(candidate_weight)
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("--candidate-weight must be finite and in [0, 1]")
+    return weight
+
+
+def blend_scored_model_probabilities(
+    candidate_races: list[dict[str, Any]],
+    baseline_races: list[dict[str, Any]],
+    *,
+    candidate_weight: float,
+    candidate_dataset: dict[str, int] | None = None,
+    baseline_dataset: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    if (
+        candidate_dataset is not None
+        and baseline_dataset is not None
+        and candidate_dataset != baseline_dataset
+    ):
+        raise ValueError("candidate and baseline scored datasets differ")
+
+    def index_races(
+        races: list[dict[str, Any]], *, label: str
+    ) -> dict[str, dict[str, Any]]:
+        indexed: dict[str, dict[str, Any]] = {}
+        for race in races:
+            race_id = str(race.get("race_id") or "")
+            if not race_id:
+                raise ValueError(f"{label} scored race is missing race_id")
+            if race_id in indexed:
+                raise ValueError(f"duplicate {label} scored race_id: {race_id}")
+            indexed[race_id] = race
+        return indexed
+
+    candidates = index_races(candidate_races, label="candidate")
+    baselines = index_races(baseline_races, label="baseline")
+    if set(candidates) != set(baselines):
+        candidate_only = sorted(set(candidates) - set(baselines))
+        baseline_only = sorted(set(baselines) - set(candidates))
+        raise ValueError(
+            "candidate and baseline scored race_id sets differ: "
+            f"candidate_only={candidate_only[:5]}, baseline_only={baseline_only[:5]}"
+        )
+
+    blended_races = []
+    for candidate_race in candidate_races:
+        race_id = str(candidate_race["race_id"])
+        baseline_race = baselines[race_id]
+        candidate_context = {
+            key: value
+            for key, value in candidate_race.items()
+            if key != "model_probabilities"
+        }
+        baseline_context = {
+            key: value
+            for key, value in baseline_race.items()
+            if key != "model_probabilities"
+        }
+        if _stable_signature_fingerprint(candidate_context) != (
+            _stable_signature_fingerprint(baseline_context)
+        ):
+            differing_keys = sorted(
+                key
+                for key in set(candidate_context) | set(baseline_context)
+                if _stable_signature_fingerprint(candidate_context.get(key))
+                != _stable_signature_fingerprint(baseline_context.get(key))
+            )
+            raise ValueError(
+                f"candidate and baseline scored race data differ for {race_id}: "
+                + ", ".join(differing_keys)
+            )
+        blended_race = dict(candidate_race)
+        blended_race["model_probabilities"] = (
+            geometric_blend_model_probabilities(
+                candidate_race.get("model_probabilities") or {},
+                baseline_race.get("model_probabilities") or {},
+                candidate_weight=candidate_weight,
+            )
+        )
+        blended_races.append(blended_race)
+    return blended_races
+
+
 @contextmanager
 def scored_cache_build_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -6394,6 +6569,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db", default="data/boatrace.sqlite")
     parser.add_argument("--model", default="data/models/listwise_newton_cg_v1.joblib")
+    parser.add_argument("--baseline-model")
+    parser.add_argument("--candidate-weight", type=float)
     parser.add_argument(
         "--output",
         default="data/models/listwise_market_calibrated_shadow.json",
@@ -6460,6 +6637,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    candidate_weight = validate_fixed_model_blend(
+        args.baseline_model,
+        args.candidate_weight,
+    )
     init_db(args.db)
     model_path = Path(args.model)
     output_path = Path(args.output)
@@ -6469,6 +6650,10 @@ def main(argv: list[str] | None = None) -> int:
         else output_path.with_suffix(".races.joblib")
     )
     artifact = joblib.load(model_path)
+    baseline_model_path = Path(args.baseline_model) if args.baseline_model else None
+    baseline_artifact = (
+        joblib.load(baseline_model_path) if baseline_model_path is not None else None
+    )
     v25_probability_artifact = None
     v25_artifact_audit = None
     if args.v25_probability_artifact:
@@ -6495,32 +6680,54 @@ def main(argv: list[str] | None = None) -> int:
         max_snapshot_age_seconds=args.max_snapshot_age_seconds,
         odds_signature=odds_signature,
     )
-    cached = load_scored_cache(cache_path, contract=contract)
-    if cached is None:
-        with scored_cache_build_lock(cache_path):
-            cached = load_scored_cache(cache_path, contract=contract)
-            if cached is None:
-                with connection(args.db) as conn:
-                    races, dataset = score_real_odds_races(
-                        conn,
-                        artifact=artifact,
-                        from_date=args.from_date,
-                        through_date=args.through_date,
-                        max_snapshot_age_seconds=args.max_snapshot_age_seconds,
-                    )
-                write_scored_cache(
-                    cache_path,
-                    contract=contract,
-                    races=races,
-                    dataset=dataset,
-                )
-                cache_source = "built"
-            else:
-                races, dataset = cached
-                cache_source = "disk_after_wait"
-    else:
-        races, dataset = cached
-        cache_source = "disk"
+    def score_artifact(
+        source_artifact: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        with connection(args.db) as conn:
+            return score_real_odds_races(
+                conn,
+                artifact=source_artifact,
+                from_date=args.from_date,
+                through_date=args.through_date,
+                max_snapshot_age_seconds=args.max_snapshot_age_seconds,
+            )
+
+    races, dataset, cache_source = load_or_build_scored_cache(
+        cache_path,
+        contract=contract,
+        builder=lambda: score_artifact(artifact),
+    )
+    baseline_contract = None
+    baseline_cache_path = None
+    baseline_cache_source = None
+    if baseline_model_path is not None and baseline_artifact is not None:
+        baseline_contract = scored_cache_contract(
+            model_path=baseline_model_path,
+            artifact=baseline_artifact,
+            from_date=args.from_date,
+            through_date=args.through_date,
+            max_snapshot_age_seconds=args.max_snapshot_age_seconds,
+            odds_signature=odds_signature,
+        )
+        baseline_cache_path = baseline_scored_cache_path(
+            cache_path,
+            baseline_model_path=baseline_model_path,
+            baseline_model_sha256=baseline_contract["model_sha256"],
+        )
+        baseline_races, baseline_dataset, baseline_cache_source = (
+            load_or_build_scored_cache(
+                baseline_cache_path,
+                contract=baseline_contract,
+                builder=lambda: score_artifact(baseline_artifact),
+            )
+        )
+        races = blend_scored_model_probabilities(
+            races,
+            baseline_races,
+            candidate_weight=float(candidate_weight),
+            candidate_dataset=dataset,
+            baseline_dataset=baseline_dataset,
+        )
     clean_races, coverage_gate = filter_clean_market_days(
         races,
         day_targets=day_targets,
@@ -6585,6 +6792,14 @@ def main(argv: list[str] | None = None) -> int:
             "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "source_model": str(args.model),
             "source_model_sha256": contract["model_sha256"],
+            "candidate_model_sha256": contract["model_sha256"],
+            "baseline_model": (
+                str(baseline_model_path) if baseline_model_path is not None else None
+            ),
+            "baseline_model_sha256": (
+                baseline_contract["model_sha256"] if baseline_contract else None
+            ),
+            "candidate_weight": candidate_weight,
             "source_model_trained_through": artifact.get("trained_through"),
             "v25_probability_artifact": v25_artifact_audit,
             "from_date": args.from_date,
@@ -6599,6 +6814,10 @@ def main(argv: list[str] | None = None) -> int:
             "coverage_gate": coverage_gate,
             "scored_cache": str(cache_path),
             "scored_cache_source": cache_source,
+            "baseline_scored_cache": (
+                str(baseline_cache_path) if baseline_cache_path is not None else None
+            ),
+            "baseline_scored_cache_source": baseline_cache_source,
             "calibration_input_scope": (
                 "all_eligible_races_including_partial_market_days"
                 if args.calibrator_strategy
