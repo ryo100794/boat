@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
+import joblib
 import pytest
 
 from boatrace_ai.paired_market_comparison import compare_market_results, main
@@ -96,6 +97,7 @@ def _result(*, candidate: bool = False) -> dict:
         "benchmark_dates": ["2026-07-30", "2026-07-31"],
         "odds_data_signature": {"version": 4, "sha256": "same-source"},
         "evaluation_races": 4,
+        "benchmark_evaluation_races_sha256": "a" * 64,
         "chronological_bankroll": {
             "daily": daily,
             "tickets": sum(day["tickets"] for day in daily),
@@ -166,10 +168,7 @@ def test_ticket_and_stake_turnover_include_changed_stake_and_membership() -> Non
         (lambda row: row.__setitem__("benchmark_dates", ["2026-07-30"]), "benchmark_dates mismatch"),
         (lambda row: row.__setitem__("odds_data_signature", {"sha256": "other"}), "odds_data_signature mismatch"),
         (lambda row: row.__setitem__("evaluation_races", 3), "evaluation_races mismatch"),
-        (
-            lambda row: row["chronological_bankroll"]["daily"][0]["ledger"][0].__setitem__("race_id", "different-race"),
-            "evaluation races mismatch",
-        ),
+        (lambda row: row.__setitem__("benchmark_evaluation_races_sha256", "b" * 64), "evaluation_races_sha256 mismatch"),
         (
             lambda row: row["chronological_bankroll"]["daily"][0].__setitem__("profit_yen", 999),
             "profit_yen is inconsistent",
@@ -190,8 +189,22 @@ def test_contract_and_malformed_fixtures_fail_closed(mutation, message: str) -> 
 def test_cli_prints_reproducible_json(tmp_path, capsys) -> None:
     anchor_path = tmp_path / "anchor.json"
     candidate_path = tmp_path / "candidate.json"
-    anchor_path.write_text(json.dumps(_result()), encoding="utf-8")
-    candidate_path.write_text(json.dumps(_result(candidate=True)), encoding="utf-8")
+    cache_path = tmp_path / "scored.joblib"
+    joblib.dump({
+        "races": [
+            {"race_date": race_date, "race_id": f"{race_date}-01-{rno:02d}"}
+            for race_date in ("2026-07-30", "2026-07-31")
+            for rno in (1, 2)
+        ]
+    }, cache_path)
+    anchor = _result()
+    candidate = _result(candidate=True)
+    anchor.pop("benchmark_evaluation_races_sha256")
+    candidate.pop("benchmark_evaluation_races_sha256")
+    anchor["scored_cache"] = str(cache_path)
+    candidate["scored_cache"] = str(cache_path)
+    anchor_path.write_text(json.dumps(anchor), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
 
     assert main([
         "--anchor", str(anchor_path),

@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 
 
@@ -78,6 +79,59 @@ def _load_json(path: Path) -> dict[str, Any]:
     return dict(_require_mapping(value, str(path)))
 
 
+def _evaluation_population_sha256_from_cache(
+    result: Mapping[str, Any], *, result_path: Path
+) -> str:
+    cache_value = _require_string(
+        result.get("scored_cache"), f"{result_path}.scored_cache"
+    )
+    cache_path = Path(cache_value)
+    if not cache_path.is_absolute():
+        cache_path = (result_path.parent / cache_path).resolve()
+    try:
+        payload = joblib.load(cache_path)
+    except (OSError, ValueError, EOFError) as exc:
+        raise ValueError(f"cannot read scored cache {cache_path}: {exc}") from exc
+    cache = _require_mapping(payload, str(cache_path))
+    races = _require_list(cache.get("races"), f"{cache_path}.races")
+    dates = set(
+        _require_string(value, f"{result_path}.benchmark_dates")
+        for value in _require_list(
+            result.get("benchmark_dates"), f"{result_path}.benchmark_dates"
+        )
+    )
+    race_ids = sorted({
+        _require_string(race.get("race_id"), f"{cache_path}.races[].race_id")
+        for raw_race in races
+        for race in [_require_mapping(raw_race, f"{cache_path}.races[]")]
+        if str(race.get("race_date") or "") in dates
+    })
+    expected = _require_int(
+        result.get("evaluation_races"), f"{result_path}.evaluation_races"
+    )
+    if len(race_ids) != expected:
+        raise ValueError(
+            f"{cache_path} benchmark race count mismatch: "
+            f"expected {expected}, got {len(race_ids)}"
+        )
+    return _canonical_sha256(race_ids)
+
+
+def _attach_evaluation_population_contract(
+    result: dict[str, Any], *, result_path: Path
+) -> dict[str, Any]:
+    enriched = dict(result)
+    fingerprint = enriched.get("benchmark_evaluation_races_sha256")
+    if fingerprint is None:
+        fingerprint = _evaluation_population_sha256_from_cache(
+            enriched, result_path=result_path
+        )
+    enriched["benchmark_evaluation_races_sha256"] = _require_string(
+        fingerprint, f"{result_path}.benchmark_evaluation_races_sha256"
+    )
+    return enriched
+
+
 def _contract(result: Mapping[str, Any], label: str) -> dict[str, Any]:
     version = result.get("evaluation_version")
     if isinstance(version, bool) or not isinstance(version, (int, str)):
@@ -105,12 +159,24 @@ def _contract(result: Mapping[str, Any], label: str) -> dict[str, Any]:
     evaluation_races = _require_int(
         result.get("evaluation_races"), f"{label}.evaluation_races"
     )
+    evaluation_races_sha256 = _require_string(
+        result.get("benchmark_evaluation_races_sha256"),
+        f"{label}.benchmark_evaluation_races_sha256",
+    )
+    if len(evaluation_races_sha256) != 64 or any(
+        character not in "0123456789abcdef"
+        for character in evaluation_races_sha256
+    ):
+        raise ValueError(
+            f"{label}.benchmark_evaluation_races_sha256 must be a SHA-256 hex digest"
+        )
     return {
         "evaluation_version": version,
         "calibrator_strategy": strategy,
         "benchmark_dates": dates,
         "odds_data_signature": odds_signature,
         "evaluation_races": evaluation_races,
+        "evaluation_races_sha256": evaluation_races_sha256,
     }
 
 
@@ -206,8 +272,8 @@ def _extract_bankroll(result: Mapping[str, Any], label: str) -> dict[str, Any]:
         evaluated_races = _require_int(
             day.get("evaluated_races"), f"{day_field}.evaluated_races"
         )
-        if evaluated_races != decision_count:
-            raise ValueError(f"{day_field}.evaluated_races does not match decisions")
+        if decision_count > evaluated_races:
+            raise ValueError(f"{day_field}.ledger has too many decisions")
         if selected_count != day_tickets or selected_stake != day_stake:
             raise ValueError(f"{day_field} ticket totals do not match ledger")
         daily_profits[race_date] = day_profit
@@ -275,15 +341,12 @@ def _validate_pair(
         "benchmark_dates",
         "odds_data_signature",
         "evaluation_races",
+        "evaluation_races_sha256",
     ):
         if anchor_contract[field] != candidate_contract[field]:
             raise ValueError(f"anchor/candidate {field} mismatch")
     if anchor_bankroll["dates"] != candidate_bankroll["dates"]:
         raise ValueError("anchor/candidate evaluation dates mismatch")
-    if anchor_bankroll["race_keys"] != candidate_bankroll["race_keys"]:
-        raise ValueError("anchor/candidate evaluation races mismatch")
-    if len(anchor_bankroll["race_keys"]) != anchor_contract["evaluation_races"]:
-        raise ValueError("evaluation_races does not match chronological decisions")
 
 
 def _bootstrap_daily_profit_difference(
@@ -395,7 +458,6 @@ def compare_market_results(
             bootstrap["one_sided_5pct_lower_yen"] >= 0.0
         ),
     }
-    race_keys = [list(key) for key in sorted(anchor_bankroll["race_keys"])]
     return {
         "schema_version": SCHEMA_VERSION,
         "contract": {
@@ -404,8 +466,7 @@ def compare_market_results(
                 anchor_contract["odds_data_signature"]
             ),
             "evaluation_dates": anchor_bankroll["dates"],
-            "evaluation_race_count": len(race_keys),
-            "evaluation_races_sha256": _canonical_sha256(race_keys),
+            "evaluation_race_count": anchor_contract["evaluation_races"],
         },
         "tickets": {
             "anchor_count": len(anchor_keys),
@@ -483,8 +544,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         result = compare_market_results(
-            _load_json(args.anchor),
-            _load_json(args.candidate),
+            _attach_evaluation_population_contract(
+                _load_json(args.anchor), result_path=args.anchor
+            ),
+            _attach_evaluation_population_contract(
+                _load_json(args.candidate), result_path=args.candidate
+            ),
             seed=args.seed,
             samples=args.samples,
             min_ticket_jaccard=args.min_ticket_jaccard,
