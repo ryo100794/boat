@@ -1436,6 +1436,8 @@ def summarize_registered_policy_daily(
     selected_policy = REGISTERED_EV_BAND_POLICY if policy is None else policy
     stake_yen = sum(int(row.get("stake_yen") or 0) for row in daily)
     return_yen = sum(int(row.get("return_yen") or 0) for row in daily)
+    winning_days = sum(int((row.get("profit_yen") or 0) > 0) for row in daily)
+    bootstrap = bootstrap_daily_roi(daily) if daily else None
     return {
         "status": "evaluating" if daily else "waiting_for_first_unseen_day",
         "comparison_role": "prospective_only_pre_registered_policy_chronological_shadow",
@@ -1450,6 +1452,16 @@ def summarize_registered_policy_daily(
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "winning_days": winning_days,
+        "profitable_day_fraction": winning_days / len(daily) if daily else None,
+        "daily_cluster_bootstrap_roi_lower_95": (
+            bootstrap["roi_ci95_lower"] if bootstrap is not None else None
+        ),
+        "probability_roi_above_one": (
+            bootstrap["probability_roi_above_one"]
+            if bootstrap is not None
+            else None
+        ),
         **bankroll_reliability_metrics(daily, evaluated_races=evaluated_races),
         "daily": daily,
     }
