@@ -51,6 +51,10 @@ QUOTA_CEIL_PROSPECTIVE_START_DATE = "2026-08-02"
 QUOTA_CEIL_MODEL_KEY = "quota_ceil_daily"
 QUOTA_CEIL_STRATEGY = "quota_ceil_v21_t300"
 QUOTA_CEIL_DIAGNOSTIC_KEY = "v21_triple_head"
+RAW_GUARD_PROSPECTIVE_START_DATE = "2026-08-02"
+RAW_GUARD_MODEL_KEY = "raw_guard_daily"
+RAW_GUARD_STRATEGY = "raw_guard_v21_t300"
+RAW_GUARD_DIAGNOSTIC_KEY = "v21_triple_head"
 FAMILIES = ("v12", "v14", "v16")
 ALL_FAMILIES = (*FAMILIES, "v18")
 BUNDLE_FAMILIES = (*ALL_FAMILIES, "v20", "v21")
@@ -1513,6 +1517,26 @@ def collect_quota_ceil_prospective_evidence(
     )
 
 
+def collect_raw_guard_prospective_evidence(
+    conn: Any,
+    *,
+    state_root: Path,
+    through_date: str,
+) -> dict[str, Any]:
+    return collect_v21_prospective_evidence(
+        PostgresqlConnection(conn),
+        config=V21ProspectiveEvidenceConfig(
+            start_date=RAW_GUARD_PROSPECTIVE_START_DATE,
+            through_date=through_date,
+            model_key=RAW_GUARD_MODEL_KEY,
+            expected_strategy_name=RAW_GUARD_STRATEGY,
+            diagnostic_key=RAW_GUARD_DIAGNOSTIC_KEY,
+            evidence_kind="raw_guard_fixed_identity_fully_unseen_prospective",
+        ),
+        output_path=state_root / "raw-guard-prospective-evidence.json",
+    )
+
+
 def run_once(
     conn: Any,
     *,
@@ -1615,6 +1639,7 @@ def run_once(
     v23_evidence = None
     stable_cell_evidence = None
     quota_ceil_evidence = None
+    raw_guard_evidence = None
     current_active = _active_state(state_root)
     if (
         now.date().isoformat() >= V21_PROSPECTIVE_START_DATE
@@ -1660,6 +1685,12 @@ def run_once(
                 state_root=state_root,
                 through_date=now.date().isoformat(),
             )
+        if now.date().isoformat() >= RAW_GUARD_PROSPECTIVE_START_DATE:
+            raw_guard_evidence = collect_raw_guard_prospective_evidence(
+                conn,
+                state_root=state_root,
+                through_date=now.date().isoformat(),
+            )
     return {
         "status": status, "through_date": through, "prediction_date": prediction,
         "jobs": {family: job.job_id for family, job in jobs.items()},
@@ -1670,6 +1701,7 @@ def run_once(
         "v23_prospective_evidence": v23_evidence,
         "stable_cell_prospective_evidence": stable_cell_evidence,
         "quota_ceil_prospective_evidence": quota_ceil_evidence,
+        "raw_guard_prospective_evidence": raw_guard_evidence,
     }
 
 
