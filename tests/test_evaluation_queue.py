@@ -462,6 +462,38 @@ def test_four_head_pairwise_rank_requires_teacher_version_ten(
 
 
 
+def test_four_head_temporal_aggregate_uses_only_queue_result_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    command, output = build_command(
+        _job(
+            "four_head_temporal_aggregate",
+            {"source_job_ids": [11198, 11216, 11246, 11247]},
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["four_head_temporal_aggregate"]["memory_mb"] == 512
+    assert command[1:3] == [
+        "-m",
+        "boatrace_ai.listwise.four_head_temporal_aggregate",
+    ]
+    assert command.count("--input") == 4
+    assert str(root / "data/models/evaluation_queue/job-00011198.json") in command
+    assert command[-2:] == ["--output", str(output)]
+
+    with pytest.raises(ValueError, match="source_job_ids"):
+        build_command(
+            _job("four_head_temporal_aggregate", {"source_job_ids": [11198]}),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_four_head_offset_tail_requires_teacher_version_eleven(
     tmp_path: Path,
 ) -> None:
