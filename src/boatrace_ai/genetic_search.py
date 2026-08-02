@@ -19,6 +19,7 @@ class GeneticSearchSettings:
     mutation_rate: float = 0.30
     random_injections: int = 1
     max_workers: int = 4
+    execution_backend: str = "thread"
     seed: int = 33034
 
     def validate(self) -> None:
@@ -34,6 +35,8 @@ class GeneticSearchSettings:
             raise ValueError("random_injections must be smaller than population")
         if self.max_workers < 1:
             raise ValueError("max_workers must be positive")
+        if self.execution_backend not in {"thread", "process"}:
+            raise ValueError("execution_backend must be thread or process")
 
 
 @dataclass(frozen=True)
@@ -104,11 +107,21 @@ def evolve_population(
         candidates = list(unique.values())[: settings.population_size]
         uncached = [row for row in candidates if candidate_key(row) not in cache]
         if uncached:
-            with ThreadPoolExecutor(
-                max_workers=min(settings.max_workers, len(uncached)),
-                thread_name_prefix="genetic-fitness",
-            ) as executor:
-                metrics_rows = list(executor.map(evaluator, uncached))
+            workers = min(settings.max_workers, len(uncached))
+            if settings.execution_backend == "process" and workers > 1:
+                from joblib import Parallel, delayed
+
+                metrics_rows = Parallel(
+                    n_jobs=workers,
+                    backend="loky",
+                    batch_size="auto",
+                )(delayed(evaluator)(candidate) for candidate in uncached)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix="genetic-fitness",
+                ) as executor:
+                    metrics_rows = list(executor.map(evaluator, uncached))
             for candidate, metrics in zip(uncached, metrics_rows):
                 key = candidate_key(candidate)
                 cache[key] = EvaluatedCandidate(

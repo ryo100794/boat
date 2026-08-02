@@ -472,6 +472,7 @@ def run_joint_bankroll_evaluation(
                     mutation_rate=0.35,
                     random_injections=1,
                     max_workers=min(4, population_size),
+                    execution_backend="process",
                     seed=path_seed + 1,
                 ),
             )
