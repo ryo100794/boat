@@ -386,3 +386,20 @@ def test_outer_settlement_fails_closed_on_incomplete_official_data(
         evaluation._build_outer_settlements(
             object(), loaded.outer_races, loaded.decision_audit
         )
+
+
+def test_cli_accepts_context_factor_tweedie_purchase_loss() -> None:
+    args = evaluation.build_parser().parse_args(
+        [
+            "--db", "postgresql://test",
+            "--source-model", "source.joblib",
+            "--training-from", "2026-07-20",
+            "--training-through", "2026-07-30",
+            "--outer-from", "2026-07-31",
+            "--outer-through", "2026-08-01",
+            "--purchase-loss",
+            "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+        ]
+    )
+
+    assert args.purchase_loss.endswith("context_factor_tweedie")
