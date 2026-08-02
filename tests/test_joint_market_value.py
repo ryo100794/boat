@@ -4,97 +4,224 @@ import pytest
 
 from boatrace_ai.joint_market_value import (
     JointMarketScenario,
+    TRIFECTA_OUTCOMES,
     evaluate_joint_market_value,
     validate_probability_simplex,
+    validate_trifecta_probability_simplex,
 )
 
 
-def _payouts(scenario, bets):
-    assert set(bets) == {"1-2-3"}
-    return {"1-2-3": scenario.market_state["payout"]}
+def _ordinary_payoffs(scenario, bets):
+    multipliers = scenario.market_state["multipliers"]
+    return {
+        ticket: {ticket: round(stake * multipliers[ticket])}
+        for ticket, stake in bets.items()
+    }
 
 
 def test_joint_value_keeps_probability_price_covariance() -> None:
     draw = [
         JointMarketScenario(
-            {"1-2-3": 0.8, "1-3-2": 0.2}, {"payout": 1.2}
+            {"1-2-3": 0.8, "1-3-2": 0.2},
+            {"multipliers": {"1-2-3": 1.2}},
         ),
         JointMarketScenario(
-            {"1-2-3": 0.2, "1-3-2": 0.8}, {"payout": 6.0}
-        ),
-    ]
-    result = evaluate_joint_market_value(
-        [draw], bets_yen={"1-2-3": 100}, payout_model=_payouts
-    )
-    moments = result["moments_by_draw"][0]["tickets"]["1-2-3"]
-    assert moments["probability_payout_covariance"] == pytest.approx(-0.72)
-    assert moments["joint_expected_edge"] == pytest.approx(0.08)
-    assert moments["independence_approximation_edge"] == pytest.approx(0.8)
-
-
-def test_outer_quantile_is_over_path_integrated_parameter_draws() -> None:
-    draws = [
-        [JointMarketScenario({"1-2-3": 0.5, "1-3-2": 0.5}, {"payout": p}) for p in (2.4, 1.6)],
-        [JointMarketScenario({"1-2-3": 0.5, "1-3-2": 0.5}, {"payout": p}) for p in (2.0, 1.2)],
-    ]
-    result = evaluate_joint_market_value(
-        draws,
-        bets_yen={"1-2-3": 100},
-        payout_model=_payouts,
-        outer_alpha=0.5,
-    )
-    ticket = result["tickets"]["1-2-3"]
-    assert ticket["mean"] == pytest.approx(-0.1)
-    assert ticket["lower_quantile"] == pytest.approx(-0.1)
-    assert ticket["passes_purchase_gate"] is False
-
-
-def test_inner_tail_mean_penalizes_bad_market_paths() -> None:
-    draw = [
-        JointMarketScenario(
-            {"1-2-3": 0.5, "1-3-2": 0.5}, {"payout": 4.0}, weight=0.75
-        ),
-        JointMarketScenario(
-            {"1-2-3": 0.5, "1-3-2": 0.5}, {"payout": 1.0}, weight=0.25
+            {"1-2-3": 0.2, "1-3-2": 0.8},
+            {"multipliers": {"1-2-3": 6.0}},
         ),
     ]
     result = evaluate_joint_market_value(
         [draw],
         bets_yen={"1-2-3": 100},
-        payout_model=_payouts,
-        inner_tail_fraction=0.25,
+        gross_payoff_model=_ordinary_payoffs,
+        minimum_outer_draws=1,
     )
-    assert result["tickets"]["1-2-3"]["mean"] == pytest.approx(-0.5)
-    assert result["inner_aggregation"] == "weighted_lower_tail_mean"
+    moments = result["moments_by_draw"][0]["tickets"]["1-2-3"]
+    assert moments["probability_multiplier_covariance"] == pytest.approx(-0.72)
+    assert moments["joint_expected_edge"] == pytest.approx(0.08)
+    assert moments["ordinary_hit_independence_approximation_edge"] == pytest.approx(
+        0.8
+    )
 
 
-def test_payout_model_receives_complete_bet_vector_for_self_impact() -> None:
-    observed = []
+def test_portfolio_tail_is_taken_after_scenario_level_diversification() -> None:
+    scenarios = [
+        JointMarketScenario(
+            {"A": 0.5, "B": 0.5},
+            {"multipliers": {"A": 4.0, "B": 0.0}},
+        ),
+        JointMarketScenario(
+            {"A": 0.5, "B": 0.5},
+            {"multipliers": {"A": 0.0, "B": 4.0}},
+        ),
+    ]
+    result = evaluate_joint_market_value(
+        [scenarios],
+        bets_yen={"A": 100, "B": 100},
+        gross_payoff_model=_ordinary_payoffs,
+        inner_tail_fraction=0.5,
+        minimum_outer_draws=1,
+        minimum_inner_tail_effective_samples=1.0,
+    )
 
-    def payout_model(scenario, bets):
-        observed.append(dict(bets))
-        return {key: 2.0 for key in bets}
+    assert result["tickets"]["A"]["mean"] == pytest.approx(-1.0)
+    assert result["tickets"]["B"]["mean"] == pytest.approx(-1.0)
+    assert result["portfolio"]["mean"] == pytest.approx(0.0)
+    assert result["inner_aggregation"] == (
+        "portfolio_path_weighted_lower_tail_mean"
+    )
 
+
+def test_cancelled_terminal_state_returns_principal_without_hit() -> None:
     scenario = JointMarketScenario(
-        {"1-2-3": 0.5, "1-3-2": 0.5}, {"pool": 10_000}
+        {"A": 0.0, "B": 0.0, "cancelled": 1.0}, {}
     )
-    evaluate_joint_market_value(
+
+    def refunds(_scenario, bets):
+        return {ticket: {"cancelled": stake} for ticket, stake in bets.items()}
+
+    result = evaluate_joint_market_value(
         [[scenario]],
-        bets_yen={"1-2-3": 100, "1-3-2": 200},
-        payout_model=payout_model,
+        bets_yen={"A": 100},
+        gross_payoff_model=refunds,
+        expected_outcomes=("A", "B", "cancelled"),
+        minimum_outer_draws=1,
     )
-    assert observed == [{"1-2-3": 100, "1-3-2": 200}]
+
+    assert result["portfolio"]["mean"] == pytest.approx(0.0)
+    moments = result["moments_by_draw"][0]["tickets"]["A"]
+    assert moments["mean_probability"] == 0.0
+    assert moments["mean_other_terminal_receipts_per_yen"] == 1.0
+
+
+def test_marginal_contribution_recomputes_payoffs_after_ticket_removal() -> None:
+    observed_vectors = []
+
+    def self_impact_payoffs(_scenario, bets):
+        observed_vectors.append(dict(bets))
+        total = sum(bets.values())
+        return {
+            ticket: {ticket: round(stake * (3.0 - total / 1_000.0))}
+            for ticket, stake in bets.items()
+        }
+
+    scenario = JointMarketScenario({"A": 0.5, "B": 0.5}, {})
+    result = evaluate_joint_market_value(
+        [[scenario]],
+        bets_yen={"A": 100, "B": 200},
+        gross_payoff_model=self_impact_payoffs,
+        minimum_outer_draws=1,
+    )
+
+    assert {tuple(sorted(row)) for row in observed_vectors} == {
+        ("A", "B"),
+        ("A",),
+        ("B",),
+    }
+    assert result["marginal_contributions"]["A"]["available"] is True
+    assert "passes_purchase_gate" not in result["tickets"]["A"]
+
+
+def test_weighted_tail_uses_partial_boundary_mass() -> None:
+    draw = [
+        JointMarketScenario(
+            {"A": 0.5, "B": 0.5},
+            {"multipliers": {"A": 4.0}},
+            weight=0.75,
+        ),
+        JointMarketScenario(
+            {"A": 0.5, "B": 0.5},
+            {"multipliers": {"A": 1.0}},
+            weight=0.25,
+        ),
+    ]
+    result = evaluate_joint_market_value(
+        [draw],
+        bets_yen={"A": 100},
+        gross_payoff_model=_ordinary_payoffs,
+        inner_tail_fraction=0.5,
+        minimum_outer_draws=1,
+        minimum_inner_tail_effective_samples=0.1,
+    )
+
+    assert result["portfolio"]["mean"] == pytest.approx(0.25)
+
+
+def test_outer_quantile_uses_observed_order_statistic_not_interpolation() -> None:
+    draws = [
+        [JointMarketScenario({"A": 1.0}, {"multipliers": {"A": 1.0}})],
+        [JointMarketScenario({"A": 1.0}, {"multipliers": {"A": 2.0}})],
+    ]
+    result = evaluate_joint_market_value(
+        draws,
+        bets_yen={"A": 100},
+        gross_payoff_model=_ordinary_payoffs,
+        outer_alpha=0.5,
+        minimum_outer_draws=1,
+    )
+
+    assert result["portfolio"]["lower_quantile"] == pytest.approx(0.0)
+    assert result["outer_quantile_method"] == "inverted_cdf"
+
+
+def test_purchase_gate_is_disabled_when_outer_or_inner_evidence_is_small() -> None:
+    draws = [
+        [JointMarketScenario({"A": 1.0}, {"multipliers": {"A": 2.0}})]
+    ] * 2
+    result = evaluate_joint_market_value(
+        draws,
+        bets_yen={"A": 100},
+        gross_payoff_model=_ordinary_payoffs,
+        inner_tail_fraction=0.05,
+    )
+
+    assert result["portfolio"]["purchase_gate_evaluable"] is False
+    assert result["portfolio"]["passes_purchase_gate"] is False
+    assert set(result["portfolio"]["purchase_gate_reasons"]) == {
+        "insufficient_outer_parameter_draws",
+        "insufficient_inner_tail_effective_samples",
+    }
+
+
+def test_trifecta_adapter_requires_exactly_the_120_outcomes() -> None:
+    complete = {combination: 1.0 / 120.0 for combination in TRIFECTA_OUTCOMES}
+    validated = validate_trifecta_probability_simplex(complete)
+    assert len(validated) == 120
+
+    incomplete = dict(complete)
+    incomplete.pop(TRIFECTA_OUTCOMES[-1])
+    incomplete[TRIFECTA_OUTCOMES[0]] += 1.0 / 120.0
+    with pytest.raises(ValueError, match="expected set"):
+        validate_trifecta_probability_simplex(incomplete)
 
 
 @pytest.mark.parametrize(
     "probabilities",
     [
         {},
-        {"1-2-3": 0.4, "1-3-2": 0.4},
-        {"1-2-3": -0.1, "1-3-2": 1.1},
-        {"1-2-3": float("nan"), "1-3-2": 1.0},
+        {"A": 0.4, "B": 0.4},
+        {"A": -0.1, "B": 1.1},
+        {"A": float("nan"), "B": 1.0},
+        {1: 0.5, "1": 0.5},
     ],
 )
-def test_probability_simplex_is_enforced(probabilities) -> None:
+def test_probability_simplex_rejects_invalid_values_and_non_string_keys(
+    probabilities,
+) -> None:
     with pytest.raises(ValueError):
         validate_probability_simplex(probabilities)
+
+
+def test_payoff_table_must_match_bet_vector_exactly() -> None:
+    scenario = JointMarketScenario({"A": 1.0}, {})
+
+    def extra_ticket(_scenario, _bets):
+        return {"A": {"A": 100}, "B": {"A": 0}}
+
+    with pytest.raises(ValueError, match="complete bet vector"):
+        evaluate_joint_market_value(
+            [[scenario]],
+            bets_yen={"A": 100},
+            gross_payoff_model=extra_ticket,
+            minimum_outer_draws=1,
+        )

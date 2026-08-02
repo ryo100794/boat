@@ -226,6 +226,7 @@ Primary references:
 - This intentionally resets formal policy evidence to zero. It prevents a
   mathematically plausible correction designed after a result from appearing
   as untouched production evidence.
+
 ## Joint decision-time value contract
 
 The production purchase target is not a fixed probability ratio and is not the
@@ -245,10 +246,14 @@ popularity is an output of the path, never a decision-time feature.  The system
 must not replace `E[pi * D]` with `E[pi] * E[D]`; the omitted covariance can be
 material and its sign is estimated rather than assumed.
 
-The payout multiplier is a function of the complete proposed bet vector.  The
-payout engine, rather than the probability model, owns self-impact, refunds,
-rounding and special payouts.  The generic evaluator therefore requires a
-payout callback and deliberately has no approximate payout default.
+Settlement is a function of the complete proposed bet vector. The payoff
+engine returns integer-yen gross receipts for each ticket and terminal state,
+including ordinary trifecta outcomes, cancellations and refunds. It, rather
+than the probability model, owns self-impact, rounding and special payouts.
+The evaluator deliberately has no approximate payout default. The purchase
+gate applies only to the complete fixed bet vector; per-ticket values are
+diagnostics. Marginal ticket contribution reruns settlement after removing the
+ticket because self-impact changes with the vector.
 
 Parameter uncertainty and future-path uncertainty are kept separate.  For each
 outer parameter/refit draw `r`, future paths `s` are integrated to produce an
@@ -278,7 +283,13 @@ Selection resampling and sealed evaluation are distinct:
 - Meeting blocks and consecutive-day moving blocks test persistent racer,
   motor and venue effects.
 
-`boatrace_ai.joint_market_value.evaluate_joint_market_value` implements the
-value boundary, covariance diagnostics, inner lower-tail expectation and outer
-parameter quantile.  It is an evaluation primitive; it does not yet claim that
-the current closing-market model has learned a deployable joint distribution.
+`boatrace_ai.joint_market_value.evaluate_joint_market_value` is explicitly the
+`joint_market_value_evaluator_v0`. It evaluates pre-generated joint scenarios,
+computes portfolio-path lower-tail expectation before outer aggregation, uses
+an `inverted_cdf` empirical outer quantile, reports scenario ESS, and disables
+the purchase gate when outer or tail evidence is insufficient. It does not
+generate joint scenarios. Conditional copula/shared-state generation, partial
+pooling, closing-market distribution fitting, and connection of this evaluator
+to policy GA remain separate unfinished work. The current market-residual GA
+uses market-relative probability metrics and is not described as a joint-value
+GA.

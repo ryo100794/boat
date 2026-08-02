@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import permutations
 from math import fsum, isfinite
 from typing import Any, Callable, Mapping, Sequence
 
@@ -8,19 +9,25 @@ import numpy as np
 
 
 SIMPLEX_TOLERANCE = 1e-8
+MAX_EXACT_YEN = 2**53 - 1
+TRIFECTA_OUTCOMES = tuple(
+    "-".join(str(lane) for lane in order)
+    for order in permutations(range(1, 7), 3)
+)
 
 
 @dataclass(frozen=True)
 class JointMarketScenario:
-    """One shared future path for outcome probabilities and market state."""
+    """One already-generated joint path for probabilities and market state."""
 
     probabilities: Mapping[str, float]
     market_state: Mapping[str, Any] = field(default_factory=dict)
     weight: float = 1.0
 
 
-PayoutModel = Callable[
-    [JointMarketScenario, Mapping[str, int]], Mapping[str, float]
+GrossPayoffModel = Callable[
+    [JointMarketScenario, Mapping[str, int]],
+    Mapping[str, Mapping[str, int]],
 ]
 
 
@@ -36,21 +43,48 @@ def _finite_non_negative(value: object, name: str) -> float:
     return parsed
 
 
+def _non_negative_yen(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a non-negative integer yen amount")
+    parsed = int(value)
+    if parsed < 0 or parsed > MAX_EXACT_YEN:
+        raise ValueError(f"{name} must be a non-negative integer yen amount")
+    return parsed
+
+
 def validate_probability_simplex(
     probabilities: Mapping[str, float],
     *,
+    expected_outcomes: Sequence[str] | None = None,
     tolerance: float = SIMPLEX_TOLERANCE,
 ) -> dict[str, float]:
     if not probabilities:
         raise ValueError("probabilities must not be empty")
+    if any(not isinstance(key, str) or not key for key in probabilities):
+        raise ValueError("probability keys must be non-empty strings")
     parsed = {
-        str(combination): _finite_non_negative(value, "probability")
-        for combination, value in probabilities.items()
+        key: _finite_non_negative(value, "probability")
+        for key, value in probabilities.items()
     }
-    total = fsum(parsed.values())
-    if abs(total - 1.0) > tolerance:
+    if expected_outcomes is not None:
+        if any(not isinstance(value, str) or not value for value in expected_outcomes):
+            raise ValueError("expected_outcomes must be non-empty strings")
+        expected = set(expected_outcomes)
+        if len(expected) != len(expected_outcomes):
+            raise ValueError("expected_outcomes must be unique")
+        if set(parsed) != expected:
+            raise ValueError("probability outcomes do not match the expected set")
+    if abs(fsum(parsed.values()) - 1.0) > tolerance:
         raise ValueError("probabilities must sum to one")
     return parsed
+
+
+def validate_trifecta_probability_simplex(
+    probabilities: Mapping[str, float],
+) -> dict[str, float]:
+    return validate_probability_simplex(
+        probabilities, expected_outcomes=TRIFECTA_OUTCOMES
+    )
 
 
 def _normalized_weights(scenarios: Sequence[JointMarketScenario]) -> np.ndarray:
@@ -85,174 +119,302 @@ def _weighted_lower_tail_mean(
     return total / fraction
 
 
-def _outer_summary(values: Sequence[float], alpha: float) -> dict[str, float]:
+def _aggregate_path(
+    values: np.ndarray,
+    weights: np.ndarray,
+    inner_tail_fraction: float | None,
+) -> float:
+    return (
+        float(np.dot(weights, values))
+        if inner_tail_fraction is None
+        else _weighted_lower_tail_mean(values, weights, inner_tail_fraction)
+    )
+
+
+def _outer_summary(values: Sequence[float], alpha: float) -> dict[str, Any]:
     array = np.asarray(values, dtype=np.float64)
     return {
         "mean": float(np.mean(array)),
-        "lower_quantile": float(np.quantile(array, alpha)),
+        "lower_quantile": float(
+            np.quantile(array, alpha, method="inverted_cdf")
+        ),
         "minimum": float(np.min(array)),
         "maximum": float(np.max(array)),
+        "quantile_method": "inverted_cdf",
     }
+
+
+def _validate_bets(bets_yen: Mapping[str, int]) -> dict[str, int]:
+    parsed = {}
+    for combination, amount in bets_yen.items():
+        if not isinstance(combination, str) or not combination:
+            raise ValueError("bet keys must be non-empty strings")
+        value = _non_negative_yen(amount, "bet")
+        if value > 0:
+            parsed[combination] = value
+    if not parsed:
+        raise ValueError("at least one positive bet is required")
+    return parsed
+
+
+def _scenario_paths(
+    scenarios: Sequence[JointMarketScenario],
+    *,
+    bets: Mapping[str, int],
+    gross_payoff_model: GrossPayoffModel,
+    costs: Mapping[str, int],
+    expected_outcomes: Sequence[str] | None,
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray, dict[str, Any]]:
+    weights = _normalized_weights(scenarios)
+    ticket_edges = {
+        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
+    }
+    portfolio_edges = np.empty(len(scenarios), dtype=np.float64)
+    probability_paths = {
+        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
+    }
+    winning_multiplier_paths = {
+        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
+    }
+    other_receipt_paths = {
+        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
+    }
+    total_stake = sum(bets.values())
+    total_cost = sum(costs.get(ticket, 0) for ticket in bets)
+
+    for scenario_index, scenario in enumerate(scenarios):
+        probabilities = validate_probability_simplex(
+            scenario.probabilities, expected_outcomes=expected_outcomes
+        )
+        missing_probabilities = set(bets) - set(probabilities)
+        if missing_probabilities:
+            raise ValueError(
+                "scenario is missing bet outcomes: "
+                + ", ".join(sorted(missing_probabilities))
+            )
+        payoff_table = gross_payoff_model(scenario, bets)
+        if set(payoff_table) != set(bets):
+            raise ValueError(
+                "payoff model ticket keys must match the complete bet vector"
+            )
+        portfolio_gross = 0.0
+        for ticket, stake in bets.items():
+            receipts = payoff_table[ticket]
+            if not isinstance(receipts, Mapping):
+                raise ValueError("payoff table values must map outcomes to yen")
+            if any(not isinstance(state, str) or not state for state in receipts):
+                raise ValueError("payoff terminal states must be non-empty strings")
+            unknown = set(receipts) - set(probabilities)
+            if unknown:
+                raise ValueError(
+                    "payoff model returned unknown terminal states: "
+                    + ", ".join(sorted(unknown))
+                )
+            parsed_receipts = {
+                state: _non_negative_yen(amount, "gross receipt")
+                for state, amount in receipts.items()
+            }
+            gross = fsum(
+                probabilities[state] * parsed_receipts.get(state, 0)
+                for state in probabilities
+            )
+            portfolio_gross += gross
+            ticket_edges[ticket][scenario_index] = (
+                gross - stake - costs.get(ticket, 0)
+            ) / stake
+            hit_receipt = parsed_receipts.get(ticket, 0)
+            hit_probability = probabilities[ticket]
+            probability_paths[ticket][scenario_index] = hit_probability
+            winning_multiplier_paths[ticket][scenario_index] = hit_receipt / stake
+            other_receipt_paths[ticket][scenario_index] = (
+                gross - hit_probability * hit_receipt
+            ) / stake
+        portfolio_edges[scenario_index] = (
+            portfolio_gross - total_stake - total_cost
+        ) / total_stake
+    diagnostics = {
+        "probabilities": probability_paths,
+        "winning_multipliers": winning_multiplier_paths,
+        "other_receipts_per_yen": other_receipt_paths,
+    }
+    return weights, ticket_edges, portfolio_edges, diagnostics
 
 
 def evaluate_joint_market_value(
     parameter_draws: Sequence[Sequence[JointMarketScenario]],
     *,
     bets_yen: Mapping[str, int],
-    payout_model: PayoutModel,
-    operational_margins: Mapping[str, float] | None = None,
+    gross_payoff_model: GrossPayoffModel,
+    operational_costs_yen: Mapping[str, int] | None = None,
+    expected_outcomes: Sequence[str] | None = None,
     outer_alpha: float = 0.05,
     inner_tail_fraction: float | None = None,
     buy_margin: float = 0.0,
+    minimum_outer_draws: int = 20,
+    minimum_inner_tail_effective_samples: float = 5.0,
 ) -> dict[str, Any]:
-    """Evaluate ticket value without assuming probability/price independence.
-
-    The payout model receives the complete bet vector for every scenario. It is
-    responsible for self-impact, refunds, rounding and special payouts. The
-    lower tail, when requested, is taken over conditional expected edge paths;
-    realized Bernoulli returns are intentionally not used as a purchase gate.
-    """
-
+    """Evaluate already-generated joint scenarios; this does not generate them."""
     if not parameter_draws:
         raise ValueError("parameter_draws must not be empty")
     if not 0.0 < outer_alpha < 1.0:
         raise ValueError("outer_alpha must be in (0, 1)")
+    if isinstance(minimum_outer_draws, bool) or not isinstance(
+        minimum_outer_draws, int
+    ) or minimum_outer_draws < 1:
+        raise ValueError("minimum_outer_draws must be positive")
+    minimum_tail_ess = _finite_non_negative(
+        minimum_inner_tail_effective_samples,
+        "minimum_inner_tail_effective_samples",
+    )
     threshold = _finite_non_negative(buy_margin, "buy_margin")
-    parsed_bets: dict[str, int] = {}
-    for combination, raw_value in bets_yen.items():
-        if isinstance(raw_value, bool) or not isinstance(raw_value, int):
-            raise ValueError("bets_yen values must be non-negative integers")
-        if raw_value < 0:
-            raise ValueError("bets_yen values must be non-negative integers")
-        if raw_value > 0:
-            parsed_bets[str(combination)] = raw_value
-    if not parsed_bets:
-        raise ValueError("at least one positive bet is required")
-    margins = {
-        combination: _finite_non_negative(value, "operational margin")
-        for combination, value in (operational_margins or {}).items()
+    bets = _validate_bets(bets_yen)
+    costs = {
+        ticket: _non_negative_yen(value, "operational cost")
+        for ticket, value in (operational_costs_yen or {}).items()
     }
-    total_stake = float(sum(parsed_bets.values()))
-    outer_ticket_values = {combination: [] for combination in parsed_bets}
+    unknown_costs = set(costs) - set(bets)
+    if unknown_costs:
+        raise ValueError("operational costs contain unknown tickets")
+    outer_ticket_values = {ticket: [] for ticket in bets}
     outer_portfolio_values: list[float] = []
-    moments_by_draw: list[dict[str, Any]] = []
+    moments_by_draw = []
+    inner_effective_samples = []
 
     for draw_index, draw in enumerate(parameter_draws):
         scenarios = list(draw)
-        weights = _normalized_weights(scenarios)
-        edge_paths = {
-            combination: np.empty(len(scenarios), dtype=np.float64)
-            for combination in parsed_bets
-        }
-        probability_paths = {
-            combination: np.empty(len(scenarios), dtype=np.float64)
-            for combination in parsed_bets
-        }
-        payout_paths = {
-            combination: np.empty(len(scenarios), dtype=np.float64)
-            for combination in parsed_bets
-        }
-        for scenario_index, scenario in enumerate(scenarios):
-            probabilities = validate_probability_simplex(scenario.probabilities)
-            missing = set(parsed_bets) - set(probabilities)
-            if missing:
-                raise ValueError(
-                    "scenario is missing bet probabilities: "
-                    + ", ".join(sorted(missing))
-                )
-            payouts = payout_model(scenario, parsed_bets)
-            missing = set(parsed_bets) - set(payouts)
-            if missing:
-                raise ValueError(
-                    "payout model is missing bet multipliers: "
-                    + ", ".join(sorted(missing))
-                )
-            for combination in parsed_bets:
-                probability = probabilities[combination]
-                payout = _finite_non_negative(
-                    payouts[combination], "payout multiplier"
-                )
-                probability_paths[combination][scenario_index] = probability
-                payout_paths[combination][scenario_index] = payout
-                edge_paths[combination][scenario_index] = (
-                    probability * payout - 1.0 - margins.get(combination, 0.0)
-                )
-
-        draw_ticket_values: dict[str, float] = {}
-        draw_moments: dict[str, Any] = {"draw": draw_index, "tickets": {}}
-        for combination in parsed_bets:
-            edges = edge_paths[combination]
-            value = (
-                float(np.dot(weights, edges))
-                if inner_tail_fraction is None
-                else _weighted_lower_tail_mean(
-                    edges, weights, float(inner_tail_fraction)
-                )
+        weights, ticket_paths, portfolio_path, diagnostics = _scenario_paths(
+            scenarios,
+            bets=bets,
+            gross_payoff_model=gross_payoff_model,
+            costs=costs,
+            expected_outcomes=expected_outcomes,
+        )
+        ess = 1.0 / float(np.dot(weights, weights))
+        inner_effective_samples.append(ess)
+        draw_moments = {"draw": draw_index, "tickets": {}}
+        for ticket in bets:
+            outer_ticket_values[ticket].append(
+                _aggregate_path(ticket_paths[ticket], weights, inner_tail_fraction)
             )
-            draw_ticket_values[combination] = value
-            outer_ticket_values[combination].append(value)
-            mean_probability = float(
-                np.dot(weights, probability_paths[combination])
-            )
-            mean_payout = float(np.dot(weights, payout_paths[combination]))
-            mean_product = float(
-                np.dot(
-                    weights,
-                    probability_paths[combination] * payout_paths[combination],
-                )
-            )
-            draw_moments["tickets"][combination] = {
+            probabilities = diagnostics["probabilities"][ticket]
+            multipliers = diagnostics["winning_multipliers"][ticket]
+            other_receipts = diagnostics["other_receipts_per_yen"][ticket]
+            mean_probability = float(np.dot(weights, probabilities))
+            mean_multiplier = float(np.dot(weights, multipliers))
+            mean_product = float(np.dot(weights, probabilities * multipliers))
+            mean_other = float(np.dot(weights, other_receipts))
+            draw_moments["tickets"][ticket] = {
                 "mean_probability": mean_probability,
-                "mean_payout_multiplier": mean_payout,
-                "mean_probability_times_payout": mean_product,
-                "probability_payout_covariance": (
-                    mean_product - mean_probability * mean_payout
+                "mean_winning_multiplier": mean_multiplier,
+                "mean_hit_probability_times_multiplier": mean_product,
+                "probability_multiplier_covariance": (
+                    mean_product - mean_probability * mean_multiplier
                 ),
-                "joint_expected_edge": (
-                    mean_product - 1.0 - margins.get(combination, 0.0)
-                ),
-                "independence_approximation_edge": (
-                    mean_probability * mean_payout
+                "mean_other_terminal_receipts_per_yen": mean_other,
+                "joint_expected_edge": float(np.dot(weights, ticket_paths[ticket])),
+                "ordinary_hit_independence_approximation_edge": (
+                    mean_probability * mean_multiplier
+                    + mean_other
                     - 1.0
-                    - margins.get(combination, 0.0)
+                    - costs.get(ticket, 0) / bets[ticket]
                 ),
             }
         outer_portfolio_values.append(
-            fsum(
-                parsed_bets[combination] * draw_ticket_values[combination]
-                for combination in parsed_bets
-            )
-            / total_stake
+            _aggregate_path(portfolio_path, weights, inner_tail_fraction)
         )
         moments_by_draw.append(draw_moments)
 
-    tickets = {}
-    for combination, values in outer_ticket_values.items():
-        summary = _outer_summary(values, outer_alpha)
-        summary["passes_purchase_gate"] = summary["lower_quantile"] > threshold
-        tickets[combination] = summary
+    tickets = {
+        ticket: {
+            **_outer_summary(values, outer_alpha),
+            "role": "diagnostic_only_not_an_independent_purchase_command",
+        }
+        for ticket, values in outer_ticket_values.items()
+    }
     portfolio = _outer_summary(outer_portfolio_values, outer_alpha)
-    portfolio["passes_purchase_gate"] = portfolio["lower_quantile"] > threshold
+    tail_effective_samples = (
+        min(inner_effective_samples) * inner_tail_fraction
+        if inner_tail_fraction is not None
+        else None
+    )
+    gate_reasons = []
+    if len(parameter_draws) < minimum_outer_draws:
+        gate_reasons.append("insufficient_outer_parameter_draws")
+    if tail_effective_samples is not None and tail_effective_samples < minimum_tail_ess:
+        gate_reasons.append("insufficient_inner_tail_effective_samples")
+    gate_evaluable = not gate_reasons
+    portfolio["purchase_gate_evaluable"] = gate_evaluable
+    portfolio["passes_purchase_gate"] = bool(
+        gate_evaluable and portfolio["lower_quantile"] > threshold
+    )
+    portfolio["purchase_gate_reasons"] = gate_reasons
+
+    marginal_contributions = {}
+    for removed_ticket in bets:
+        reduced_bets = {
+            ticket: amount for ticket, amount in bets.items() if ticket != removed_ticket
+        }
+        if not reduced_bets:
+            marginal_contributions[removed_ticket] = {
+                "available": False,
+                "reason": "removing_the_only_ticket_leaves_no_portfolio",
+            }
+            continue
+        reduced_values = []
+        reduced_costs = {
+            ticket: amount for ticket, amount in costs.items() if ticket in reduced_bets
+        }
+        for draw in parameter_draws:
+            weights, _tickets, portfolio_path, _diagnostics = _scenario_paths(
+                list(draw),
+                bets=reduced_bets,
+                gross_payoff_model=gross_payoff_model,
+                costs=reduced_costs,
+                expected_outcomes=expected_outcomes,
+            )
+            reduced_values.append(
+                _aggregate_path(portfolio_path, weights, inner_tail_fraction)
+            )
+        differences = [
+            full - reduced
+            for full, reduced in zip(outer_portfolio_values, reduced_values)
+        ]
+        marginal_contributions[removed_ticket] = {
+            "available": True,
+            "definition": "V(full_bet_vector)-V(vector_without_ticket)",
+            **_outer_summary(differences, outer_alpha),
+        }
+
     return {
-        "definition": "E[pi_T * D_T(b) | F_t] - 1 - operational_margin",
+        "version": "joint_market_value_evaluator_v0",
+        "scope": "evaluates_pre_generated_joint_scenarios_only",
+        "definition": "E[gross_receipt(b)|F_t]/stake - 1 - costs/stake",
         "parameter_draws": len(parameter_draws),
+        "minimum_outer_draws": minimum_outer_draws,
         "inner_aggregation": (
             "weighted_mean"
             if inner_tail_fraction is None
-            else "weighted_lower_tail_mean"
+            else "portfolio_path_weighted_lower_tail_mean"
         ),
         "inner_tail_fraction": inner_tail_fraction,
+        "inner_effective_samples_min": min(inner_effective_samples),
+        "inner_tail_effective_samples_min": tail_effective_samples,
+        "minimum_inner_tail_effective_samples": minimum_tail_ess,
         "outer_alpha": outer_alpha,
+        "outer_quantile_method": "inverted_cdf",
         "buy_margin": threshold,
         "tickets": tickets,
         "portfolio": portfolio,
+        "marginal_contributions": marginal_contributions,
         "moments_by_draw": moments_by_draw,
     }
 
 
 __all__ = [
+    "GrossPayoffModel",
     "JointMarketScenario",
-    "PayoutModel",
+    "TRIFECTA_OUTCOMES",
     "evaluate_joint_market_value",
     "validate_probability_simplex",
+    "validate_trifecta_probability_simplex",
 ]
