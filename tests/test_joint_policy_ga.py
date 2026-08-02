@@ -29,7 +29,7 @@ def _payoffs(scenario, bets):
     }
 
 
-def _settings() -> GeneticSearchSettings:
+def _settings(backend: str = "thread") -> GeneticSearchSettings:
     return GeneticSearchSettings(
         population_size=8,
         generations=4,
@@ -37,6 +37,7 @@ def _settings() -> GeneticSearchSettings:
         mutation_rate=0.4,
         random_injections=1,
         max_workers=1,
+        execution_backend=backend,
         seed=41,
     )
 
@@ -95,3 +96,38 @@ def test_insufficient_outer_draws_selects_no_bet() -> None:
     assert result["selected"]["fitness"] == 0.0
     assert result["purchase_authorized"] is False
     assert result["selected"]["joint_value"] is None
+
+
+def test_process_backend_matches_thread_backend() -> None:
+    options = {
+        "candidate_tickets": ("A", "B", "C"),
+        "gross_payoff_model": _payoffs,
+        "available_bankroll_yen": 1_000,
+        "expected_outcomes": ("A", "B", "C"),
+        "config": JointPolicySearchConfig(
+            maximum_portfolio_stake_yen=1_000,
+            maximum_ticket_stake_yen=1_000,
+            maximum_selected_tickets=3,
+            inner_tail_fraction=None,
+            minimum_outer_draws=20,
+        ),
+    }
+    thread = optimize_joint_portfolio(
+        _draws(20),
+        **options,
+        genetic_settings=_settings("thread"),
+    )
+    process = optimize_joint_portfolio(
+        _draws(20),
+        **options,
+        genetic_settings=GeneticSearchSettings(
+            **{
+                **_settings("process").__dict__,
+                "max_workers": 2,
+            }
+        ),
+    )
+
+    assert process["selected"]["bets_yen"] == thread["selected"]["bets_yen"]
+    assert process["selected"]["fitness"] == thread["selected"]["fitness"]
+    assert process["purchase_authorized"] == thread["purchase_authorized"]
