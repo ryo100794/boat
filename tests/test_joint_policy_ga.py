@@ -98,6 +98,46 @@ def test_insufficient_outer_draws_selects_no_bet() -> None:
     assert result["selected"]["joint_value"] is None
 
 
+def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None:
+    def losing_payoffs(scenario, bets):
+        multipliers = {"A": 1, "B": 1, "C": 1}
+        return {
+            ticket: {ticket: amount * multipliers[ticket]}
+            for ticket, amount in bets.items()
+        }
+
+    result = optimize_joint_portfolio(
+        _draws(20),
+        candidate_tickets=("A", "B", "C"),
+        gross_payoff_model=losing_payoffs,
+        available_bankroll_yen=1_000,
+        expected_outcomes=("A", "B", "C"),
+        config=JointPolicySearchConfig(
+            maximum_portfolio_stake_yen=1_000,
+            maximum_ticket_stake_yen=1_000,
+            maximum_selected_tickets=3,
+            inner_tail_fraction=None,
+            minimum_outer_draws=20,
+        ),
+        genetic_settings=_settings(),
+    )
+
+    assert result["purchase_authorized"] is False
+    assert result["selected"]["bets_yen"] == {}
+    assert result["selected"]["fitness"] == 0.0
+    assert result["history"][0]["best_candidate"]["total_stake_yen"] > 0
+    rejected = [
+        row for row in result["ranked_candidates"]
+        if row["total_stake_yen"] > 0
+    ]
+    assert rejected
+    assert all(row["metrics"]["search_feasible"] is False for row in rejected)
+    assert all(row["fitness"] > 0.0 for row in rejected)
+    assert len({
+        row["metrics"]["constraint_violation"] for row in rejected
+    }) > 1
+
+
 def test_process_backend_matches_thread_backend() -> None:
     options = {
         "candidate_tickets": ("A", "B", "C"),
