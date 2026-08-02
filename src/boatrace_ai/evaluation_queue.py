@@ -1846,6 +1846,7 @@ def build_command(
             "bootstrap_samples", "max_races_per_day",
             "max_snapshot_age_seconds", "timeout_seconds",
             "odds_path_schema",
+            "allocation_grid",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1905,6 +1906,9 @@ def build_command(
         odds_path_schema = params.get("odds_path_schema")
         if odds_path_schema not in (None, "t5_odds_path_v1"):
             raise ValueError("unsupported learned allocation odds_path_schema")
+        allocation_grid = str(params.get("allocation_grid", "default"))
+        if allocation_grid not in {"default", "exhaustive-v1"}:
+            raise ValueError("unsupported learned allocation grid")
         _integer(params, "timeout_seconds", 7200, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         source_model = (app_root / str(params["source_model"])).resolve()
@@ -1953,6 +1957,7 @@ def build_command(
             "--allocation-max-iterations", str(allocation_iterations),
             "--bootstrap-samples", str(bootstrap_samples),
             "--max-snapshot-age-seconds", str(max_snapshot_age),
+            "--allocation-grid", allocation_grid,
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
         ]

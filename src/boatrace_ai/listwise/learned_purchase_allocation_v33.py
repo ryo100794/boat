@@ -39,6 +39,15 @@ DEFAULT_CONFIGS = (
     AllocationConfig("stable", 0.10, 1.0),
     AllocationConfig("conservative", 0.30, 2.0),
 )
+EXHAUSTIVE_CONFIGS_V1 = tuple(
+    AllocationConfig(
+        f"grid-r{regularization:g}-d{downside:g}",
+        regularization,
+        downside,
+    )
+    for regularization in (1e-5, 1e-4, 1e-3, 1e-2, 0.03, 0.1, 0.3)
+    for downside in (0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0)
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,16 @@ class PreparedAllocationRace:
     base_log_probability: np.ndarray
     winner_index: int
     payout_odds: float
+
+
+@dataclass(frozen=True)
+class PreparedAllocationBatch:
+    ticket: np.ndarray
+    race: np.ndarray
+    base_log_probability: np.ndarray
+    winner_index: np.ndarray
+    payout_odds: np.ndarray
+    day_weight: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -361,6 +380,118 @@ def _day_weights(races: Sequence[PreparedAllocationRace]) -> np.ndarray:
     )
 
 
+def _prepared_batch(
+    races: Sequence[PreparedAllocationRace],
+    normalization: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+) -> PreparedAllocationBatch:
+    if not races:
+        raise ValueError("allocation batch requires races")
+    ticket_mean, ticket_scale, race_mean, race_scale = normalization
+    choices = len(races[0].base_log_probability)
+    if any(len(race.base_log_probability) != choices for race in races):
+        raise ValueError("allocation batch requires a fixed ticket universe")
+    ticket = np.ascontiguousarray(
+        np.stack(
+            [
+                (race.ticket_features - ticket_mean) / ticket_scale
+                for race in races
+            ]
+        ),
+        dtype=np.float64,
+    )
+    race_matrix = np.ascontiguousarray(
+        np.column_stack(
+            (
+                np.stack(
+                    [
+                        (race.race_features - race_mean) / race_scale
+                        for race in races
+                    ]
+                ),
+                np.ones(len(races), dtype=np.float64),
+            )
+        ),
+        dtype=np.float64,
+    )
+    return PreparedAllocationBatch(
+        ticket=ticket,
+        race=race_matrix,
+        base_log_probability=np.ascontiguousarray(
+            np.stack([race.base_log_probability for race in races]),
+            dtype=np.float64,
+        ),
+        winner_index=np.asarray(
+            [race.winner_index for race in races], dtype=np.int64
+        ),
+        payout_odds=np.asarray(
+            [race.payout_odds for race in races], dtype=np.float64
+        ),
+        day_weight=_day_weights(races),
+    )
+
+
+def _objective_gradient_batch(
+    parameters: np.ndarray,
+    batch: PreparedAllocationBatch,
+    *,
+    config: AllocationConfig,
+) -> tuple[float, np.ndarray]:
+    ticket_dimension = batch.ticket.shape[2]
+    allocation = parameters[:ticket_dimension]
+    gate = parameters[ticket_dimension:]
+
+    scores = batch.base_log_probability + batch.ticket @ allocation
+    scores -= np.max(scores, axis=1, keepdims=True)
+    allocation_weight = np.exp(np.clip(scores, -60.0, 0.0))
+    allocation_weight /= np.sum(allocation_weight, axis=1, keepdims=True)
+    gate_score = np.clip(batch.race @ gate, -60.0, 60.0)
+    gate_probability = 1.0 / (1.0 + np.exp(-gate_score))
+    exposure = MAX_RACE_EXPOSURE_FRACTION * gate_probability
+    row_index = np.arange(len(batch.winner_index))
+    winner_allocation = allocation_weight[row_index, batch.winner_index]
+    allocated_payout = batch.payout_odds * winner_allocation
+    growth = np.maximum(
+        EPSILON, 1.0 + exposure * (allocated_payout - 1.0)
+    )
+    log_growth = np.log(growth)
+    downside = np.minimum(0.0, log_growth)
+    loss = float(
+        batch.day_weight
+        @ (-log_growth + config.downside_penalty * downside * downside)
+    )
+    derivative_growth = (
+        batch.day_weight
+        * (-1.0 + 2.0 * config.downside_penalty * downside)
+        / growth
+    )
+
+    gate_factor = (
+        derivative_growth
+        * (allocated_payout - 1.0)
+        * MAX_RACE_EXPOSURE_FRACTION
+        * gate_probability
+        * (1.0 - gate_probability)
+    )
+    gate_gradient = batch.race.T @ gate_factor
+    weighted_ticket = np.einsum(
+        "nc,ncd->nd", allocation_weight, batch.ticket, optimize=True
+    )
+    winner_ticket = batch.ticket[row_index, batch.winner_index]
+    allocation_factor = (
+        derivative_growth * exposure * allocated_payout
+    )
+    allocation_gradient = (
+        (winner_ticket - weighted_ticket).T @ allocation_factor
+    )
+    gradient = np.concatenate((allocation_gradient, gate_gradient))
+
+    regularized = parameters.copy()
+    regularized[-1] = 0.0
+    loss += 0.5 * config.regularization * float(regularized @ regularized)
+    gradient += config.regularization * regularized
+    return loss, gradient
+
+
 def _objective_gradient(
     parameters: np.ndarray,
     races: Sequence[PreparedAllocationRace],
@@ -371,53 +502,10 @@ def _objective_gradient(
     race_scale: np.ndarray,
     config: AllocationConfig,
 ) -> tuple[float, np.ndarray]:
-    ticket_dimension = ticket_mean.size
-    allocation = parameters[:ticket_dimension]
-    gate = parameters[ticket_dimension:]
-    gradient = np.zeros_like(parameters)
-    allocation_gradient = gradient[:ticket_dimension]
-    gate_gradient = gradient[ticket_dimension:]
-    loss = 0.0
-    for weight, race in zip(_day_weights(races), races, strict=True):
-        ticket = (race.ticket_features - ticket_mean) / ticket_scale
-        race_vector = np.concatenate(
-            (((race.race_features - race_mean) / race_scale), np.ones(1))
-        )
-        allocation_weight = _softmax(race.base_log_probability + ticket @ allocation)
-        gate_probability = _sigmoid(float(race_vector @ gate))
-        exposure = MAX_RACE_EXPOSURE_FRACTION * gate_probability
-        winner_allocation = float(allocation_weight[race.winner_index])
-        allocated_payout = race.payout_odds * winner_allocation
-        growth = max(EPSILON, 1.0 + exposure * (allocated_payout - 1.0))
-        log_growth = math.log(growth)
-        downside = min(0.0, log_growth)
-        loss += weight * (-log_growth + config.downside_penalty * downside * downside)
-        derivative_growth = weight * (
-            -1.0 + 2.0 * config.downside_penalty * downside
-        ) / growth
-        gate_gradient += (
-            derivative_growth
-            * (allocated_payout - 1.0)
-            * MAX_RACE_EXPOSURE_FRACTION
-            * gate_probability
-            * (1.0 - gate_probability)
-            * race_vector
-        )
-        score_derivative = -allocation_weight
-        score_derivative[race.winner_index] += 1.0
-        allocation_gradient += (
-            derivative_growth
-            * exposure
-            * allocated_payout
-            * (ticket.T @ score_derivative)
-        )
-    regularized = parameters.copy()
-    # Cash exposure is an action, not a zero-centered coefficient. Penalizing the
-    # gate intercept biases every race toward 50% of the safety exposure ceiling.
-    regularized[-1] = 0.0
-    loss += 0.5 * config.regularization * float(regularized @ regularized)
-    gradient += config.regularization * regularized
-    return float(loss), gradient
+    batch = _prepared_batch(
+        races, (ticket_mean, ticket_scale, race_mean, race_scale)
+    )
+    return _objective_gradient_batch(parameters, batch, config=config)
 
 
 def _fit(
@@ -429,17 +517,10 @@ def _fit(
 ) -> tuple[np.ndarray, Mapping[str, Any]]:
     ticket_mean, ticket_scale, race_mean, race_scale = normalization
     dimension = ticket_mean.size + race_mean.size + 1
+    batch = _prepared_batch(races, normalization)
 
     def objective(values: np.ndarray) -> tuple[float, np.ndarray]:
-        return _objective_gradient(
-            values,
-            races,
-            ticket_mean=ticket_mean,
-            ticket_scale=ticket_scale,
-            race_mean=race_mean,
-            race_scale=race_scale,
-            config=config,
-        )
+        return _objective_gradient_batch(values, batch, config=config)
 
     result = minimize(
         objective,
