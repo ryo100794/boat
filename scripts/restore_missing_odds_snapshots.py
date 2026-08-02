@@ -84,7 +84,7 @@ def restore_pages(
             """
             SELECT 1 FROM odds_snapshots
             WHERE race_id = ? AND bet_type = 'trifecta'
-              AND captured_at = ?::timestamptz
+              AND captured_at::timestamptz = ?::timestamptz
             LIMIT 1
             """,
             (race_id, captured_at),
