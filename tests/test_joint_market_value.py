@@ -5,10 +5,42 @@ import pytest
 from boatrace_ai.joint_market_value import (
     JointMarketScenario,
     TRIFECTA_OUTCOMES,
+    evaluate_joint_bankroll_growth,
     evaluate_joint_market_value,
     validate_probability_simplex,
     validate_trifecta_probability_simplex,
 )
+
+
+def test_bankroll_growth_penalizes_ruin_and_prefers_fractional_stake() -> None:
+    draws = [[JointMarketScenario(
+        {"A": 0.6, "B": 0.4},
+        {"multipliers": {"A": 2.0, "B": 0.0}},
+    )] for _ in range(20)]
+
+    fractional = evaluate_joint_bankroll_growth(
+        draws,
+        bets_yen={"A": 200},
+        gross_payoff_model=_ordinary_payoffs,
+        available_bankroll_yen=1_000,
+        expected_outcomes=("A", "B"),
+        minimum_outer_draws=20,
+    )
+    all_in = evaluate_joint_bankroll_growth(
+        draws,
+        bets_yen={"A": 1_000},
+        gross_payoff_model=_ordinary_payoffs,
+        available_bankroll_yen=1_000,
+        expected_outcomes=("A", "B"),
+        minimum_outer_draws=20,
+    )
+
+    assert fractional["growth"]["lower_quantile"] > 0.0
+    assert fractional["growth"]["passes_growth_gate"] is True
+    assert all_in["growth"]["lower_quantile"] < 0.0
+    assert all_in["growth"]["maximum_conditional_ruin_probability"] == pytest.approx(
+        0.4
+    )
 
 
 def _ordinary_payoffs(scenario, bets):

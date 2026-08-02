@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import permutations
-from math import fsum, isfinite
+from math import fsum, isfinite, log
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -435,10 +435,151 @@ def evaluate_joint_market_value(
     }
 
 
+def evaluate_joint_bankroll_growth(
+    parameter_draws: Sequence[Sequence[JointMarketScenario]],
+    *,
+    bets_yen: Mapping[str, int],
+    gross_payoff_model: GrossPayoffModel,
+    available_bankroll_yen: int,
+    operational_costs_yen: Mapping[str, int] | None = None,
+    expected_outcomes: Sequence[str] | None = None,
+    outer_alpha: float = 0.05,
+    inner_tail_fraction: float | None = None,
+    minimum_outer_draws: int = 20,
+    minimum_inner_tail_effective_samples: float = 5.0,
+    minimum_terminal_wealth_yen: int = 1,
+) -> dict[str, Any]:
+    """Evaluate conservative expected log growth after integer settlement."""
+    if not parameter_draws:
+        raise ValueError("parameter_draws must not be empty")
+    if not 0.0 < outer_alpha < 1.0:
+        raise ValueError("outer_alpha must be in (0, 1)")
+    if isinstance(minimum_outer_draws, bool) or not isinstance(
+        minimum_outer_draws, int
+    ) or minimum_outer_draws < 1:
+        raise ValueError("minimum_outer_draws must be positive")
+    bankroll = _non_negative_yen(available_bankroll_yen, "available bankroll")
+    wealth_floor = _non_negative_yen(
+        minimum_terminal_wealth_yen, "minimum terminal wealth"
+    )
+    if bankroll < 1 or wealth_floor < 1 or wealth_floor > bankroll:
+        raise ValueError(
+            "bankroll and minimum terminal wealth must be positive, "
+            "with the floor no larger than bankroll"
+        )
+    minimum_tail_ess = _finite_non_negative(
+        minimum_inner_tail_effective_samples,
+        "minimum_inner_tail_effective_samples",
+    )
+    bets = _validate_bets(bets_yen)
+    costs = {
+        ticket: _non_negative_yen(value, "operational cost")
+        for ticket, value in (operational_costs_yen or {}).items()
+    }
+    if set(costs) - set(bets):
+        raise ValueError("operational costs contain unknown tickets")
+    total_outlay = sum(bets.values()) + sum(costs.values())
+    if total_outlay > bankroll:
+        raise ValueError("bet stakes and costs exceed available bankroll")
+
+    outer_values: list[float] = []
+    inner_effective_samples: list[float] = []
+    ruin_probability_upper = 0.0
+    for draw in parameter_draws:
+        scenarios = list(draw)
+        weights = _normalized_weights(scenarios)
+        inner_effective_samples.append(1.0 / float(np.dot(weights, weights)))
+        scenario_growth = np.empty(len(scenarios), dtype=np.float64)
+        draw_ruin_probability = 0.0
+        for scenario_index, scenario in enumerate(scenarios):
+            probabilities = validate_probability_simplex(
+                scenario.probabilities, expected_outcomes=expected_outcomes
+            )
+            payoff_table = gross_payoff_model(scenario, bets)
+            if set(payoff_table) != set(bets):
+                raise ValueError(
+                    "payoff model ticket keys must match the complete bet vector"
+                )
+            gross_by_outcome = {outcome: 0 for outcome in probabilities}
+            for ticket, receipts in payoff_table.items():
+                if not isinstance(receipts, Mapping):
+                    raise ValueError("payoff table values must map outcomes to yen")
+                unknown = set(receipts) - set(probabilities)
+                if unknown:
+                    raise ValueError(
+                        "payoff model returned unknown terminal states: "
+                        + ", ".join(sorted(unknown))
+                    )
+                for outcome, amount in receipts.items():
+                    gross_by_outcome[outcome] += _non_negative_yen(
+                        amount, "gross receipt"
+                    )
+            expected_growth = 0.0
+            ruin_probability = 0.0
+            cash_after_outlay = bankroll - total_outlay
+            for outcome, probability in probabilities.items():
+                terminal_wealth = cash_after_outlay + gross_by_outcome[outcome]
+                if terminal_wealth <= 0:
+                    ruin_probability += probability
+                expected_growth += probability * log(
+                    max(wealth_floor, terminal_wealth) / bankroll
+                )
+            scenario_growth[scenario_index] = expected_growth
+            draw_ruin_probability += float(weights[scenario_index]) * ruin_probability
+        ruin_probability_upper = max(
+            ruin_probability_upper, draw_ruin_probability
+        )
+        outer_values.append(
+            _aggregate_path(scenario_growth, weights, inner_tail_fraction)
+        )
+
+    tail_effective_samples = (
+        min(inner_effective_samples) * inner_tail_fraction
+        if inner_tail_fraction is not None
+        else None
+    )
+    gate_reasons = []
+    if len(parameter_draws) < minimum_outer_draws:
+        gate_reasons.append("insufficient_outer_parameter_draws")
+    if tail_effective_samples is not None and tail_effective_samples < minimum_tail_ess:
+        gate_reasons.append("insufficient_inner_tail_effective_samples")
+    summary = _outer_summary(outer_values, outer_alpha)
+    summary.update({
+        "purchase_gate_evaluable": not gate_reasons,
+        "passes_growth_gate": bool(
+            not gate_reasons and summary["lower_quantile"] > 0.0
+        ),
+        "purchase_gate_reasons": gate_reasons,
+        "maximum_conditional_ruin_probability": ruin_probability_upper,
+    })
+    return {
+        "version": "joint_bankroll_growth_evaluator_v1",
+        "definition": (
+            "lower parameter quantile of scenario-tail expected "
+            "log(terminal_wealth/available_bankroll)"
+        ),
+        "available_bankroll_yen": bankroll,
+        "total_outlay_yen": total_outlay,
+        "minimum_terminal_wealth_yen": wealth_floor,
+        "inner_aggregation": (
+            "weighted_mean"
+            if inner_tail_fraction is None
+            else "weighted_lower_tail_mean"
+        ),
+        "inner_tail_fraction": inner_tail_fraction,
+        "inner_effective_samples_min": min(inner_effective_samples),
+        "inner_tail_effective_samples_min": tail_effective_samples,
+        "outer_alpha": outer_alpha,
+        "outer_quantile_method": "inverted_cdf",
+        "growth": summary,
+    }
+
+
 __all__ = [
     "GrossPayoffModel",
     "JointMarketScenario",
     "TRIFECTA_OUTCOMES",
+    "evaluate_joint_bankroll_growth",
     "evaluate_joint_market_value",
     "validate_probability_simplex",
     "validate_trifecta_probability_simplex",

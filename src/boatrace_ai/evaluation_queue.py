@@ -3372,7 +3372,9 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
-    if payload.get("model") == "joint_bankroll_strict_walk_forward_v1":
+    if str(payload.get("model") or "").startswith(
+        "joint_bankroll_strict_walk_forward_v"
+    ):
         probability = payload.get("probability_metrics")
         probability = probability if isinstance(probability, dict) else {}
         aliases = {

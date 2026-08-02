@@ -10,6 +10,7 @@ from .genetic_search import GeneticSearchSettings, evolve_population
 from .joint_market_value import (
     GrossPayoffModel,
     JointMarketScenario,
+    evaluate_joint_bankroll_growth,
     evaluate_joint_market_value,
 )
 
@@ -242,7 +243,25 @@ def optimize_joint_portfolio(
             include_marginal_contributions=False,
             include_ticket_diagnostics=False,
         )
+        growth = evaluate_joint_bankroll_growth(
+            parameter_draws,
+            bets_yen=vector,
+            gross_payoff_model=gross_payoff_model,
+            available_bankroll_yen=available_bankroll_yen,
+            operational_costs_yen={
+                ticket: (operational_costs_yen or {}).get(ticket, 0)
+                for ticket in vector
+            },
+            expected_outcomes=expected_outcomes,
+            outer_alpha=policy.outer_alpha,
+            inner_tail_fraction=policy.inner_tail_fraction,
+            minimum_outer_draws=policy.minimum_outer_draws,
+            minimum_inner_tail_effective_samples=(
+                policy.minimum_inner_tail_effective_samples
+            ),
+        )
         portfolio = dict(result["portfolio"])
+        growth_summary = dict(growth["growth"])
         conservative_profit = (
             (float(portfolio["lower_quantile"]) - policy.buy_margin)
             * total_stake
@@ -253,11 +272,16 @@ def optimize_joint_portfolio(
             "total_stake_yen": total_stake,
             "conservative_expected_profit_yen": conservative_profit,
             "search_fitness": (
-                conservative_profit
-                if conservative_profit is not None
+                float(growth_summary["lower_quantile"])
+                if (
+                    conservative_profit is not None
+                    and portfolio["passes_purchase_gate"]
+                    and growth_summary["passes_growth_gate"]
+                )
                 else -1.0e15
             ),
             "portfolio": portfolio,
+            "bankroll_growth": growth,
         }
 
     def fitness(
@@ -312,14 +336,35 @@ def optimize_joint_portfolio(
             ),
             include_marginal_contributions=True,
         )
+        detailed_growth = evaluate_joint_bankroll_growth(
+            parameter_draws,
+            bets_yen=selected_bets,
+            gross_payoff_model=gross_payoff_model,
+            available_bankroll_yen=available_bankroll_yen,
+            operational_costs_yen={
+                ticket: (operational_costs_yen or {}).get(ticket, 0)
+                for ticket in selected_bets
+            },
+            expected_outcomes=expected_outcomes,
+            outer_alpha=policy.outer_alpha,
+            inner_tail_fraction=policy.inner_tail_fraction,
+            minimum_outer_draws=policy.minimum_outer_draws,
+            minimum_inner_tail_effective_samples=(
+                policy.minimum_inner_tail_effective_samples
+            ),
+        )
+    else:
+        detailed_growth = None
     purchase_authorized = bool(
         selected_bets
         and detailed_value
+        and detailed_growth
         and detailed_value["portfolio"]["passes_purchase_gate"]
+        and detailed_growth["growth"]["passes_growth_gate"]
         and selected.fitness > 0.0
     )
     return {
-        "version": "joint_portfolio_policy_ga_v0",
+        "version": "joint_portfolio_policy_ga_v1",
         "role": "diagnostic_only_never_submits_wagers",
         "parameter_draws": len(parameter_draws),
         "candidate_tickets": list(tickets),
@@ -331,6 +376,7 @@ def optimize_joint_portfolio(
             "fitness": selected.fitness,
             "metrics": dict(selected.metrics),
             "joint_value": detailed_value,
+            "bankroll_growth": detailed_growth,
         },
         "ranked_candidates": [
             {
