@@ -217,6 +217,8 @@ def optimize_joint_portfolio(
                 "total_stake_yen": 0,
                 "conservative_expected_profit_yen": 0.0,
                 "search_fitness": 0.0,
+                "search_feasible": False,
+                "constraint_violation": None,
                 "portfolio": {
                     "lower_quantile": 0.0,
                     "purchase_gate_evaluable": True,
@@ -268,18 +270,41 @@ def optimize_joint_portfolio(
             if portfolio["purchase_gate_evaluable"]
             else None
         )
+        search_evaluable = bool(
+            portfolio["purchase_gate_evaluable"]
+            and growth_summary["purchase_gate_evaluable"]
+        )
+        edge_excess = float(portfolio["lower_quantile"]) - policy.buy_margin
+        growth_excess = float(growth_summary["lower_quantile"])
+        search_feasible = bool(
+            search_evaluable
+            and portfolio["passes_purchase_gate"]
+            and growth_summary["passes_growth_gate"]
+        )
+        constraint_violation = (
+            max(0.0, -edge_excess) + max(0.0, -growth_excess)
+            if search_evaluable
+            else None
+        )
+        # Preserve the hard production gate while giving evolution a gradient
+        # toward feasibility when the initial population has no valid vector.
+        search_fitness = (
+            1.0 + growth_excess
+            if search_feasible
+            else (
+                1.0 / (1.0 + float(constraint_violation))
+                if constraint_violation is not None
+                else -1.0
+            )
+        )
         return {
             "total_stake_yen": total_stake,
             "conservative_expected_profit_yen": conservative_profit,
-            "search_fitness": (
-                float(growth_summary["lower_quantile"])
-                if (
-                    conservative_profit is not None
-                    and portfolio["passes_purchase_gate"]
-                    and growth_summary["passes_growth_gate"]
-                )
-                else -1.0e15
-            ),
+            "search_fitness": search_fitness,
+            "search_feasible": search_feasible,
+            "constraint_violation": constraint_violation,
+            "edge_excess": edge_excess,
+            "growth_excess": growth_excess,
             "portfolio": portfolio,
             "bankroll_growth": growth,
         }
@@ -314,7 +339,17 @@ def optimize_joint_portfolio(
         serialize=serialize,
         immigrants=(zero, first_full, equal),
     )
-    selected = ranked[0]
+    feasible = [
+        row for row in ranked if bool(row.metrics.get("search_feasible"))
+    ]
+    if feasible:
+        selected = feasible[0]
+    else:
+        selected = next(
+            row
+            for row in ranked
+            if not any(row.candidate.stake_units)
+        )
     selected_bets = bets(selected.candidate)
     detailed_value = None
     if selected_bets:
