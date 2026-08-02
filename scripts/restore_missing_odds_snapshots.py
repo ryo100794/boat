@@ -71,7 +71,7 @@ def restore_pages(
             FROM raw_pages
             WHERE race_id = ? AND page_type = 'odds3t'
               AND local_path LIKE ?
-            ORDER BY ABS(EXTRACT(EPOCH FROM (fetched_at - ?::timestamptz)))
+            ORDER BY ABS(EXTRACT(EPOCH FROM (fetched_at::timestamptz - ?::timestamptz)))
             LIMIT 1
             """,
             (race_id, f"%/{path.name}", filename_time.isoformat()),
