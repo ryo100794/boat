@@ -743,6 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hurdle_logistic_lognormal",
             "hurdle_logistic_lognormal_calibrated",
             "hurdle_contextual_lognormal",
+            "hurdle_contextual_interactions_lognormal",
         ),
         default="ridge_capped_net",
     )

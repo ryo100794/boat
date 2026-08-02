@@ -297,6 +297,12 @@ def _purchase_matrix(
         return base
     if feature_map == "decision_context_v2":
         return np.column_stack((base, _array(decision.features)))
+    if feature_map == "decision_context_interactions_v3":
+        contextual = np.column_stack((base, _array(decision.features)))
+        left, right = np.triu_indices(contextual.shape[1])
+        return np.column_stack(
+            (contextual, contextual[:, left] * contextual[:, right])
+        )
     raise ValueError(f"unsupported purchase feature map: {feature_map}")
 
 
@@ -394,6 +400,7 @@ def _fit_purchase_heads(
         "hurdle_logistic_lognormal",
         "hurdle_logistic_lognormal_calibrated",
         "hurdle_contextual_lognormal",
+        "hurdle_contextual_interactions_lognormal",
     }:
         hit = returns >= 0.0
         fitted_hit = LogisticRegression(
@@ -473,11 +480,12 @@ def fit_four_head_nested_v22(
     if minimum_purchase_training_dates < 1:
         raise ValueError("minimum_purchase_training_dates must be positive")
     dates = sorted({race.decision.race_date for race in ordered})
-    purchase_feature_map = (
-        "decision_context_v2"
-        if purchase_loss == "hurdle_contextual_lognormal"
-        else "base_outputs_v1"
-    )
+    purchase_feature_map = {
+        "hurdle_contextual_lognormal": "decision_context_v2",
+        "hurdle_contextual_interactions_lognormal": (
+            "decision_context_interactions_v3"
+        ),
+    }.get(purchase_loss, "base_outputs_v1")
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")
     by_date = {
