@@ -1877,11 +1877,12 @@ def build_command(
             "multinomial_market_offset_oof_scaled_payout_tweedie": 17,
             "multinomial_market_offset_oof_scaled_payout_factor_tweedie": 18,
             "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie": 19,
+            "multinomial_market_offset_oof_scaled_payout_stacked_tweedie": 20,
         }
         if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 19
+            params, "purchase_teacher_version", 3, 3, 20
         )
         expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:
@@ -3003,6 +3004,7 @@ METRIC_KEYS = (
     "purchase_payout_log_mae",
     "purchase_gross_hit_exponent",
     "purchase_gross_payout_exponent",
+    "purchase_gross_direct_value_exponent",
     "purchase_hit_log_loss",
     "t5_market_log_loss",
     "purchase_hit_log_loss_delta_vs_market",

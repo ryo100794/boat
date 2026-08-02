@@ -17,6 +17,10 @@ from boatrace_ai.evaluation_queue import build_command
             "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
             19,
         ),
+        (
+            "multinomial_market_offset_oof_scaled_payout_stacked_tweedie",
+            20,
+        ),
     ),
 )
 def test_payout_models_require_matching_teacher_version(

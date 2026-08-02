@@ -3131,6 +3131,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "purchase_gross_payout_exponent": _float_or_none(
                     metrics.get("purchase_gross_payout_exponent")
                 ),
+                "purchase_gross_direct_value_exponent": _float_or_none(
+                    metrics.get("purchase_gross_direct_value_exponent")
+                ),
                 "purchase_value_positive_predicted_tickets": metrics.get(
                     "purchase_value_positive_predicted_tickets"
                 ),

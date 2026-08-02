@@ -13,6 +13,9 @@ from sklearn.linear_model import LogisticRegression, PoissonRegressor, TweedieRe
 
 MODEL_KEY = "four_head_nested_v22"
 ARTIFACT_VERSION = 3
+STACKED_TWEEDIE_LOSS = (
+    "multinomial_market_offset_oof_scaled_payout_stacked_tweedie"
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class FourHeadArtifact:
     purchase_threshold_input_sha256_by_date: tuple[tuple[str, str], ...]
     training_race_ids: tuple[str, ...]
     purchase_payout_head: LinearHead | None = None
+    purchase_auxiliary_head: LinearHead | None = None
     purchase_calibration_head: LinearHead | None = None
     purchase_feature_map: str = "base_outputs_v1"
     purchase_probability_temperature: float = 1.0
@@ -597,6 +601,7 @@ def _fit_purchase_heads(
         "multinomial_market_offset_oof_scaled_payout_tweedie",
         "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
         "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+        STACKED_TWEEDIE_LOSS,
     }:
         if conditional_gross_payouts is None:
             raise ValueError("market-offset closing teacher targets are required")
@@ -992,6 +997,31 @@ def _purchase_factor_calibration_matrix(
     )
 
 
+def _purchase_stacked_factor_calibration_matrix(
+    head: LinearHead,
+    payout_head: LinearHead | None,
+    auxiliary_head: LinearHead | None,
+    matrix: np.ndarray,
+    *,
+    probability_residual_scale: float,
+    payout_residual_scale: float,
+) -> np.ndarray:
+    """Stack market-calibrated factors with the direct V5 value signal."""
+    if auxiliary_head is None or not auxiliary_head.teacher.startswith(
+        "tweedie_expected_capped_gross_return"
+    ):
+        raise ValueError("stacked calibration requires a direct-value head")
+    factors = _purchase_factor_calibration_matrix(
+        head,
+        payout_head,
+        matrix,
+        probability_residual_scale=probability_residual_scale,
+        payout_residual_scale=payout_residual_scale,
+    )
+    direct_log_gross = _scores(auxiliary_head, matrix[:, :6])
+    return np.column_stack((factors, direct_log_gross))
+
+
 def _purchase_context_factor_calibration_matrix(
     head: LinearHead,
     payout_head: LinearHead | None,
@@ -1068,6 +1098,7 @@ def fit_four_head_nested_v22(
         "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie": (
             "decision_context_v2"
         ),
+        STACKED_TWEEDIE_LOSS: "decision_context_v2",
         "multinomial_offset_all_choice_closing_temperature": (
             "decision_context_v2"
         ),
@@ -1137,6 +1168,7 @@ def fit_four_head_nested_v22(
     purchase_oof_returns_for_calibration: list[float] = []
     purchase_oof_factor_features: list[np.ndarray] = []
     purchase_oof_context_factor_features: list[np.ndarray] = []
+    purchase_oof_stacked_factor_features: list[np.ndarray] = []
     purchase_oof_probabilities_for_temperature: list[np.ndarray] = []
     purchase_oof_winners_for_temperature: list[int] = []
     purchase_oof_market_probabilities_for_scale: list[np.ndarray] = []
@@ -1146,7 +1178,10 @@ def fit_four_head_nested_v22(
     purchase_oof_payout_residuals: list[np.ndarray] = []
     purchase_oof_target_log_payouts: list[np.ndarray] = []
     purchase_oof_scale_records: list[
-        tuple[str, str, LinearHead, LinearHead | None, np.ndarray, np.ndarray]
+        tuple[
+            str, str, LinearHead, LinearHead | None, LinearHead | None,
+            np.ndarray, np.ndarray,
+        ]
     ] = []
     for validation_index in range(
         minimum_purchase_training_dates, len(base_oof_dates)
@@ -1164,6 +1199,14 @@ def fit_four_head_nested_v22(
             purchase_loss=purchase_loss,
             conditional_gross_payouts=[record[3] for record in training_records],
         )
+        fold_auxiliary_head = None
+        if purchase_loss == STACKED_TWEEDIE_LOSS:
+            fold_auxiliary_head, _unused_payout_head = _fit_purchase_heads(
+                [record[1][:, :6] for record in training_records],
+                [record[2] for record in training_records],
+                alpha=alpha,
+                purchase_loss="tweedie_capped_gross",
+            )
         date_score_payloads: list[dict[str, Any]] = []
         date_threshold_payloads: list[dict[str, Any]] = []
         for race_id, matrix, realized, _conditional_gross in validation_records:
@@ -1178,6 +1221,7 @@ def fit_four_head_nested_v22(
                 "multinomial_market_offset_oof_scaled_payout_tweedie",
                 "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
                 "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+                STACKED_TWEEDIE_LOSS,
             }:
                 winner_indices = np.flatnonzero(realized >= 0.0)
                 if len(winner_indices) != 1:
@@ -1194,6 +1238,7 @@ def fit_four_head_nested_v22(
                     "multinomial_market_offset_oof_scaled_payout_tweedie",
                     "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
                     "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+                    STACKED_TWEEDIE_LOSS,
                 }:
                     if fold_payout_head is None:
                         raise ValueError("scaled payout OOF head is missing")
@@ -1207,7 +1252,7 @@ def fit_four_head_nested_v22(
                 purchase_oof_scale_records.append(
                     (
                         validation_date, race_id, fold_head, fold_payout_head,
-                        matrix, realized,
+                        fold_auxiliary_head, matrix, realized,
                     )
                 )
             if purchase_loss == "multinomial_offset_all_choice_closing_temperature":
@@ -1265,6 +1310,7 @@ def fit_four_head_nested_v22(
         "multinomial_market_offset_oof_scaled_payout_tweedie",
         "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
         "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+        STACKED_TWEEDIE_LOSS,
     }:
         (
             purchase_residual_scale,
@@ -1281,6 +1327,7 @@ def fit_four_head_nested_v22(
             "multinomial_market_offset_oof_scaled_payout_tweedie",
             "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
             "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+            STACKED_TWEEDIE_LOSS,
         }:
             (
                 purchase_payout_residual_scale,
@@ -1302,7 +1349,8 @@ def fit_four_head_nested_v22(
             date_score_payloads = []
             date_threshold_payloads = []
             for (
-                record_date, race_id, fold_head, fold_payout_head, matrix, realized
+                record_date, race_id, fold_head, fold_payout_head,
+                fold_auxiliary_head, matrix, realized,
             ) in purchase_oof_scale_records:
                 if record_date != validation_date:
                     continue
@@ -1318,6 +1366,7 @@ def fit_four_head_nested_v22(
                 if purchase_loss in {
                     "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
                     "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+                    STACKED_TWEEDIE_LOSS,
                 }:
                     factor_builder = (
                         _purchase_context_factor_calibration_matrix
@@ -1333,6 +1382,17 @@ def fit_four_head_nested_v22(
                         factor_builder(
                             fold_head,
                             fold_payout_head,
+                            matrix,
+                            probability_residual_scale=purchase_residual_scale,
+                            payout_residual_scale=purchase_payout_residual_scale,
+                        )
+                    )
+                if purchase_loss == STACKED_TWEEDIE_LOSS:
+                    purchase_oof_stacked_factor_features.append(
+                        _purchase_stacked_factor_calibration_matrix(
+                            fold_head,
+                            fold_payout_head,
+                            fold_auxiliary_head,
                             matrix,
                             probability_residual_scale=purchase_residual_scale,
                             payout_residual_scale=purchase_payout_residual_scale,
@@ -1371,15 +1431,21 @@ def fit_four_head_nested_v22(
         "multinomial_market_offset_oof_scaled_payout_tweedie",
         "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
         "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+        STACKED_TWEEDIE_LOSS,
     }:
         if purchase_loss in {
             "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
             "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+            STACKED_TWEEDIE_LOSS,
         }:
             factor_features = (
-                purchase_oof_context_factor_features
-                if purchase_loss.endswith("context_factor_tweedie")
-                else purchase_oof_factor_features
+                purchase_oof_stacked_factor_features
+                if purchase_loss == STACKED_TWEEDIE_LOSS
+                else (
+                    purchase_oof_context_factor_features
+                    if purchase_loss.endswith("context_factor_tweedie")
+                    else purchase_oof_factor_features
+                )
             )
             if not factor_features:
                 raise ValueError("factor calibration requires strict OOF features")
@@ -1398,6 +1464,7 @@ def fit_four_head_nested_v22(
             "multinomial_market_offset_oof_scaled_payout_tweedie",
             "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
             "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
+            STACKED_TWEEDIE_LOSS,
         }:
             calibration_target = np.maximum(
                 np.asarray(purchase_oof_returns_for_calibration, dtype=np.float64)
@@ -1412,7 +1479,12 @@ def fit_four_head_nested_v22(
                 max_iter=1000,
                 tol=1e-8,
             ).fit(calibration_matrix, calibration_target)
-            if purchase_loss.endswith("context_factor_tweedie"):
+            if purchase_loss == STACKED_TWEEDIE_LOSS:
+                calibration_teacher = (
+                    "tweedie_power_1_5_stacked_factor_calibration_of_"
+                    "strict_purchase_oof_gross_return"
+                )
+            elif purchase_loss.endswith("context_factor_tweedie"):
                 calibration_teacher = (
                     "tweedie_power_1_5_context_factor_calibration_of_"
                     "strict_purchase_oof_gross_return"
@@ -1461,6 +1533,14 @@ def fit_four_head_nested_v22(
         purchase_loss=purchase_loss,
         conditional_gross_payouts=[record[3] for record in all_base_oof_records],
     )
+    purchase_auxiliary_head = None
+    if purchase_loss == STACKED_TWEEDIE_LOSS:
+        purchase_auxiliary_head, _unused_payout_head = _fit_purchase_heads(
+            [record[1][:, :6] for record in all_base_oof_records],
+            [record[2] for record in all_base_oof_records],
+            alpha=alpha,
+            purchase_loss="tweedie_capped_gross",
+        )
     probability_head, ranking_head, closing_head = _fit_base_heads(
         ordered, alpha=alpha
     )
@@ -1476,6 +1556,7 @@ def fit_four_head_nested_v22(
         closing_odds_head=closing_head,
         purchase_head=purchase_head,
         purchase_payout_head=purchase_payout_head,
+        purchase_auxiliary_head=purchase_auxiliary_head,
         purchase_calibration_head=purchase_calibration_head,
         purchase_feature_map=purchase_feature_map,
         purchase_probability_temperature=purchase_probability_temperature,
@@ -1524,6 +1605,11 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
             "purchase_payout_head": (
                 head_payload(artifact.purchase_payout_head)
                 if artifact.purchase_payout_head is not None
+                else None
+            ),
+            "purchase_auxiliary_head": (
+                head_payload(getattr(artifact, "purchase_auxiliary_head", None))
+                if getattr(artifact, "purchase_auxiliary_head", None) is not None
                 else None
             ),
             "purchase_calibration_head": (
@@ -1620,6 +1706,21 @@ def predict_race(
         calibration_matrix = purchase.reshape(-1, 1)
         calibration_teacher = artifact.purchase_calibration_head.teacher
         if calibration_teacher.startswith(
+            "tweedie_power_1_5_stacked_factor_calibration"
+        ):
+            calibration_matrix = _purchase_stacked_factor_calibration_matrix(
+                artifact.purchase_head,
+                artifact.purchase_payout_head,
+                artifact.purchase_auxiliary_head,
+                purchase_matrix,
+                probability_residual_scale=getattr(
+                    artifact, "purchase_residual_scale", 1.0
+                ),
+                payout_residual_scale=getattr(
+                    artifact, "purchase_payout_residual_scale", 1.0
+                ),
+            )
+        elif calibration_teacher.startswith(
             "tweedie_power_1_5_context_factor_calibration"
         ):
             calibration_matrix = _purchase_context_factor_calibration_matrix(
