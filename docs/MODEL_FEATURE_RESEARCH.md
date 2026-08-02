@@ -456,8 +456,18 @@ Policy v1 instead integrates each terminal settlement state and maximizes the
 lower parameter quantile of scenario-tail expected log bankroll growth. The
 expected-edge gate remains mandatory, while the growth objective selects the
 stake fraction and penalizes terminal ruin. Matched-window job 11852 compares
-this correction with job 11845. It remains provisional regardless of its point
-result because only five complete operating days are available.
+this correction with job 11845. It staked JPY 100 on one ticket, returned zero,
+and limited maximum drawdown to JPY 100. The generated probabilities retained
+the trifecta LogLoss improvement of 0.003128 and Brier improvement of 0.000076,
+while 3T5 regressed by 0.14 percentage points. The growth objective therefore
+fixed the catastrophic stake sizing but did not establish a profitable policy.
+
+Inspection found that every rejected vector had the same search penalty, so an
+initial population without a feasible vector had no selection gradient. Policy
+GA v2 fixes that search-only defect while preserving the exact same hard
+authorization gates and zero-stake fallback. Matched-window job 11895 evaluates
+the change as joint bankroll evaluation v3. Both results remain provisional
+regardless of point ROI because only five complete operating days are available.
 
 ### 2026-08-03 residual and dependence calibration comparison
 
