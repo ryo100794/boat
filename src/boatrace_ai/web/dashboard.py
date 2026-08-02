@@ -1462,12 +1462,15 @@ def _model_performance_report_contract(
         None,
     )
     return {
-        "version": "model-performance-v4",
+        "version": "model-performance-v6",
         "principles": [
             "異なる評価母集団の数値は横比較しない",
             "損失は艇Entry LLと3連単LLを区別する",
             "投資0円はROI 0ではなく購入なしと表示する",
             "正式T-5評価は事前登録日以降の完全日だけを集計する",
+            "結合購入価値は単票でなく固定賭け金ベクトル全体のV_buyを使う",
+            "正式ROIゲートはQ0.05(ROI)>1だけとしP(ROI>1)は補助表示に限定する",
+            "封印検証・模擬運用・少額固定運用の証拠を別系列で表示する",
         ],
         "stages": [
             {
@@ -1488,8 +1491,8 @@ def _model_performance_report_contract(
                 "id": "purchase_policy",
                 "label": "購入・資金配分",
                 "teacher": "払戻と資金制約下の実現損益",
-                "metrics": ["ROI", "損益", "最大DD", "ROI片側95%下限"],
-                "gate": "過去日だけで方針を選び未使用日でROI下限1超",
+                "metrics": ["V_buy", "ROI", "損益", "最大DD", "ROI片側95%下限"],
+                "gate": "V_buyが安全余裕を超え、未使用日でQ0.05(ROI)>1",
             },
             {
                 "id": "promotion",
@@ -1498,6 +1501,13 @@ def _model_performance_report_contract(
                 "metrics": ["予測gate", "オッズ品質gate", "資金gate"],
                 "gate": "全必須gate合格。未達はno-betまたはshadowを維持",
             },
+            {
+                "id": "operational_evidence",
+                "label": "運用証拠",
+                "teacher": "固定済み購入判断と実時点ジャーナル",
+                "metrics": ["封印連続日", "模擬判断", "少額固定注文"],
+                "gate": "段階4は封印30日と模擬運用、段階5はモデル無変更の少額固定運用を要求",
+            },
         ],
         "metric_definitions": {
             "entry_log_loss": "各艇の着順確率に対する対数損失。低いほど良い",
@@ -1505,6 +1515,10 @@ def _model_performance_report_contract(
             "trifecta_top5_hit_rate": "正解3連単が予測上位5点に含まれるレース率",
             "roi": "払戻総額を投資総額で割った値。購入なしは未評価",
             "roi_ci95_lower": "日単位再標本化によるROI片側95%下限",
+            "joint_purchase_value": "外側パラメータ標本ごとのポートフォリオ下側期待値についての経験5%分位",
+            "joint_purchase_safety_margin": "購入価値が超える必要がある事前固定の安全余裕",
+            "formal_roi_gate": "inverted_cdf経験分位でQ0.05(ROI)>1。P(ROI>1)は補助診断",
+            "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedを固定するSHA-256条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
         "groups": [
@@ -3037,6 +3051,46 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "probability_roi_above_one": _float_or_none(
                     metrics.get("probability_roi_above_one")
                 ),
+                "joint_purchase_value_minimum": _float_or_none(
+                    metrics.get("joint_purchase_value_minimum")
+                ),
+                "joint_purchase_safety_margin": _float_or_none(
+                    metrics.get("joint_purchase_safety_margin")
+                ),
+                "joint_purchase_value_minimum_excess": _float_or_none(
+                    metrics.get("joint_purchase_value_minimum_excess")
+                ),
+                "joint_purchase_value_selected_portfolios": metrics.get(
+                    "joint_purchase_value_selected_portfolios"
+                ),
+                "joint_purchase_value_gate_passed": metrics.get(
+                    "joint_purchase_value_gate_passed"
+                ),
+                "formal_roi_gate_method": metrics.get(
+                    "formal_roi_gate_method"
+                ),
+                "formal_roi_gate_passed": metrics.get(
+                    "formal_roi_gate_passed"
+                ),
+                "roi_probability_is_diagnostic_only": metrics.get(
+                    "roi_probability_is_diagnostic_only"
+                ),
+                "bootstrap_condition_id": metrics.get(
+                    "bootstrap_condition_id"
+                ),
+                "bootstrap_primary_block": metrics.get(
+                    "bootstrap_primary_block"
+                ),
+                "bootstrap_quantile_method": metrics.get(
+                    "bootstrap_quantile_method"
+                ),
+                "bootstrap_samples": metrics.get("bootstrap_samples"),
+                "day_venue_roi_lower_95": _float_or_none(
+                    metrics.get("day_venue_roi_lower_95")
+                ),
+                "venue_meeting_roi_lower_95": _float_or_none(
+                    metrics.get("venue_meeting_roi_lower_95")
+                ),
                 "running": status == "running",
                 "elapsed": _database_job_elapsed(
                     current_attempt_started.get(
@@ -3569,6 +3623,44 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     candidate_metrics.get(
                         "payout_feature_probability_roi_above_one"
                     )
+                ),
+                "daily_cluster_bootstrap_roi_lower_95": _float_or_none(
+                    candidate_metrics.get(
+                        "daily_cluster_bootstrap_roi_lower_95"
+                    )
+                ),
+                "probability_roi_above_one": _float_or_none(
+                    candidate_metrics.get("probability_roi_above_one")
+                ),
+                "joint_purchase_value_minimum": _float_or_none(
+                    candidate_metrics.get("joint_purchase_value_minimum")
+                ),
+                "joint_purchase_safety_margin": _float_or_none(
+                    candidate_metrics.get("joint_purchase_safety_margin")
+                ),
+                "joint_purchase_value_gate_passed": candidate_metrics.get(
+                    "joint_purchase_value_gate_passed"
+                ),
+                "formal_roi_gate_passed": candidate_metrics.get(
+                    "formal_roi_gate_passed"
+                ),
+                "bootstrap_condition_id": candidate_metrics.get(
+                    "bootstrap_condition_id"
+                ),
+                "bootstrap_primary_block": candidate_metrics.get(
+                    "bootstrap_primary_block"
+                ),
+                "bootstrap_quantile_method": candidate_metrics.get(
+                    "bootstrap_quantile_method"
+                ),
+                "bootstrap_samples": candidate_metrics.get(
+                    "bootstrap_samples"
+                ),
+                "day_venue_roi_lower_95": _float_or_none(
+                    candidate_metrics.get("day_venue_roi_lower_95")
+                ),
+                "venue_meeting_roi_lower_95": _float_or_none(
+                    candidate_metrics.get("venue_meeting_roi_lower_95")
                 ),
                 "payout_feature_legacy_roi": _float_or_none(
                     candidate_metrics.get("payout_feature_legacy_roi")

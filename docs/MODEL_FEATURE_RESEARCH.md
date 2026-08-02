@@ -404,11 +404,28 @@ preserves empirical probability-price dependence without claiming that a
 single fit represents parameter uncertainty.
 
 Neither artifact is deployment eligible yet. The terminal teacher is partly
-conditioned on the final market by definition. The generator has passed an
-initial real-data chronological diagnostic, but only across five outer days,
-and its scenarios are not connected to the purchase GA or settlement evaluator.
-Outer parameter uncertainty requires day-block refits. Promotion remains
-prohibited until at least 30 complete days and the sealed bankroll gates pass.
+conditioned on the final market by definition. The generator is connected to
+complete-vector policy GA and integer settlement, but its real-data evaluation
+still covers only five outer days. Outer parameter uncertainty requires
+day-block refits. Promotion remains prohibited until at least 30 complete days,
+the sealed bankroll gates pass, and timestamped shadow-operation evidence is
+recorded.
+
+The formal purchase value is the empirical `inverted_cdf` outer quantile of the
+portfolio-path lower-tail expected edge, `V_buy(b)`. A portfolio is authorized
+only when `V_buy(b) > m_buy`; ticket-level values remain diagnostics. The formal
+sealed return gate is exclusively `Q0.05(ROI) > 1` under complete operating-day
+resampling. `P(ROI > 1)` is displayed only as a diagnostic. Every result stores
+a condition ID covering the quantile method, sample count, block definition and
+seed, with independent day-by-venue and consecutive venue-meeting blocks shown
+as sensitivity analyses.
+
+Current maturity is stage 3 of 6: late research. Stage 4 requires a fully frozen
+model, calibration, genome and purchase threshold over at least 30 previously
+unseen consecutive days, positive formal purchase value, sealed ROI lower bound
+above one, profit after removing the largest hit, and a complete timestamped
+shadow journal. Stage 5 additionally requires low fixed-stake live operation
+without changing the model or purchase rules during the evidence period.
 
 ### 2026-08-03 strict joint walk-forward diagnostic
 

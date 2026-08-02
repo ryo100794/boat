@@ -142,6 +142,7 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
         "evaluation_through": "2026-08-01",
         "evaluation_days": 5,
         "evaluated_races": 713,
+        "configuration": {"buy_margin": 0.05},
         "probability_metrics": {
             "generated_winner_log_loss": 0.7,
             "generated_winner_top1_accuracy": 0.55,
@@ -160,10 +161,25 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
             "minimum_30_complete_days": False,
             "positive_profit": True,
         },
+        "bankroll_confidence": {
+            "samples": 2000,
+            "block": "complete_operating_day",
+            "quantile_method": "inverted_cdf",
+            "roi_lower": 0.98,
+            "probability_roi_above_one": 0.8,
+        },
         "daily": [{
             "races": [
-                {"stake_yen": 10_000, "return_yen": 12_000},
-                {"stake_yen": 10_000, "return_yen": 9_000},
+                {
+                    "stake_yen": 10_000,
+                    "return_yen": 12_000,
+                    "portfolio_lower_quantile": 0.08,
+                },
+                {
+                    "stake_yen": 10_000,
+                    "return_yen": 9_000,
+                    "portfolio_lower_quantile": 0.06,
+                },
             ],
         }],
     })
@@ -176,5 +192,15 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
     assert summary["daily_cluster_bootstrap_roi_lower_95"] == 0.98
     assert summary["largest_hit_return_share"] == pytest.approx(12_000 / 21_000)
     assert summary["roi_without_largest_hit"] == 0.45
-    assert summary["promotion_gate_passed"] == 1
-    assert summary["promotion_gate_total"] == 2
+    assert summary["joint_purchase_value_minimum"] == 0.06
+    assert summary["joint_purchase_safety_margin"] == 0.05
+    assert summary["joint_purchase_value_minimum_excess"] == pytest.approx(0.01)
+    assert summary["joint_purchase_value_gate_passed"] is True
+    assert summary["formal_roi_gate_method"] == "Q0.05_ROI_greater_than_1"
+    assert summary["formal_roi_gate_passed"] is False
+    assert summary["roi_probability_is_diagnostic_only"] is True
+    assert summary["bootstrap_primary_block"] == "complete_operating_day"
+    assert summary["bootstrap_quantile_method"] == "inverted_cdf"
+    assert summary["bootstrap_samples"] == 2000
+    assert summary["promotion_gate_passed"] == 2
+    assert summary["promotion_gate_total"] == 3

@@ -159,6 +159,26 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["primary_bankroll"]["roi"] is None
     assert result["promotion_eligible"] is False
     assert "generated_log_loss" in result["probability_metrics"]
+    purchase_value = result["joint_purchase_value"]
+    assert purchase_value["selected_portfolios"] == 0
+    assert purchase_value["minimum"] is None
+    assert purchase_value["all_above_safety_margin"] is False
+    confidence = result["bankroll_confidence"]
+    assert confidence["condition"]["formal_gate"] == (
+        "Q0.05_ROI_greater_than_1"
+    )
+    assert len(confidence["condition_id"]) == 64
+    assert confidence["formal_gate_passed"] is False
+    assert confidence["probability_roi_above_one_is_diagnostic_only"] is True
+    assert confidence["sensitivity"]["day_venue"]["block"] == (
+        "independent_day_venue_sensitivity"
+    )
+    assert confidence["sensitivity"]["venue_meeting"]["block"] == (
+        "consecutive_venue_meeting_sensitivity"
+    )
+    assert result["promotion_gate"][
+        "joint_purchase_value_above_safety_margin"
+    ] is False
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["actual_payout_yen"] == 150
