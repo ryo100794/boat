@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+from scipy.optimize import minimize
 from sklearn.linear_model import LogisticRegression, PoissonRegressor, TweedieRegressor
 
 
@@ -328,6 +329,94 @@ def _oof_payload(
     }
 
 
+def _fit_multinomial_offset_purchase_head(
+    matrices: Sequence[np.ndarray],
+    realized_returns: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> LinearHead:
+    """Learn within-race probability residuals around the frozen base head."""
+    if not matrices:
+        raise ValueError("offset purchase teacher requires at least one race")
+    dimension = int(matrices[0].shape[1])
+    winners: list[int] = []
+    offsets: list[np.ndarray] = []
+    for matrix, returns in zip(matrices, realized_returns, strict=True):
+        if matrix.ndim != 2 or matrix.shape[1] != dimension:
+            raise ValueError("offset purchase matrices must share dimensions")
+        winner_indices = np.flatnonzero(np.asarray(returns) >= 0.0)
+        if len(winner_indices) != 1:
+            raise ValueError("offset purchase teacher requires one winner per race")
+        winners.append(int(winner_indices[0]))
+        offsets.append(
+            np.log(np.clip(np.asarray(matrix[:, 0], dtype=np.float64), 1e-12, 1.0))
+        )
+
+    def objective(coefficients: np.ndarray) -> tuple[float, np.ndarray]:
+        loss = 0.0
+        gradient = np.zeros(dimension, dtype=np.float64)
+        for matrix, offset, winner in zip(
+            matrices, offsets, winners, strict=True
+        ):
+            probabilities = _softmax(offset + matrix @ coefficients)
+            loss -= math.log(max(float(probabilities[winner]), 1e-15))
+            errors = probabilities.copy()
+            errors[winner] -= 1.0
+            gradient += matrix.T @ errors
+        scale = 1.0 / len(matrices)
+        loss = loss * scale + 0.5 * float(alpha) * float(
+            coefficients @ coefficients
+        )
+        gradient = gradient * scale + float(alpha) * coefficients
+        return loss, gradient
+
+    fitted = minimize(
+        objective,
+        np.zeros(dimension, dtype=np.float64),
+        method="L-BFGS-B",
+        jac=True,
+        options={"maxiter": 500, "ftol": 1e-11, "gtol": 1e-7, "maxls": 30},
+    )
+    coefficients = np.asarray(fitted.x, dtype=np.float64)
+    if not np.isfinite(coefficients).all():
+        raise ValueError("offset purchase fit produced non-finite coefficients")
+    return _head(
+        "purchase_multinomial_offset_head",
+        "multinomial_probability_residual_from_strict_prior_base_head_oof",
+        (coefficients, 0.0),
+    )
+
+
+def _fit_uncapped_payout_residual_head(
+    matrices: Sequence[np.ndarray],
+    realized_returns: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> LinearHead:
+    winner_rows: list[np.ndarray] = []
+    log_residuals: list[float] = []
+    for matrix, returns in zip(matrices, realized_returns, strict=True):
+        winner_indices = np.flatnonzero(np.asarray(returns) >= 0.0)
+        if len(winner_indices) != 1:
+            raise ValueError("payout residual teacher requires one winner per race")
+        winner = int(winner_indices[0])
+        actual_gross = float(returns[winner]) + 1.0
+        predicted_closing = math.exp(float(matrix[winner, 2]))
+        if actual_gross <= 1.0 or predicted_closing <= 1.0:
+            raise ValueError("payout residual teacher requires valid gross odds")
+        winner_rows.append(np.asarray(matrix[winner], dtype=np.float64))
+        log_residuals.append(math.log(actual_gross / predicted_closing))
+    return _head(
+        "purchase_uncapped_payout_residual_head",
+        "uncapped_log_payout_residual_to_predicted_closing_strict_prior_oof",
+        _fit_ridge(
+            np.vstack(winner_rows),
+            np.asarray(log_residuals, dtype=np.float64),
+            alpha=alpha,
+        ),
+    )
+
+
 def _fit_pairwise_purchase_head(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
@@ -389,6 +478,15 @@ def _fit_purchase_heads(
 ) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
+    if purchase_loss == "multinomial_offset_uncapped_lognormal":
+        return (
+            _fit_multinomial_offset_purchase_head(
+                matrices, realized_returns, alpha=alpha
+            ),
+            _fit_uncapped_payout_residual_head(
+                matrices, realized_returns, alpha=alpha
+            ),
+        )
     if purchase_loss == "pairwise_contextual_rank_calibrated":
         return (
             _fit_pairwise_purchase_head(
@@ -513,6 +611,21 @@ def _purchase_net_scores(
     matrix: np.ndarray,
 ) -> np.ndarray:
     linear = _scores(head, matrix)
+    if head.teacher.startswith("multinomial_probability_residual"):
+        if payout_head is None or not payout_head.teacher.startswith(
+            "uncapped_log_payout_residual"
+        ):
+            raise ValueError("offset purchase head requires payout residual head")
+        base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
+        hit_probability = _softmax(np.log(base_probability) + linear)
+        conditional_payout = np.exp(
+            np.clip(
+                matrix[:, 2] + _scores(payout_head, matrix),
+                math.log(1.01),
+                math.log(1e6),
+            )
+        )
+        return hit_probability * conditional_payout - 1.0
     if payout_head is not None:
         hit_probability = 1.0 / (1.0 + np.exp(-np.clip(linear, -40.0, 40.0)))
         conditional_payout = np.exp(
@@ -547,6 +660,7 @@ def fit_four_head_nested_v22(
             "decision_context_interactions_v3"
         ),
         "pairwise_contextual_rank_calibrated": "decision_context_v2",
+        "multinomial_offset_uncapped_lognormal": "decision_context_v2",
     }.get(purchase_loss, "base_outputs_v1")
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")

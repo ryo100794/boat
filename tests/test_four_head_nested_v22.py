@@ -338,6 +338,80 @@ def test_nested_pairwise_purchase_rank_is_oof_calibrated() -> None:
     assert np.isfinite(prediction.purchase_scores).all()
 
 
+
+
+def test_offset_tail_heads_preserve_race_probability_and_uncapped_payout() -> None:
+    base_probability = np.asarray([0.55, 0.30, 0.15], dtype=np.float64)
+    matrices = [
+        np.column_stack(
+            (
+                base_probability,
+                np.asarray([1.0, 0.0, -1.0]),
+                np.log(np.asarray([8.0, 15.0, 40.0])),
+            )
+        ),
+        np.column_stack(
+            (
+                base_probability[::-1],
+                np.asarray([-1.0, 0.0, 1.0]),
+                np.log(np.asarray([45.0, 18.0, 7.0])),
+            )
+        ),
+    ]
+    returns = [
+        np.asarray([119.0, -1.0, -1.0]),
+        np.asarray([-1.0, -1.0, 89.0]),
+    ]
+
+    hit_head, payout_head = v22._fit_purchase_heads(
+        matrices,
+        returns,
+        alpha=0.1,
+        purchase_loss="multinomial_offset_uncapped_lognormal",
+    )
+    scores = v22._purchase_net_scores(hit_head, payout_head, matrices[0])
+    conditional_payout = np.exp(
+        matrices[0][:, 2] + v22._scores(payout_head, matrices[0])
+    )
+    learned_probability = (scores + 1.0) / conditional_payout
+
+    assert hit_head.teacher.startswith("multinomial_probability_residual")
+    assert payout_head.teacher.startswith("uncapped_log_payout_residual")
+    assert learned_probability.sum() == pytest.approx(1.0)
+    assert (learned_probability > 0.0).all()
+    assert conditional_payout.max() > 51.0
+    assert np.isfinite(scores).all()
+
+
+def test_nested_offset_tail_artifact_uses_context_without_oof_calibration() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_offset_uncapped_lognormal",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_feature_map == "decision_context_v2"
+    assert artifact.purchase_payout_head is not None
+    assert artifact.purchase_calibration_head is None
+    assert artifact.purchase_head.teacher.startswith(
+        "multinomial_probability_residual"
+    )
+    assert artifact.purchase_payout_head.teacher.startswith(
+        "uncapped_log_payout_residual"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
+    assert prediction.selected_indices == tuple(
+        index
+        for index, value in enumerate(prediction.purchase_scores)
+        if value >= 0.0
+    )
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64
