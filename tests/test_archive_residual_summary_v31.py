@@ -69,6 +69,8 @@ def test_v31_probability_ranking_and_bankroll_roles_are_separate() -> None:
     summary = summarize_result(payload)
 
     assert summary["model"] == "ticket_utility_meta_ranking_v31"
+    assert summary["evaluation_from"] == "2026-07-18"
+    assert summary["evaluation_through"] == "2026-07-30"
     assert summary["trifecta_log_loss"] == 3.665
     assert summary["residual_selection"]["label_scheme"] == "payout_weighted"
     assert summary["residual_selection"]["tree_preset"] == "balanced"

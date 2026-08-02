@@ -3068,6 +3068,23 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     )
                     else []
                 ),
+                "residual_selection": (
+                    metrics.get("residual_selection")
+                    if isinstance(metrics.get("residual_selection"), dict)
+                    else None
+                ),
+                "residual_ranking_metrics": (
+                    metrics.get("residual_ranking_metrics")
+                    if isinstance(metrics.get("residual_ranking_metrics"), dict)
+                    else None
+                ),
+                "residual_evaluation_from": metrics.get(
+                    "residual_evaluation_from"
+                ),
+                "residual_evaluation_through": metrics.get(
+                    "residual_evaluation_through"
+                ),
+                "residual_architecture": metrics.get("residual_architecture"),
                 "roi_without_largest_hit": _float_or_none(
                     metrics.get("roi_without_largest_hit")
                 ),

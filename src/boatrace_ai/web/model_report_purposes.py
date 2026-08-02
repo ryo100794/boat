@@ -211,8 +211,26 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _purpose_evaluation(job: dict[str, Any], key: str) -> dict[str, Any]:
-    required = PURPOSE_REQUIREMENTS[key]
-    available = [metric for metric in required if job.get(metric) is not None]
+    ranking = job.get("residual_ranking_metrics")
+    if key == "ticket_value" and isinstance(ranking, dict):
+        required = (
+            "residual_selection",
+            "ticket_ranking_hit_rate",
+            "ticket_ranking_roi",
+            "ticket_ranking_roi_ci95_lower",
+        )
+        values = {
+            "residual_selection": job.get("residual_selection"),
+            "ticket_ranking_hit_rate": ranking.get("hit_rate"),
+            "ticket_ranking_roi": ranking.get("roi"),
+            "ticket_ranking_roi_ci95_lower": ranking.get("roi_ci95_lower"),
+        }
+        profile = "ticket_utility_ranking"
+    else:
+        required = PURPOSE_REQUIREMENTS[key]
+        values = job
+        profile = "direct_expected_value" if key == "ticket_value" else key
+    available = [metric for metric in required if values.get(metric) is not None]
     missing = [metric for metric in required if metric not in available]
     backtest = _backtest_scope(job)
     missing_scope = [
@@ -226,6 +244,7 @@ def _purpose_evaluation(job: dict[str, Any], key: str) -> dict[str, Any]:
         "required_metrics": list(required),
         "available_metrics": available,
         "missing_metrics": missing,
+        "metric_profile": profile,
         "metric_count": len(available),
         "metric_total": len(required),
         "complete": not missing,
@@ -292,6 +311,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
         purposes.append("closing_odds")
     if has(
         (
+            "residual_ranking_metrics",
             "purchase_value_pearson_correlation",
             "purchase_value_calibration_mae",
             "purchase_value_positive_predicted_tickets",
