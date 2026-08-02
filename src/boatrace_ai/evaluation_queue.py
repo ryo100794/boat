@@ -3876,6 +3876,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "payout_feature_promotion_candidate"
     if summary.get("incremental_confidence_pass") is True:
         return "confirm_on_new_holdout"
+    if summary.get("promotion_eligible") is False:
+        return "reject_or_research_only"
     roi = summary.get("roi")
     profit = summary.get("profit_yen")
     if roi is not None and float(roi) >= 1.0 and float(profit or 0) > 0:

@@ -657,6 +657,17 @@ def test_archive_closing_backfill_is_rate_limited_and_serial(tmp_path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_explicit_failed_promotion_gate_cannot_fall_through_to_roi_pass() -> None:
+    assert result_decision(
+        "four_head_learned_value",
+        {
+            "roi": 3.2666667,
+            "profit_yen": 680,
+            "promotion_eligible": False,
+        },
+    ) == "reject_or_research_only"
+
+
 def test_archive_closing_backfill_result_is_collection_not_rejection() -> None:
     assert result_decision(
         "archive_closing_backfill",

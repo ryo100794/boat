@@ -129,6 +129,18 @@ def test_uses_existing_chronological_allocator_and_official_settlement(
         "v22_four_head_chronological_discrete_log"
     )
     assert result["diagnostic_unit_roi_is_formal_roi"] is False
+    assert result["evaluation_days"] == 1
+    assert result["tickets"] == 2
+    assert result["hit_tickets"] == 2
+    assert result["roi_without_largest_hit"] == 3.5
+    assert result["largest_hit_return_share"] == 0.5
+    assert result["effective_hit_count"] == pytest.approx(
+        2.0
+    )
+    assert result["promotion_eligible"] is False
+    assert result["promotion_gate"]["minimum_30_evaluation_days"] is False
+    assert result["promotion_gate"]["minimum_1000_evaluated_races"] is False
+    assert result["promotion_gate"]["minimum_100_tickets"] is False
 
 
 def test_learned_purchase_return_controls_stake_size(
