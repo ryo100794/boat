@@ -96,6 +96,20 @@ def test_absolute_total_pool_and_shares_are_apportioned_in_integer_units() -> No
     assert set(settle(scenario, {"A": 100})) == {"A"}
 
 
+def test_opt_in_external_stake_cache_preserves_complete_vector_settlement() -> None:
+    settle = build_parimutuel_gross_payoff_model(
+        ordinary_outcomes=OUTCOMES,
+        cache_external_stakes=True,
+    )
+    scenario = _scenario()
+
+    assert settle(scenario, {"A": 100}) == {"A": {"A": 180}}
+    assert settle(scenario, {"A": 100, "B": 100}) == {
+        "A": {"A": 220},
+        "B": {"B": 110},
+    }
+
+
 def test_partial_refund_returns_only_affected_ticket_principal() -> None:
     settle = build_parimutuel_gross_payoff_model(ordinary_outcomes=OUTCOMES)
     scenario = JointMarketScenario(

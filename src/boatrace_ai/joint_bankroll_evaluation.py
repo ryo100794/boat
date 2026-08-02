@@ -332,9 +332,6 @@ def run_joint_bankroll_evaluation(
     races_by_id = {str(race["race_id"]): race for race in races}
     outcomes = tuple(expected_outcomes)
     settlement_rules = ParimutuelSettlementRules()
-    settle = build_parimutuel_gross_payoff_model(
-        ordinary_outcomes=outcomes, rules=settlement_rules
-    )
     skip_reasons: Counter[str] = Counter()
     daily = []
     all_probability_rows = []
@@ -425,6 +422,11 @@ def run_joint_bankroll_evaluation(
                     settlement_rules.payout_rate_numerator
                     / settlement_rules.payout_rate_denominator
                 ),
+            )
+            settle = build_parimutuel_gross_payoff_model(
+                ordinary_outcomes=outcomes,
+                rules=settlement_rules,
+                cache_external_stakes=True,
             )
             portfolio_limit = min(
                 maximum_portfolio_stake_yen,
