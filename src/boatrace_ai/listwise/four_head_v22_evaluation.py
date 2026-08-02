@@ -745,6 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hurdle_contextual_lognormal",
             "hurdle_contextual_interactions_lognormal",
             "pairwise_contextual_rank_calibrated",
+            "multinomial_offset_uncapped_lognormal",
         ),
         default="ridge_capped_net",
     )
