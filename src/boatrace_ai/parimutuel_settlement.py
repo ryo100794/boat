@@ -157,6 +157,7 @@ def build_parimutuel_gross_payoff_model(
     *,
     ordinary_outcomes: Sequence[str],
     rules: ParimutuelSettlementRules | None = None,
+    cache_external_stakes: bool = False,
 ) -> GrossPayoffModel:
     """Build a strict payout callback; no pool-size estimate is invented."""
     outcomes = tuple(ordinary_outcomes)
@@ -166,6 +167,8 @@ def build_parimutuel_gross_payoff_model(
         raise ValueError("ordinary_outcomes must be unique non-empty strings")
     settlement_rules = rules or ParimutuelSettlementRules()
     settlement_rules.validate()
+    if not isinstance(cache_external_stakes, bool):
+        raise ValueError("cache_external_stakes must be boolean")
     refund_states = settlement_rules.refund_terminal_states
     if set(outcomes) & set(refund_states):
         raise ValueError("ordinary outcomes and refund states must be disjoint")
@@ -173,6 +176,9 @@ def build_parimutuel_gross_payoff_model(
         settlement_rules.payout_rate_numerator,
         settlement_rules.payout_rate_denominator,
     )
+    external_cache: dict[
+        int, tuple[JointMarketScenario, dict[str, int]]
+    ] = {}
 
     def settle(
         scenario: JointMarketScenario,
@@ -188,11 +194,17 @@ def build_parimutuel_gross_payoff_model(
             for amount in bets.values()
         ):
             raise ValueError("bets must use positive purchase-unit increments")
-        external = _external_stakes(
-            scenario.market_state,
-            ordinary_outcomes=outcomes,
-            face_unit_yen=settlement_rules.face_unit_yen,
-        )
+        cached = external_cache.get(id(scenario)) if cache_external_stakes else None
+        if cached is not None and cached[0] is scenario:
+            external = cached[1]
+        else:
+            external = _external_stakes(
+                scenario.market_state,
+                ordinary_outcomes=outcomes,
+                face_unit_yen=settlement_rules.face_unit_yen,
+            )
+            if cache_external_stakes:
+                external_cache[id(scenario)] = (scenario, external)
         special_addition = _yen(
             scenario.market_state.get("special_addition_yen", 0),
             "special payout addition",
