@@ -572,6 +572,26 @@ def test_oof_residual_scale_learns_signal_and_rejects_noise() -> None:
     assert noise_scaled_loss == pytest.approx(noise_market_loss)
 
 
+
+def test_payout_residual_scale_learns_signal_and_rejects_opposite_signal() -> None:
+    base = [np.log(np.asarray([5.0, 10.0, 20.0]))]
+    residual = [np.asarray([0.4, -0.2, 0.1])]
+    target = [base[0] + 1.5 * residual[0]]
+
+    scale, baseline_mae, scaled_mae = v22._fit_payout_residual_scale(
+        base, residual, target, alpha=1e-6
+    )
+
+    assert 0.0 < scale <= 2.0
+    assert scaled_mae < baseline_mae
+
+    zero_scale, zero_baseline, zero_scaled = v22._fit_payout_residual_scale(
+        base, residual, [base[0] - residual[0]], alpha=1e-6
+    )
+    assert zero_scale == 0.0
+    assert zero_scaled == pytest.approx(zero_baseline)
+
+
 def test_nested_oof_scaled_market_artifact_freezes_learned_scale() -> None:
     artifact = fit_four_head_nested_v22(
         labeled_races(start_day=1, days=8, races_per_day=3),
@@ -597,6 +617,49 @@ def test_nested_oof_scaled_market_artifact_freezes_learned_scale() -> None:
     assert hit_probability is not None
     assert hit_probability.sum() == pytest.approx(1.0)
     assert np.isfinite(predict_race(artifact, race.decision).purchase_scores).all()
+
+
+
+def test_scaled_payout_artifact_freezes_oof_shrinkage_and_predicts_payouts() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_market_offset_oof_scaled_payout_closing",
+    )
+    race = labeled_races(start_day=9, days=1)[0]
+    payouts = v22.predict_purchase_gross_payouts(artifact, race.decision)
+
+    assert 0.0 <= artifact.purchase_payout_residual_scale <= 2.0
+    assert artifact.purchase_oof_base_payout_log_mae is not None
+    assert artifact.purchase_oof_scaled_payout_log_mae is not None
+    assert (
+        artifact.purchase_oof_scaled_payout_log_mae
+        <= artifact.purchase_oof_base_payout_log_mae + 1e-10
+    )
+    assert payouts is not None
+    assert np.isfinite(payouts).all()
+    assert np.all(payouts > 1.0)
+
+
+def test_tweedie_payout_artifact_uses_strict_oof_gross_return_calibration() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_market_offset_oof_scaled_payout_tweedie",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_calibration_head is not None
+    assert artifact.purchase_calibration_head.teacher.startswith(
+        "tweedie_power_1_5_calibration_of_strict_purchase_oof"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
 
 
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:

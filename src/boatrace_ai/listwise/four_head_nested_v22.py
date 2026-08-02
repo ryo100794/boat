@@ -93,6 +93,9 @@ class FourHeadArtifact:
     purchase_residual_scale: float = 1.0
     purchase_oof_market_log_loss: float | None = None
     purchase_oof_scaled_log_loss: float | None = None
+    purchase_payout_residual_scale: float = 1.0
+    purchase_oof_base_payout_log_mae: float | None = None
+    purchase_oof_scaled_payout_log_mae: float | None = None
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
     purchase_threshold_source: str = "learned_unit_return_break_even_zero"
@@ -590,6 +593,8 @@ def _fit_purchase_heads(
     if purchase_loss in {
         "multinomial_market_offset_all_choice_closing",
         "multinomial_market_offset_oof_scaled_all_choice_closing",
+        "multinomial_market_offset_oof_scaled_payout_closing",
+        "multinomial_market_offset_oof_scaled_payout_tweedie",
     }:
         if conditional_gross_payouts is None:
             raise ValueError("market-offset closing teacher targets are required")
@@ -820,6 +825,44 @@ def _fit_multinomial_residual_scale(
     return scale, log_loss(0.0), log_loss(scale)
 
 
+def _fit_payout_residual_scale(
+    base_log_payouts: Sequence[np.ndarray],
+    residual_predictions: Sequence[np.ndarray],
+    target_log_payouts: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> tuple[float, float, float]:
+    """Shrink closing-payout movement using strict-OOF all-choice targets."""
+    if (
+        not base_log_payouts
+        or len(base_log_payouts) != len(residual_predictions)
+        or len(base_log_payouts) != len(target_log_payouts)
+    ):
+        raise ValueError("payout residual scale requires aligned OOF races")
+    base = np.concatenate(base_log_payouts)
+    residual = np.concatenate(residual_predictions)
+    target = np.concatenate(target_log_payouts)
+    if not (
+        np.isfinite(base).all()
+        and np.isfinite(residual).all()
+        and np.isfinite(target).all()
+    ):
+        raise ValueError("payout residual scale inputs must be finite")
+    movement = target - base
+    denominator = float(residual @ residual) + float(alpha) * len(residual)
+    scale = (
+        float(np.clip(float(residual @ movement) / denominator, 0.0, 2.0))
+        if denominator > 0.0
+        else 0.0
+    )
+    baseline_mae = float(np.mean(np.abs(base - target)))
+    scaled_mae = float(np.mean(np.abs(base + scale * residual - target)))
+    if scaled_mae > baseline_mae:
+        scale = 0.0
+        scaled_mae = baseline_mae
+    return scale, baseline_mae, scaled_mae
+
+
 def _fit_multinomial_temperature(
     probabilities: Sequence[np.ndarray],
     winner_indices: Sequence[int],
@@ -877,6 +920,7 @@ def _purchase_net_scores(
     *,
     probability_temperature: float = 1.0,
     probability_residual_scale: float = 1.0,
+    payout_residual_scale: float = 1.0,
 ) -> np.ndarray:
     linear = _scores(head, matrix)
     if head.teacher.startswith("multinomial_probability_residual"):
@@ -893,7 +937,9 @@ def _purchase_net_scores(
         )
         conditional_payout = np.exp(
             np.clip(
-                matrix[:, 2] + _scores(payout_head, matrix),
+                matrix[:, 2] + payout_residual_scale * _scores(
+                    payout_head, matrix
+                ),
                 math.log(1.01),
                 math.log(1e6),
             )
@@ -939,6 +985,12 @@ def fit_four_head_nested_v22(
             "decision_context_v2"
         ),
         "multinomial_market_offset_oof_scaled_all_choice_closing": (
+            "decision_context_v2"
+        ),
+        "multinomial_market_offset_oof_scaled_payout_closing": (
+            "decision_context_v2"
+        ),
+        "multinomial_market_offset_oof_scaled_payout_tweedie": (
             "decision_context_v2"
         ),
         "multinomial_offset_all_choice_closing_temperature": (
@@ -1013,6 +1065,9 @@ def fit_four_head_nested_v22(
     purchase_oof_market_probabilities_for_scale: list[np.ndarray] = []
     purchase_oof_residual_logits_for_scale: list[np.ndarray] = []
     purchase_oof_winners_for_scale: list[int] = []
+    purchase_oof_base_log_payouts: list[np.ndarray] = []
+    purchase_oof_payout_residuals: list[np.ndarray] = []
+    purchase_oof_target_log_payouts: list[np.ndarray] = []
     purchase_oof_scale_records: list[
         tuple[str, str, LinearHead, LinearHead | None, np.ndarray, np.ndarray]
     ] = []
@@ -1040,9 +1095,11 @@ def fit_four_head_nested_v22(
             )
             purchase_oof_scores_for_calibration.extend(scores.tolist())
             purchase_oof_returns_for_calibration.extend(realized.tolist())
-            if purchase_loss == (
-                "multinomial_market_offset_oof_scaled_all_choice_closing"
-            ):
+            if purchase_loss in {
+                "multinomial_market_offset_oof_scaled_all_choice_closing",
+                "multinomial_market_offset_oof_scaled_payout_closing",
+                "multinomial_market_offset_oof_scaled_payout_tweedie",
+            }:
                 winner_indices = np.flatnonzero(realized >= 0.0)
                 if len(winner_indices) != 1:
                     raise ValueError("residual-scale OOF race requires one winner")
@@ -1053,6 +1110,19 @@ def fit_four_head_nested_v22(
                     _scores(fold_head, matrix)
                 )
                 purchase_oof_winners_for_scale.append(int(winner_indices[0]))
+                if purchase_loss in {
+                    "multinomial_market_offset_oof_scaled_payout_closing",
+                    "multinomial_market_offset_oof_scaled_payout_tweedie",
+                }:
+                    if fold_payout_head is None:
+                        raise ValueError("scaled payout OOF head is missing")
+                    purchase_oof_base_log_payouts.append(matrix[:, 2].copy())
+                    purchase_oof_payout_residuals.append(
+                        _scores(fold_payout_head, matrix)
+                    )
+                    purchase_oof_target_log_payouts.append(
+                        np.log(np.asarray(_conditional_gross, dtype=np.float64))
+                    )
                 purchase_oof_scale_records.append(
                     (
                         validation_date, race_id, fold_head, fold_payout_head,
@@ -1105,9 +1175,14 @@ def fit_four_head_nested_v22(
     purchase_residual_scale = 1.0
     purchase_oof_market_log_loss = None
     purchase_oof_scaled_log_loss = None
-    if purchase_loss == (
-        "multinomial_market_offset_oof_scaled_all_choice_closing"
-    ):
+    purchase_payout_residual_scale = 1.0
+    purchase_oof_base_payout_log_mae = None
+    purchase_oof_scaled_payout_log_mae = None
+    if purchase_loss in {
+        "multinomial_market_offset_oof_scaled_all_choice_closing",
+        "multinomial_market_offset_oof_scaled_payout_closing",
+        "multinomial_market_offset_oof_scaled_payout_tweedie",
+    }:
         (
             purchase_residual_scale,
             purchase_oof_market_log_loss,
@@ -1118,6 +1193,20 @@ def fit_four_head_nested_v22(
             purchase_oof_winners_for_scale,
             alpha=alpha,
         )
+        if purchase_loss in {
+            "multinomial_market_offset_oof_scaled_payout_closing",
+            "multinomial_market_offset_oof_scaled_payout_tweedie",
+        }:
+            (
+                purchase_payout_residual_scale,
+                purchase_oof_base_payout_log_mae,
+                purchase_oof_scaled_payout_log_mae,
+            ) = _fit_payout_residual_scale(
+                purchase_oof_base_log_payouts,
+                purchase_oof_payout_residuals,
+                purchase_oof_target_log_payouts,
+                alpha=alpha,
+            )
         purchase_oof_scores_for_calibration.clear()
         purchase_oof_returns_for_calibration.clear()
         purchase_score_payloads.clear()
@@ -1137,6 +1226,7 @@ def fit_four_head_nested_v22(
                     fold_payout_head,
                     matrix,
                     probability_residual_scale=purchase_residual_scale,
+                    payout_residual_scale=purchase_payout_residual_scale,
                 )
                 purchase_oof_scores_for_calibration.extend(scores.tolist())
                 purchase_oof_returns_for_calibration.extend(realized.tolist())
@@ -1170,6 +1260,7 @@ def fit_four_head_nested_v22(
     if purchase_loss in {
         "hurdle_logistic_lognormal_calibrated",
         "pairwise_contextual_rank_calibrated",
+        "multinomial_market_offset_oof_scaled_payout_tweedie",
     }:
         calibration_matrix = np.asarray(
             purchase_oof_scores_for_calibration, dtype=np.float64
@@ -1180,15 +1271,38 @@ def fit_four_head_nested_v22(
             0.0,
             51.0,
         )
-        fitted_calibration = PoissonRegressor(
-            alpha=alpha,
-            fit_intercept=True,
-            max_iter=500,
-            tol=1e-8,
-        ).fit(calibration_matrix, calibration_target)
+        if purchase_loss == (
+            "multinomial_market_offset_oof_scaled_payout_tweedie"
+        ):
+            calibration_target = np.maximum(
+                np.asarray(purchase_oof_returns_for_calibration, dtype=np.float64)
+                + 1.0,
+                0.0,
+            )
+            fitted_calibration = TweedieRegressor(
+                power=1.5,
+                alpha=alpha,
+                link="log",
+                fit_intercept=True,
+                max_iter=1000,
+                tol=1e-8,
+            ).fit(calibration_matrix, calibration_target)
+            calibration_teacher = (
+                "tweedie_power_1_5_calibration_of_strict_purchase_oof_gross_return"
+            )
+        else:
+            fitted_calibration = PoissonRegressor(
+                alpha=alpha,
+                fit_intercept=True,
+                max_iter=500,
+                tol=1e-8,
+            ).fit(calibration_matrix, calibration_target)
+            calibration_teacher = (
+                "poisson_calibration_of_strict_purchase_head_oof_gross_return"
+            )
         purchase_calibration_head = _head(
             "purchase_calibration_head",
-            "poisson_calibration_of_strict_purchase_head_oof_gross_return",
+            calibration_teacher,
             (
                 np.asarray(fitted_calibration.coef_, dtype=np.float64),
                 float(fitted_calibration.intercept_),
@@ -1232,6 +1346,9 @@ def fit_four_head_nested_v22(
         purchase_residual_scale=purchase_residual_scale,
         purchase_oof_market_log_loss=purchase_oof_market_log_loss,
         purchase_oof_scaled_log_loss=purchase_oof_scaled_log_loss,
+        purchase_payout_residual_scale=purchase_payout_residual_scale,
+        purchase_oof_base_payout_log_mae=purchase_oof_base_payout_log_mae,
+        purchase_oof_scaled_payout_log_mae=purchase_oof_scaled_payout_log_mae,
         purchase_threshold=threshold,
         inner_oof_folds=tuple(folds),
         inner_oof_race_ids=oof_ids,
@@ -1291,6 +1408,15 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
             "purchase_oof_scaled_log_loss": getattr(
                 artifact, "purchase_oof_scaled_log_loss", None
             ),
+            "purchase_payout_residual_scale": getattr(
+                artifact, "purchase_payout_residual_scale", 1.0
+            ),
+            "purchase_oof_base_payout_log_mae": getattr(
+                artifact, "purchase_oof_base_payout_log_mae", None
+            ),
+            "purchase_oof_scaled_payout_log_mae": getattr(
+                artifact, "purchase_oof_scaled_payout_log_mae", None
+            ),
             "purchase_threshold": artifact.purchase_threshold,
             "inner_oof_folds": [fold.__dict__ for fold in artifact.inner_oof_folds],
             "inner_oof_race_ids": artifact.inner_oof_race_ids,
@@ -1349,6 +1475,9 @@ def predict_race(
         probability_residual_scale=getattr(
             artifact, "purchase_residual_scale", 1.0
         ),
+        payout_residual_scale=getattr(
+            artifact, "purchase_payout_residual_scale", 1.0
+        ),
     )
     if artifact.purchase_calibration_head is not None:
         purchase = np.exp(
@@ -1358,7 +1487,11 @@ def predict_race(
                     purchase.reshape(-1, 1),
                 ),
                 -30.0,
-                math.log(51.0),
+                (
+                    math.log(1e6)
+                    if "tweedie_power_1_5" in artifact.purchase_calibration_head.teacher
+                    else math.log(51.0)
+                ),
             )
         ) - 1.0
     selected = tuple(
@@ -1403,6 +1536,38 @@ def predict_purchase_hit_probabilities(
         matrix,
         temperature=getattr(artifact, "purchase_probability_temperature", 1.0),
         residual_scale=getattr(artifact, "purchase_residual_scale", 1.0),
+    )
+
+
+def predict_purchase_gross_payouts(
+    artifact: FourHeadArtifact,
+    decision: DecisionRace,
+) -> np.ndarray | None:
+    if artifact.purchase_payout_head is None or not artifact.purchase_head.teacher.startswith(
+        "multinomial_probability_residual"
+    ):
+        return None
+    probability, ranking, closing = _base_outputs(
+        decision,
+        artifact.probability_head,
+        artifact.ranking_head,
+        artifact.closing_odds_head,
+    )
+    matrix = _purchase_matrix(
+        decision,
+        probability,
+        ranking,
+        closing,
+        feature_map=artifact.purchase_feature_map,
+    )
+    return np.exp(
+        np.clip(
+            matrix[:, 2]
+            + getattr(artifact, "purchase_payout_residual_scale", 1.0)
+            * _scores(artifact.purchase_payout_head, matrix),
+            math.log(1.01),
+            math.log(1e6),
+        )
     )
 
 
