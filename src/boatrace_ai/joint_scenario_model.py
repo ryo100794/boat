@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
-from math import isfinite
+from math import fsum, isfinite, log
 import re
 from typing import Any, Mapping, Sequence
 
@@ -449,12 +449,247 @@ def joint_scenario_model_diagnostics(
     }
 
 
+def _mean_scenario_simplex(
+    scenarios: Sequence[JointMarketScenario],
+    outcomes: Sequence[str],
+    *,
+    market: bool,
+) -> dict[str, float]:
+    values = {}
+    for outcome in outcomes:
+        if market:
+            values[outcome] = fsum(
+                scenario.weight
+                * float(scenario.market_state["final_market_shares"][outcome])
+                for scenario in scenarios
+            )
+        else:
+            values[outcome] = fsum(
+                scenario.weight * float(scenario.probabilities[outcome])
+                for scenario in scenarios
+            )
+    total = fsum(values.values())
+    return {outcome: value / total for outcome, value in values.items()}
+
+
+def _walk_forward_metric_summary(rows: Sequence[Mapping[str, float]]) -> dict[str, float]:
+    count = len(rows)
+    if not count:
+        raise ValueError("walk-forward metric rows must not be empty")
+    keys = tuple(rows[0])
+    return {
+        key: fsum(float(row[key]) for row in rows) / count
+        for key in keys
+    }
+
+
+def evaluate_joint_scenario_walk_forward(
+    observations: Sequence[JointScenarioObservation],
+    actual_outcomes: Mapping[str, str],
+    *,
+    minimum_training_days: int = 3,
+    scenarios_per_race: int = 128,
+    rank: int = 8,
+    pooling_strength: float = 20.0,
+    seed: int = 33036,
+) -> dict[str, Any]:
+    """Evaluate the generator with strict prior-day refits; never tune policy."""
+    if (
+        isinstance(minimum_training_days, bool)
+        or not isinstance(minimum_training_days, int)
+        or minimum_training_days < 1
+    ):
+        raise ValueError("minimum_training_days must be a positive integer")
+    if (
+        isinstance(scenarios_per_race, bool)
+        or not isinstance(scenarios_per_race, int)
+        or scenarios_per_race < 1
+    ):
+        raise ValueError("scenarios_per_race must be a positive integer")
+    by_day: dict[str, list[JointScenarioObservation]] = {}
+    for observation in observations:
+        day = _iso_date(observation.race_date, "race_date")
+        by_day.setdefault(day, []).append(observation)
+    dates = sorted(by_day)
+    if len(dates) <= minimum_training_days:
+        raise ValueError("insufficient days for joint scenario walk-forward")
+    all_metric_rows = []
+    daily = []
+    outcomes: tuple[str, ...] | None = None
+    for day_index in range(minimum_training_days, len(dates)):
+        evaluation_date = dates[day_index]
+        training_dates = dates[:day_index]
+        training = [row for day in training_dates for row in by_day[day]]
+        model = fit_conditional_joint_scenario_model(
+            training,
+            expected_outcomes=outcomes,
+            rank=rank,
+            pooling_strength=pooling_strength,
+        )
+        outcomes = model.outcomes
+        day_metrics = []
+        for observation in sorted(
+            by_day[evaluation_date], key=lambda row: str(row.race_id)
+        ):
+            actual = str(actual_outcomes.get(str(observation.race_id)) or "")
+            if actual not in outcomes:
+                raise ValueError("walk-forward actual outcome is missing or invalid")
+            race_seed = int.from_bytes(
+                hashlib.sha256(
+                    f"{seed}:{observation.race_id}".encode("utf-8")
+                ).digest()[:8],
+                byteorder="big",
+                signed=False,
+            )
+            scenarios = generate_joint_market_scenarios(
+                model,
+                decision_probabilities=observation.decision_probabilities,
+                decision_market_shares=observation.decision_market_shares,
+                venue=observation.venue,
+                decision_horizon_seconds=observation.decision_horizon_seconds,
+                popularity_band=observation.popularity_band,
+                scenarios=scenarios_per_race,
+                seed=race_seed,
+            )
+            predicted_probability = _mean_scenario_simplex(
+                scenarios, outcomes, market=False
+            )
+            predicted_market = _mean_scenario_simplex(
+                scenarios, outcomes, market=True
+            )
+            decision_probability = validate_probability_simplex(
+                observation.decision_probabilities,
+                expected_outcomes=outcomes,
+            )
+            decision_market = validate_probability_simplex(
+                observation.decision_market_shares,
+                expected_outcomes=outcomes,
+            )
+            terminal_teacher = validate_probability_simplex(
+                observation.terminal_probability_teacher,
+                expected_outcomes=outcomes,
+            )
+            final_market = validate_probability_simplex(
+                observation.final_market_shares,
+                expected_outcomes=outcomes,
+            )
+            observed_pair = np.concatenate((
+                _clr(terminal_teacher, outcomes) - _clr(decision_probability, outcomes),
+                _clr(final_market, outcomes) - _clr(decision_market, outcomes),
+            ))
+            dimension = len(outcomes)
+            generated_inner_products = []
+            for scenario in scenarios:
+                probability_residual = (
+                    _clr(scenario.probabilities, outcomes)
+                    - _clr(decision_probability, outcomes)
+                )
+                market_residual = (
+                    _clr(
+                        scenario.market_state["final_market_shares"], outcomes
+                    )
+                    - _clr(decision_market, outcomes)
+                )
+                generated_inner_products.append(
+                    float(probability_residual @ market_residual) / dimension
+                )
+            one_hot = {
+                outcome: float(outcome == actual) for outcome in outcomes
+            }
+            metrics = {
+                "generated_log_loss": -log(max(EPSILON, predicted_probability[actual])),
+                "decision_model_log_loss": -log(
+                    max(EPSILON, decision_probability[actual])
+                ),
+                "decision_market_log_loss": -log(
+                    max(EPSILON, decision_market[actual])
+                ),
+                "terminal_teacher_log_loss": -log(
+                    max(EPSILON, terminal_teacher[actual])
+                ),
+                "generated_brier": fsum(
+                    (predicted_probability[key] - one_hot[key]) ** 2
+                    for key in outcomes
+                ),
+                "decision_model_brier": fsum(
+                    (decision_probability[key] - one_hot[key]) ** 2
+                    for key in outcomes
+                ),
+                "generated_top5": float(
+                    actual
+                    in sorted(
+                        outcomes,
+                        key=predicted_probability.get,
+                        reverse=True,
+                    )[:5]
+                ),
+                "decision_model_top5": float(
+                    actual
+                    in sorted(
+                        outcomes,
+                        key=decision_probability.get,
+                        reverse=True,
+                    )[:5]
+                ),
+                "closing_cross_entropy": -fsum(
+                    final_market[key]
+                    * log(max(EPSILON, predicted_market[key]))
+                    for key in outcomes
+                ),
+                "decision_market_cross_entropy": -fsum(
+                    final_market[key]
+                    * log(max(EPSILON, decision_market[key]))
+                    for key in outcomes
+                ),
+                "closing_total_variation": 0.5
+                * fsum(
+                    abs(predicted_market[key] - final_market[key])
+                    for key in outcomes
+                ),
+                "decision_market_total_variation": 0.5
+                * fsum(
+                    abs(decision_market[key] - final_market[key])
+                    for key in outcomes
+                ),
+                "observed_residual_inner_product": float(
+                    observed_pair[:dimension] @ observed_pair[dimension:]
+                )
+                / dimension,
+                "generated_residual_inner_product": fsum(
+                    generated_inner_products
+                )
+                / len(generated_inner_products),
+            }
+            day_metrics.append(metrics)
+            all_metric_rows.append(metrics)
+        daily.append({
+            "date": evaluation_date,
+            "trained_through_date": training_dates[-1],
+            "training_races": len(training),
+            "evaluated_races": len(day_metrics),
+            "metrics": _walk_forward_metric_summary(day_metrics),
+        })
+    return {
+        "version": f"{MODEL_VERSION}_walk_forward_v1",
+        "role": "diagnostic_joint_generator_not_policy_or_ga_fitness",
+        "minimum_training_days": minimum_training_days,
+        "scenarios_per_race": scenarios_per_race,
+        "evaluated_days": len(daily),
+        "evaluated_races": len(all_metric_rows),
+        "evaluation_from": daily[0]["date"],
+        "evaluation_through": daily[-1]["date"],
+        "metrics": _walk_forward_metric_summary(all_metric_rows),
+        "days": daily,
+    }
+
+
 __all__ = [
     "ConditionalJointScenarioModel",
     "JointScenarioObservation",
     "MODEL_VERSION",
     "TEACHER_KIND",
     "fit_conditional_joint_scenario_model",
+    "evaluate_joint_scenario_walk_forward",
     "generate_joint_market_scenarios",
     "joint_scenario_model_diagnostics",
     "outcome_schema_fingerprint",

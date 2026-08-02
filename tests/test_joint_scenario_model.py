@@ -6,6 +6,7 @@ import pytest
 from boatrace_ai.joint_scenario_model import (
     JointScenarioObservation,
     TEACHER_KIND,
+    evaluate_joint_scenario_walk_forward,
     fit_conditional_joint_scenario_model,
     generate_joint_market_scenarios,
     joint_scenario_model_diagnostics,
@@ -247,3 +248,74 @@ def test_generation_is_deterministic_and_reports_teacher_boundary() -> None:
     diagnostics = joint_scenario_model_diagnostics(model)
     assert diagnostics["actual_one_hot_used_as_terminal_probability_teacher"] is False
     assert diagnostics["role"].endswith("not_yet_policy_connected")
+
+
+def test_walk_forward_uses_only_strictly_prior_joint_observations() -> None:
+    rows = _training_rows()
+    actual = {
+        row.race_id: "A" if index % 2 else "B"
+        for index, row in enumerate(rows)
+    }
+    result = evaluate_joint_scenario_walk_forward(
+        rows,
+        actual,
+        minimum_training_days=5,
+        scenarios_per_race=32,
+        rank=2,
+        seed=19,
+    )
+
+    assert result["evaluated_days"] == 7
+    assert result["evaluated_races"] == 7
+    assert all(
+        row["trained_through_date"] < row["date"] for row in result["days"]
+    )
+    assert result["role"].endswith("not_policy_or_ga_fitness")
+
+
+def test_walk_forward_current_teacher_cannot_change_own_prediction() -> None:
+    rows = _training_rows()
+    actual = {row.race_id: "A" for row in rows}
+    baseline = evaluate_joint_scenario_walk_forward(
+        rows[:7],
+        actual,
+        minimum_training_days=5,
+        scenarios_per_race=32,
+        rank=2,
+        seed=23,
+    )
+    changed_terminal = {"A": 0.8, "B": 0.2}
+    target = rows[5]
+    changed = JointScenarioObservation(
+        **{
+            **target.__dict__,
+            "terminal_probability_teacher": changed_terminal,
+            "terminal_probability_prediction_sha256": (
+                terminal_probability_prediction_fingerprint(
+                    race_id=target.race_id,
+                    probabilities=changed_terminal,
+                    artifact_sha256=target.terminal_probability_artifact_sha256,
+                    fold_id=target.terminal_probability_fold_id,
+                    fold_manifest_sha256=(
+                        target.terminal_probability_fold_manifest_sha256
+                    ),
+                    feature_cutoff_seconds=0,
+                    outcomes=("A", "B"),
+                )
+            ),
+        }
+    )
+    mutated_rows = [*rows[:5], changed, rows[6]]
+    mutated = evaluate_joint_scenario_walk_forward(
+        mutated_rows,
+        actual,
+        minimum_training_days=5,
+        scenarios_per_race=32,
+        rank=2,
+        seed=23,
+    )
+
+    assert (
+        mutated["days"][0]["metrics"]["generated_log_loss"]
+        == pytest.approx(baseline["days"][0]["metrics"]["generated_log_loss"])
+    )
