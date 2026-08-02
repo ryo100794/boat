@@ -270,10 +270,15 @@ absolute total wager-pool amount plus the 120-way market shares in every
 scenario. In the latter case, total face units are allocated by deterministic
 largest remainder before adding the system's order. Closing odds or normalized
 market shares alone identify relative prices but not absolute pool size, so they
-cannot identify the price impact of a JPY 100 or JPY 10,000 order. No nominal
-pool size is invented. Until an audited pool-size source or conservative
-pool-size model is attached, the production purchase gate is unavailable even
-when probability and closing-share scenarios exist.
+cannot uniquely identify the price impact of a JPY 100 or JPY 10,000 order.
+`boatrace_ai.pool_scale_lower_bound` supplies a fail-closed fallback rather than
+inventing a nominal pool: it finds the smallest integer 10-yen-face-unit pool
+whose statutory settlement reproduces every available decision-time decimal
+odd. Missing outcomes are rejected unless the caller explicitly marks them as
+unpriced. The resulting amount is a lower bound, not an estimate of the actual
+closing pool. Holding it fixed through close deliberately overstates self
+impact and can reject otherwise viable bets. Audited wager-type sales remain
+the preferred input and replace this fallback when available.
 
 An initial source probe found race-level wager-type sales in venue-published
 official record sheets. For example, the 2026-06-25 Tokoname record sheet lists
@@ -291,6 +296,13 @@ finite search-disqualification score, while the no-bet vector retains value
 zero. Every GA candidate is repriced as a whole; the selected vector alone is
 rerun with ticket-removal marginal diagnostics. Version v0 is diagnostic-only
 and has no path to the wagering API.
+
+The pool lower bound can be attached to every generated path while retaining
+that path's final 120-way market shares. The settlement adapter then allocates
+the absolute lower-bound scale across those generated shares and reprices each
+complete GA vector. The attachment records its method, decision-time as-of
+label and deterministic allocation audit hash. It refuses to overwrite an
+exact pool amount or exact ticket stakes already present in a scenario.
 
 `boatrace_ai.joint_parameter_uncertainty` supplies genuine outer parameter
 draws rather than duplicating paths from one fit. It resamples complete strictly
@@ -337,9 +349,11 @@ an `inverted_cdf` empirical outer quantile, reports scenario ESS, and disables
 the purchase gate when outer or tail evidence is insufficient. It does not
 generate joint scenarios. Shared-state generation, partial pooling, and
 closing-market distribution fitting now live in the separate diagnostic
-`joint_scenario_model`; connection of generated paths to settlement and policy
-GA remains unfinished. The current market-residual GA uses market-relative
-probability metrics and is not described as a joint-value GA.
+`joint_scenario_model`; generated paths are now connected to integer settlement
+and complete-vector policy GA. Exact nationwide pool labels, sealed bankroll
+evaluation and production promotion remain unfinished. The current
+market-residual GA uses market-relative probability metrics and is not
+described as a joint-value GA.
 
 `boatrace_ai.terminal_probability_oof` now supplies the previously missing
 diagnostic terminal-probability teacher. For each evaluation day it fits a
