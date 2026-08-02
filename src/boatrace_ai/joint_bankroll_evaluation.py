@@ -7,7 +7,7 @@ from math import fsum, log
 import json
 from pathlib import Path
 import random
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import joblib
 import numpy as np
@@ -302,6 +302,7 @@ def run_joint_bankroll_evaluation(
     settlement_delay_seconds: int = 600,
     seed: int = 33041,
     expected_outcomes: Sequence[str] = TRIFECTA_OUTCOMES,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     if outer_draws < 1 or scenarios_per_draw < 1:
         raise ValueError("outer_draws and scenarios_per_draw must be positive")
@@ -336,10 +337,13 @@ def run_joint_bankroll_evaluation(
     daily = []
     all_probability_rows = []
 
-    for day_index, evaluation_date in enumerate(sorted(observations_by_day)):
+    ordered_dates = sorted(observations_by_day)
+    minimum_prior_days = max(2, joint_min_training_days)
+    total_evaluation_days = max(0, len(ordered_dates) - minimum_prior_days)
+    for day_index, evaluation_date in enumerate(ordered_dates):
         prior = [row for row in observations if row.race_date < evaluation_date]
         prior_days = {row.race_date for row in prior}
-        if len(prior_days) < max(2, joint_min_training_days):
+        if len(prior_days) < minimum_prior_days:
             continue
         parameter_models = bootstrap_joint_parameter_models(
             prior,
@@ -372,6 +376,16 @@ def run_joint_bankroll_evaluation(
             ),
         )
         for race_index, observation in enumerate(current):
+            if progress_callback is not None and race_index % 25 == 0:
+                progress_callback({
+                    "event": "joint_bankroll_race_progress",
+                    "model": EVALUATION_VERSION,
+                    "evaluation_date": evaluation_date,
+                    "completed_days": len(daily),
+                    "total_evaluation_days": total_evaluation_days,
+                    "race_index": race_index,
+                    "races_on_day": len(current),
+                })
             race = races_by_id[observation.race_id]
             purchase_at = _instant(race.get("captured_at"), "captured_at")
             pending_receipts, matured_receipt = _release_matured_receipts(
@@ -514,7 +528,7 @@ def run_joint_bankroll_evaluation(
             balance += final_receipt
             peak = max(peak, balance)
         day_metrics = _average_metrics(day_probability_rows)
-        daily.append({
+        day_row = {
             "race_date": evaluation_date,
             "training_days": len(prior_days),
             "evaluated_races": len(day_probability_rows),
@@ -530,7 +544,20 @@ def run_joint_bankroll_evaluation(
             "max_drawdown_ratio": maximum_drawdown / opening,
             "probability_metrics": day_metrics,
             "races": race_rows,
-        })
+        }
+        daily.append(day_row)
+        if progress_callback is not None:
+            progress_callback({
+                "event": "joint_bankroll_day_completed",
+                "model": EVALUATION_VERSION,
+                "evaluation_date": evaluation_date,
+                "completed_days": len(daily),
+                "total_evaluation_days": total_evaluation_days,
+                "evaluated_races": day_row["evaluated_races"],
+                "stake_yen": day_row["stake_yen"],
+                "return_yen": day_row["return_yen"],
+                "closing_bankroll_yen": day_row["closing_bankroll_yen"],
+            })
 
     total_stake = sum(day["stake_yen"] for day in daily)
     total_return = sum(day["return_yen"] for day in daily)
@@ -717,7 +744,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     options["learn_residual_scales"] = not options.pop(
         "no_learn_residual_scales"
     )
-    result = run_joint_bankroll_evaluation(**options)
+    result = run_joint_bankroll_evaluation(
+        **options,
+        progress_callback=lambda row: print(
+            json.dumps(dict(row), ensure_ascii=False, sort_keys=True),
+            flush=True,
+        ),
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(
