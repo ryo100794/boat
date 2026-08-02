@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import joblib
 import numpy as np
 
+from ..genetic_search import GeneticSearchSettings
 from .four_head_nested_v22 import (
     LabeledRace,
     RacePrediction,
@@ -600,6 +601,7 @@ def evaluate_learned_purchase_allocation_v33(
     allocation_validation_fraction: float = 0.25,
     allocation_max_iterations: int = 200,
     allocation_selection_mode: str = "holdout",
+    allocation_genetic_search: GeneticSearchSettings | None = None,
     initial_bankroll_yen: int = INITIAL_BANKROLL_YEN,
     stake_unit_yen: int = STAKE_UNIT_YEN,
     max_snapshot_age_seconds: float = MAX_T5_AGE_SECONDS,
@@ -655,6 +657,7 @@ def evaluate_learned_purchase_allocation_v33(
         max_iterations=allocation_max_iterations,
         model_key=model_key,
         selection_mode=allocation_selection_mode,
+        genetic_search=allocation_genetic_search,
     )
 
     # Refit only base heads on all training. Outer labels/results stay inaccessible.
@@ -811,7 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allocation-max-iterations", type=int, default=200)
     parser.add_argument(
         "--allocation-grid",
-        choices=("default", "exhaustive-v1"),
+        choices=("default", "exhaustive-v1", "genetic-v1"),
         default="default",
     )
     parser.add_argument(
@@ -819,6 +822,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("holdout", "walk-forward"),
         default="holdout",
     )
+    parser.add_argument("--ga-population-size", type=int, default=12)
+    parser.add_argument("--ga-generations", type=int, default=5)
+    parser.add_argument("--ga-elite-count", type=int, default=3)
+    parser.add_argument("--ga-mutation-rate", type=float, default=0.30)
+    parser.add_argument("--ga-random-injections", type=int, default=1)
+    parser.add_argument("--ga-seed", type=int, default=33034)
     parser.add_argument("--bootstrap-samples", type=int, default=BOOTSTRAP_SAMPLES)
     return parser
 
@@ -896,6 +905,18 @@ def main(argv: list[str] | None = None) -> int:
                 EXHAUSTIVE_CONFIGS_V1
                 if args.allocation_grid == "exhaustive-v1"
                 else DEFAULT_CONFIGS
+            ),
+            allocation_genetic_search=(
+                GeneticSearchSettings(
+                    population_size=args.ga_population_size,
+                    generations=args.ga_generations,
+                    elite_count=args.ga_elite_count,
+                    mutation_rate=args.ga_mutation_rate,
+                    random_injections=args.ga_random_injections,
+                    seed=args.ga_seed,
+                )
+                if args.allocation_grid == "genetic-v1"
+                else None
             ),
             max_snapshot_age_seconds=args.max_snapshot_age_seconds,
             bootstrap_samples=args.bootstrap_samples,

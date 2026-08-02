@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -14,6 +13,7 @@ from typing import Any, Callable
 
 from .db import connection
 from .feature_tuning import load_complete_race_ids
+from .genetic_search import GeneticSearchSettings, evolve_population
 from .hashed_feature_dataset import HashedRaceDataset, load_hashed_dataset
 from .listwise.model import evaluate_range, fit_scaler, train_listwise_model
 
@@ -326,30 +326,6 @@ def _date_groups(
     return groups
 
 
-def _percentile(sorted_values: list[float], fraction: float) -> float:
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    position = (len(sorted_values) - 1) * fraction
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return sorted_values[lower]
-    weight = position - lower
-    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
-
-
-def _fitness_distribution(ranked: list[dict[str, Any]]) -> dict[str, float]:
-    values = sorted(float(row["fitness"]) for row in ranked)
-    return {
-        "min_fitness": values[0],
-        "q1_fitness": _percentile(values, 0.25),
-        "median_fitness": _percentile(values, 0.5),
-        "q3_fitness": _percentile(values, 0.75),
-        "max_fitness": values[-1],
-        "std_fitness": statistics.pstdev(values),
-    }
-
-
 def evolve_island(
     *,
     rng: random.Random,
@@ -364,71 +340,58 @@ def evolve_island(
     if population_size < 4:
         raise ValueError("population_size must be at least 4")
     elite_count = min(max(1, elite_count), population_size // 2)
-    population = list(immigrants or [])[:elite_count]
-    population.extend(random_genome(rng) for _ in range(population_size - len(population)))
-    history: list[dict[str, Any]] = []
-    ranked: list[dict[str, Any]] = []
-    best_seen = -math.inf
-    stagnant_generations = 0
-    for local_generation in range(local_generations):
-        unique = {json.dumps(row.as_dict(), sort_keys=True): row for row in population}
-        while len(unique) < population_size:
-            genome = random_genome(rng)
-            unique[json.dumps(genome.as_dict(), sort_keys=True)] = genome
-        genomes = list(unique.values())[:population_size]
-        with ThreadPoolExecutor(max_workers=min(2, population_size)) as executor:
-            metrics_rows = list(executor.map(evaluator, genomes))
-        candidate_rows: list[dict[str, Any]] = []
-        for genome, metrics in zip(genomes, metrics_rows):
-            components = fitness_components(metrics, genome)
-            candidate_rows.append(
-                {
-                    "genome": genome.as_dict(),
-                    "metrics": metrics,
-                    "fitness": components["fitness"],
-                    "fitness_components": components,
+    ranked, generic_history = evolve_population(
+        settings=GeneticSearchSettings(
+            population_size=population_size,
+            generations=local_generations,
+            elite_count=elite_count,
+            mutation_rate=mutation_rate,
+            random_injections=max(0, random_injections),
+            max_workers=min(2, population_size),
+            seed=rng.randrange(0, 2**31),
+        ),
+        evaluator=evaluator,
+        fitness=lambda metrics, genome: speculative_fitness(
+            dict(metrics), genome
+        ),
+        random_candidate=random_genome,
+        crossover=crossover,
+        mutate=lambda genome, local_rng, rate: mutate(
+            genome, local_rng, rate=rate
+        ),
+        candidate_key=lambda genome: json.dumps(
+            genome.as_dict(), sort_keys=True
+        ),
+        serialize=lambda genome: genome.as_dict(),
+        immigrants=tuple(immigrants or ()),
+    )
+    candidate_rows = [
+        {
+            "genome": row.candidate.as_dict(),
+            "metrics": dict(row.metrics),
+            "fitness": row.fitness,
+            "fitness_components": fitness_components(
+                dict(row.metrics), row.candidate
+            ),
+        }
+        for row in ranked[:elite_count]
+    ]
+    history = [
+        {
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in {
+                    "generation", "best_candidate", "unique_candidates"
                 }
-            )
-        ranked = sorted(
-            candidate_rows,
-            key=lambda row: float(row["fitness"]),
-            reverse=True,
-        )
-        current_best = float(ranked[0]["fitness"])
-        if current_best > best_seen + 1e-7:
-            best_seen = current_best
-            stagnant_generations = 0
-        else:
-            stagnant_generations += 1
-        adaptive_rate = min(0.85, mutation_rate + 0.20 * stagnant_generations)
-        injection_count = (
-            min(max(0, random_injections), population_size - elite_count)
-            if local_generation + 1 < local_generations
-            else 0
-        )
-        history.append({
-            "local_generation": local_generation,
-            "best_fitness": ranked[0]["fitness"],
-            "best_genome": ranked[0]["genome"],
-            "mutation_rate": adaptive_rate,
-            "random_injections": injection_count,
-            "unique_genomes": len(unique),
-            **_fitness_distribution(ranked),
-        })
-        elites = [genome_from_dict(row["genome"]) for row in ranked[:elite_count]]
-        population = list(elites)
-        offspring_target = population_size - injection_count
-        while len(population) < offspring_target:
-            parents = (
-                rng.sample(elites, 2)
-                if len(elites) > 1
-                else [elites[0], elites[0]]
-            )
-            population.append(
-                mutate(crossover(*parents, rng), rng, rate=adaptive_rate)
-            )
-        population.extend(random_genome(rng) for _ in range(injection_count))
-    return ranked[:elite_count], history
+            },
+            "local_generation": row["generation"],
+            "best_genome": row["best_candidate"],
+            "unique_genomes": row["unique_candidates"],
+        }
+        for row in generic_history
+    ]
+    return candidate_rows, history
 
 
 def _slice_dataset(
