@@ -683,6 +683,9 @@ def run_v22_smoke_evaluation(
         "model_key": artifact.model_key,
         "artifact_sha256": artifact_fingerprint(artifact),
         "purchase_loss": purchase_loss,
+        "purchase_probability_temperature": (
+            artifact.purchase_probability_temperature
+        ),
         "periods": {
             "training_from": training_from_date,
             "training_through": training_through_date,
