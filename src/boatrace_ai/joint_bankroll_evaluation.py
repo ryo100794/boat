@@ -472,7 +472,10 @@ def run_joint_bankroll_evaluation(
                     mutation_rate=0.35,
                     random_injections=1,
                     max_workers=min(4, population_size),
-                    execution_backend="process",
+                    # A 120-outcome path set is expensive to pickle for every
+                    # GA candidate. Real-race profiling is faster with the
+                    # shared in-process scenario graph and sparse settlement.
+                    execution_backend="thread",
                     seed=path_seed + 1,
                 ),
             )
