@@ -1847,6 +1847,7 @@ def build_command(
             "max_snapshot_age_seconds", "timeout_seconds",
             "odds_path_schema",
             "allocation_grid",
+            "allocation_selection_mode",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1909,6 +1910,11 @@ def build_command(
         allocation_grid = str(params.get("allocation_grid", "default"))
         if allocation_grid not in {"default", "exhaustive-v1"}:
             raise ValueError("unsupported learned allocation grid")
+        allocation_selection_mode = str(
+            params.get("allocation_selection_mode", "holdout")
+        )
+        if allocation_selection_mode not in {"holdout", "walk-forward"}:
+            raise ValueError("unsupported learned allocation selection mode")
         _integer(params, "timeout_seconds", 7200, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         source_model = (app_root / str(params["source_model"])).resolve()
@@ -1958,6 +1964,7 @@ def build_command(
             "--bootstrap-samples", str(bootstrap_samples),
             "--max-snapshot-age-seconds", str(max_snapshot_age),
             "--allocation-grid", allocation_grid,
+            "--allocation-selection-mode", allocation_selection_mode,
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
         ]

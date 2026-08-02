@@ -599,6 +599,7 @@ def evaluate_learned_purchase_allocation_v33(
     allocation_configs: Iterable[AllocationConfig] = DEFAULT_CONFIGS,
     allocation_validation_fraction: float = 0.25,
     allocation_max_iterations: int = 200,
+    allocation_selection_mode: str = "holdout",
     initial_bankroll_yen: int = INITIAL_BANKROLL_YEN,
     stake_unit_yen: int = STAKE_UNIT_YEN,
     max_snapshot_age_seconds: float = MAX_T5_AGE_SECONDS,
@@ -653,6 +654,7 @@ def evaluate_learned_purchase_allocation_v33(
         validation_fraction=allocation_validation_fraction,
         max_iterations=allocation_max_iterations,
         model_key=model_key,
+        selection_mode=allocation_selection_mode,
     )
 
     # Refit only base heads on all training. Outer labels/results stay inaccessible.
@@ -812,6 +814,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("default", "exhaustive-v1"),
         default="default",
     )
+    parser.add_argument(
+        "--allocation-selection-mode",
+        choices=("holdout", "walk-forward"),
+        default="holdout",
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=BOOTSTRAP_SAMPLES)
     return parser
 
@@ -884,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             allocation_validation_fraction=args.allocation_validation_fraction,
             allocation_max_iterations=args.allocation_max_iterations,
+            allocation_selection_mode=args.allocation_selection_mode,
             allocation_configs=(
                 EXHAUSTIVE_CONFIGS_V1
                 if args.allocation_grid == "exhaustive-v1"
