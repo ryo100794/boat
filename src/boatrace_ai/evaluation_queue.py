@@ -65,6 +65,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
+    "four_head_temporal_aggregate": {"category": "evaluation", "memory_mb": 512, "idle_cpu": 0.0, "max_parallel": 2, "disk_mb": 128},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "listwise_newton_refine": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 15.0, "max_parallel": 2, "disk_mb": 4096},
@@ -1794,6 +1795,40 @@ def build_command(
             "--output",
             str(output),
         ], output
+    if task_type == "four_head_temporal_aggregate":
+        allowed = {"source_job_ids", "timeout_seconds"}
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported four_head_temporal_aggregate parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        source_job_ids = params.get("source_job_ids")
+        if (
+            not isinstance(source_job_ids, list)
+            or not 2 <= len(source_job_ids) <= 32
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+                for value in source_job_ids
+            )
+            or len(set(source_job_ids)) != len(source_job_ids)
+        ):
+            raise ValueError("source_job_ids must contain 2..32 unique job ids")
+        _integer(params, "timeout_seconds", 600, 60, 3600)
+        result_root = app_root / "data" / "models" / "evaluation_queue"
+        command = [
+            str(python),
+            "-m",
+            "boatrace_ai.listwise.four_head_temporal_aggregate",
+        ]
+        for source_job_id in source_job_ids:
+            command.extend(
+                ["--input", str(result_root / f"job-{source_job_id:08d}.json")]
+            )
+        for source_job_id in source_job_ids:
+            command.extend(["--source-job-id", str(source_job_id)])
+        command.extend(["--output", str(output)])
+        return command, output
     if task_type == "four_head_learned_value":
         allowed = {
             "source_model", "training_from", "training_through",
