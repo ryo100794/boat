@@ -79,14 +79,17 @@ This ratio is a theoretical special case, not the production betting rule.
 For ticket i, use its own decision-time information set F_t and model the final
 decimal payout D_final as uncertain:
 
-    conditional_EV_i = E[p_i * D_i_final | F_t] - 1
+    conditional_EV_i = E[1{outcome = i} * D_i_final | F_t] - 1
 
 Probability and final payout are not assumed independent. New information that
 raises the estimated outcome probability can attract late money and lower the
 payout at the same time. Closing-price scenarios must therefore preserve their
 joint dependence by decision offset, venue, popularity band, and ticket.
+Factoring this expectation into p_i times expected payout is valid only under
+the corresponding conditional-independence assumption.
 
-The executable gate is conservative:
+When the joint distribution is not estimable with adequate support, use this
+conservative sufficient gate rather than treating it as an EV identity:
 
     p_i_LCB * D_i_final_low > 1 + safety_margin
 
