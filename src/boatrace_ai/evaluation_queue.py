@@ -2228,6 +2228,7 @@ def build_command(
         if strategy not in {
             "grid",
             "newton_residual",
+            "genetic_t5_market_residual_v1",
             "orthogonal_residual",
             "odds_path_return",
             "odds_path_probability",
@@ -3224,6 +3225,39 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    deployment = payload.get("deployment_configuration")
+    genetic_selection = (
+        deployment.get("calibrator_selection")
+        if isinstance(deployment, dict)
+        else None
+    )
+    if (
+        isinstance(genetic_selection, dict)
+        and genetic_selection.get("protocol") == "genetic_t5_market_residual_v1"
+    ):
+        champion = genetic_selection.get("champion")
+        metrics = genetic_selection.get("champion_metrics")
+        summary["market_residual_ga_protocol"] = genetic_selection["protocol"]
+        summary["market_residual_ga_outer_holdout_used"] = bool(
+            genetic_selection.get("outer_holdout_used")
+        )
+        summary["market_residual_ga_champion"] = (
+            dict(champion) if isinstance(champion, dict) else None
+        )
+        summary["market_residual_ga_fitness"] = genetic_selection.get(
+            "champion_fitness"
+        )
+        if isinstance(metrics, dict):
+            for key in (
+                "prequential_races",
+                "evaluation_days",
+                "mean_log_loss_delta",
+                "log_loss_delta_ci95_upper",
+                "worst_day_log_loss_delta",
+                "mean_brier_delta",
+                "mean_top5_delta",
+            ):
+                summary[f"market_residual_ga_{key}"] = metrics.get(key)
     periods = payload.get("periods")
     if isinstance(periods, dict):
         summary.setdefault(

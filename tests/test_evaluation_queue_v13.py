@@ -119,3 +119,37 @@ def test_v13_work_ticket_is_reproducibly_seeded_with_performance_gates() -> None
     assert "bootstrap片側下限" in acceptance
     assert "条件付きcoverage" in acceptance
     assert "expected-vs-hit" in acceptance
+
+
+def test_genetic_market_residual_summary_preserves_market_relative_metrics() -> None:
+    summary = summarize_result({
+        "deployment_configuration": {
+            "calibrator_selection": {
+                "protocol": "genetic_t5_market_residual_v1",
+                "outer_holdout_used": False,
+                "champion": {
+                    "family": "global_log_pool",
+                    "regularization": 0.1,
+                    "lookback_days": 30,
+                },
+                "champion_fitness": 0.02,
+                "champion_metrics": {
+                    "prequential_races": 1_200,
+                    "evaluation_days": 30,
+                    "mean_log_loss_delta": -0.02,
+                    "log_loss_delta_ci95_upper": -0.005,
+                    "worst_day_log_loss_delta": 0.03,
+                    "mean_brier_delta": -0.001,
+                    "mean_top5_delta": 0.01,
+                },
+            }
+        }
+    })
+
+    assert summary["market_residual_ga_protocol"] == (
+        "genetic_t5_market_residual_v1"
+    )
+    assert summary["market_residual_ga_champion"]["lookback_days"] == 30
+    assert summary["market_residual_ga_prequential_races"] == 1_200
+    assert summary["market_residual_ga_log_loss_delta_ci95_upper"] == -0.005
+    assert summary["market_residual_ga_outer_holdout_used"] is False

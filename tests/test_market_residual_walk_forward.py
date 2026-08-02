@@ -109,6 +109,91 @@ def test_walk_forward_executes_newton_residual_branch(monkeypatch) -> None:
     assert result["folds"][0]["calibrator"]["model_weight"] == 0.1
 
 
+def test_walk_forward_executes_genetic_market_residual_branch(monkeypatch) -> None:
+    races = [
+        _race("2026-07-20", "1-2-3"),
+        _race("2026-07-21", "1-3-2"),
+        _race("2026-07-22", "1-2-3"),
+    ]
+    selected = {
+        "protocol": "genetic_t5_market_residual_v1",
+        "final_calibrator": {
+            "model_weight": 0.0,
+            "temperature": 1.0,
+            "model_coefficient": 0.0,
+            "market_coefficient": 1.0,
+        },
+    }
+    routed = []
+
+    def select(rows):
+        routed.append([row["race_date"] for row in rows])
+        return selected
+
+    monkeypatch.setattr(market_residual, "select_market_residual_genetic", select)
+    monkeypatch.setattr(
+        market_calibration,
+        "select_policy",
+        lambda *args, **kwargs: ({"name": "no_bet", "no_bet": True}, []),
+    )
+    monkeypatch.setattr(
+        market_calibration,
+        "select_flat_policy",
+        lambda *args, **kwargs: ({"name": "no_bet", "no_bet": True}, []),
+    )
+    monkeypatch.setattr(
+        market_calibration,
+        "simulate_policy",
+        lambda rows, **kwargs: {
+            "evaluated_races": len(rows),
+            "race_days": 1,
+            "evaluation_days": 1,
+            "tickets": 0,
+            "hit_tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": 0.0,
+            "max_drawdown_yen": 0,
+            "winning_days": 0,
+            "daily": [{
+                "race_date": rows[0]["race_date"],
+                "tickets": 0,
+                "hits": 0,
+                "hit_tickets": 0,
+                "stake_yen": 0,
+                "return_yen": 0,
+                "profit_yen": 0,
+            }],
+            "chronological_bankroll": {"daily": []},
+        },
+    )
+    monkeypatch.setattr(
+        market_calibration,
+        "simulate_flat_policy",
+        market_calibration.simulate_policy,
+    )
+    monkeypatch.setattr(
+        market_calibration, "predefined_ticket_diagnostics", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        market_calibration, "summarize_policy_candidates", lambda rows: {}
+    )
+    monkeypatch.setattr(
+        market_calibration, "summarize_flat_candidates", lambda rows: {}
+    )
+
+    result = market_calibration.walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        calibrator_strategy=market_calibration.GENETIC_MARKET_RESIDUAL_STRATEGY,
+    )
+
+    assert routed[0] == ["2026-07-20", "2026-07-21"]
+    assert result["calibrator_strategy"] == "genetic_t5_market_residual_v1"
+    assert result["promotion_eligible"] is False
+
+
 def test_v20_routes_dual_heads_without_outer_holdout_selection(monkeypatch) -> None:
     races = [
         _race("2026-07-20", "1-2-3"),

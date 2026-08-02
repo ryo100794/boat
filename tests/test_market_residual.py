@@ -10,8 +10,10 @@ from boatrace_ai.listwise.market_residual import (
     project_scored_race_for_residual,
     residual_decision_fingerprint,
     residual_probability_metrics,
+    select_market_residual_genetic,
     select_regularization_prequential,
 )
+from boatrace_ai.genetic_search import GeneticSearchSettings
 
 
 def _enriched_scored_race() -> dict:
@@ -63,6 +65,85 @@ def test_future_teacher_changes_do_not_change_residual_input_fingerprint() -> No
     after = residual_decision_fingerprint(project_scored_race_for_residual(race))
 
     assert after == before
+
+
+def _ga_races(*, model_correct: bool) -> list[dict]:
+    races = []
+    for day in range(1, 6):
+        actual = "1-2-3" if day % 2 else "1-3-2"
+        market_a = 0.55
+        model_a = (0.9 if actual == "1-2-3" else 0.1) if model_correct else 0.5
+        race = _enriched_scored_race()
+        race["race_id"] = f"202607{day:02d}0101"
+        race["race_date"] = f"2026-07-{day:02d}"
+        race["actual_combination"] = actual
+        race["model_probabilities"] = {
+            "1-2-3": model_a,
+            "1-3-2": 1.0 - model_a,
+        }
+        race["market_probabilities"] = {
+            "1-2-3": market_a,
+            "1-3-2": 1.0 - market_a,
+        }
+        races.append(race)
+    return races
+
+
+def _ga_settings() -> GeneticSearchSettings:
+    return GeneticSearchSettings(
+        population_size=6,
+        generations=2,
+        elite_count=2,
+        mutation_rate=0.3,
+        random_injections=1,
+        max_workers=1,
+        seed=71,
+    )
+
+
+def test_genetic_residual_is_deterministic_and_strictly_forward() -> None:
+    races = _ga_races(model_correct=True)
+    first = select_market_residual_genetic(
+        races, settings=_ga_settings(), bootstrap_samples=101
+    )
+    second = select_market_residual_genetic(
+        races, settings=_ga_settings(), bootstrap_samples=101
+    )
+
+    assert first == second
+    assert first["outer_holdout_used"] is False
+    assert first["input_contract"] == "t300_residual_decision_v1"
+    for fold in first["champion_metrics"]["folds"]:
+        assert max(fold["training_dates"]) < fold["evaluation_date"]
+
+
+def test_genetic_residual_keeps_market_identity_when_model_adds_no_signal() -> None:
+    result = select_market_residual_genetic(
+        _ga_races(model_correct=False),
+        settings=_ga_settings(),
+        bootstrap_samples=101,
+    )
+
+    assert result["champion"]["family"] == "market_identity"
+    assert result["champion_metrics"]["mean_log_loss_delta"] == pytest.approx(0.0)
+
+
+def test_genetic_residual_selection_ignores_closing_price_changes() -> None:
+    races = _ga_races(model_correct=True)
+    first = select_market_residual_genetic(
+        races, settings=_ga_settings(), bootstrap_samples=101
+    )
+    for race in races:
+        race["closing_odds"] = {"1-2-3": 100.0, "1-3-2": 1.01}
+        race["official_closing_odds"] = {"1-2-3": 90.0, "1-3-2": 1.02}
+        race["actual_payout_yen"] = 99_900
+        race["odds_checkpoints"]["120"] = {"odds": {"1-2-3": 88.0}}
+    second = select_market_residual_genetic(
+        races, settings=_ga_settings(), bootstrap_samples=101
+    )
+
+    assert second["champion"] == first["champion"]
+    assert second["champion_metrics"] == first["champion_metrics"]
 
 
 def _race(race_date: str, actual: str, model_a: float, market_a: float) -> dict:
