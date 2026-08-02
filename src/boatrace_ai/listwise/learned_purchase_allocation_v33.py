@@ -587,6 +587,7 @@ def fit_learned_allocation_head(
     validation_fraction: float = 0.25,
     max_iterations: int = 200,
     model_key: str = MODEL_KEY,
+    selection_mode: str = "holdout",
 ) -> LearnedAllocationArtifact:
     if not model_key:
         raise ValueError("allocation model_key is required")
@@ -609,26 +610,105 @@ def fit_learned_allocation_head(
         raise ValueError("allocation base heads must be trained strictly before teacher races")
     if not 0.1 <= validation_fraction <= 0.5:
         raise ValueError("allocation validation_fraction must be between 0.1 and 0.5")
+    if selection_mode not in {"holdout", "walk-forward"}:
+        raise ValueError("unsupported allocation selection_mode")
     dates = sorted({race.race_date for race in prepared})
     if len(dates) < 4:
         raise ValueError("allocation model selection requires at least four dates")
-    validation_days = max(1, int(math.ceil(len(dates) * validation_fraction)))
-    validation_dates = set(dates[-validation_days:])
-    fit_races = [race for race in prepared if race.race_date not in validation_dates]
-    validation_races = [race for race in prepared if race.race_date in validation_dates]
-    normalization = _normalization(fit_races)
     normalized_configs = tuple(configs)
     if not normalized_configs:
         raise ValueError("allocation model selection requires candidates")
 
     def fit_candidate(config: AllocationConfig) -> dict[str, Any]:
-        parameters, diagnostics = _fit(
-            fit_races, config, normalization, max_iterations=max_iterations
+        if selection_mode == "holdout":
+            validation_days = max(
+                1, int(math.ceil(len(dates) * validation_fraction))
+            )
+            validation_dates = set(dates[-validation_days:])
+            fit_races = [
+                race for race in prepared
+                if race.race_date not in validation_dates
+            ]
+            validation_races = [
+                race for race in prepared
+                if race.race_date in validation_dates
+            ]
+            normalization = _normalization(fit_races)
+            parameters, diagnostics = _fit(
+                fit_races, config, normalization, max_iterations=max_iterations
+            )
+            return {
+                "config": config,
+                "selection_mode": selection_mode,
+                **diagnostics,
+                **_continuous_metrics(
+                    parameters, validation_races, normalization
+                ),
+            }
+
+        fold_rows: list[dict[str, Any]] = []
+        for validation_index in range(2, len(dates)):
+            fit_dates = set(dates[:validation_index])
+            validation_date = dates[validation_index]
+            fit_races = [
+                race for race in prepared if race.race_date in fit_dates
+            ]
+            validation_races = [
+                race for race in prepared
+                if race.race_date == validation_date
+            ]
+            normalization = _normalization(fit_races)
+            parameters, diagnostics = _fit(
+                fit_races, config, normalization, max_iterations=max_iterations
+            )
+            fold_rows.append(
+                {
+                    "validation_date": validation_date,
+                    **diagnostics,
+                    **_continuous_metrics(
+                        parameters, validation_races, normalization
+                    ),
+                }
+            )
+        growth = np.asarray(
+            [
+                float(row["geometric_daily_growth"])
+                for row in fold_rows
+            ],
+            dtype=np.float64,
         )
+        exposures = [
+            float(row["mean_exposure_fraction"])
+            for row in fold_rows
+            if row["mean_exposure_fraction"] is not None
+        ]
         return {
             "config": config,
-            **diagnostics,
-            **_continuous_metrics(parameters, validation_races, normalization),
+            "selection_mode": selection_mode,
+            "objective": float(np.mean([row["objective"] for row in fold_rows])),
+            "gradient_norm": float(
+                np.max([row["gradient_norm"] for row in fold_rows])
+            ),
+            "iterations": int(sum(row["iterations"] for row in fold_rows)),
+            "converged": all(row["converged"] for row in fold_rows),
+            "message": "strict-prior daily walk-forward",
+            "validation_days": len(fold_rows),
+            "validation_races": int(
+                sum(row["validation_races"] for row in fold_rows)
+            ),
+            "geometric_daily_growth": float(
+                np.exp(np.mean(np.log(np.maximum(growth, EPSILON))))
+            ),
+            "minimum_daily_growth": float(np.min(growth)),
+            "profitable_day_fraction": float(np.mean(growth > 1.0)),
+            "mean_exposure_fraction": (
+                float(np.mean(exposures)) if exposures else None
+            ),
+            "max_exposure_fraction": max(
+                float(row["max_exposure_fraction"] or 0.0)
+                for row in fold_rows
+            ),
+            "folds": fold_rows,
         }
 
     if len(normalized_configs) >= 8:
@@ -644,6 +724,7 @@ def fit_learned_allocation_head(
         key=lambda row: (
             float(row["geometric_daily_growth"] or 0.0),
             float(row["profitable_day_fraction"] or 0.0),
+            float(row.get("minimum_daily_growth") or 0.0),
             -float(row["mean_exposure_fraction"] or 0.0),
         ),
     )

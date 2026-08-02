@@ -196,6 +196,30 @@ def test_fit_rejects_non_prior_base_heads() -> None:
         )
 
 
+def test_walk_forward_selection_uses_only_strictly_prior_days() -> None:
+    races, predictions = _pairs(days=5, races_per_day=4)
+
+    artifact = fit_learned_allocation_head(
+        races,
+        predictions,
+        _payouts(races),
+        base_predictions_trained_through_date="2026-06-30",
+        configs=(AllocationConfig("walk", 0.1, 1.0),),
+        max_iterations=20,
+        selection_mode="walk-forward",
+    )
+
+    candidate = artifact.candidate_metrics[0]
+    assert candidate["selection_mode"] == "walk-forward"
+    assert [row["validation_date"] for row in candidate["folds"]] == [
+        "2026-07-03",
+        "2026-07-04",
+        "2026-07-05",
+    ]
+    assert candidate["validation_days"] == 3
+    assert candidate["validation_races"] == 12
+
+
 def test_learns_cash_exposure_and_ticket_allocation_then_rounds_to_units() -> None:
     races, predictions = _pairs()
     artifact = fit_learned_allocation_head(
