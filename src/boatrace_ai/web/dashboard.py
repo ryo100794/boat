@@ -37,6 +37,7 @@ from ..standard_evaluation import (
     protocol_sha256 as standard_protocol_sha256,
 )
 from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulations
+from .model_report_purposes import evaluation_purpose_groups
 from .prediction_summary import attach_latest_prediction_summaries
 from .roadmap_model_status import queue_model_roadmap_status
 
@@ -1377,6 +1378,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "sweeps": sweeps,
         "feature_diagnostics": feature_diagnostics,
         "evaluation_jobs": evaluation_jobs,
+        "evaluation_purposes": evaluation_purpose_groups(evaluation_jobs),
         "evaluation_candidates": queued_evaluations["candidates"],
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
         "remote_generated_at": remote_evaluations.get("generated_at"),
@@ -3063,8 +3065,35 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "roi_without_largest_hit": _float_or_none(
                     metrics.get("roi_without_largest_hit")
                 ),
+                "winning_days": metrics.get("winning_days"),
+                "profitable_day_fraction": _float_or_none(
+                    metrics.get("profitable_day_fraction")
+                ),
+                "largest_hit_return_share": _float_or_none(
+                    metrics.get("largest_hit_return_share")
+                ),
+                "effective_hit_count": _float_or_none(
+                    metrics.get("effective_hit_count")
+                ),
                 "daily_cluster_bootstrap_roi_lower_95": _float_or_none(
                     metrics.get("daily_cluster_bootstrap_roi_lower_95")
+                ),
+                "purchase_value_diagnostics": (
+                    metrics.get("purchase_value_diagnostics")
+                    if isinstance(metrics.get("purchase_value_diagnostics"), dict)
+                    else None
+                ),
+                "purchase_value_pearson_correlation": _float_or_none(
+                    metrics.get("purchase_value_pearson_correlation")
+                ),
+                "purchase_value_calibration_mae": _float_or_none(
+                    metrics.get("purchase_value_calibration_mae")
+                ),
+                "purchase_value_positive_predicted_tickets": metrics.get(
+                    "purchase_value_positive_predicted_tickets"
+                ),
+                "purchase_value_positive_observed_capped_roi": _float_or_none(
+                    metrics.get("purchase_value_positive_observed_capped_roi")
                 ),
                 "purchase_decision_diagnostics": (
                     metrics.get("purchase_decision_diagnostics")
