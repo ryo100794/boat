@@ -328,6 +328,58 @@ def _oof_payload(
     }
 
 
+def _fit_pairwise_purchase_head(
+    matrices: Sequence[np.ndarray],
+    realized_returns: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> LinearHead:
+    differences: list[np.ndarray] = []
+    labels: list[np.ndarray] = []
+    weights: list[np.ndarray] = []
+    for matrix, returns in zip(matrices, realized_returns, strict=True):
+        values = np.asarray(returns, dtype=np.float64)
+        winners = np.flatnonzero(values >= 0.0)
+        if len(winners) != 1:
+            raise ValueError("pairwise purchase teacher requires one winner per race")
+        winner = int(winners[0])
+        losers = np.flatnonzero(values < 0.0)
+        forward = np.asarray(matrix[winner] - matrix[losers], dtype=np.float64)
+        race_weight = float(np.clip(values[winner] + 1.0, 1.0, 51.0))
+        differences.extend((forward, -forward))
+        labels.extend(
+            (
+                np.ones(len(forward), dtype=np.int8),
+                np.zeros(len(forward), dtype=np.int8),
+            )
+        )
+        weights.extend(
+            (
+                np.full(len(forward), race_weight, dtype=np.float64),
+                np.full(len(forward), race_weight, dtype=np.float64),
+            )
+        )
+    pair_matrix = np.vstack(differences)
+    fitted = LogisticRegression(
+        C=1.0 / max(float(alpha), 1e-9),
+        fit_intercept=False,
+        max_iter=500,
+        tol=1e-8,
+    ).fit(
+        pair_matrix,
+        np.concatenate(labels),
+        sample_weight=np.concatenate(weights),
+    )
+    return _head(
+        "purchase_pairwise_rank_head",
+        "payout_weighted_winner_over_loser_pairwise_strict_prior_oof",
+        (
+            np.asarray(fitted.coef_[0], dtype=np.float64),
+            0.0,
+        ),
+    )
+
+
 def _fit_purchase_heads(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
@@ -337,6 +389,15 @@ def _fit_purchase_heads(
 ) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
+    if purchase_loss == "pairwise_contextual_rank_calibrated":
+        return (
+            _fit_pairwise_purchase_head(
+                matrices,
+                realized_returns,
+                alpha=alpha,
+            ),
+            None,
+        )
     if purchase_loss == "ridge_capped_net":
         return (
             _head(
@@ -485,6 +546,7 @@ def fit_four_head_nested_v22(
         "hurdle_contextual_interactions_lognormal": (
             "decision_context_interactions_v3"
         ),
+        "pairwise_contextual_rank_calibrated": "decision_context_v2",
     }.get(purchase_loss, "base_outputs_v1")
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")
@@ -600,7 +662,10 @@ def fit_four_head_nested_v22(
             )
         )
     purchase_calibration_head = None
-    if purchase_loss == "hurdle_logistic_lognormal_calibrated":
+    if purchase_loss in {
+        "hurdle_logistic_lognormal_calibrated",
+        "pairwise_contextual_rank_calibrated",
+    }:
         calibration_matrix = np.asarray(
             purchase_oof_scores_for_calibration, dtype=np.float64
         ).reshape(-1, 1)
