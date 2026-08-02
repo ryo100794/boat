@@ -41,6 +41,7 @@ class JointScenarioObservation:
     terminal_probability_teacher: Mapping[str, float]
     decision_market_shares: Mapping[str, float]
     final_market_shares: Mapping[str, float]
+    resample_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -270,9 +271,13 @@ def fit_conditional_joint_scenario_model(
         _validated_observation(row, expected_outcomes=expected_outcomes)
         for row in observations
     ]
-    race_ids = [str(row.race_id) for row in observations]
-    if len(set(race_ids)) != len(race_ids):
-        raise ValueError("joint scenario observations must have unique race IDs")
+    sample_keys = [
+        (str(row.race_id), str(row.resample_key)) for row in observations
+    ]
+    if len(set(sample_keys)) != len(sample_keys):
+        raise ValueError(
+            "joint scenario observations must have unique race/resample keys"
+        )
     outcomes = parsed[0][0]
     if any(row[0] != outcomes for row in parsed):
         raise ValueError("all observations must use the same outcome order")
@@ -649,7 +654,11 @@ def _calibrate_shared_shock_on_training(
     candidates = _validated_scale_candidates(candidates)
     ordered = sorted(
         observations,
-        key=lambda row: (str(row.race_date), str(row.race_id)),
+        key=lambda row: (
+            str(row.race_date),
+            str(row.race_id),
+            str(row.resample_key),
+        ),
     )
     if len(ordered) > maximum_races:
         indexes = np.linspace(
