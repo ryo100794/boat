@@ -310,23 +310,30 @@ function modelKey(value){
 }
 function modelValues(row){ return [row&&row.name,row&&row.file,row&&row.model,row&&row.model_file,row&&row.id,row&&row.label,row&&row.variant].filter(Boolean); }
 function modelMatches(row,key){ return String((row&&row.model_key)||"")===key || modelValues(row).some(value=>modelKey(value)===key); }
-function comparisonIdentity(row){
-  const scope=String((row&&row.evaluation_scope)||"unknown");
-  const value=(row&&(row.name||row.file||row.model))||"unknown";
-  return scope+":"+modelKey(value);
+function explicitComparisonIdentity(row){
+  const cohort=String((row&&row.evaluation_cohort_id)||"");
+  const bundle=String((row&&row.evaluation_bundle_id)||"");
+  return cohort&&bundle?bundle+":"+cohort:"";
 }
 function mergeComparisonRows(tests,bankroll){
-  const rows=new Map();
-  const add=(item,type)=>{
-    const id=comparisonIdentity(item);
-    if(!rows.has(id)) rows.set(id,{id:id,scope:item.evaluation_scope||"unknown",name:item.name||item.file||item.model||"-",model_key:item.model_key||modelKey(item.name||item.file||item.model),prediction:null,bankroll:null});
-    const row=rows.get(id);
+  const rows=[], seenResults=new Set();
+  const add=(item,type,index)=>{
+    const resultId=String((item&&item.result_id)||"");
+    if(resultId&&seenResults.has(type+":"+resultId)) return;
+    if(resultId) seenResults.add(type+":"+resultId);
+    const identity=explicitComparisonIdentity(item);
+    let row=identity?rows.find(candidate=>candidate.identity===identity&&!candidate[type]):null;
+    if(!row){
+      const fallback=resultId||String((item&&item.evaluation_run_id)||"")||type+":"+index;
+      row={id:identity||fallback,identity:identity,scope:item.evaluation_scope||"unknown",name:item.name||item.file||item.model||"-",model_key:item.model_key||modelKey(item.name||item.file||item.model),evaluation_run_id:item.evaluation_run_id||null,prediction:null,bankroll:null};
+      rows.push(row);
+    }
     row[type]=item;
     if(type==="prediction") row.name=item.name||item.file||item.model||row.name;
   };
-  (tests||[]).forEach(item=>add(item,"prediction"));
-  (bankroll||[]).forEach(item=>add(item,"bankroll"));
-  return [...rows.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
+  (tests||[]).forEach((item,index)=>add(item,"prediction",index));
+  (bankroll||[]).forEach((item,index)=>add(item,"bankroll",index));
+  return rows.sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja")||String(a.id).localeCompare(String(b.id)));
 }
 function predictionRow(row){
   const p=row.prediction||{};
