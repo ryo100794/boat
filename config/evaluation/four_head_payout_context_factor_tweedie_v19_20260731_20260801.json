@@ -1,0 +1,15 @@
+{
+  "alpha": 0.001,
+  "source_model": "data/models/evaluation_queue/job-00002707.joblib",
+  "training_from": "2026-07-20",
+  "training_through": "2026-07-30",
+  "outer_from": "2026-07-31",
+  "outer_through": "2026-08-01",
+  "projection_dimensions": 8,
+  "minimum_inner_training_dates": 2,
+  "minimum_purchase_training_dates": 2,
+  "max_snapshot_age_seconds": 300,
+  "timeout_seconds": 7200,
+  "purchase_teacher_version": 19,
+  "purchase_loss": "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie"
+}
