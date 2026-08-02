@@ -47,6 +47,8 @@ PURPOSE_SPECS = (
             "purchase_oof_base_payout_log_mae",
             "purchase_oof_scaled_payout_log_mae",
             "purchase_payout_log_mae",
+            "purchase_gross_hit_exponent",
+            "purchase_gross_payout_exponent",
             "purchase_value_positive_predicted_tickets",
             "purchase_value_positive_observed_capped_roi",
         ),

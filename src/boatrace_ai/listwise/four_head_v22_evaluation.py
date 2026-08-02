@@ -743,6 +743,22 @@ def run_v22_smoke_evaluation(
         "purchase_payout_log_mae": formal_bankroll[
             "purchase_payout_log_mae"
         ],
+        "purchase_gross_hit_exponent": (
+            artifact.purchase_calibration_head.coefficients[0]
+            if artifact.purchase_calibration_head is not None
+            and artifact.purchase_calibration_head.teacher.startswith(
+                "tweedie_power_1_5_factor_calibration"
+            )
+            else None
+        ),
+        "purchase_gross_payout_exponent": (
+            artifact.purchase_calibration_head.coefficients[1]
+            if artifact.purchase_calibration_head is not None
+            and artifact.purchase_calibration_head.teacher.startswith(
+                "tweedie_power_1_5_factor_calibration"
+            )
+            else None
+        ),
         "outer_outcomes_used_for_fit_selection_or_threshold": False,
     }
 
@@ -789,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
             "multinomial_market_offset_oof_scaled_all_choice_closing",
             "multinomial_market_offset_oof_scaled_payout_closing",
             "multinomial_market_offset_oof_scaled_payout_tweedie",
+            "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
         ),
         default="ridge_capped_net",
     )

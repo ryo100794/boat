@@ -331,6 +331,7 @@ def test_nested_pairwise_purchase_rank_is_oof_calibrated() -> None:
 
     assert artifact.purchase_feature_map == "decision_context_v2"
     assert artifact.purchase_payout_head is None
+    assert artifact.purchase_feature_map == "decision_context_v2"
     assert artifact.purchase_calibration_head is not None
     assert artifact.purchase_calibration_head.teacher.startswith(
         "poisson_calibration_of_strict_purchase_head_oof"
@@ -659,6 +660,30 @@ def test_tweedie_payout_artifact_uses_strict_oof_gross_return_calibration() -> N
     assert artifact.purchase_calibration_head.teacher.startswith(
         "tweedie_power_1_5_calibration_of_strict_purchase_oof"
     )
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
+
+def test_factor_tweedie_learns_hit_and_payout_exponents_from_strict_oof() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss=(
+            "multinomial_market_offset_oof_scaled_payout_factor_tweedie"
+        ),
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_calibration_head is not None
+    assert artifact.purchase_calibration_head.teacher.startswith(
+        "tweedie_power_1_5_factor_calibration_of_strict_purchase_oof"
+    )
+    assert len(artifact.purchase_calibration_head.coefficients) == 2
+    assert np.isfinite(artifact.purchase_calibration_head.coefficients).all()
     assert np.isfinite(prediction.purchase_scores).all()
 
 

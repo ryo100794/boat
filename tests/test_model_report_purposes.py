@@ -57,6 +57,8 @@ def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     assert "purchase_payout_residual_scale" in metrics["ticket_value"]
     assert "purchase_oof_scaled_payout_log_mae" in metrics["ticket_value"]
     assert "purchase_payout_log_mae" in metrics["ticket_value"]
+    assert "purchase_gross_hit_exponent" in metrics["ticket_value"]
+    assert "purchase_gross_payout_exponent" in metrics["ticket_value"]
     assert "daily_cluster_bootstrap_roi_lower_95" in metrics["bankroll_policy"]
     assert 'id="purposeSection"' in MODEL_REPORT_HTML
     assert 'id="purposeGroups"' in MODEL_REPORT_HTML
@@ -65,5 +67,6 @@ def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     assert "的中LL / 市場LL / Δ" in MODEL_REPORT_HTML
     assert "払戻倍率 / OOF MAE" in MODEL_REPORT_HTML
     assert "外側払戻MAE" in MODEL_REPORT_HTML
+    assert "収益指数 H/P" in MODEL_REPORT_HTML
     assert "評価期間" in MODEL_REPORT_HTML
     assert "最大1的中除外" in MODEL_REPORT_HTML
