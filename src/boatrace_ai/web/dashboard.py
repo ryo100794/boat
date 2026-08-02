@@ -3113,6 +3113,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "purchase_hit_top5_rate": _float_or_none(
                     metrics.get("purchase_hit_top5_rate")
                 ),
+                "purchase_payout_residual_scale": _float_or_none(
+                    metrics.get("purchase_payout_residual_scale")
+                ),
+                "purchase_oof_base_payout_log_mae": _float_or_none(
+                    metrics.get("purchase_oof_base_payout_log_mae")
+                ),
+                "purchase_oof_scaled_payout_log_mae": _float_or_none(
+                    metrics.get("purchase_oof_scaled_payout_log_mae")
+                ),
+                "purchase_payout_log_mae": _float_or_none(
+                    metrics.get("purchase_payout_log_mae")
+                ),
                 "purchase_value_positive_predicted_tickets": metrics.get(
                     "purchase_value_positive_predicted_tickets"
                 ),

@@ -112,6 +112,12 @@ def test_reports_purchase_head_log_loss_against_t5_market(
         "predict_purchase_hit_probabilities",
         lambda _artifact, _decision: learned,
     )
+    predicted_payouts = np.full(120, 10.0)
+    monkeypatch.setattr(
+        module,
+        "predict_purchase_gross_payouts",
+        lambda _artifact, _decision: predicted_payouts,
+    )
 
     result = evaluate_four_head_v22_bankroll(
         _artifact(), (race,), (_settlement(race),)
@@ -121,6 +127,10 @@ def test_reports_purchase_head_log_loss_against_t5_market(
     assert result["t5_market_log_loss"] == pytest.approx(np.log(120.0))
     assert result["purchase_hit_log_loss_delta_vs_market"] < 0.0
     assert result["purchase_hit_top5_rate"] == 1.0
+    expected = np.mean(
+        np.abs(np.log(predicted_payouts) - np.log(race.outcome.closing_odds))
+    )
+    assert result["purchase_payout_log_mae"] == pytest.approx(expected)
 
 
 def test_uses_existing_chronological_allocator_and_official_settlement(

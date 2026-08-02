@@ -21,6 +21,7 @@ from .four_head_nested_v22 import (
     artifact_fingerprint,
     predict_race,
     predict_purchase_hit_probabilities,
+    predict_purchase_gross_payouts,
     prediction_fingerprint,
 )
 
@@ -160,6 +161,7 @@ def _prediction_metrics(
     closing_errors: list[float] = []
     purchase_hit_loss = market_hit_loss = 0.0
     purchase_hit_top5 = purchase_probability_races = 0
+    purchase_payout_log_errors: list[float] = []
     for race, prediction in zip(races, predictions, strict=True):
         probabilities = np.asarray(prediction.probabilities, dtype=np.float64)
         ranking = np.asarray(prediction.ranking_scores, dtype=np.float64)
@@ -192,6 +194,16 @@ def _prediction_metrics(
                 winner_index in np.argsort(-purchase_probabilities)[:5]
             )
             purchase_probability_races += 1
+        predicted_purchase_payouts = predict_purchase_gross_payouts(
+            artifact, race.decision
+        )
+        if predicted_purchase_payouts is not None:
+            purchase_payout_log_errors.extend(
+                np.abs(
+                    np.log(predicted_purchase_payouts)
+                    - np.log(np.asarray(race.outcome.closing_odds, dtype=np.float64))
+                ).tolist()
+            )
         closing_errors.extend(
             np.abs(
                 np.log(np.asarray(prediction.predicted_closing_odds))
@@ -227,6 +239,11 @@ def _prediction_metrics(
         "purchase_hit_top5_rate": (
             purchase_hit_top5 / purchase_probability_races
             if purchase_probability_races
+            else None
+        ),
+        "purchase_payout_log_mae": (
+            float(np.mean(purchase_payout_log_errors))
+            if purchase_payout_log_errors
             else None
         ),
     }

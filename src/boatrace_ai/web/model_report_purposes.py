@@ -43,6 +43,10 @@ PURPOSE_SPECS = (
             "t5_market_log_loss",
             "purchase_hit_log_loss_delta_vs_market",
             "purchase_hit_top5_rate",
+            "purchase_payout_residual_scale",
+            "purchase_oof_base_payout_log_mae",
+            "purchase_oof_scaled_payout_log_mae",
+            "purchase_payout_log_mae",
             "purchase_value_positive_predicted_tickets",
             "purchase_value_positive_observed_capped_roi",
         ),
@@ -132,6 +136,8 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "purchase_value_calibration_mae",
             "purchase_value_positive_predicted_tickets",
             "purchase_value_positive_observed_capped_roi",
+            "purchase_payout_log_mae",
+            "purchase_oof_scaled_payout_log_mae",
         )
     ) or parameters.get("purchase_loss") or tokens(
         (

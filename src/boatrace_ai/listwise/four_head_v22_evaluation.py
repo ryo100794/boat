@@ -689,6 +689,15 @@ def run_v22_smoke_evaluation(
         "purchase_residual_scale": artifact.purchase_residual_scale,
         "purchase_oof_market_log_loss": artifact.purchase_oof_market_log_loss,
         "purchase_oof_scaled_log_loss": artifact.purchase_oof_scaled_log_loss,
+        "purchase_payout_residual_scale": (
+            artifact.purchase_payout_residual_scale
+        ),
+        "purchase_oof_base_payout_log_mae": (
+            artifact.purchase_oof_base_payout_log_mae
+        ),
+        "purchase_oof_scaled_payout_log_mae": (
+            artifact.purchase_oof_scaled_payout_log_mae
+        ),
         "periods": {
             "training_from": training_from_date,
             "training_through": training_through_date,
@@ -731,6 +740,9 @@ def run_v22_smoke_evaluation(
             "purchase_hit_log_loss_delta_vs_market"
         ],
         "purchase_hit_top5_rate": formal_bankroll["purchase_hit_top5_rate"],
+        "purchase_payout_log_mae": formal_bankroll[
+            "purchase_payout_log_mae"
+        ],
         "outer_outcomes_used_for_fit_selection_or_threshold": False,
     }
 
@@ -775,6 +787,8 @@ def build_parser() -> argparse.ArgumentParser:
             "multinomial_offset_all_choice_closing_temperature",
             "multinomial_market_offset_all_choice_closing",
             "multinomial_market_offset_oof_scaled_all_choice_closing",
+            "multinomial_market_offset_oof_scaled_payout_closing",
+            "multinomial_market_offset_oof_scaled_payout_tweedie",
         ),
         default="ridge_capped_net",
     )
