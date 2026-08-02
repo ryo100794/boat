@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+import math
 from numbers import Integral
 from typing import Any, Mapping, Sequence
 
@@ -61,10 +62,24 @@ def _external_stakes(
     face_unit_yen: int,
 ) -> dict[str, int]:
     raw = market_state.get("external_ticket_stakes_yen")
+    if raw is None:
+        total_sales = market_state.get("external_total_sales_yen")
+        shares = market_state.get("final_market_shares")
+        if total_sales is None or not isinstance(shares, Mapping):
+            raise ValueError(
+                "market state requires absolute external_ticket_stakes_yen or "
+                "external_total_sales_yen plus final_market_shares; normalized "
+                "market shares alone cannot identify self impact"
+            )
+        return apportion_external_stakes(
+            total_sales_yen=total_sales,
+            market_shares=shares,
+            ordinary_outcomes=ordinary_outcomes,
+            face_unit_yen=face_unit_yen,
+        )
     if not isinstance(raw, Mapping):
         raise ValueError(
-            "market state requires absolute external_ticket_stakes_yen; "
-            "normalized market shares cannot identify self impact"
+            "external_ticket_stakes_yen must be a mapping"
         )
     if set(raw) != set(ordinary_outcomes):
         raise ValueError("external ticket stakes must match ordinary outcomes")
@@ -77,6 +92,65 @@ def _external_stakes(
     if sum(stakes.values()) <= 0:
         raise ValueError("external ticket stakes must have positive total sales")
     return stakes
+
+
+def apportion_external_stakes(
+    *,
+    total_sales_yen: object,
+    market_shares: Mapping[str, float],
+    ordinary_outcomes: Sequence[str],
+    face_unit_yen: int = 10,
+) -> dict[str, int]:
+    """Allocate known absolute pool scale by largest remainder in face units."""
+    if isinstance(face_unit_yen, bool) or not isinstance(
+        face_unit_yen, int
+    ) or face_unit_yen < 1:
+        raise ValueError("face_unit_yen must be positive")
+    total = _yen(total_sales_yen, "external total sales")
+    if total <= 0 or total % face_unit_yen:
+        raise ValueError("external total sales must use positive face units")
+    outcomes = tuple(ordinary_outcomes)
+    if not outcomes or len(set(outcomes)) != len(outcomes):
+        raise ValueError("ordinary outcomes must be unique and non-empty")
+    if set(market_shares) != set(outcomes):
+        raise ValueError("market shares must match ordinary outcomes")
+    parsed = {}
+    for outcome in outcomes:
+        value = market_shares[outcome]
+        if isinstance(value, bool):
+            raise ValueError("market shares must be finite and non-negative")
+        try:
+            parsed[outcome] = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "market shares must be finite and non-negative"
+            ) from exc
+    if any(not math.isfinite(value) or value < 0.0 for value in parsed.values()):
+        raise ValueError("market shares must be finite and non-negative")
+    share_total = sum(parsed.values())
+    if abs(share_total - 1.0) > 1e-8:
+        raise ValueError("market shares must sum to one")
+    parsed = {
+        outcome: value / share_total for outcome, value in parsed.items()
+    }
+    total_units = total // face_unit_yen
+    raw_units = {
+        outcome: parsed[outcome] * total_units for outcome in outcomes
+    }
+    allocated = {outcome: math.floor(raw_units[outcome]) for outcome in outcomes}
+    remaining = total_units - sum(allocated.values())
+    order = sorted(
+        outcomes,
+        key=lambda outcome: (
+            -(raw_units[outcome] - allocated[outcome]),
+            outcomes.index(outcome),
+        ),
+    )
+    for outcome in order[:remaining]:
+        allocated[outcome] += 1
+    return {
+        outcome: allocated[outcome] * face_unit_yen for outcome in outcomes
+    }
 
 
 def build_parimutuel_gross_payoff_model(
@@ -180,5 +254,6 @@ def build_parimutuel_gross_payoff_model(
 
 __all__ = [
     "ParimutuelSettlementRules",
+    "apportion_external_stakes",
     "build_parimutuel_gross_payoff_model",
 ]
