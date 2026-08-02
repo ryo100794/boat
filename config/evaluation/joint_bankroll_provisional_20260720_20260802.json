@@ -1,0 +1,23 @@
+{
+  "scored_cache": "data/models/evaluation_cache/market_scored/job-00002707_2026-07-18_2026-08-02.races.joblib",
+  "terminal_min_training_days": 5,
+  "joint_min_training_days": 3,
+  "outer_draws": 20,
+  "scenarios_per_draw": 64,
+  "rank": 8,
+  "pooling_strength": 20.0,
+  "learn_residual_scales": true,
+  "candidate_ticket_count": 12,
+  "initial_daily_bankroll_yen": 10000,
+  "maximum_portfolio_stake_yen": 10000,
+  "maximum_ticket_stake_yen": 5000,
+  "maximum_selected_tickets": 12,
+  "buy_margin": 0.0,
+  "inner_tail_fraction": 0.1,
+  "population_size": 8,
+  "generations": 3,
+  "bootstrap_samples": 2000,
+  "settlement_delay_seconds": 600,
+  "seed": 33041,
+  "timeout_seconds": 43200
+}
