@@ -96,6 +96,8 @@ def test_insufficient_outer_draws_selects_no_bet() -> None:
     assert result["selected"]["fitness"] == 0.0
     assert result["purchase_authorized"] is False
     assert result["selected"]["joint_value"] is None
+    assert result["feasible_candidates_found"] == 0
+    assert result["best_search_candidate"]["bets_yen"] == {}
 
 
 def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None:
@@ -126,6 +128,11 @@ def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None
     assert result["selected"]["bets_yen"] == {}
     assert result["selected"]["fitness"] == 0.0
     assert result["history"][0]["best_candidate"]["total_stake_yen"] > 0
+    assert result["feasible_candidates_found"] == 0
+    assert result["best_search_candidate"]["total_stake_yen"] > 0
+    assert result["best_search_candidate"]["metrics"][
+        "constraint_violation"
+    ] > 0.0
     rejected = [
         row for row in result["ranked_candidates"]
         if row["total_stake_yen"] > 0

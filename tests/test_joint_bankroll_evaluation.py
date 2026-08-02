@@ -159,6 +159,12 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["primary_bankroll"]["roi"] is None
     assert result["promotion_eligible"] is False
     assert "generated_log_loss" in result["probability_metrics"]
+    diagnostic_race = result["daily"][0]["races"][0]
+    assert diagnostic_race["actual_combination"] in {"A", "B"}
+    assert diagnostic_race["actual_payout_yen"] == 150
+    assert diagnostic_race["selected_bets_yen"] == {}
+    assert diagnostic_race["feasible_candidates_found"] == 0
+    assert diagnostic_race["best_search_constraint_violation"] is not None
     completed = [
         row for row in progress
         if row["event"] == "joint_bankroll_day_completed"
