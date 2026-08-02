@@ -225,3 +225,27 @@ def test_payoff_table_must_match_bet_vector_exactly() -> None:
             gross_payoff_model=extra_ticket,
             minimum_outer_draws=1,
         )
+
+
+def test_ga_evaluation_can_skip_marginal_repricing() -> None:
+    observed_vectors = []
+
+    def payoffs(_scenario, bets):
+        observed_vectors.append(dict(bets))
+        return {ticket: {ticket: amount * 2} for ticket, amount in bets.items()}
+
+    result = evaluate_joint_market_value(
+        [[JointMarketScenario({"A": 0.5, "B": 0.5})]],
+        bets_yen={"A": 100, "B": 100},
+        gross_payoff_model=payoffs,
+        minimum_outer_draws=1,
+        include_marginal_contributions=False,
+        include_ticket_diagnostics=False,
+    )
+
+    assert observed_vectors == [{"A": 100, "B": 100}]
+    assert result["marginal_contributions_computed"] is False
+    assert result["marginal_contributions"] == {}
+    assert result["ticket_diagnostics_computed"] is False
+    assert result["tickets"] == {}
+    assert result["moments_by_draw"] == []

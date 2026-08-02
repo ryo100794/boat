@@ -164,21 +164,30 @@ def _scenario_paths(
     gross_payoff_model: GrossPayoffModel,
     costs: Mapping[str, int],
     expected_outcomes: Sequence[str] | None,
+    include_ticket_diagnostics: bool,
 ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray, dict[str, Any]]:
     weights = _normalized_weights(scenarios)
-    ticket_edges = {
-        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
-    }
+    ticket_edges = (
+        {ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets}
+        if include_ticket_diagnostics
+        else {}
+    )
     portfolio_edges = np.empty(len(scenarios), dtype=np.float64)
-    probability_paths = {
-        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
-    }
-    winning_multiplier_paths = {
-        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
-    }
-    other_receipt_paths = {
-        ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets
-    }
+    probability_paths = (
+        {ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets}
+        if include_ticket_diagnostics
+        else {}
+    )
+    winning_multiplier_paths = (
+        {ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets}
+        if include_ticket_diagnostics
+        else {}
+    )
+    other_receipt_paths = (
+        {ticket: np.empty(len(scenarios), dtype=np.float64) for ticket in bets}
+        if include_ticket_diagnostics
+        else {}
+    )
     total_stake = sum(bets.values())
     total_cost = sum(costs.get(ticket, 0) for ticket in bets)
 
@@ -219,16 +228,19 @@ def _scenario_paths(
                 for state in probabilities
             )
             portfolio_gross += gross
-            ticket_edges[ticket][scenario_index] = (
-                gross - stake - costs.get(ticket, 0)
-            ) / stake
-            hit_receipt = parsed_receipts.get(ticket, 0)
-            hit_probability = probabilities[ticket]
-            probability_paths[ticket][scenario_index] = hit_probability
-            winning_multiplier_paths[ticket][scenario_index] = hit_receipt / stake
-            other_receipt_paths[ticket][scenario_index] = (
-                gross - hit_probability * hit_receipt
-            ) / stake
+            if include_ticket_diagnostics:
+                ticket_edges[ticket][scenario_index] = (
+                    gross - stake - costs.get(ticket, 0)
+                ) / stake
+                hit_receipt = parsed_receipts.get(ticket, 0)
+                hit_probability = probabilities[ticket]
+                probability_paths[ticket][scenario_index] = hit_probability
+                winning_multiplier_paths[ticket][scenario_index] = (
+                    hit_receipt / stake
+                )
+                other_receipt_paths[ticket][scenario_index] = (
+                    gross - hit_probability * hit_receipt
+                ) / stake
         portfolio_edges[scenario_index] = (
             portfolio_gross - total_stake - total_cost
         ) / total_stake
@@ -252,6 +264,8 @@ def evaluate_joint_market_value(
     buy_margin: float = 0.0,
     minimum_outer_draws: int = 20,
     minimum_inner_tail_effective_samples: float = 5.0,
+    include_marginal_contributions: bool = True,
+    include_ticket_diagnostics: bool = True,
 ) -> dict[str, Any]:
     """Evaluate already-generated joint scenarios; this does not generate them."""
     if not parameter_draws:
@@ -262,6 +276,10 @@ def evaluate_joint_market_value(
         minimum_outer_draws, int
     ) or minimum_outer_draws < 1:
         raise ValueError("minimum_outer_draws must be positive")
+    if not isinstance(include_marginal_contributions, bool):
+        raise ValueError("include_marginal_contributions must be boolean")
+    if not isinstance(include_ticket_diagnostics, bool):
+        raise ValueError("include_ticket_diagnostics must be boolean")
     minimum_tail_ess = _finite_non_negative(
         minimum_inner_tail_effective_samples,
         "minimum_inner_tail_effective_samples",
@@ -275,7 +293,9 @@ def evaluate_joint_market_value(
     unknown_costs = set(costs) - set(bets)
     if unknown_costs:
         raise ValueError("operational costs contain unknown tickets")
-    outer_ticket_values = {ticket: [] for ticket in bets}
+    outer_ticket_values = (
+        {ticket: [] for ticket in bets} if include_ticket_diagnostics else {}
+    )
     outer_portfolio_values: list[float] = []
     moments_by_draw = []
     inner_effective_samples = []
@@ -288,11 +308,12 @@ def evaluate_joint_market_value(
             gross_payoff_model=gross_payoff_model,
             costs=costs,
             expected_outcomes=expected_outcomes,
+            include_ticket_diagnostics=include_ticket_diagnostics,
         )
         ess = 1.0 / float(np.dot(weights, weights))
         inner_effective_samples.append(ess)
         draw_moments = {"draw": draw_index, "tickets": {}}
-        for ticket in bets:
+        for ticket in bets if include_ticket_diagnostics else ():
             outer_ticket_values[ticket].append(
                 _aggregate_path(ticket_paths[ticket], weights, inner_tail_fraction)
             )
@@ -322,7 +343,8 @@ def evaluate_joint_market_value(
         outer_portfolio_values.append(
             _aggregate_path(portfolio_path, weights, inner_tail_fraction)
         )
-        moments_by_draw.append(draw_moments)
+        if include_ticket_diagnostics:
+            moments_by_draw.append(draw_moments)
 
     tickets = {
         ticket: {
@@ -350,7 +372,7 @@ def evaluate_joint_market_value(
     portfolio["purchase_gate_reasons"] = gate_reasons
 
     marginal_contributions = {}
-    for removed_ticket in bets:
+    for removed_ticket in bets if include_marginal_contributions else ():
         reduced_bets = {
             ticket: amount for ticket, amount in bets.items() if ticket != removed_ticket
         }
@@ -371,6 +393,7 @@ def evaluate_joint_market_value(
                 gross_payoff_model=gross_payoff_model,
                 costs=reduced_costs,
                 expected_outcomes=expected_outcomes,
+                include_ticket_diagnostics=False,
             )
             reduced_values.append(
                 _aggregate_path(portfolio_path, weights, inner_tail_fraction)
@@ -404,7 +427,9 @@ def evaluate_joint_market_value(
         "outer_quantile_method": "inverted_cdf",
         "buy_margin": threshold,
         "tickets": tickets,
+        "ticket_diagnostics_computed": include_ticket_diagnostics,
         "portfolio": portfolio,
+        "marginal_contributions_computed": include_marginal_contributions,
         "marginal_contributions": marginal_contributions,
         "moments_by_draw": moments_by_draw,
     }

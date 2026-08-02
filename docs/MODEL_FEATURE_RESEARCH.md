@@ -255,6 +255,33 @@ gate applies only to the complete fixed bet vector; per-ticket values are
 diagnostics. Marginal ticket contribution reruns settlement after removing the
 ticket because self-impact changes with the vector.
 
+`boatrace_ai.parimutuel_settlement` implements that boundary with integer yen
+and 10-yen face units. It follows the statutory pool formula and minimum
+face-value return, supports full and ticket-specific refund terminal states,
+and adds the complete proposed bet vector to both total sales and winning-ticket
+sales before computing receipts. The legal basis is Article 15 of the Motorboat
+Racing Act and Article 28 / Appendix 2 of its enforcement regulation:
+
+- <https://laws.e-gov.go.jp/law/326AC1000000242>
+- <https://laws.e-gov.go.jp/document?lawid=326M50000800059>
+
+The adapter deliberately requires absolute external ticket stakes in every
+scenario. Closing odds or normalized market shares identify relative prices but
+not absolute pool size, so they cannot identify the price impact of a JPY 100
+or JPY 10,000 order. No nominal pool size is invented. Until an audited pool
+size source or conservative pool-size model is attached, the production
+purchase gate is unavailable even when probability and closing-share scenarios
+exist.
+
+`boatrace_ai.joint_policy_ga` connects pre-generated parameter/path draws to
+the settlement callback and searches complete 100-yen stake vectors. Fitness is
+the portfolio lower-quantile value above the fixed safety margin multiplied by
+stake, not a sum of independently gated tickets. Unevaluable vectors receive a
+finite search-disqualification score, while the no-bet vector retains value
+zero. Every GA candidate is repriced as a whole; the selected vector alone is
+rerun with ticket-removal marginal diagnostics. Version v0 is diagnostic-only
+and has no path to the wagering API.
+
 Parameter uncertainty and future-path uncertainty are kept separate.  For each
 outer parameter/refit draw `r`, future paths `s` are integrated to produce an
 expected edge `mu_i(r)`.  The default purchase gate is a preregistered lower
