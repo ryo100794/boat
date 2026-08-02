@@ -5,6 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from boatrace_ai.genetic_search import GeneticSearchSettings
 from boatrace_ai.listwise.four_head_nested_v22 import (
     DecisionRace,
     LabeledRace,
@@ -218,6 +219,37 @@ def test_walk_forward_selection_uses_only_strictly_prior_days() -> None:
     ]
     assert candidate["validation_days"] == 3
     assert candidate["validation_races"] == 12
+
+
+def test_genetic_walk_forward_is_reproducible_and_audited() -> None:
+    races, predictions = _pairs(days=5, races_per_day=4)
+    kwargs = {
+        "base_predictions_trained_through_date": "2026-06-30",
+        "configs": (AllocationConfig("seed", 0.03, 0.5),),
+        "max_iterations": 20,
+        "selection_mode": "walk-forward",
+        "genetic_search": GeneticSearchSettings(
+            population_size=4,
+            generations=2,
+            elite_count=1,
+            max_workers=2,
+            seed=23,
+        ),
+    }
+
+    first = fit_learned_allocation_head(
+        races, predictions, _payouts(races), **kwargs
+    )
+    second = fit_learned_allocation_head(
+        races, predictions, _payouts(races), **kwargs
+    )
+
+    assert first.selected_config == second.selected_config
+    assert first.candidate_metrics == second.candidate_metrics
+    assert first.search_protocol == "genetic-walk-forward-v1"
+    assert first.search_history == second.search_history
+    assert len(first.search_history) == 2
+    assert all("new_evaluations" in row for row in first.search_history)
 
 
 def test_learns_cash_exposure_and_ticket_allocation_then_rounds_to_units() -> None:

@@ -1848,6 +1848,8 @@ def build_command(
             "odds_path_schema",
             "allocation_grid",
             "allocation_selection_mode",
+            "ga_population_size", "ga_generations", "ga_elite_count",
+            "ga_mutation_rate", "ga_random_injections", "ga_seed",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1908,13 +1910,26 @@ def build_command(
         if odds_path_schema not in (None, "t5_odds_path_v1"):
             raise ValueError("unsupported learned allocation odds_path_schema")
         allocation_grid = str(params.get("allocation_grid", "default"))
-        if allocation_grid not in {"default", "exhaustive-v1"}:
+        if allocation_grid not in {"default", "exhaustive-v1", "genetic-v1"}:
             raise ValueError("unsupported learned allocation grid")
         allocation_selection_mode = str(
             params.get("allocation_selection_mode", "holdout")
         )
         if allocation_selection_mode not in {"holdout", "walk-forward"}:
             raise ValueError("unsupported learned allocation selection mode")
+        ga_population = _integer(params, "ga_population_size", 12, 4, 128)
+        ga_generations = _integer(params, "ga_generations", 5, 1, 100)
+        ga_elite = _integer(params, "ga_elite_count", 3, 1, 64)
+        ga_mutation = _number(params, "ga_mutation_rate", 0.30, 0.0, 1.0)
+        ga_injections = _integer(params, "ga_random_injections", 1, 0, 64)
+        ga_seed = _integer(params, "ga_seed", 33034, 0, 2147483647)
+        if allocation_grid == "genetic-v1":
+            if allocation_selection_mode != "walk-forward":
+                raise ValueError("genetic allocation grid requires walk-forward")
+            if ga_elite > ga_population // 2:
+                raise ValueError("GA elite count must not exceed half population")
+            if ga_injections >= ga_population:
+                raise ValueError("GA random injections must be smaller than population")
         _integer(params, "timeout_seconds", 7200, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         source_model = (app_root / str(params["source_model"])).resolve()
@@ -1965,6 +1980,12 @@ def build_command(
             "--max-snapshot-age-seconds", str(max_snapshot_age),
             "--allocation-grid", allocation_grid,
             "--allocation-selection-mode", allocation_selection_mode,
+            "--ga-population-size", str(ga_population),
+            "--ga-generations", str(ga_generations),
+            "--ga-elite-count", str(ga_elite),
+            "--ga-mutation-rate", str(ga_mutation),
+            "--ga-random-injections", str(ga_injections),
+            "--ga-seed", str(ga_seed),
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
         ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 from scipy.optimize import minimize
 
+from ..genetic_search import GeneticSearchSettings, evolve_population
 from .four_head_nested_v22 import (
     DecisionRace,
     LabeledRace,
@@ -96,6 +98,8 @@ class LearnedAllocationArtifact:
     information_boundary: str = INFORMATION_BOUNDARY
     outer_outcomes_used: bool = False
     odds_path_schema: str | None = None
+    search_protocol: str = "fixed-candidates-v1"
+    search_history: tuple[Mapping[str, Any], ...] = ()
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -121,6 +125,12 @@ class LearnedAllocationArtifact:
             "allocation_objective_version": 2,
             "gate_intercept_regularized": False,
             "odds_path_schema": self.odds_path_schema,
+            "search_protocol": getattr(
+                self, "search_protocol", "fixed-candidates-v1"
+            ),
+            "search_history": [
+                dict(row) for row in getattr(self, "search_history", ())
+            ],
         }
 
 
@@ -588,6 +598,7 @@ def fit_learned_allocation_head(
     max_iterations: int = 200,
     model_key: str = MODEL_KEY,
     selection_mode: str = "holdout",
+    genetic_search: GeneticSearchSettings | None = None,
 ) -> LearnedAllocationArtifact:
     if not model_key:
         raise ValueError("allocation model_key is required")
@@ -612,11 +623,13 @@ def fit_learned_allocation_head(
         raise ValueError("allocation validation_fraction must be between 0.1 and 0.5")
     if selection_mode not in {"holdout", "walk-forward"}:
         raise ValueError("unsupported allocation selection_mode")
+    if genetic_search is not None and selection_mode != "walk-forward":
+        raise ValueError("genetic allocation search requires walk-forward selection")
     dates = sorted({race.race_date for race in prepared})
     if len(dates) < 4:
         raise ValueError("allocation model selection requires at least four dates")
     normalized_configs = tuple(configs)
-    if not normalized_configs:
+    if not normalized_configs and genetic_search is None:
         raise ValueError("allocation model selection requires candidates")
 
     def fit_candidate(config: AllocationConfig) -> dict[str, Any]:
@@ -711,7 +724,106 @@ def fit_learned_allocation_head(
             "folds": fold_rows,
         }
 
-    if len(normalized_configs) >= 8:
+    search_history: tuple[Mapping[str, Any], ...] = ()
+    search_protocol = "fixed-candidates-v1"
+    if genetic_search is not None:
+        regularization_bounds = (1e-5, 0.3)
+        downside_bounds = (0.0, 4.0)
+
+        def make_config(regularization: float, downside: float) -> AllocationConfig:
+            regularization = min(
+                regularization_bounds[1],
+                max(regularization_bounds[0], regularization),
+            )
+            downside = min(downside_bounds[1], max(downside_bounds[0], downside))
+            return AllocationConfig(
+                f"ga-r{regularization:.8g}-d{downside:.8g}",
+                regularization,
+                downside,
+            )
+
+        def random_config(rng: random.Random) -> AllocationConfig:
+            return make_config(
+                10 ** rng.uniform(
+                    math.log10(regularization_bounds[0]),
+                    math.log10(regularization_bounds[1]),
+                ),
+                rng.uniform(*downside_bounds),
+            )
+
+        def crossover_config(
+            left: AllocationConfig,
+            right: AllocationConfig,
+            rng: random.Random,
+        ) -> AllocationConfig:
+            blend = rng.random()
+            return make_config(
+                10 ** (
+                    blend * math.log10(left.regularization)
+                    + (1.0 - blend) * math.log10(right.regularization)
+                ),
+                blend * left.downside_penalty
+                + (1.0 - blend) * right.downside_penalty,
+            )
+
+        def mutate_config(
+            config: AllocationConfig,
+            rng: random.Random,
+            rate: float,
+        ) -> AllocationConfig:
+            regularization = config.regularization
+            downside = config.downside_penalty
+            if rng.random() < rate:
+                regularization *= math.exp(rng.gauss(0.0, 1.0))
+            if rng.random() < rate:
+                downside += rng.gauss(
+                    0.0, 0.20 * (downside_bounds[1] - downside_bounds[0])
+                )
+            return make_config(regularization, downside)
+
+        def config_key(config: AllocationConfig) -> str:
+            return f"{config.regularization:.12g}:{config.downside_penalty:.12g}"
+
+        def ga_fitness(
+            metrics: Mapping[str, Any], _config: AllocationConfig
+        ) -> float:
+            growth = max(EPSILON, float(metrics["geometric_daily_growth"] or 0.0))
+            minimum = max(
+                EPSILON, float(metrics.get("minimum_daily_growth") or growth)
+            )
+            profitable = float(metrics["profitable_day_fraction"] or 0.0)
+            exposure = float(metrics["mean_exposure_fraction"] or 0.0)
+            return (
+                math.log(growth)
+                + 0.25 * math.log(minimum)
+                + 0.10 * (profitable - 0.5)
+                - exposure
+            )
+
+        ranked, history = evolve_population(
+            settings=genetic_search,
+            evaluator=fit_candidate,
+            fitness=ga_fitness,
+            random_candidate=random_config,
+            crossover=crossover_config,
+            mutate=mutate_config,
+            candidate_key=config_key,
+            serialize=lambda config: config.__dict__,
+            immigrants=normalized_configs,
+        )
+        candidates = [
+            {
+                **row.metrics,
+                "config": row.candidate,
+                "ga_fitness": row.fitness,
+                "first_generation": row.first_generation,
+            }
+            for row in ranked
+        ]
+        selected = candidates[0]
+        search_history = tuple(history)
+        search_protocol = "genetic-walk-forward-v1"
+    elif len(normalized_configs) >= 8:
         with ThreadPoolExecutor(
             max_workers=min(4, len(normalized_configs)),
             thread_name_prefix="allocation-grid",
@@ -719,15 +831,16 @@ def fit_learned_allocation_head(
             candidates = list(executor.map(fit_candidate, normalized_configs))
     else:
         candidates = [fit_candidate(config) for config in normalized_configs]
-    selected = max(
-        candidates,
-        key=lambda row: (
-            float(row["geometric_daily_growth"] or 0.0),
-            float(row["profitable_day_fraction"] or 0.0),
-            float(row.get("minimum_daily_growth") or 0.0),
-            -float(row["mean_exposure_fraction"] or 0.0),
-        ),
-    )
+    if genetic_search is None:
+        selected = max(
+            candidates,
+            key=lambda row: (
+                float(row["geometric_daily_growth"] or 0.0),
+                float(row["profitable_day_fraction"] or 0.0),
+                float(row.get("minimum_daily_growth") or 0.0),
+                -float(row["mean_exposure_fraction"] or 0.0),
+            ),
+        )
     final_normalization = _normalization(prepared)
     parameters, final_diagnostics = _fit(
         prepared,
@@ -763,6 +876,8 @@ def fit_learned_allocation_head(
         ),
         training_input_sha256=digest,
         odds_path_schema=odds_path_schema,
+        search_protocol=search_protocol,
+        search_history=search_history,
     )
 
 

@@ -31,3 +31,38 @@ def test_v34_odds_path_uses_distinct_cache_and_required_schema(tmp_path: Path) -
     assert "/evaluation_cache/learned_allocation_v34/" in command[
         command.index("--data-cache") + 1
     ]
+
+
+def test_v34_genetic_search_parameters_reach_runner(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    job = {
+        "job_id": 12035,
+        "status": "running",
+        "task_type": "learned_purchase_allocation_v33",
+        "model_key": "learned-purchase-allocation-odds-path-ga-v34",
+        "parameters": {
+            "source_model": "data/models/source.joblib",
+            "training_from": "2026-07-20",
+            "training_through": "2026-07-30",
+            "outer_from": "2026-07-31",
+            "outer_through": "2026-08-01",
+            "allocation_grid": "genetic-v1",
+            "allocation_selection_mode": "walk-forward",
+            "ga_population_size": 10,
+            "ga_generations": 4,
+            "ga_elite_count": 2,
+            "ga_seed": 91,
+        },
+    }
+
+    command, _output = build_command(
+        job,
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--allocation-grid") + 1] == "genetic-v1"
+    assert command[command.index("--ga-population-size") + 1] == "10"
+    assert command[command.index("--ga-generations") + 1] == "4"
+    assert command[command.index("--ga-seed") + 1] == "91"
