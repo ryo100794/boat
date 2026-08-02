@@ -68,6 +68,20 @@ def v20_payload() -> dict[str, object]:
             "calibrated_trifecta_top5_hit_rate": 0.3703703704,
         },
         "market_comparison": market_comparison(),
+        "periods": {
+            "outer_from": "2026-07-18",
+            "outer_through": "2026-07-30",
+        },
+        "evaluation": {"races": 918},
+        "formal_bankroll": {
+            "policy": {
+                "initial_bankroll_yen_per_day": 10_000,
+                "allocation_api": "adaptive_discrete_log",
+                "profit_reinvestment": True,
+                "decision_odds": "complete_official_trifecta_snapshot_at_T-5",
+            },
+            "bankroll": {"evaluated_races": 918},
+        },
         "promotion_gate": {
             "primary_bankroll": "chronological_bankroll",
             "sample_size_pass": False,
@@ -110,6 +124,13 @@ def test_v20_result_summary_serializes_probability_head_and_market_confidence() 
     assert_v20_probability_fields(summary)
     assert summary["roi"] == 1.4756097561
     assert summary["market_comparison"] == market_comparison()
+    assert summary["evaluation_from"] == "2026-07-18"
+    assert summary["evaluation_through"] == "2026-07-30"
+    assert summary["evaluated_races"] == 918
+    assert summary["daily_budget_yen"] == 10_000
+    assert summary["allocation_mode"] == "adaptive_discrete_log"
+    assert summary["profit_reinvestment"] is True
+    assert summary["odds_mode"].endswith("T-5")
 
 
 def test_v20_database_api_exposes_canonical_probability_head(tmp_path: Path) -> None:
@@ -152,6 +173,13 @@ def test_v20_database_api_exposes_canonical_probability_head(tmp_path: Path) -> 
 
     assert_v20_probability_fields(row)
     assert row["roi"] == 1.4756097561
+    assert row["evaluation_from"] == "2026-07-18"
+    assert row["evaluation_through"] == "2026-07-30"
+    assert row["evaluated_races"] == 918
+    assert row["daily_budget_yen"] == 10_000
+    assert row["allocation_mode"] == "adaptive_discrete_log"
+    assert row["profit_reinvestment"] is True
+    assert row["odds_mode"].endswith("T-5")
     assert row["largest_hit_excluded_roi"] == 1.2024390244
     assert row["roi_ci95_lower"] == 1.1147058824
     assert row["promotion_gate_failed"] == [

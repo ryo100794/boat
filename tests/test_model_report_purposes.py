@@ -110,7 +110,7 @@ def test_purpose_group_reports_metric_completeness_and_backtest_scope() -> None:
         "status": "完了",
         "winner_log_loss": 1.12,
         "winner_top1_accuracy": 0.58,
-        "calibrated_trifecta_log_loss": 3.7,
+        "trifecta_log_loss": 3.7,
         "trifecta_top5_hit_rate": 0.37,
         "evaluation_days": 31,
         "evaluated_races": 1520,

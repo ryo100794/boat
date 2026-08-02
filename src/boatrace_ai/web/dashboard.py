@@ -2990,6 +2990,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     else []
                 ),
                 "evaluation_days": metrics.get("evaluation_days"),
+                "evaluation_from": metrics.get("evaluation_from"),
+                "evaluation_through": metrics.get("evaluation_through"),
+                "daily_budget_yen": metrics.get("daily_budget_yen"),
+                "allocation_mode": metrics.get("allocation_mode"),
+                "profit_reinvestment": metrics.get("profit_reinvestment"),
+                "odds_mode": metrics.get("odds_mode"),
                 "promotion_eligible": metrics.get("promotion_eligible"),
                 "prediction_deployment_eligible": metrics.get(
                     "prediction_deployment_eligible"
