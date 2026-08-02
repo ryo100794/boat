@@ -397,6 +397,61 @@ def test_nested_contextual_hurdle_uses_decision_feature_map() -> None:
     assert np.isfinite(prediction.purchase_scores).all()
 
 
+def test_contextual_interaction_map_learns_all_pairwise_terms() -> None:
+    race = labeled_races(start_day=1, days=1)[0]
+    choices = len(race.decision.current_odds)
+    probability = np.full(choices, 1.0 / choices)
+    ranking = np.linspace(1.0, 0.0, choices)
+    closing = np.asarray(race.outcome.closing_odds)
+
+    contextual = v22._purchase_matrix(
+        race.decision,
+        probability,
+        ranking,
+        closing,
+        feature_map="decision_context_v2",
+    )
+    interactions = v22._purchase_matrix(
+        race.decision,
+        probability,
+        ranking,
+        closing,
+        feature_map="decision_context_interactions_v3",
+    )
+    width = contextual.shape[1]
+
+    assert interactions.shape == (
+        choices,
+        width + width * (width + 1) // 2,
+    )
+    assert np.allclose(interactions[:, :width], contextual)
+    assert np.isfinite(interactions).all()
+
+
+def test_nested_contextual_interaction_hurdle_uses_learned_terms() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="hurdle_contextual_interactions_lognormal",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_feature_map == "decision_context_interactions_v3"
+    assert artifact.purchase_payout_head is not None
+    contextual_width = 6 + len(
+        labeled_races(start_day=9, days=1)[0].decision.features[0]
+    )
+    expected_width = contextual_width + contextual_width * (
+        contextual_width + 1
+    ) // 2
+    assert len(artifact.purchase_head.coefficients) == expected_width
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_purchase_selection_uses_learned_return_break_even_not_oof_roi_search() -> None:
     artifact = fit_four_head_nested_v22(
         labeled_races(start_day=1, days=8, races_per_day=3),
