@@ -636,6 +636,20 @@ def test_summary_preserves_learned_purchase_value_calibration() -> None:
     assert summary["purchase_probability_temperature"] == 1.75
 
 
+def test_summary_preserves_temporal_aggregate_page_metrics() -> None:
+    summary = summarize_result(
+        {
+            "profitable_day_fraction": 1 / 7,
+            "purchase_value_positive_predicted_tickets": 816,
+            "purchase_value_positive_observed_capped_roi": 0.6334,
+        }
+    )
+
+    assert summary["profitable_day_fraction"] == 1 / 7
+    assert summary["purchase_value_positive_predicted_tickets"] == 816
+    assert summary["purchase_value_positive_observed_capped_roi"] == 0.6334
+
+
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(
