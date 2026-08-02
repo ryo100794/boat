@@ -110,7 +110,7 @@ def collect_beforeinfo(conn, *, race_date: date, jcd: str, rno: int, raw_dir: Pa
     if not html:
         return False
     parsed = parse_beforeinfo_html(html)
-    if not parsed["rows"]:
+    if {int(row["lane"]) for row in parsed["rows"]} != set(range(1, 7)):
         return False
     _ensure_minimal_race(conn, race_date=race_date, jcd=jcd, rno=rno, status="scheduled")
     insert_beforeinfo_rows(conn, race_id=rid, captured_at=utc_now_iso(), rows=parsed["rows"])
