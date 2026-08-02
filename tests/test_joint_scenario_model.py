@@ -179,6 +179,7 @@ def test_probability_and_market_residual_scales_are_role_separated() -> None:
         seed=29,
         probability_mean_residual_scale=0.0,
         market_mean_residual_scale=1.0,
+        shared_shock_scale=0.0,
     )
 
     assert all(row.probabilities["A"] == pytest.approx(0.55) for row in scenarios)
@@ -353,4 +354,8 @@ def test_walk_forward_current_teacher_cannot_change_own_prediction() -> None:
     assert (
         mutated["days"][0]["probability_mean_residual_scale"]
         == baseline["days"][0]["probability_mean_residual_scale"]
+    )
+    assert (
+        mutated["days"][0]["shared_shock_scale"]
+        == baseline["days"][0]["shared_shock_scale"]
     )
