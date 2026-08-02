@@ -522,6 +522,36 @@ def test_nested_temperature_artifact_learns_from_strict_purchase_oof() -> None:
     assert np.isfinite(prediction.purchase_scores).all()
 
 
+def test_t5_market_probability_is_normalized_from_current_odds() -> None:
+    matrix = np.zeros((3, 6), dtype=np.float64)
+    matrix[:, 5] = np.log(np.asarray([2.0, 4.0, 8.0]))
+
+    probability = v22._market_probability_from_purchase_matrix(matrix)
+
+    assert probability == pytest.approx(np.asarray([4 / 7, 2 / 7, 1 / 7]))
+    assert probability.sum() == pytest.approx(1.0)
+
+
+def test_nested_market_offset_artifact_learns_residual_from_t5_odds() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_market_offset_all_choice_closing",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert "_from_t5_market_" in artifact.purchase_head.teacher
+    assert artifact.purchase_payout_head is not None
+    assert artifact.purchase_payout_head.teacher.startswith(
+        "all_choice_log_closing_odds_residual"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64

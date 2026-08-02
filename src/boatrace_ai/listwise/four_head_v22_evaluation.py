@@ -764,6 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
             "multinomial_offset_uncapped_lognormal",
             "multinomial_offset_all_choice_closing",
             "multinomial_offset_all_choice_closing_temperature",
+            "multinomial_market_offset_all_choice_closing",
         ),
         default="ridge_capped_net",
     )

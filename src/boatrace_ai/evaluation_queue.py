@@ -1866,11 +1866,12 @@ def build_command(
             "multinomial_offset_uncapped_lognormal": 11,
             "multinomial_offset_all_choice_closing": 12,
             "multinomial_offset_all_choice_closing_temperature": 13,
+            "multinomial_market_offset_all_choice_closing": 14,
         }
         if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 13
+            params, "purchase_teacher_version", 3, 3, 14
         )
         expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:
