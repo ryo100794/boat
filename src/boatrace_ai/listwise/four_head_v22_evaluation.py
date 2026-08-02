@@ -806,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
             "multinomial_market_offset_oof_scaled_payout_closing",
             "multinomial_market_offset_oof_scaled_payout_tweedie",
             "multinomial_market_offset_oof_scaled_payout_factor_tweedie",
+            "multinomial_market_offset_oof_scaled_payout_context_factor_tweedie",
         ),
         default="ridge_capped_net",
     )
