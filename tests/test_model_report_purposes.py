@@ -43,6 +43,26 @@ def test_multi_head_purchase_job_is_reported_under_each_objective() -> None:
     assert groups["bankroll_policy"]["models"][0]["db_job_id"] == 11160
 
 
+def test_completed_model_is_only_grouped_where_metrics_exist() -> None:
+    job = {
+        "db_job_id": 11582,
+        "name": "four_head_payout_stacked_tweedie_v20",
+        "kind": "four_head_learned_value",
+        "status": "完了",
+        "winner_log_loss": 1.57,
+        "purchase_value_pearson_correlation": 0.066,
+        "roi": 0.0,
+        "promotion_gate_total": 9,
+    }
+
+    assert evaluation_purpose_keys(job) == [
+        "outcome_probability",
+        "ticket_value",
+        "bankroll_policy",
+        "production_validation",
+    ]
+
+
 def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     metrics = {key: set(values) for key, _, _, values, _ in PURPOSE_SPECS}
 

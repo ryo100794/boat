@@ -94,6 +94,9 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
     )
     text = f"{task} {name} {parameters.get('purchase_loss', '')}".lower()
     purposes: list[str] = []
+    pending = bool(job.get("running")) or str(job.get("status") or "") in {
+        "実行中", "待機中"
+    }
 
     def has(keys: tuple[str, ...]) -> bool:
         return any(job.get(key) is not None for key in keys)
@@ -110,7 +113,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "calibrated_trifecta_log_loss",
             "trifecta_top5_hit_rate",
         )
-    ) or tokens(
+    ) or (pending and tokens(
         (
             "listwise",
             "newton",
@@ -122,7 +125,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "four_head",
             "standardized_365d",
         )
-    ):
+    )):
         purposes.append("outcome_probability")
     if has(
         (
@@ -131,7 +134,10 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "closing_odds_interval_coverage",
             "closing_snapshot_age_seconds",
         )
-    ) or tokens(("closing_odds", "odds_path", "market_curvature", "four_head")):
+    ) or (
+        pending
+        and tokens(("closing_odds", "odds_path", "market_curvature", "four_head"))
+    ):
         purposes.append("closing_odds")
     if has(
         (
@@ -142,7 +148,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "purchase_payout_log_mae",
             "purchase_oof_scaled_payout_log_mae",
         )
-    ) or parameters.get("purchase_loss") or tokens(
+    ) or (pending and (parameters.get("purchase_loss") or tokens(
         (
             "four_head",
             "conditional_payout",
@@ -150,7 +156,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "learned_value",
             "contextual",
             "market_residual",
-        )
+        )))
     ):
         purposes.append("ticket_value")
     if has(
@@ -162,7 +168,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "roi_without_largest_hit",
             "daily_cluster_bootstrap_roi_lower_95",
         )
-    ) or tokens(
+    ) or (pending and tokens(
         (
             "bankroll_policy",
             "market_residual",
@@ -170,7 +176,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "conditional_payout",
             "standardized_365d",
         )
-    ):
+    )):
         purposes.append("bankroll_policy")
     if (
         job.get("promotion_gate_total") is not None
