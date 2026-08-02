@@ -80,6 +80,10 @@ def test_probability_metrics_match_existing_logloss_brier_top5_definitions() -> 
     assert result["generated_brier"] == pytest.approx(0.18)
     assert result["decision_model_brier"] == pytest.approx(0.32)
     assert result["generated_top5"] == 1.0
+    assert result["generated_winner_log_loss"] == pytest.approx(
+        result["generated_log_loss"]
+    )
+    assert result["generated_winner_top1_accuracy"] == 1.0
 
 
 def test_day_block_roi_interval_resamples_complete_days_deterministically() -> None:

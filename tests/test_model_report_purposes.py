@@ -30,6 +30,27 @@ def test_unknown_completed_job_is_not_misclassified_as_probability() -> None:
     assert all(not group["models"] for group in evaluation_purpose_groups([job]))
 
 
+def test_running_joint_bankroll_job_is_visible_in_its_three_objectives() -> None:
+    job = {
+        "db_job_id": 11845,
+        "name": "joint_bankroll_strict_walk_forward_v1",
+        "kind": "joint_bankroll_walk_forward",
+        "status": "実行中",
+        "running": True,
+        "parameters": {"initial_daily_bankroll_yen": 10_000},
+    }
+
+    assert evaluation_purpose_keys(job) == [
+        "outcome_probability",
+        "bankroll_policy",
+        "production_validation",
+    ]
+    groups = {row["key"]: row for row in evaluation_purpose_groups([job])}
+    assert groups["bankroll_policy"]["models"][0][
+        "purpose_evaluation"
+    ]["backtest"]["daily_budget_yen"] == 10_000
+
+
 def test_multi_head_purchase_job_is_reported_under_each_objective() -> None:
     job = {
         "db_job_id": 11160,

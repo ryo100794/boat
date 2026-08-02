@@ -3362,6 +3362,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "metrics", "holdout", "holdout_after_newton", "bankroll",
             "holdout_prediction_metrics", "selection_prediction_metrics",
             "bankroll_confidence",
+            "probability_metrics", "primary_bankroll",
             "closing_odds_forecast",
             "evaluation", "formal_bankroll", "prediction_metrics",
             "conditional_order", "venue_conditional_order",
