@@ -295,6 +295,49 @@ def test_nested_tweedie_artifact_predicts_finite_net_returns() -> None:
     assert all(-1.0 < value <= 50.0 for value in prediction.purchase_scores)
 
 
+def test_pairwise_purchase_head_learns_payout_weighted_ticket_order() -> None:
+    matrices = [
+        np.asarray([[-2.0], [-1.0], [2.0]], dtype=np.float64),
+        np.asarray([[-3.0], [0.0], [3.0]], dtype=np.float64),
+    ]
+    returns = [
+        np.asarray([-1.0, -1.0, 8.0]),
+        np.asarray([-1.0, -1.0, 3.0]),
+    ]
+
+    head, payout = v22._fit_purchase_heads(
+        matrices,
+        returns,
+        alpha=0.01,
+        purchase_loss="pairwise_contextual_rank_calibrated",
+    )
+
+    assert payout is None
+    assert head.teacher.startswith("payout_weighted_winner_over_loser")
+    assert v22._scores(head, matrices[0])[-1] > v22._scores(head, matrices[0])[0]
+
+
+def test_nested_pairwise_purchase_rank_is_oof_calibrated() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="pairwise_contextual_rank_calibrated",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_feature_map == "decision_context_v2"
+    assert artifact.purchase_payout_head is None
+    assert artifact.purchase_calibration_head is not None
+    assert artifact.purchase_calibration_head.teacher.startswith(
+        "poisson_calibration_of_strict_purchase_head_oof"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64

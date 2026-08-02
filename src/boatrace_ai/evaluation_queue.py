@@ -1827,11 +1827,12 @@ def build_command(
             "hurdle_logistic_lognormal_calibrated": 7,
             "hurdle_contextual_lognormal": 8,
             "hurdle_contextual_interactions_lognormal": 9,
+            "pairwise_contextual_rank_calibrated": 10,
         }
         if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 9
+            params, "purchase_teacher_version", 3, 3, 10
         )
         expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:
