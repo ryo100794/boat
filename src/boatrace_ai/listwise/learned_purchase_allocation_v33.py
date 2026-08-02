@@ -91,6 +91,8 @@ class LearnedAllocationArtifact:
             "max_race_exposure_fraction": self.max_race_exposure_fraction,
             "information_boundary": self.information_boundary,
             "outer_outcomes_used": self.outer_outcomes_used,
+            "allocation_objective_version": 2,
+            "gate_intercept_regularized": False,
         }
 
 
@@ -336,8 +338,12 @@ def _objective_gradient(
             * allocated_payout
             * (ticket.T @ score_derivative)
         )
-    loss += 0.5 * config.regularization * float(parameters @ parameters)
-    gradient += config.regularization * parameters
+    regularized = parameters.copy()
+    # Cash exposure is an action, not a zero-centered coefficient. Penalizing the
+    # gate intercept biases every race toward 50% of the safety exposure ceiling.
+    regularized[-1] = 0.0
+    loss += 0.5 * config.regularization * float(regularized @ regularized)
+    gradient += config.regularization * regularized
     return float(loss), gradient
 
 
@@ -367,6 +373,7 @@ def _fit(
         np.zeros(dimension, dtype=np.float64),
         method="L-BFGS-B",
         jac=True,
+        bounds=[(None, None)] * (dimension - 1) + [(-12.0, 12.0)],
         options={"maxiter": max_iterations, "ftol": 1e-11, "gtol": 1e-6, "maxls": 40},
     )
     value, gradient = objective(np.asarray(result.x, dtype=np.float64))
