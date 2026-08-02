@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -616,21 +617,28 @@ def fit_learned_allocation_head(
     fit_races = [race for race in prepared if race.race_date not in validation_dates]
     validation_races = [race for race in prepared if race.race_date in validation_dates]
     normalization = _normalization(fit_races)
-    candidates: list[dict[str, Any]] = []
     normalized_configs = tuple(configs)
     if not normalized_configs:
         raise ValueError("allocation model selection requires candidates")
-    for config in normalized_configs:
+
+    def fit_candidate(config: AllocationConfig) -> dict[str, Any]:
         parameters, diagnostics = _fit(
             fit_races, config, normalization, max_iterations=max_iterations
         )
-        candidates.append(
-            {
-                "config": config,
-                **diagnostics,
-                **_continuous_metrics(parameters, validation_races, normalization),
-            }
-        )
+        return {
+            "config": config,
+            **diagnostics,
+            **_continuous_metrics(parameters, validation_races, normalization),
+        }
+
+    if len(normalized_configs) >= 8:
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(normalized_configs)),
+            thread_name_prefix="allocation-grid",
+        ) as executor:
+            candidates = list(executor.map(fit_candidate, normalized_configs))
+    else:
+        candidates = [fit_candidate(config) for config in normalized_configs]
     selected = max(
         candidates,
         key=lambda row: (
