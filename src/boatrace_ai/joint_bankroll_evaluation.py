@@ -30,7 +30,7 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v2"
+EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v3"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 
