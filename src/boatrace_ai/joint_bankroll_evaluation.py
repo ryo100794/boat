@@ -510,16 +510,34 @@ def run_joint_bankroll_evaluation(
                 selected["metrics"].get("bankroll_growth", {}).get("growth")
                 or {}
             )
+            best_search = search.get("best_search_candidate") or {}
+            best_search_metrics = best_search.get("metrics") or {}
             race_rows.append({
                 "race_id": observation.race_id,
                 "venue": observation.venue,
+                "actual_combination": str(race["actual_combination"]),
+                "actual_payout_yen": int(race["actual_payout_yen"]),
                 "stake_yen": stake,
                 "return_yen": receipt,
                 "profit_yen": receipt - stake,
                 "available_cash_after_bet_yen": balance,
                 "settlement_available_at": settlement_at.isoformat(),
                 "selected_tickets": len(selected_bets),
+                "selected_bets_yen": selected_bets,
                 "purchase_authorized": bool(search["purchase_authorized"]),
+                "feasible_candidates_found": int(
+                    search.get("feasible_candidates_found") or 0
+                ),
+                "best_search_fitness": best_search.get("fitness"),
+                "best_search_constraint_violation": best_search_metrics.get(
+                    "constraint_violation"
+                ),
+                "best_search_edge_excess": best_search_metrics.get(
+                    "edge_excess"
+                ),
+                "best_search_growth_excess": best_search_metrics.get(
+                    "growth_excess"
+                ),
                 "portfolio_lower_quantile": portfolio.get("lower_quantile"),
                 "bankroll_growth_lower_quantile": growth.get("lower_quantile"),
                 "maximum_conditional_ruin_probability": growth.get(

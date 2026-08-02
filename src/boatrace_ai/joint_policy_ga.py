@@ -350,6 +350,7 @@ def optimize_joint_portfolio(
             for row in ranked
             if not any(row.candidate.stake_units)
         )
+    best_search_candidate = ranked[0]
     selected_bets = bets(selected.candidate)
     detailed_value = None
     if selected_bets:
@@ -406,6 +407,13 @@ def optimize_joint_portfolio(
         "available_bankroll_yen": available_bankroll_yen,
         "search_budget_yen": budget_yen,
         "purchase_authorized": purchase_authorized,
+        "feasible_candidates_found": len(feasible),
+        "best_search_candidate": {
+            **serialize(best_search_candidate.candidate),
+            "fitness": best_search_candidate.fitness,
+            "metrics": dict(best_search_candidate.metrics),
+            "first_generation": best_search_candidate.first_generation,
+        },
         "selected": {
             **serialize(selected.candidate),
             "fitness": selected.fitness,
