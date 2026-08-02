@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 
@@ -83,6 +85,146 @@ PURPOSE_SPECS = (
         "統一期間または完全未見前進評価。全必須ゲート合格時のみ昇格",
     ),
 )
+
+PURPOSE_REQUIREMENTS = {
+    "outcome_probability": (
+        "winner_log_loss",
+        "winner_top1_accuracy",
+        "calibrated_trifecta_log_loss",
+        "trifecta_top5_hit_rate",
+    ),
+    "closing_odds": (
+        "closing_odds_log_mae",
+        "closing_odds_rank_correlation",
+        "closing_odds_interval_coverage",
+        "closing_snapshot_age_seconds",
+    ),
+    "ticket_value": (
+        "purchase_value_pearson_correlation",
+        "purchase_value_calibration_mae",
+        "purchase_hit_log_loss_delta_vs_market",
+        "purchase_payout_log_mae",
+    ),
+    "bankroll_policy": (
+        "roi",
+        "profit_yen",
+        "stake_yen",
+        "max_drawdown_yen",
+        "roi_without_largest_hit",
+        "daily_cluster_bootstrap_roi_lower_95",
+    ),
+    "production_validation": (
+        "promotion_gate_passed",
+        "promotion_gate_total",
+        "prediction_deployment_eligible",
+        "roi",
+        "daily_cluster_bootstrap_roi_lower_95",
+    ),
+}
+
+
+PURPOSE_DECISION_RULES = {
+    "outcome_probability": (
+        "未見時系列でLogLossを市場基準と比較し、日クラスタ95%CI、1着、3T5を併記"
+    ),
+    "closing_odds": (
+        "同一T-5窓でlog MAEを最小化し、順位相関・区間被覆・取得時差を同時監査"
+    ),
+    "ticket_value": (
+        "外側未見券で価値相関>0、的中LLの市場差<0、払戻誤差を確認。ROI単独で採用しない"
+    ),
+    "bankroll_policy": (
+        "日額1万円・利益再投資でROI>1、最大1的中除外ROI>1、日次LCB95>1を全て要求"
+    ),
+    "production_validation": (
+        "30日以上の前進未見評価で必須ゲート全合格。締切後情報の推論利用を禁止"
+    ),
+}
+
+
+def _first_value(*values: Any) -> Any:
+    return next((value for value in values if value not in (None, "")), None)
+
+
+def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
+    parameters = job.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    return {
+        "start": _first_value(
+            job.get("holdout_start"),
+            job.get("evaluation_start"),
+            job.get("formal_evaluation_from"),
+            parameters.get("evaluation_from"),
+            parameters.get("from_date"),
+        ),
+        "end": _first_value(
+            job.get("holdout_end"),
+            job.get("evaluation_end"),
+            job.get("market_comparison_date"),
+            parameters.get("evaluation_through"),
+            parameters.get("through_date"),
+        ),
+        "days": _first_value(job.get("evaluation_days"), job.get("race_days")),
+        "races": _first_value(job.get("evaluated_races"), job.get("evaluation_races")),
+        "folds": _first_value(job.get("fold_count"), job.get("expected_folds")),
+        "decision_minutes_before": _first_value(
+            parameters.get("decision_minutes_before"),
+            parameters.get("minutes_before_deadline"),
+            parameters.get("snapshot_minutes_before"),
+        ),
+        "daily_budget_yen": _first_value(
+            parameters.get("daily_budget_yen"),
+            parameters.get("budget_yen"),
+            parameters.get("budget"),
+        ),
+        "odds_mode": _first_value(
+            parameters.get("odds_mode"),
+            parameters.get("market_source"),
+            "T-5" if parameters.get("include_odds") is True else None,
+            "履歴のみ" if parameters.get("include_odds") is False else None,
+        ),
+        "race_set_sha256": _first_value(
+            parameters.get("race_set_sha256"), job.get("race_set_sha256")
+        ),
+        "protocol_sha256": _first_value(
+            parameters.get("protocol_sha256"), job.get("protocol_sha256")
+        ),
+        "policy_sha256": _first_value(
+            parameters.get("policy_sha256"), job.get("policy_sha256")
+        ),
+        "allocation_mode": parameters.get("allocation_mode"),
+        "profit_reinvestment": _first_value(
+            parameters.get("profit_reinvestment"),
+            parameters.get("reinvest_profit"),
+        ),
+    }
+
+
+def _purpose_evaluation(job: dict[str, Any], key: str) -> dict[str, Any]:
+    required = PURPOSE_REQUIREMENTS[key]
+    available = [metric for metric in required if job.get(metric) is not None]
+    missing = [metric for metric in required if metric not in available]
+    backtest = _backtest_scope(job)
+    missing_scope = [
+        field for field in ("start", "end", "races")
+        if backtest.get(field) is None
+    ]
+    serialized = json.dumps(
+        backtest, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    return {
+        "required_metrics": list(required),
+        "available_metrics": available,
+        "missing_metrics": missing,
+        "metric_count": len(available),
+        "metric_total": len(required),
+        "complete": not missing,
+        "comparison_ready": not missing and not missing_scope,
+        "missing_scope": missing_scope,
+        "comparison_id": hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:10],
+        "backtest": backtest,
+    }
 
 
 def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
@@ -184,7 +326,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
         or tokens(("standardized_365d", "nested_annual", "promotion", "prospective"))
     ):
         purposes.append("production_validation")
-    return purposes or ["outcome_probability"]
+    return purposes
 
 
 def evaluation_purpose_groups(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -192,8 +334,12 @@ def evaluation_purpose_groups(jobs: list[dict[str, Any]]) -> list[dict[str, Any]
     status_order = {"実行中": 0, "待機中": 1, "完了": 2, "失敗": 3, "取消": 4}
     for job in jobs:
         keys = evaluation_purpose_keys(job)
-        item = {**job, "purpose_keys": keys}
         for key in keys:
+            item = {
+                **job,
+                "purpose_keys": keys,
+                "purpose_evaluation": _purpose_evaluation(job, key),
+            }
             grouped[key].append(item)
     result = []
     for key, label, objective, metrics, protocol in PURPOSE_SPECS:
@@ -210,7 +356,9 @@ def evaluation_purpose_groups(jobs: list[dict[str, Any]]) -> list[dict[str, Any]
                 "label": label,
                 "objective": objective,
                 "primary_metrics": list(metrics),
+                "required_metrics": list(PURPOSE_REQUIREMENTS[key]),
                 "backtest_protocol": protocol,
+                "decision_rule": PURPOSE_DECISION_RULES[key],
                 "models": models,
                 "active_models": sum(bool(row.get("running")) for row in models),
             }
