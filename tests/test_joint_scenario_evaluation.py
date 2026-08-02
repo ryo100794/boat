@@ -42,6 +42,7 @@ def test_joint_scenario_evaluation_reports_exclusions_and_deltas(
         pooling_strength=4.0,
         seed=7,
         expected_outcomes=("A", "B"),
+        learn_residual_scales=True,
     )
 
     assert result["coverage"]["excluded_races"] == 1
@@ -64,6 +65,7 @@ def test_joint_scenario_queue_command_is_path_restricted(tmp_path: Path) -> None
             "joint_min_training_days": 3,
             "scenarios_per_race": 32,
             "rank": 8,
+            "learn_residual_scales": True,
         },
     }
     command, output = build_command(
@@ -75,6 +77,7 @@ def test_joint_scenario_queue_command_is_path_restricted(tmp_path: Path) -> None
 
     assert command[1:3] == ["-m", "boatrace_ai.joint_scenario_evaluation"]
     assert command[command.index("--scenarios-per-race") + 1] == "32"
+    assert "--learn-residual-scales" in command
     assert output.name == "job-00000019.json"
     assert result_decision("joint_scenario_walk_forward", {}) == (
         "diagnostic_complete_not_policy_connected"

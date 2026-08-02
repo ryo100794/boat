@@ -2318,7 +2318,8 @@ def build_command(
         allowed = {
             "scored_cache", "terminal_min_training_days",
             "joint_min_training_days", "scenarios_per_race", "rank",
-            "pooling_strength", "seed", "timeout_seconds",
+            "pooling_strength", "seed", "learn_residual_scales",
+            "timeout_seconds",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -2348,8 +2349,11 @@ def build_command(
         rank = _integer(params, "rank", 8, 1, 32)
         pooling = _number(params, "pooling_strength", 20.0, 0.1, 1000.0)
         seed = _integer(params, "seed", 33036, 0, 2_147_483_647)
+        learn_scales = params.get("learn_residual_scales", False)
+        if type(learn_scales) is not bool:
+            raise ValueError("learn_residual_scales must be a boolean")
         _integer(params, "timeout_seconds", 3600, 300, 86400)
-        return [
+        command = [
             str(python), "-m", "boatrace_ai.joint_scenario_evaluation",
             "--scored-cache", str(scored_cache),
             "--output", str(output),
@@ -2359,7 +2363,10 @@ def build_command(
             "--rank", str(rank),
             "--pooling-strength", str(pooling),
             "--seed", str(seed),
-        ], output
+        ]
+        if learn_scales:
+            command.append("--learn-residual-scales")
+        return command, output
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",

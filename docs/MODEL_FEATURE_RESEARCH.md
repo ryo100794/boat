@@ -318,3 +318,30 @@ real-data chronological diagnostic, and its scenarios are not connected to the
 purchase GA or settlement evaluator. Outer parameter uncertainty requires
 day-block refits. Promotion remains prohibited until those diagnostics and the
 sealed bankroll gates pass.
+
+### 2026-08-03 strict joint walk-forward diagnostic
+
+DB evaluation job 11785 used the 2,034-race scored cache through 2026-08-02.
+It retained 1,896 races with official closing odds; 137 excluded rows were
+unfinished 2026-08-02 closes and one 2026-07-28 row was a true missing close.
+No closing value was imputed.
+
+The terminal teacher trained on at least five strictly earlier days and scored
+1,181 races from 2026-07-25 through 2026-08-01. Relative to closing-market
+identity, LogLoss improved by 0.00769 and Brier by 0.000269; 3T5 was unchanged
+at 37.93%. Seven of eight daily LogLoss deltas were negative, but this remains
+short of the 30-day promotion evidence requirement.
+
+The joint generator then used an additional prior-day refit boundary and
+evaluated 713 races from 2026-07-28 through 2026-08-01. Closing-market forecasts
+improved cross entropy by 0.01388 and total-variation error by 0.01657, with an
+improvement on every evaluated day. The generated outcome mean improved
+LogLoss by only 0.00144 against the decision model, while Brier regressed by
+0.000023 and 3T5 regressed by 0.42 percentage points. Its generated paired
+residual inner product, 0.03802, was close to the observed 0.03823.
+
+The result supports retaining the shared market-path component but rejects a
+full-strength probability residual for deployment. Probability and market
+residual strengths must be selected separately on inner prior-day folds before
+each outer day. Job 11785 is diagnostic only and remains disconnected from
+settlement, policy GA and automated purchasing.

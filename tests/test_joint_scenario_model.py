@@ -159,6 +159,27 @@ def test_generated_probability_and_market_vectors_remain_simplexes() -> None:
     )
 
 
+def test_probability_and_market_residual_scales_are_role_separated() -> None:
+    model = fit_conditional_joint_scenario_model(_training_rows(), rank=2)
+    scenarios = generate_joint_market_scenarios(
+        model,
+        decision_probabilities={"A": 0.55, "B": 0.45},
+        decision_market_shares={"A": 0.6, "B": 0.4},
+        venue="01",
+        decision_horizon_seconds=300,
+        popularity_band="favorite",
+        scenarios=20,
+        seed=29,
+        probability_residual_scale=0.0,
+        market_residual_scale=1.0,
+    )
+
+    assert all(row.probabilities["A"] == pytest.approx(0.55) for row in scenarios)
+    assert np.std([
+        row.market_state["final_market_shares"]["A"] for row in scenarios
+    ]) > 0.0
+
+
 def test_shared_factor_preserves_learned_negative_probability_market_dependence() -> None:
     model = fit_conditional_joint_scenario_model(
         _training_rows(),
@@ -283,6 +304,7 @@ def test_walk_forward_current_teacher_cannot_change_own_prediction() -> None:
         scenarios_per_race=32,
         rank=2,
         seed=23,
+        learn_residual_scales=True,
     )
     changed_terminal = {"A": 0.8, "B": 0.2}
     target = rows[5]
@@ -313,9 +335,14 @@ def test_walk_forward_current_teacher_cannot_change_own_prediction() -> None:
         scenarios_per_race=32,
         rank=2,
         seed=23,
+        learn_residual_scales=True,
     )
 
     assert (
         mutated["days"][0]["metrics"]["generated_log_loss"]
         == pytest.approx(baseline["days"][0]["metrics"]["generated_log_loss"])
+    )
+    assert (
+        mutated["days"][0]["probability_residual_scale"]
+        == baseline["days"][0]["probability_residual_scale"]
     )
