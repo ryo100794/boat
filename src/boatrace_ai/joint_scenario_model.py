@@ -63,6 +63,9 @@ class ConditionalJointScenarioModel:
     teacher_sources: tuple[str, ...]
     teacher_artifact_sha256s: tuple[str, ...]
     rank: int
+    probability_residual_scale: float
+    market_residual_scale: float
+    residual_scale_selection: Mapping[str, Any]
 
 
 def _iso_date(value: object, name: str) -> str:
@@ -247,6 +250,10 @@ def fit_conditional_joint_scenario_model(
     rank: int = 8,
     pooling_strength: float = 20.0,
     diagonal_noise_fraction: float = 0.05,
+    learn_residual_scales: bool = False,
+    residual_scale_candidates: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0),
+    scale_selection_scenarios: int = 32,
+    scale_selection_seed: int = 33037,
 ) -> ConditionalJointScenarioModel:
     """Fit paired compositional residuals; never infer pi_T from one-hot results."""
     if len(observations) < 3:
@@ -324,6 +331,26 @@ def fit_conditional_joint_scenario_model(
         group_means[key] = additive_main + weight * (group_mean - additive_main)
         group_counts[key] = count
     dates = sorted(_iso_date(row.race_date, "race_date") for row in observations)
+    probability_scale = 1.0
+    market_scale = 1.0
+    scale_selection: dict[str, Any] = {
+        "method": "fixed_full_residual",
+        "selected_probability_scale": probability_scale,
+        "selected_market_scale": market_scale,
+    }
+    if learn_residual_scales:
+        probability_scale, market_scale, scale_selection = (
+            _select_residual_scales_on_last_training_day(
+                observations,
+                expected_outcomes=outcomes,
+                rank=rank,
+                pooling_strength=pooling_strength,
+                diagonal_noise_fraction=diagonal_noise_fraction,
+                candidates=residual_scale_candidates,
+                scenarios=scale_selection_scenarios,
+                seed=scale_selection_seed,
+            )
+        )
     return ConditionalJointScenarioModel(
         version=MODEL_VERSION,
         outcomes=outcomes,
@@ -348,6 +375,9 @@ def fit_conditional_joint_scenario_model(
             for row in observations
         })),
         rank=selected_rank,
+        probability_residual_scale=probability_scale,
+        market_residual_scale=market_scale,
+        residual_scale_selection=scale_selection,
     )
 
 
@@ -361,11 +391,27 @@ def generate_joint_market_scenarios(
     popularity_band: str,
     scenarios: int = 1_000,
     seed: int = 33036,
+    probability_residual_scale: float | None = None,
+    market_residual_scale: float | None = None,
 ) -> list[JointMarketScenario]:
     if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
         raise ValueError("scenarios must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("seed must be a non-negative integer")
+    probability_scale = (
+        model.probability_residual_scale
+        if probability_residual_scale is None
+        else float(probability_residual_scale)
+    )
+    market_scale = (
+        model.market_residual_scale
+        if market_residual_scale is None
+        else float(market_residual_scale)
+    )
+    if not isfinite(probability_scale) or not 0.0 <= probability_scale <= 2.0:
+        raise ValueError("probability_residual_scale must be finite and in [0, 2]")
+    if not isfinite(market_scale) or not 0.0 <= market_scale <= 2.0:
+        raise ValueError("market_residual_scale must be finite and in [0, 2]")
     decision = validate_probability_simplex(
         decision_probabilities, expected_outcomes=model.outcomes
     )
@@ -400,10 +446,12 @@ def generate_joint_market_scenarios(
     result = []
     for index, residual in enumerate(residuals):
         terminal_probability = _softmax_mapping(
-            base_probability + residual[:dimension], model.outcomes
+            base_probability + probability_scale * residual[:dimension],
+            model.outcomes,
         )
         final_market = _softmax_mapping(
-            base_market + residual[dimension:], model.outcomes
+            base_market + market_scale * residual[dimension:],
+            model.outcomes,
         )
         result.append(JointMarketScenario(
             probabilities=terminal_probability,
@@ -413,10 +461,137 @@ def generate_joint_market_scenarios(
                 "context_key": key,
                 "context_fallback": key not in model.group_means,
                 "scenario_index": index,
+                "probability_residual_scale": probability_scale,
+                "market_residual_scale": market_scale,
             },
             weight=weight,
         ))
     return result
+
+
+def _validated_scale_candidates(values: Sequence[float]) -> tuple[float, ...]:
+    candidates = tuple(dict.fromkeys(float(value) for value in values))
+    if not candidates or any(
+        not isfinite(value) or not 0.0 <= value <= 2.0
+        for value in candidates
+    ):
+        raise ValueError("residual scale candidates must be finite and in [0, 2]")
+    return tuple(sorted(candidates))
+
+
+def _select_residual_scales_on_last_training_day(
+    observations: Sequence[JointScenarioObservation],
+    *,
+    expected_outcomes: Sequence[str],
+    rank: int,
+    pooling_strength: float,
+    diagonal_noise_fraction: float,
+    candidates: Sequence[float],
+    scenarios: int,
+    seed: int,
+) -> tuple[float, float, dict[str, Any]]:
+    candidates = _validated_scale_candidates(candidates)
+    if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
+        raise ValueError("scale_selection_scenarios must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("scale_selection_seed must be a non-negative integer")
+    dates = sorted({_iso_date(row.race_date, "race_date") for row in observations})
+    if len(dates) < 2:
+        return 1.0, 1.0, {
+            "method": "insufficient_dates_full_residual",
+            "selected_probability_scale": 1.0,
+            "selected_market_scale": 1.0,
+        }
+    validation_date = dates[-1]
+    inner_training = [
+        row for row in observations if str(row.race_date) < validation_date
+    ]
+    validation = [
+        row for row in observations if str(row.race_date) == validation_date
+    ]
+    if len(inner_training) < 3 or not validation:
+        return 1.0, 1.0, {
+            "method": "insufficient_inner_training_full_residual",
+            "validation_date": validation_date,
+            "selected_probability_scale": 1.0,
+            "selected_market_scale": 1.0,
+        }
+    inner_model = fit_conditional_joint_scenario_model(
+        inner_training,
+        expected_outcomes=expected_outcomes,
+        rank=rank,
+        pooling_strength=pooling_strength,
+        diagonal_noise_fraction=diagonal_noise_fraction,
+        learn_residual_scales=False,
+    )
+    probability_loss = {value: 0.0 for value in candidates}
+    market_loss = {value: 0.0 for value in candidates}
+    for observation in validation:
+        race_seed = int.from_bytes(
+            hashlib.sha256(
+                f"{seed}:{observation.race_id}".encode("utf-8")
+            ).digest()[:8],
+            byteorder="big",
+            signed=False,
+        )
+        terminal = validate_probability_simplex(
+            observation.terminal_probability_teacher,
+            expected_outcomes=expected_outcomes,
+        )
+        final_market = validate_probability_simplex(
+            observation.final_market_shares,
+            expected_outcomes=expected_outcomes,
+        )
+        for scale in candidates:
+            generated = generate_joint_market_scenarios(
+                inner_model,
+                decision_probabilities=observation.decision_probabilities,
+                decision_market_shares=observation.decision_market_shares,
+                venue=observation.venue,
+                decision_horizon_seconds=observation.decision_horizon_seconds,
+                popularity_band=observation.popularity_band,
+                scenarios=scenarios,
+                seed=race_seed,
+                probability_residual_scale=scale,
+                market_residual_scale=scale,
+            )
+            probability_mean = _mean_scenario_simplex(
+                generated, expected_outcomes, market=False
+            )
+            market_mean = _mean_scenario_simplex(
+                generated, expected_outcomes, market=True
+            )
+            probability_loss[scale] += -fsum(
+                terminal[outcome]
+                * log(max(EPSILON, probability_mean[outcome]))
+                for outcome in expected_outcomes
+            )
+            market_loss[scale] += -fsum(
+                final_market[outcome]
+                * log(max(EPSILON, market_mean[outcome]))
+                for outcome in expected_outcomes
+            )
+    probability_scale = min(
+        candidates, key=lambda value: (probability_loss[value], value)
+    )
+    market_scale = min(candidates, key=lambda value: (market_loss[value], value))
+    count = len(validation)
+    return probability_scale, market_scale, {
+        "method": "last_prior_day_distribution_cross_entropy",
+        "validation_date": validation_date,
+        "inner_training_through": dates[-2],
+        "inner_training_races": len(inner_training),
+        "validation_races": count,
+        "candidates": list(candidates),
+        "probability_cross_entropy": {
+            str(value): probability_loss[value] / count for value in candidates
+        },
+        "market_cross_entropy": {
+            str(value): market_loss[value] / count for value in candidates
+        },
+        "selected_probability_scale": probability_scale,
+        "selected_market_scale": market_scale,
+    }
 
 
 def joint_scenario_model_diagnostics(
@@ -446,6 +621,9 @@ def joint_scenario_model_diagnostics(
         "parameter_uncertainty": (
             "not_in_single_fit; outer day-block refits are required"
         ),
+        "probability_residual_scale": model.probability_residual_scale,
+        "market_residual_scale": model.market_residual_scale,
+        "residual_scale_selection": dict(model.residual_scale_selection),
     }
 
 
@@ -492,6 +670,7 @@ def evaluate_joint_scenario_walk_forward(
     rank: int = 8,
     pooling_strength: float = 20.0,
     seed: int = 33036,
+    learn_residual_scales: bool = False,
 ) -> dict[str, Any]:
     """Evaluate the generator with strict prior-day refits; never tune policy."""
     if (
@@ -525,6 +704,7 @@ def evaluate_joint_scenario_walk_forward(
             expected_outcomes=outcomes,
             rank=rank,
             pooling_strength=pooling_strength,
+            learn_residual_scales=learn_residual_scales,
         )
         outcomes = model.outcomes
         day_metrics = []
@@ -667,6 +847,9 @@ def evaluate_joint_scenario_walk_forward(
             "trained_through_date": training_dates[-1],
             "training_races": len(training),
             "evaluated_races": len(day_metrics),
+            "probability_residual_scale": model.probability_residual_scale,
+            "market_residual_scale": model.market_residual_scale,
+            "residual_scale_selection": dict(model.residual_scale_selection),
             "metrics": _walk_forward_metric_summary(day_metrics),
         })
     return {
@@ -674,6 +857,7 @@ def evaluate_joint_scenario_walk_forward(
         "role": "diagnostic_joint_generator_not_policy_or_ga_fitness",
         "minimum_training_days": minimum_training_days,
         "scenarios_per_race": scenarios_per_race,
+        "learn_residual_scales": learn_residual_scales,
         "evaluated_days": len(daily),
         "evaluated_races": len(all_metric_rows),
         "evaluation_from": daily[0]["date"],

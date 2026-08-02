@@ -88,6 +88,7 @@ def run_joint_scenario_evaluation(
     pooling_strength: float,
     seed: int,
     expected_outcomes: Sequence[str] = TRIFECTA_OUTCOMES,
+    learn_residual_scales: bool = False,
 ) -> dict[str, Any]:
     races = _load_scored_races(scored_cache)
     eligible, coverage = _eligible_terminal_rows(races)
@@ -109,6 +110,7 @@ def run_joint_scenario_evaluation(
         rank=rank,
         pooling_strength=pooling_strength,
         seed=seed,
+        learn_residual_scales=learn_residual_scales,
     )
     joint["metrics"] = _with_deltas(joint["metrics"])
     for day in joint["days"]:
@@ -149,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--pooling-strength", type=float, default=20.0)
     parser.add_argument("--seed", type=int, default=33036)
+    parser.add_argument("--learn-residual-scales", action="store_true")
     return parser
 
 
@@ -162,6 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rank=args.rank,
         pooling_strength=args.pooling_strength,
         seed=args.seed,
+        learn_residual_scales=args.learn_residual_scales,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
