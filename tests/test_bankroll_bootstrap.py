@@ -5,11 +5,27 @@ from itertools import product
 import numpy as np
 import pytest
 
-from boatrace_ai.bankroll_bootstrap import MAX_EXACT_YEN, bootstrap_daily_roi
+from boatrace_ai.bankroll_bootstrap import (
+    MAX_EXACT_YEN,
+    bootstrap_daily_roi,
+    leave_one_venue_out_roi,
+    moving_block_bootstrap_roi,
+)
 
 
 def _row(day: str, stake: float, returned: float) -> dict[str, object]:
     return {"race_date": day, "stake_yen": stake, "return_yen": returned}
+
+
+def _venue_row(
+    day: str, jcd: str, stake: float, returned: float
+) -> dict[str, object]:
+    return {
+        "race_date": day,
+        "jcd": jcd,
+        "stake_yen": stake,
+        "return_yen": returned,
+    }
 
 
 class _ExhaustiveRng:
@@ -223,3 +239,142 @@ def test_default_uses_twenty_thousand_memory_bounded_samples(monkeypatch) -> Non
     assert result["samples"] == 20_000
     assert sum(shape[0] for shape in observed_shapes) == 20_000
     assert max(shape[0] for shape in observed_shapes) == 2_000
+
+
+def test_moving_block_bootstrap_preserves_complete_consecutive_days(
+    monkeypatch,
+) -> None:
+    class _StartsRng:
+        def integers(self, low, high, *, size):
+            assert (low, high, size) == (0, 3, (2, 2))
+            return np.asarray([[0, 2], [1, 0]], dtype=np.int64)
+
+    monkeypatch.setattr(
+        "boatrace_ai.bankroll_bootstrap.np.random.default_rng",
+        lambda seed: _StartsRng(),
+    )
+    rows = [
+        _row("2026-07-01", 40, 0),
+        _row("2026-07-01", 60, 100),
+        _row("2026-07-02", 100, 0),
+        _row("2026-07-03", 100, 300),
+        _row("2026-07-04", 100, 0),
+    ]
+    result = moving_block_bootstrap_roi(
+        rows, block_days=2, samples=2, seed=19, chunk_size=2
+    )
+    assert result["days"] == 4
+    assert result["blocks_per_sample"] == 2
+    assert result["valid_samples"] == 2
+    assert result["roi_ci95_lower"] == pytest.approx(1.0)
+    assert result["probability_roi_above_one"] == 0.0
+
+
+def test_moving_block_bootstrap_is_seeded_and_chunk_bounded(monkeypatch) -> None:
+    observed_shapes: list[tuple[int, int]] = []
+    original = np.random.default_rng
+
+    class _RecordingRng:
+        def __init__(self, seed: int) -> None:
+            self._rng = original(seed)
+
+        def integers(self, low, high, *, size):
+            observed_shapes.append(size)
+            return self._rng.integers(low, high, size=size)
+
+    monkeypatch.setattr(
+        "boatrace_ai.bankroll_bootstrap.np.random.default_rng",
+        lambda seed: _RecordingRng(seed),
+    )
+    rows = [_row(f"2026-07-{day:02d}", 100, day * 10) for day in range(1, 8)]
+    first = moving_block_bootstrap_roi(
+        rows, block_days=3, samples=101, seed=31, chunk_size=17
+    )
+    shapes_after_first = list(observed_shapes)
+    observed_shapes.clear()
+    second = moving_block_bootstrap_roi(
+        rows, block_days=3, samples=101, seed=31, chunk_size=17
+    )
+    assert first == second
+    assert shapes_after_first == observed_shapes
+    assert max(shape[0] for shape in observed_shapes) == 17
+    assert all(shape[1] == 3 for shape in observed_shapes)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"block_days": 0},
+        {"block_days": 3},
+        {"block_days": 1, "samples": 0},
+        {"block_days": 1, "chunk_size": 0},
+        {"block_days": 1, "seed": -1},
+    ],
+)
+def test_invalid_moving_block_controls_are_rejected(kwargs) -> None:
+    with pytest.raises(ValueError):
+        moving_block_bootstrap_roi(
+            [_row("2026-07-01", 100, 100), _row("2026-07-02", 100, 100)],
+            **kwargs,
+        )
+
+
+def test_leave_one_venue_out_reports_whole_venue_sensitivity() -> None:
+    rows = [
+        _venue_row("2026-07-01", "01", 100, 300),
+        _venue_row("2026-07-02", "01", 100, 0),
+        _venue_row("2026-07-01", "02", 200, 100),
+        _venue_row("2026-07-02", "03", 0, 0),
+    ]
+    result = leave_one_venue_out_roi(rows)
+    assert result["venues"] == 3
+    assert result["roi"] == 1.0
+    assert result["profit_yen"] == 0.0
+    by_venue = {row["jcd"]: row for row in result["leave_one_venue_out"]}
+    assert by_venue["01"] == {
+        "jcd": "01",
+        "omitted_stake_yen": 200.0,
+        "omitted_return_yen": 300.0,
+        "omitted_profit_yen": 100.0,
+        "remaining_stake_yen": 200.0,
+        "remaining_return_yen": 100.0,
+        "remaining_profit_yen": -100.0,
+        "remaining_roi": 0.5,
+    }
+    assert by_venue["02"]["remaining_roi"] == 1.5
+    assert by_venue["03"]["remaining_roi"] == 1.0
+
+
+def test_leave_one_venue_out_is_order_invariant_and_handles_one_venue() -> None:
+    rows = [
+        _venue_row("2026-07-02", "01", 100, 150),
+        _venue_row("2026-07-01", "01", 0, 0),
+    ]
+    assert leave_one_venue_out_roi(rows) == leave_one_venue_out_roi(
+        list(reversed(rows))
+    )
+    diagnostic = leave_one_venue_out_roi(rows)["leave_one_venue_out"][0]
+    assert diagnostic["remaining_stake_yen"] == 0.0
+    assert diagnostic["remaining_roi"] is None
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [_row("2026-07-01", 100, 100)],
+        [_venue_row("2026-07-01", "", 100, 100)],
+        [
+            {
+                "race_date": "2026-07-01",
+                "jcd": "01",
+                "stake_yen": -1,
+                "return_yen": 0,
+            }
+        ],
+        [None],
+    ],
+)
+def test_malformed_venue_rows_are_rejected(rows) -> None:
+    with pytest.raises(ValueError):
+        leave_one_venue_out_roi(rows)
