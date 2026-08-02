@@ -20,6 +20,7 @@ from .four_head_nested_v22 import (
     RacePrediction,
     artifact_fingerprint,
     predict_race,
+    predict_purchase_hit_probabilities,
     prediction_fingerprint,
 )
 
@@ -150,12 +151,15 @@ def _settlement_map(
 
 
 def _prediction_metrics(
+    artifact: FourHeadArtifact,
     races: Sequence[LabeledRace],
     predictions: Sequence[RacePrediction],
 ) -> dict[str, Any]:
     trifecta_loss = winner_loss = 0.0
     trifecta_top1 = trifecta_top5 = winner_top1 = 0
     closing_errors: list[float] = []
+    purchase_hit_loss = market_hit_loss = 0.0
+    purchase_hit_top5 = purchase_probability_races = 0
     for race, prediction in zip(races, predictions, strict=True):
         probabilities = np.asarray(prediction.probabilities, dtype=np.float64)
         ranking = np.asarray(prediction.ranking_scores, dtype=np.float64)
@@ -170,6 +174,24 @@ def _prediction_metrics(
         actual_lane = TRIFECTA_COMBINATIONS[winner_index][0] - 1
         winner_loss -= math.log(max(float(lane_probabilities[actual_lane]), 1e-15))
         winner_top1 += int(int(np.argmax(lane_probabilities)) == actual_lane)
+        purchase_probabilities = predict_purchase_hit_probabilities(
+            artifact, race.decision
+        )
+        if purchase_probabilities is not None:
+            market_probabilities = 1.0 / np.asarray(
+                race.decision.current_odds, dtype=np.float64
+            )
+            market_probabilities /= float(market_probabilities.sum())
+            purchase_hit_loss -= math.log(
+                max(float(purchase_probabilities[winner_index]), 1e-15)
+            )
+            market_hit_loss -= math.log(
+                max(float(market_probabilities[winner_index]), 1e-15)
+            )
+            purchase_hit_top5 += int(
+                winner_index in np.argsort(-purchase_probabilities)[:5]
+            )
+            purchase_probability_races += 1
         closing_errors.extend(
             np.abs(
                 np.log(np.asarray(prediction.predicted_closing_odds))
@@ -177,6 +199,16 @@ def _prediction_metrics(
             ).tolist()
         )
     count = len(races)
+    purchase_log_loss = (
+        purchase_hit_loss / purchase_probability_races
+        if purchase_probability_races
+        else None
+    )
+    market_log_loss = (
+        market_hit_loss / purchase_probability_races
+        if purchase_probability_races
+        else None
+    )
     return {
         "races": count,
         "winner_log_loss": winner_loss / count,
@@ -185,6 +217,18 @@ def _prediction_metrics(
         "trifecta_top1_accuracy": trifecta_top1 / count,
         "trifecta_top5_hit_rate": trifecta_top5 / count,
         "closing_odds_log_mae": float(np.mean(closing_errors)),
+        "purchase_hit_log_loss": purchase_log_loss,
+        "t5_market_log_loss": market_log_loss,
+        "purchase_hit_log_loss_delta_vs_market": (
+            purchase_log_loss - market_log_loss
+            if purchase_log_loss is not None and market_log_loss is not None
+            else None
+        ),
+        "purchase_hit_top5_rate": (
+            purchase_hit_top5 / purchase_probability_races
+            if purchase_probability_races
+            else None
+        ),
     }
 
 
@@ -367,7 +411,7 @@ def evaluate_four_head_v22_bankroll(
     bankroll = summarize_chronological_bankroll_days(daily)
     stability = _bankroll_stability(bankroll)
     promotion_gate = _promotion_gate(bankroll, stability)
-    metrics = _prediction_metrics(races, predictions)
+    metrics = _prediction_metrics(artifact, races, predictions)
     return {
         "model_key": artifact.model_key,
         "artifact_sha256": artifact_fingerprint(artifact),

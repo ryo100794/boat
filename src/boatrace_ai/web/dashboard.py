@@ -3092,6 +3092,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "purchase_probability_temperature": _float_or_none(
                     metrics.get("purchase_probability_temperature")
                 ),
+                "purchase_residual_scale": _float_or_none(
+                    metrics.get("purchase_residual_scale")
+                ),
+                "purchase_oof_market_log_loss": _float_or_none(
+                    metrics.get("purchase_oof_market_log_loss")
+                ),
+                "purchase_oof_scaled_log_loss": _float_or_none(
+                    metrics.get("purchase_oof_scaled_log_loss")
+                ),
+                "purchase_hit_log_loss": _float_or_none(
+                    metrics.get("purchase_hit_log_loss")
+                ),
+                "t5_market_log_loss": _float_or_none(
+                    metrics.get("t5_market_log_loss")
+                ),
+                "purchase_hit_log_loss_delta_vs_market": _float_or_none(
+                    metrics.get("purchase_hit_log_loss_delta_vs_market")
+                ),
+                "purchase_hit_top5_rate": _float_or_none(
+                    metrics.get("purchase_hit_top5_rate")
+                ),
                 "purchase_value_positive_predicted_tickets": metrics.get(
                     "purchase_value_positive_predicted_tickets"
                 ),

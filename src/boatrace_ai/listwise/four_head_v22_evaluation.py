@@ -686,6 +686,9 @@ def run_v22_smoke_evaluation(
         "purchase_probability_temperature": (
             artifact.purchase_probability_temperature
         ),
+        "purchase_residual_scale": artifact.purchase_residual_scale,
+        "purchase_oof_market_log_loss": artifact.purchase_oof_market_log_loss,
+        "purchase_oof_scaled_log_loss": artifact.purchase_oof_scaled_log_loss,
         "periods": {
             "training_from": training_from_date,
             "training_through": training_through_date,
@@ -722,6 +725,12 @@ def run_v22_smoke_evaluation(
         "winner_top1_accuracy": formal_bankroll["winner_top1_accuracy"],
         "trifecta_log_loss": formal_bankroll["trifecta_log_loss"],
         "trifecta_top5_hit_rate": formal_bankroll["trifecta_top5_hit_rate"],
+        "purchase_hit_log_loss": formal_bankroll["purchase_hit_log_loss"],
+        "t5_market_log_loss": formal_bankroll["t5_market_log_loss"],
+        "purchase_hit_log_loss_delta_vs_market": formal_bankroll[
+            "purchase_hit_log_loss_delta_vs_market"
+        ],
+        "purchase_hit_top5_rate": formal_bankroll["purchase_hit_top5_rate"],
         "outer_outcomes_used_for_fit_selection_or_threshold": False,
     }
 
@@ -765,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
             "multinomial_offset_all_choice_closing",
             "multinomial_offset_all_choice_closing_temperature",
             "multinomial_market_offset_all_choice_closing",
+            "multinomial_market_offset_oof_scaled_all_choice_closing",
         ),
         default="ridge_capped_net",
     )

@@ -51,10 +51,14 @@ def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     assert "closing_odds_log_mae" in metrics["closing_odds"]
     assert "purchase_value_pearson_correlation" in metrics["ticket_value"]
     assert "purchase_probability_temperature" in metrics["ticket_value"]
+    assert "purchase_hit_log_loss" in metrics["ticket_value"]
+    assert "t5_market_log_loss" in metrics["ticket_value"]
+    assert "purchase_residual_scale" in metrics["ticket_value"]
     assert "daily_cluster_bootstrap_roi_lower_95" in metrics["bankroll_policy"]
     assert 'id="purposeSection"' in MODEL_REPORT_HTML
     assert 'id="purposeGroups"' in MODEL_REPORT_HTML
     assert "renderPurposeGroups(data.evaluation_purposes||[])" in MODEL_REPORT_HTML
-    assert "正予測群ROI" in MODEL_REPORT_HTML
-    assert "較正MAE / T" in MODEL_REPORT_HTML
+    assert "正予測券 / 群ROI" in MODEL_REPORT_HTML
+    assert "購入LL / 市場LL / Δ" in MODEL_REPORT_HTML
+    assert "残差倍率" in MODEL_REPORT_HTML
     assert "最大1的中除外" in MODEL_REPORT_HTML

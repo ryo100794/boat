@@ -98,6 +98,31 @@ def _prediction(
     )
 
 
+def test_reports_purchase_head_log_loss_against_t5_market(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race = _race("race1", winner=0)
+    monkeypatch.setattr(
+        module, "predict_race", lambda _artifact, decision: _prediction(decision, ())
+    )
+    learned = np.full(120, 0.2 / 119.0)
+    learned[0] = 0.8
+    monkeypatch.setattr(
+        module,
+        "predict_purchase_hit_probabilities",
+        lambda _artifact, _decision: learned,
+    )
+
+    result = evaluate_four_head_v22_bankroll(
+        _artifact(), (race,), (_settlement(race),)
+    )
+
+    assert result["purchase_hit_log_loss"] == pytest.approx(-np.log(0.8))
+    assert result["t5_market_log_loss"] == pytest.approx(np.log(120.0))
+    assert result["purchase_hit_log_loss_delta_vs_market"] < 0.0
+    assert result["purchase_hit_top5_rate"] == 1.0
+
+
 def test_uses_existing_chronological_allocator_and_official_settlement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

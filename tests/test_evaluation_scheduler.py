@@ -263,6 +263,8 @@ def test_schema_tracks_attempts_resources_and_work_tickets() -> None:
         assert f"ALTER TABLE work_tickets ADD COLUMN IF NOT EXISTS {column}" in SCHEMA
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_tickets_github_issue" in SCHEMA
     assert "WHERE github_issue_number IS NOT NULL" in SCHEMA
+    assert "SET min_free_memory_mb = 8192" in SCHEMA
+    assert "task_type = 'market_residual_walk_forward'" in SCHEMA
 
 
 def test_supervisor_separates_periodic_scheduler_from_workers() -> None:
