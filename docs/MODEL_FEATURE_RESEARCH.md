@@ -226,3 +226,59 @@ Primary references:
 - This intentionally resets formal policy evidence to zero. It prevents a
   mathematically plausible correction designed after a result from appearing
   as untouched production evidence.
+## Joint decision-time value contract
+
+The production purchase target is not a fixed probability ratio and is not the
+product of two independently forecast marginal means.  At decision time `t`,
+the value of ticket `i` is
+
+```text
+V_i(t) = E[Y_i * D_i,T(b) | F_t] - 1
+       = E[pi_i,T * D_i,T(b) | F_t] - 1.
+```
+
+`pi_T` and the final market are generated from the same future path.  A path
+contains post-decision information updates, market inflow and reaction, and a
+draw from model or latent-state uncertainty.  For trifecta, each path emits one
+120-element outcome simplex and one 120-element market-share simplex.  Final
+popularity is an output of the path, never a decision-time feature.  The system
+must not replace `E[pi * D]` with `E[pi] * E[D]`; the omitted covariance can be
+material and its sign is estimated rather than assumed.
+
+The payout multiplier is a function of the complete proposed bet vector.  The
+payout engine, rather than the probability model, owns self-impact, refunds,
+rounding and special payouts.  The generic evaluator therefore requires a
+payout callback and deliberately has no approximate payout default.
+
+Parameter uncertainty and future-path uncertainty are kept separate.  For each
+outer parameter/refit draw `r`, future paths `s` are integrated to produce an
+expected edge `mu_i(r)`.  The default purchase gate is a preregistered lower
+quantile of `{mu_i(r)}` above the operating margin.  A stricter mode replaces
+the inner path mean with the lower-tail expected edge before applying the outer
+quantile.  It never applies a low quantile directly to single-ticket realized
+Bernoulli returns, which would usually reduce to `-1` and is not a useful value
+test.
+
+Venue, decision horizon, decision-time popularity, wager type and race state
+condition the joint model.  Sparse interactions use partial pooling toward the
+global effect.  The first implementation may fit calibrated marginal update
+models and join their residuals with a conditional copula.  A shared-latent
+state-space or conditional generative model is a later challenger, not a
+prerequisite for preserving the joint scenario identity.
+
+Selection resampling and sealed evaluation are distinct:
+
+- Training uncertainty resamples training days and reruns calibration, joint
+  distribution fitting and GA selection in the outer loop.
+- Sealed operating uncertainty freezes every model, threshold and genome, then
+  resamples complete operating days.
+- The primary sealed interval keeps every venue within a sampled day together.
+  Day-by-venue resampling is sensitivity analysis because it adds conditional
+  independence assumptions.
+- Meeting blocks and consecutive-day moving blocks test persistent racer,
+  motor and venue effects.
+
+`boatrace_ai.joint_market_value.evaluate_joint_market_value` implements the
+value boundary, covariance diagnostics, inner lower-tail expectation and outer
+parameter quantile.  It is an evaluation primitive; it does not yet claim that
+the current closing-market model has learned a deployable joint distribution.

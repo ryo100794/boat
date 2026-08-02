@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
+import json
 import math
 from collections import defaultdict
 from typing import Any, Iterable
@@ -9,6 +12,102 @@ import numpy as np
 
 EPSILON = 1e-12
 DEFAULT_REGULARIZATION = (0.0, 0.001, 0.01, 0.1, 1.0, 10.0)
+DECISION_OFFSET_SECONDS = 300
+DECISION_INPUT_FIELDS = (
+    "lane_context",
+    "model_probabilities",
+    "market_probabilities",
+    "odds",
+    "captured_at",
+    "source_update_time",
+    "input_snapshot_age_seconds",
+    "odds_deadline_at",
+    "earlier_market_probabilities",
+    "earlier_snapshot_id",
+    "earlier_captured_at",
+    "earlier_snapshot_age_seconds",
+    "momentum_interval_seconds",
+    "momentum_scale",
+    "odds_path",
+    "odds_path_points",
+)
+POST_DECISION_TEACHER_FIELDS = (
+    "actual_combination",
+    "actual_payout_yen",
+    "closing_odds",
+    "official_closing_odds",
+    "closing_snapshot_id",
+    "closing_captured_at",
+    "closing_source_update_time",
+    "closing_snapshot_age_seconds",
+    "closing_source_changed",
+    "closing_odds_changed",
+    "official_closing_source_key",
+)
+
+
+def project_scored_race_for_residual(race: dict[str, Any]) -> dict[str, Any]:
+    """Split an enriched scored race into immutable T-5 input and teachers."""
+    missing = {
+        "race_id",
+        "race_date",
+        "jcd",
+        "rno",
+        "model_probabilities",
+        "market_probabilities",
+        "odds",
+    } - set(race)
+    if missing:
+        raise ValueError("scored race is missing: " + ", ".join(sorted(missing)))
+    decision = {
+        "race_id": str(race["race_id"]),
+        "race_date": str(race["race_date"]),
+        "jcd": str(race["jcd"]),
+        "rno": int(race["rno"]),
+    }
+    for field in DECISION_INPUT_FIELDS:
+        if field in race:
+            decision[field] = deepcopy(race[field])
+    checkpoints = race.get("odds_checkpoints")
+    if isinstance(checkpoints, dict):
+        decision["odds_checkpoints"] = {
+            str(offset): deepcopy(point)
+            for offset, point in checkpoints.items()
+            if str(offset).isdigit() and int(offset) >= DECISION_OFFSET_SECONDS
+        }
+    path = decision.get("odds_path")
+    if isinstance(path, list):
+        decision["odds_path"] = [
+            point
+            for point in path
+            if isinstance(point, dict)
+            and float(point.get("minutes_before_decision", -1.0)) >= 0.0
+        ]
+        decision["odds_path_points"] = len(decision["odds_path"])
+    teacher = {
+        field: deepcopy(race[field])
+        for field in POST_DECISION_TEACHER_FIELDS
+        if field in race
+    }
+    return {
+        "input_contract": "t300_residual_decision_v1",
+        "decision": decision,
+        "teacher": teacher,
+    }
+
+
+def residual_decision_fingerprint(projected: dict[str, Any]) -> str:
+    decision = projected.get("decision")
+    if not isinstance(decision, dict):
+        raise ValueError("projected race must contain decision inputs")
+    serialized = json.dumps(
+        decision,
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 def _raw_identity_calibrator(

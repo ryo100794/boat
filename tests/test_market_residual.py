@@ -7,9 +7,62 @@ from boatrace_ai.listwise.market_residual import (
     fit_fixed_regularization,
     fit_log_pool_newton,
     log_pool_probabilities,
+    project_scored_race_for_residual,
+    residual_decision_fingerprint,
     residual_probability_metrics,
     select_regularization_prequential,
 )
+
+
+def _enriched_scored_race() -> dict:
+    return {
+        "race_id": "202607200101",
+        "race_date": "2026-07-20",
+        "jcd": "01",
+        "rno": 1,
+        "model_probabilities": {"1-2-3": 0.6, "1-3-2": 0.4},
+        "market_probabilities": {"1-2-3": 0.5, "1-3-2": 0.5},
+        "odds": {"1-2-3": 2.0, "1-3-2": 2.5},
+        "odds_checkpoints": {
+            "600": {"odds": {"1-2-3": 2.2}},
+            "300": {"odds": {"1-2-3": 2.0}},
+            "120": {"odds": {"1-2-3": 1.8}},
+            "10": {"odds": {"1-2-3": 1.5}},
+        },
+        "odds_path": [
+            {"minutes_before_decision": 5.0, "market_probabilities": {}},
+            {"minutes_before_decision": 0.0, "market_probabilities": {}},
+            {"minutes_before_decision": -1.0, "market_probabilities": {}},
+        ],
+        "actual_combination": "1-2-3",
+        "actual_payout_yen": 1_200,
+        "closing_odds": {"1-2-3": 1.4, "1-3-2": 3.0},
+        "official_closing_odds": {"1-2-3": 1.3, "1-3-2": 3.1},
+    }
+
+
+def test_residual_projection_separates_t5_input_from_future_teachers() -> None:
+    projected = project_scored_race_for_residual(_enriched_scored_race())
+
+    assert set(projected["decision"]["odds_checkpoints"]) == {"600", "300"}
+    assert projected["decision"]["odds_path_points"] == 2
+    assert "actual_combination" not in projected["decision"]
+    assert "closing_odds" not in projected["decision"]
+    assert projected["teacher"]["actual_combination"] == "1-2-3"
+
+
+def test_future_teacher_changes_do_not_change_residual_input_fingerprint() -> None:
+    race = _enriched_scored_race()
+    before = residual_decision_fingerprint(project_scored_race_for_residual(race))
+    race["actual_combination"] = "1-3-2"
+    race["actual_payout_yen"] = 99_990
+    race["closing_odds"] = {"1-2-3": 99.0, "1-3-2": 1.1}
+    race["official_closing_odds"] = {"1-2-3": 88.0, "1-3-2": 1.2}
+    race["odds_checkpoints"]["120"]["odds"]["1-2-3"] = 77.0
+
+    after = residual_decision_fingerprint(project_scored_race_for_residual(race))
+
+    assert after == before
 
 
 def _race(race_date: str, actual: str, model_a: float, market_a: float) -> dict:
