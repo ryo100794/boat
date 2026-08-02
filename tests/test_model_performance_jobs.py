@@ -98,9 +98,13 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert 'policyEvidence(x,"prospective_normalized_ev","N")' in MODEL_REPORT_HTML
     assert "registeredSummary" in MODEL_REPORT_HTML
     assert "winner_log_loss" in MODEL_REPORT_HTML
-    assert "候補損益" in MODEL_REPORT_HTML
-    assert "候補最大DD" in MODEL_REPORT_HTML
-    assert "P(ROI&gt;1)" in MODEL_REPORT_HTML
+    assert "V_buy" in MODEL_REPORT_HTML
+    assert "安全余裕" in MODEL_REPORT_HTML
+    assert "ROI LCB95" in MODEL_REPORT_HTML
+    assert "正式ROI" in MODEL_REPORT_HTML
+    assert "P(ROI&gt;1) 補助" in MODEL_REPORT_HTML
+    assert "再標本化条件" in MODEL_REPORT_HTML
+    assert "formalJointEvidence" in MODEL_REPORT_HTML
     assert 'id="geneticEvolution"' in MODEL_REPORT_HTML
     assert 'id="gaEvolutionChart"' in MODEL_REPORT_HTML
     assert "renderGeneticEvolution(jobs)" in MODEL_REPORT_HTML
@@ -185,6 +189,21 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "roi_ci95_lower": 0.97,
         "roi_ci95_upper": 1.09,
         "probability_roi_above_one": 0.91,
+        "daily_cluster_bootstrap_roi_lower_95": 0.97,
+        "joint_purchase_value_minimum": 0.08,
+        "joint_purchase_safety_margin": 0.05,
+        "joint_purchase_value_minimum_excess": 0.03,
+        "joint_purchase_value_selected_portfolios": 12,
+        "joint_purchase_value_gate_passed": True,
+        "formal_roi_gate_method": "Q0.05_ROI_greater_than_1",
+        "formal_roi_gate_passed": False,
+        "roi_probability_is_diagnostic_only": True,
+        "bootstrap_condition_id": "a" * 64,
+        "bootstrap_primary_block": "complete_operating_day",
+        "bootstrap_quantile_method": "inverted_cdf",
+        "bootstrap_samples": 2000,
+        "day_venue_roi_lower_95": 0.92,
+        "venue_meeting_roi_lower_95": 0.89,
         "registered_ev_band_status": "evaluating",
         "registered_ev_band_evaluation_days": 3,
         "registered_ev_band_tickets": 15,
@@ -254,6 +273,16 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["largest_hit_excluded_roi"] == 1.01
     assert status["jobs"][0]["roi_ci95_lower"] == 0.97
     assert status["jobs"][0]["probability_roi_above_one"] == 0.91
+    assert status["jobs"][0]["joint_purchase_value_minimum"] == 0.08
+    assert status["jobs"][0]["joint_purchase_safety_margin"] == 0.05
+    assert status["jobs"][0]["joint_purchase_value_gate_passed"] is True
+    assert status["jobs"][0]["formal_roi_gate_passed"] is False
+    assert status["jobs"][0]["bootstrap_condition_id"] == "a" * 64
+    assert status["jobs"][0]["bootstrap_primary_block"] == (
+        "complete_operating_day"
+    )
+    assert status["jobs"][0]["bootstrap_quantile_method"] == "inverted_cdf"
+    assert status["jobs"][0]["bootstrap_samples"] == 2000
     assert status["jobs"][0]["registered_ev_band_profit_yen"] == 1690
     assert status["jobs"][0]["registered_ev_band_roi_without_largest_hit"] == 1.342
     assert (
@@ -274,6 +303,13 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["candidates"][0]["payout_feature_roi_ci95_lower"] == 1.01
     assert status["candidates"][0]["payout_feature_probability_roi_above_one"] == 0.96
     assert status["candidates"][0]["payout_feature_roi_delta_ci95_lower"] == 0.02
+    assert status["candidates"][0]["joint_purchase_value_minimum"] == 0.08
+    assert status["candidates"][0]["joint_purchase_safety_margin"] == 0.05
+    assert status["candidates"][0]["joint_purchase_value_gate_passed"] is True
+    assert status["candidates"][0]["formal_roi_gate_passed"] is False
+    assert status["candidates"][0]["bootstrap_condition_id"] == "a" * 64
+    assert status["candidates"][0]["day_venue_roi_lower_95"] == 0.92
+    assert status["candidates"][0]["venue_meeting_roi_lower_95"] == 0.89
 
 
 def test_database_evaluation_status_includes_parent_of_recent_job(tmp_path) -> None:

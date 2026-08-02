@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+import hashlib
 from math import fsum, log
 import json
 from pathlib import Path
@@ -234,16 +235,19 @@ def _average_metrics(rows: Sequence[Mapping[str, float]]) -> dict[str, float]:
     }
 
 
-def _day_block_roi_interval(
-    days: Sequence[Mapping[str, Any]],
+def _block_roi_interval(
+    blocks: Sequence[Mapping[str, Any]],
     *,
     samples: int,
     seed: int,
+    block: str,
     alpha: float = 0.05,
 ) -> dict[str, Any]:
-    if not days:
+    if not blocks:
         return {
             "samples": samples,
+            "block": block,
+            "quantile_method": "inverted_cdf",
             "roi_lower": None,
             "roi_upper": None,
             "probability_roi_above_one": None,
@@ -251,16 +255,18 @@ def _day_block_roi_interval(
     rng = random.Random(seed)
     values = []
     for _ in range(samples):
-        selected = [rng.choice(days) for _ in days]
-        stake = sum(int(day["stake_yen"]) for day in selected)
+        selected = [rng.choice(blocks) for _ in blocks]
+        stake = sum(int(row["stake_yen"]) for row in selected)
         if stake > 0:
             values.append(
-                sum(int(day["return_yen"]) for day in selected) / stake
+                sum(int(row["return_yen"]) for row in selected) / stake
             )
     if not values:
         return {
             "samples": samples,
             "effective_samples": 0,
+            "block": block,
+            "quantile_method": "inverted_cdf",
             "roi_lower": None,
             "roi_upper": None,
             "probability_roi_above_one": None,
@@ -269,13 +275,153 @@ def _day_block_roi_interval(
     return {
         "samples": samples,
         "effective_samples": len(values),
-        "block": "complete_operating_day",
+        "block": block,
         "quantile_method": "inverted_cdf",
         "roi_lower": float(np.quantile(array, alpha, method="inverted_cdf")),
         "roi_upper": float(
             np.quantile(array, 1.0 - alpha, method="inverted_cdf")
         ),
         "probability_roi_above_one": float(np.mean(array > 1.0)),
+    }
+
+
+def _day_block_roi_interval(
+    days: Sequence[Mapping[str, Any]],
+    *,
+    samples: int,
+    seed: int,
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    return _block_roi_interval(
+        days,
+        samples=samples,
+        seed=seed,
+        block="complete_operating_day",
+        alpha=alpha,
+    )
+
+
+def _day_venue_blocks(
+    days: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    blocks = []
+    for day in days:
+        by_venue: dict[str, dict[str, int]] = {}
+        for race in day.get("races") or []:
+            venue = str(race.get("venue") or "unknown")
+            row = by_venue.setdefault(
+                venue, {"stake_yen": 0, "return_yen": 0}
+            )
+            row["stake_yen"] += int(race.get("stake_yen") or 0)
+            row["return_yen"] += int(race.get("return_yen") or 0)
+        blocks.extend(by_venue.values())
+    return blocks
+
+
+def _meeting_blocks(
+    days: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_venue_day: dict[str, dict[str, dict[str, int]]] = {}
+    for day in days:
+        race_date = str(day.get("race_date") or "")
+        for race in day.get("races") or []:
+            venue = str(race.get("venue") or "unknown")
+            row = by_venue_day.setdefault(venue, {}).setdefault(
+                race_date, {"stake_yen": 0, "return_yen": 0}
+            )
+            row["stake_yen"] += int(race.get("stake_yen") or 0)
+            row["return_yen"] += int(race.get("return_yen") or 0)
+    result = []
+    for rows in by_venue_day.values():
+        current = None
+        previous = None
+        for race_date, values in sorted(rows.items()):
+            try:
+                parsed = date.fromisoformat(race_date)
+            except ValueError:
+                result.append(dict(values))
+                current = None
+                previous = None
+                continue
+
+            if previous is None or (parsed - previous).days > 1:
+                current = {"stake_yen": 0, "return_yen": 0}
+                result.append(current)
+            current["stake_yen"] += values["stake_yen"]
+            current["return_yen"] += values["return_yen"]
+            previous = parsed
+    return result
+
+
+def build_block_bootstrap_evidence(
+    days: Sequence[Mapping[str, Any]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Build reproducible primary and sensitivity ROI evidence."""
+    normalized_days = []
+    for day in days:
+        row = dict(day)
+        races = row.get("races") or []
+        row.setdefault(
+            "stake_yen",
+            sum(int(race.get("stake_yen") or 0) for race in races),
+        )
+        row.setdefault(
+            "return_yen",
+            sum(int(race.get("return_yen") or 0) for race in races),
+        )
+        normalized_days.append(row)
+    confidence = _day_block_roi_interval(
+        normalized_days, samples=samples, seed=seed + 9_000_000
+    )
+    day_venue_confidence = _block_roi_interval(
+        _day_venue_blocks(normalized_days),
+        samples=samples,
+        seed=seed + 9_000_001,
+        block="independent_day_venue_sensitivity",
+    )
+    meeting_confidence = _block_roi_interval(
+        _meeting_blocks(normalized_days),
+        samples=samples,
+        seed=seed + 9_000_002,
+        block="consecutive_venue_meeting_sensitivity",
+    )
+    condition = {
+        "version": "joint_bankroll_block_bootstrap_v1",
+        "formal_gate": "Q0.05_ROI_greater_than_1",
+        "alpha": 0.05,
+        "quantile_method": "inverted_cdf",
+        "samples": samples,
+        "primary_block": "complete_operating_day",
+        "sensitivity_blocks": [
+            "independent_day_venue_sensitivity",
+            "consecutive_venue_meeting_sensitivity",
+        ],
+        "seed": seed + 9_000_000,
+    }
+    condition_id = hashlib.sha256(
+        json.dumps(
+            condition,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        **confidence,
+        "condition_id": condition_id,
+        "condition": condition,
+        "formal_gate_passed": bool(
+            confidence["roi_lower"] is not None
+            and confidence["roi_lower"] > 1.0
+        ),
+        "probability_roi_above_one_is_diagnostic_only": True,
+        "sensitivity": {
+            "day_venue": day_venue_confidence,
+            "venue_meeting": meeting_confidence,
+        },
     }
 
 
@@ -538,6 +684,16 @@ def run_joint_bankroll_evaluation(
                 "best_search_growth_excess": best_search_metrics.get(
                     "growth_excess"
                 ),
+                "purchase_value": portfolio.get("lower_quantile"),
+                "purchase_safety_margin": buy_margin,
+                "purchase_value_excess": (
+                    float(portfolio["lower_quantile"]) - buy_margin
+                    if portfolio.get("lower_quantile") is not None
+                    else None
+                ),
+                "purchase_value_gate_passed": bool(
+                    portfolio.get("passes_purchase_gate")
+                ),
                 "portfolio_lower_quantile": portfolio.get("lower_quantile"),
                 "bankroll_growth_lower_quantile": growth.get("lower_quantile"),
                 "maximum_conditional_ruin_probability": growth.get(
@@ -617,9 +773,46 @@ def run_joint_bankroll_evaluation(
             - probability_metrics.get("decision_model_top5", 0.0)
         ),
     })
-    confidence = _day_block_roi_interval(
-        daily, samples=bootstrap_samples, seed=seed + 9_000_000
+    confidence = build_block_bootstrap_evidence(
+        daily, samples=bootstrap_samples, seed=seed
     )
+    purchased_races = [
+        race
+        for day in daily
+        for race in day["races"]
+        if int(race.get("stake_yen") or 0) > 0
+    ]
+    purchase_values = [
+        float(race["portfolio_lower_quantile"])
+        for race in purchased_races
+        if race.get("portfolio_lower_quantile") is not None
+    ]
+    joint_purchase_value = {
+        "definition": (
+            "Q_alpha over outer parameter draws of the lower-tail mean "
+            "portfolio expected edge"
+        ),
+        "outer_alpha": 0.05,
+        "inner_tail_fraction": inner_tail_fraction,
+        "outer_quantile_method": "inverted_cdf",
+        "selected_portfolios": len(purchased_races),
+        "evaluated_values": len(purchase_values),
+        "safety_margin": buy_margin,
+        "minimum": min(purchase_values) if purchase_values else None,
+        "mean": (
+            fsum(purchase_values) / len(purchase_values)
+            if purchase_values else None
+        ),
+        "maximum": max(purchase_values) if purchase_values else None,
+        "minimum_excess": (
+            min(purchase_values) - buy_margin if purchase_values else None
+        ),
+        "all_above_safety_margin": bool(
+            purchased_races
+            and len(purchase_values) == len(purchased_races)
+            and all(value > buy_margin for value in purchase_values)
+        ),
+    }
     primary_bankroll = {
         "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
         "stake_yen": total_stake,
@@ -676,6 +869,9 @@ def run_joint_bankroll_evaluation(
                 "generated_log_loss_delta_vs_decision_model", 1.0
             ) <= 0.0
         ),
+        "joint_purchase_value_above_safety_margin": bool(
+            joint_purchase_value["all_above_safety_margin"]
+        ),
     }
     promotion_eligible = all(gate.values())
     return {
@@ -722,6 +918,7 @@ def run_joint_bankroll_evaluation(
         "skip_reasons": dict(sorted(skip_reasons.items())),
         "probability_metrics": probability_metrics,
         "primary_bankroll": primary_bankroll,
+        "joint_purchase_value": joint_purchase_value,
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
         "promotion_gate_passed": sum(gate.values()),

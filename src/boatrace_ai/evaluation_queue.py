@@ -3396,6 +3396,101 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "roi_ci95_lower"
             )
         daily = payload.get("daily")
+        configuration = payload.get("configuration")
+        configuration = configuration if isinstance(configuration, dict) else {}
+        selected_purchase_values = [
+            float(race["portfolio_lower_quantile"])
+            for day in daily if isinstance(daily, list) and isinstance(day, dict)
+            for race in (day.get("races") or []) if isinstance(race, dict)
+            if int(race.get("stake_yen") or 0) > 0
+            and race.get("portfolio_lower_quantile") is not None
+        ] if isinstance(daily, list) else []
+        selected_portfolios = sum(
+            1
+            for day in daily if isinstance(daily, list) and isinstance(day, dict)
+            for race in (day.get("races") or []) if isinstance(race, dict)
+            if int(race.get("stake_yen") or 0) > 0
+        ) if isinstance(daily, list) else 0
+        buy_margin = float(configuration.get("buy_margin") or 0.0)
+        purchase_value_gate = bool(
+            selected_portfolios
+            and len(selected_purchase_values) == selected_portfolios
+            and all(value > buy_margin for value in selected_purchase_values)
+        )
+        summary.update({
+            "joint_purchase_value_minimum": (
+                min(selected_purchase_values)
+                if selected_purchase_values else None
+            ),
+            "joint_purchase_value_mean": (
+                sum(selected_purchase_values) / len(selected_purchase_values)
+                if selected_purchase_values else None
+            ),
+            "joint_purchase_safety_margin": buy_margin,
+            "joint_purchase_value_minimum_excess": (
+                min(selected_purchase_values) - buy_margin
+                if selected_purchase_values else None
+            ),
+            "joint_purchase_value_selected_portfolios": selected_portfolios,
+            "joint_purchase_value_gate_passed": purchase_value_gate,
+        })
+        confidence = payload.get("bankroll_confidence")
+        confidence = confidence if isinstance(confidence, dict) else {}
+        if isinstance(daily, list) and (
+            not isinstance(confidence.get("condition"), dict)
+            or not isinstance(confidence.get("sensitivity"), dict)
+        ):
+            from .joint_bankroll_evaluation import (
+                build_block_bootstrap_evidence,
+            )
+
+            reconstructed = build_block_bootstrap_evidence(
+                daily,
+                samples=int(
+                    confidence.get("samples")
+                    or configuration.get("bootstrap_samples")
+                    or 2000
+                ),
+                seed=int(configuration.get("seed") or 0),
+            )
+            confidence = {
+                **reconstructed,
+                **confidence,
+                "condition_id": reconstructed["condition_id"],
+                "condition": reconstructed["condition"],
+                "probability_roi_above_one_is_diagnostic_only": True,
+                "sensitivity": reconstructed["sensitivity"],
+            }
+        roi_lower = confidence.get(
+            "roi_lower", summary.get("daily_cluster_bootstrap_roi_lower_95")
+        )
+        summary["formal_roi_gate_method"] = "Q0.05_ROI_greater_than_1"
+        summary["formal_roi_gate_passed"] = bool(
+            roi_lower is not None and float(roi_lower) > 1.0
+        )
+        summary["roi_probability_is_diagnostic_only"] = True
+        summary["bootstrap_condition_id"] = confidence.get("condition_id")
+        condition = confidence.get("condition")
+        if isinstance(condition, dict):
+            summary["bootstrap_primary_block"] = condition.get("primary_block")
+            summary["bootstrap_quantile_method"] = condition.get(
+                "quantile_method"
+            )
+            summary["bootstrap_samples"] = condition.get("samples")
+        else:
+            summary["bootstrap_primary_block"] = confidence.get(
+                "block", "complete_operating_day"
+            )
+            summary["bootstrap_quantile_method"] = confidence.get(
+                "quantile_method", "inverted_cdf"
+            )
+            summary["bootstrap_samples"] = confidence.get("samples")
+        sensitivity = confidence.get("sensitivity")
+        if isinstance(sensitivity, dict):
+            day_venue = sensitivity.get("day_venue") or {}
+            meeting = sensitivity.get("venue_meeting") or {}
+            summary["day_venue_roi_lower_95"] = day_venue.get("roi_lower")
+            summary["venue_meeting_roi_lower_95"] = meeting.get("roi_lower")
         if isinstance(daily, list) and summary.get("stake_yen"):
             returns = [
                 int(race.get("return_yen") or 0)
@@ -3416,6 +3511,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             )
         gate = payload.get("promotion_gate")
         if isinstance(gate, dict):
+            gate = {
+                **gate,
+                "joint_purchase_value_above_safety_margin": (
+                    purchase_value_gate
+                ),
+            }
             summary["promotion_gate_passed"] = sum(bool(value) for value in gate.values())
             summary["promotion_gate_total"] = len(gate)
             summary["promotion_gate_failed"] = [
@@ -3649,6 +3750,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             for key, value in promotion_gate.items()
             if isinstance(value, bool)
         }
+        if str(payload.get("model") or "").startswith(
+            "joint_bankroll_strict_walk_forward_v"
+        ):
+            checks["joint_purchase_value_above_safety_margin"] = bool(
+                summary.get("joint_purchase_value_gate_passed")
+            )
         summary["promotion_gate_passed"] = sum(checks.values())
         summary["promotion_gate_total"] = len(checks)
         summary["promotion_gate_failed"] = [
