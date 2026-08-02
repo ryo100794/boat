@@ -64,6 +64,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
+    "joint_scenario_walk_forward": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
     "learned_purchase_allocation_v33": {
         "category": "evaluation",
@@ -2313,6 +2314,52 @@ def build_command(
         if through_date is not None:
             command.extend(["--through-date", through_date])
         return command, output
+    if task_type == "joint_scenario_walk_forward":
+        allowed = {
+            "scored_cache", "terminal_min_training_days",
+            "joint_min_training_days", "scenarios_per_race", "rank",
+            "pooling_strength", "seed", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported joint_scenario_walk_forward parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "scored_cache" not in params:
+            raise ValueError("scored_cache is required")
+        cache_root = (
+            app_root / "data/models/evaluation_cache/market_scored"
+        ).resolve()
+        scored_cache = (app_root / str(params["scored_cache"])).resolve()
+        if cache_root not in scored_cache.parents or scored_cache.suffix != ".joblib":
+            raise ValueError(
+                "scored_cache must be a joblib artifact inside market_scored"
+            )
+        if not scored_cache.is_file():
+            raise JobDependencyUnavailable(
+                f"joint scenario scored cache is not available: {scored_cache}"
+            )
+        terminal_days = _integer(
+            params, "terminal_min_training_days", 5, 2, 30
+        )
+        joint_days = _integer(params, "joint_min_training_days", 3, 2, 30)
+        scenarios = _integer(params, "scenarios_per_race", 64, 8, 512)
+        rank = _integer(params, "rank", 8, 1, 32)
+        pooling = _number(params, "pooling_strength", 20.0, 0.1, 1000.0)
+        seed = _integer(params, "seed", 33036, 0, 2_147_483_647)
+        _integer(params, "timeout_seconds", 3600, 300, 86400)
+        return [
+            str(python), "-m", "boatrace_ai.joint_scenario_evaluation",
+            "--scored-cache", str(scored_cache),
+            "--output", str(output),
+            "--terminal-min-training-days", str(terminal_days),
+            "--joint-min-training-days", str(joint_days),
+            "--scenarios-per-race", str(scenarios),
+            "--rank", str(rank),
+            "--pooling-strength", str(pooling),
+            "--seed", str(seed),
+        ], output
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",
@@ -4168,6 +4215,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
         return "accumulate_formal_evidence"
+    if task_type == "joint_scenario_walk_forward":
+        return "diagnostic_complete_not_policy_connected"
     if task_type == "bankroll_policy_nested_annual":
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
