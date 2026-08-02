@@ -35,6 +35,7 @@ PURPOSE_SPECS = (
         (
             "purchase_value_pearson_correlation",
             "purchase_value_calibration_mae",
+            "purchase_probability_temperature",
             "purchase_value_positive_predicted_tickets",
             "purchase_value_positive_observed_capped_roi",
         ),

@@ -3089,6 +3089,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "purchase_value_calibration_mae": _float_or_none(
                     metrics.get("purchase_value_calibration_mae")
                 ),
+                "purchase_probability_temperature": _float_or_none(
+                    metrics.get("purchase_probability_temperature")
+                ),
                 "purchase_value_positive_predicted_tickets": metrics.get(
                     "purchase_value_positive_predicted_tickets"
                 ),

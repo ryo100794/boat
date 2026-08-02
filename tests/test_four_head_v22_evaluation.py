@@ -280,6 +280,7 @@ def test_db_backed_smoke_entrypoint_fits_then_evaluates_outer_only(monkeypatch):
     )
 
     assert result["model_key"] == "four_head_nested_v22"
+    assert result["purchase_probability_temperature"] == 1.0
     assert result["coverage"]["training_races"] == 3
     assert result["coverage"]["outer_races"] == 1
     assert result["evaluation"]["races"] == 1

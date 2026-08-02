@@ -2947,6 +2947,7 @@ METRIC_KEYS = (
     "largest_hit_return_share", "effective_hit_count", "roi_without_largest_hit",
     "profit_without_largest_hit_yen", "largest_hit_excluded_roi",
     "closing_odds_log_mae", "baseline_closing_odds_log_mae",
+    "purchase_probability_temperature",
     "closing_odds_rank_correlation", "closing_odds_interval_coverage",
     "closing_snapshot_age_seconds", "closing_snapshot_age_seconds_p90",
     "closing_q20_pinball_loss", "closing_q20_lower_coverage",

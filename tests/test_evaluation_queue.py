@@ -592,11 +592,16 @@ def test_summary_preserves_learned_purchase_value_calibration() -> None:
         "positive_observed_capped_roi": 1.04,
         "calibration_deciles": [{"quantile": 10, "tickets": 24}],
     }
-    summary = summarize_result({"purchase_value_diagnostics": value})
+    summary = summarize_result({
+        "purchase_value_diagnostics": value,
+        "purchase_probability_temperature": 1.75,
+    })
+
 
     assert summary["purchase_value_diagnostics"] == value
     assert summary["purchase_value_pearson_correlation"] == 0.12
     assert summary["purchase_value_positive_observed_capped_roi"] == 1.04
+    assert summary["purchase_probability_temperature"] == 1.75
 
 
 def test_market_curvature_command_uses_fixed_script_and_output(tmp_path) -> None:
