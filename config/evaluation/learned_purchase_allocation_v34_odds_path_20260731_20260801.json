@@ -1,0 +1,20 @@
+{
+  "source_model": "data/models/evaluation_queue/job-00002707.joblib",
+  "training_from": "2026-07-20",
+  "training_through": "2026-07-30",
+  "outer_from": "2026-07-31",
+  "outer_through": "2026-08-01",
+  "projection_dimensions": 8,
+  "base_training_fraction": 0.6,
+  "minimum_base_training_dates": 5,
+  "minimum_lpa_teacher_dates": 4,
+  "minimum_inner_training_dates": 2,
+  "minimum_purchase_training_dates": 2,
+  "alpha": 0.001,
+  "allocation_validation_fraction": 0.25,
+  "allocation_max_iterations": 200,
+  "bootstrap_samples": 20000,
+  "max_snapshot_age_seconds": 300,
+  "odds_path_schema": "t5_odds_path_v1",
+  "timeout_seconds": 7200
+}

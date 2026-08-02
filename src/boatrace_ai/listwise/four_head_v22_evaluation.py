@@ -21,8 +21,12 @@ from ..feature_tuning import to_hashable
 from ..features import MODEL_DECISION_LEAD_MINUTES, latest_trifecta_odds_before_deadline
 from ..odds_quality import plausible_trifecta_odds
 from .four_head_nested_v22 import (
+    DecisionOddsPath,
+    DecisionOddsPoint,
     DecisionRace,
     LabeledRace,
+    T5_ODDS_PATH_SCHEMA,
+    validate_decision_odds_path,
     RaceOutcome,
     artifact_fingerprint,
     evaluate_outer_outcomes,
@@ -45,6 +49,7 @@ COMBINATIONS = tuple("-".join(map(str, value)) for value in TRIFECTA_COMBINATION
 COMBINATION_INDEX = {value: index for index, value in enumerate(COMBINATIONS)}
 DEFAULT_PROJECTION_DIMENSIONS = 8
 PAYOUT_BET_TYPE = "3連単"
+T5_ODDS_PATH_LEADS = ((1800, 30), (1200, 20), (600, 10), (420, 7), (300, 5))
 
 
 @dataclass(frozen=True)
@@ -431,6 +436,48 @@ def _build_outer_settlements(
     return tuple(settlements)
 
 
+def _build_decision_odds_path(
+    race_snapshots: Mapping[Any, Any],
+    *,
+    current_odds: Sequence[float],
+    max_snapshot_age_seconds: float,
+) -> DecisionOddsPath:
+    points: list[DecisionOddsPoint] = []
+    for offset, lead in T5_ODDS_PATH_LEADS:
+        snapshot = race_snapshots.get(lead)
+        if not isinstance(snapshot, Mapping):
+            continue
+        complete = _complete_odds(snapshot.get("odds"), greater_than_one=True)
+        if complete is None:
+            continue
+        try:
+            captured = _as_aware_datetime(snapshot["captured_at"])
+            target = _as_aware_datetime(snapshot["odds_deadline_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        age = snapshot_age_seconds(snapshot)
+        if (
+            age is None
+            or age < 0.0
+            or age > max_snapshot_age_seconds
+            or captured > target
+        ):
+            continue
+        points.append(
+            DecisionOddsPoint(
+                target_offset_seconds=offset,
+                captured_at=captured.isoformat(),
+                target_at=target.isoformat(),
+                odds=tuple(complete[key] for key in COMBINATIONS),
+            )
+        )
+    path = DecisionOddsPath(schema=T5_ODDS_PATH_SCHEMA, snapshots=tuple(points))
+    validate_decision_odds_path(
+        path, choices=120, expected_t300_odds=current_odds
+    )
+    return path
+
+
 def load_v22_evaluation_data(
     conn: Any,
     *,
@@ -442,6 +489,7 @@ def load_v22_evaluation_data(
     max_snapshot_age_seconds: float = MARKET_MAX_SNAPSHOT_AGE_SECONDS,
     projection_dimensions: int = DEFAULT_PROJECTION_DIMENSIONS,
     max_races_per_day: int | None = None,
+    odds_path_schema: str | None = None,
 ) -> V22EvaluationData:
     """Load strict decision-time inputs and settlement-only labels for V22."""
 
@@ -456,6 +504,8 @@ def load_v22_evaluation_data(
         raise ValueError("max_snapshot_age_seconds must be non-negative")
     if max_races_per_day is not None and max_races_per_day < 1:
         raise ValueError("max_races_per_day must be positive")
+    if odds_path_schema not in (None, T5_ODDS_PATH_SCHEMA):
+        raise ValueError(f"unsupported odds path schema: {odds_path_schema}")
 
     race_meta: dict[str, tuple[str, str, int]] = {}
     for race_id, race_date, jcd, rno in _load_target_complete_race_ids(
@@ -477,6 +527,7 @@ def load_v22_evaluation_data(
             "excluded_missing_t300": 0,
             "excluded_incomplete_t300": 0,
             "excluded_unsafe_t300": 0,
+            "excluded_invalid_odds_path": 0,
             "excluded_missing_official_closing_odds": 0,
             "excluded_missing_outcome": 0,
             "excluded_ambiguous_outcome": 0,
@@ -537,6 +588,17 @@ def load_v22_evaluation_data(
         ):
             counters["excluded_unsafe_t300"] += 1
             continue
+        odds_path = None
+        if odds_path_schema is not None:
+            try:
+                odds_path = _build_decision_odds_path(
+                    snapshots.get(race_id) or {},
+                    current_odds=tuple(current_odds[key] for key in COMBINATIONS),
+                    max_snapshot_age_seconds=max_snapshot_age_seconds,
+                )
+            except ValueError:
+                counters["excluded_invalid_odds_path"] += 1
+                continue
         official = official_closing.get(race_id) or {}
         closing = _complete_odds(
             official.get("official_closing_odds"), greater_than_one=True
@@ -566,6 +628,7 @@ def load_v22_evaluation_data(
                 race_date=meta[0],
                 features=features,
                 current_odds=tuple(current_odds[key] for key in COMBINATIONS),
+                odds_path=odds_path,
             ),
             outcome=RaceOutcome(
                 winner_index=winner_index,
@@ -620,6 +683,13 @@ def load_v22_evaluation_data(
                 "official_closing_odds_and_outcome_settlement_only"
             ),
             "missing_t300_policy": "exclude_race_fail_closed",
+            "odds_path_schema": odds_path_schema,
+            "odds_path_offsets_seconds": (
+                [offset for offset, _lead in T5_ODDS_PATH_LEADS]
+                if odds_path_schema is not None
+                else []
+            ),
+            "older_odds_path_missing_policy": "retain_with_feature_masks",
             "ranking_teacher": "winner_first_then_official_closing_odds_order",
             "source_model_trained_through": str(source_artifact["trained_through"][1]),
         }

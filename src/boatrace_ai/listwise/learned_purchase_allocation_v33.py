@@ -10,7 +10,13 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 from scipy.optimize import minimize
 
-from .four_head_nested_v22 import DecisionRace, LabeledRace, RacePrediction
+from .four_head_nested_v22 import (
+    DecisionRace,
+    LabeledRace,
+    RacePrediction,
+    T5_ODDS_PATH_SCHEMA,
+    validate_decision_odds_path,
+)
 
 
 MODEL_KEY = "learned_purchase_allocation_head_v33"
@@ -69,6 +75,7 @@ class LearnedAllocationArtifact:
     max_race_exposure_fraction: float = MAX_RACE_EXPOSURE_FRACTION
     information_boundary: str = INFORMATION_BOUNDARY
     outer_outcomes_used: bool = False
+    odds_path_schema: str | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -93,6 +100,7 @@ class LearnedAllocationArtifact:
             "outer_outcomes_used": self.outer_outcomes_used,
             "allocation_objective_version": 2,
             "gate_intercept_regularized": False,
+            "odds_path_schema": self.odds_path_schema,
         }
 
 
@@ -129,6 +137,66 @@ def _entropy(values: np.ndarray) -> float:
     return -float(np.sum(positive * np.log(positive)))
 
 
+def _odds_path_feature_matrices(
+    decision: DecisionRace, *, choices: int
+) -> tuple[np.ndarray, np.ndarray]:
+    path = decision.odds_path
+    if path is None:
+        return np.empty((choices, 0), dtype=np.float64), np.empty(0, dtype=np.float64)
+    points = validate_decision_odds_path(
+        path, choices=choices, expected_t300_odds=decision.current_odds
+    )
+    log_market: dict[int, np.ndarray] = {}
+    for offset, point in points.items():
+        implied = 1.0 / np.asarray(point.odds, dtype=np.float64)
+        implied /= float(implied.sum())
+        log_market[offset] = np.log(implied)
+    availability = {
+        offset: float(offset in log_market) for offset in (420, 600, 1200, 1800)
+    }
+
+    def slope(older: int, newer: int) -> np.ndarray:
+        if older not in log_market or newer not in log_market:
+            return np.zeros(choices, dtype=np.float64)
+        minutes = (older - newer) / 60.0
+        return (log_market[newer] - log_market[older]) / minutes
+
+    recent = slope(420, 300)
+    long = slope(1800, 300)
+    acceleration = (
+        recent - slope(600, 420)
+        if 420 in log_market and 600 in log_market
+        else np.zeros(choices, dtype=np.float64)
+    )
+    ordered = np.vstack([log_market[offset] for offset in sorted(log_market, reverse=True)])
+    volatility = (
+        np.std(ordered, axis=0)
+        if len(ordered) >= 2
+        else np.zeros(choices, dtype=np.float64)
+    )
+    mask_columns = np.tile(
+        np.asarray(tuple(availability.values()), dtype=np.float64), (choices, 1)
+    )
+    ticket = np.column_stack((recent, long, acceleration, volatility, mask_columns))
+    observed_offsets = sorted(log_market)
+    span_minutes = (
+        (max(observed_offsets) - min(observed_offsets)) / 60.0
+        if len(observed_offsets) >= 2
+        else 0.0
+    )
+    race = np.asarray(
+        (
+            len(observed_offsets) / 5.0,
+            span_minutes / 25.0,
+            float(np.mean(volatility)),
+            float(np.std(volatility)),
+            *availability.values(),
+        ),
+        dtype=np.float64,
+    )
+    return ticket, race
+
+
 def decision_feature_matrices(
     decision: DecisionRace, prediction: RacePrediction
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -161,6 +229,9 @@ def decision_feature_matrices(
     ranking_rank = np.empty(choices, dtype=np.float64)
     ranking_rank[ranking_order] = np.arange(choices, dtype=np.float64)
     ranking_rank /= max(1, choices - 1)
+    path_ticket, path_race = _odds_path_feature_matrices(
+        decision, choices=choices
+    )
     ticket = np.column_stack(
         (
             raw,
@@ -173,6 +244,7 @@ def decision_feature_matrices(
             probability * odds,
             probability * closing,
             ranking_rank,
+            path_ticket,
         )
     )
     sorted_probability = np.sort(probability)[::-1]
@@ -199,6 +271,7 @@ def decision_feature_matrices(
             ),
         )
     )
+    race = np.concatenate((race, path_race))
     if not np.isfinite(ticket).all() or not np.isfinite(race).all():
         raise ValueError("allocation model features contain non-finite values")
     return ticket, race, np.log(probability)
@@ -431,7 +504,21 @@ def fit_learned_allocation_head(
     configs: Iterable[AllocationConfig] = DEFAULT_CONFIGS,
     validation_fraction: float = 0.25,
     max_iterations: int = 200,
+    model_key: str = MODEL_KEY,
 ) -> LearnedAllocationArtifact:
+    if not model_key:
+        raise ValueError("allocation model_key is required")
+    schemas = {
+        race.decision.odds_path.schema
+        for race in races
+        if race.decision.odds_path is not None
+    }
+    missing_paths = sum(race.decision.odds_path is None for race in races)
+    if len(schemas) > 1 or (schemas and missing_paths):
+        raise ValueError("allocation training odds path schemas must be uniform")
+    odds_path_schema = next(iter(schemas), None)
+    if odds_path_schema not in (None, T5_ODDS_PATH_SCHEMA):
+        raise ValueError("allocation training odds path schema is unsupported")
     prepared, digest = _prepare_pairs(
         races, predictions, realized_payout_yen_by_race
     )
@@ -481,7 +568,7 @@ def fit_learned_allocation_head(
     ticket_mean, ticket_scale, race_mean, race_scale = final_normalization
     ticket_dimension = ticket_mean.size
     return LearnedAllocationArtifact(
-        model_key=MODEL_KEY,
+        model_key=model_key,
         teacher=TEACHER,
         trained_through_date=max(race.race_date for race in prepared),
         base_predictions_trained_through_date=str(base_predictions_trained_through_date),
@@ -505,6 +592,7 @@ def fit_learned_allocation_head(
             for row in candidates
         ),
         training_input_sha256=digest,
+        odds_path_schema=odds_path_schema,
     )
 
 
@@ -520,6 +608,11 @@ def allocation_decision(
         raise ValueError("allocation inference must be strictly after training")
     if available_bankroll_yen < 0 or stake_unit_yen < 1:
         raise ValueError("allocation bankroll and stake unit must be valid")
+    decision_schema = (
+        decision.odds_path.schema if decision.odds_path is not None else None
+    )
+    if decision_schema != artifact.odds_path_schema:
+        raise ValueError("allocation inference odds path schema mismatch")
     ticket, race, base_log_probability = decision_feature_matrices(decision, prediction)
     ticket_mean = np.asarray(artifact.ticket_feature_mean)
     ticket_scale = np.asarray(artifact.ticket_feature_scale)
