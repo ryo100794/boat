@@ -1,0 +1,8 @@
+{
+  "from_date": "2026-05-10",
+  "through_date": "2026-08-01",
+  "temporal_calibration_through": "2026-07-17",
+  "model_input": "data/models/evaluation_queue/job-00002606.joblib",
+  "daily_budget_yen": 10000,
+  "timeout_seconds": 43200
+}
