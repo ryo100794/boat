@@ -289,13 +289,17 @@ does not establish nationwide historical coverage or a realtime endpoint:
 - <https://www.boatrace-tokoname.jp/uploads/cdn/pdf/syussou/08_20260629_2.pdf>
 
 `boatrace_ai.joint_policy_ga` connects pre-generated parameter/path draws to
-the settlement callback and searches complete 100-yen stake vectors. Fitness is
-the portfolio lower-quantile value above the fixed safety margin multiplied by
-stake, not a sum of independently gated tickets. Unevaluable vectors receive a
-finite search-disqualification score, while the no-bet vector retains value
-zero. Every GA candidate is repriced as a whole; the selected vector alone is
-rerun with ticket-removal marginal diagnostics. Version v0 is diagnostic-only
-and has no path to the wagering API.
+the settlement callback and searches complete 100-yen stake vectors. Version v1
+maximizes the lower parameter quantile of scenario-tail expected
+`log(terminal wealth / available bankroll)`, subject to the existing
+portfolio expected-edge gate. The terminal wealth calculation integrates every
+ordinary and refund outcome through the integer gross-payoff callback. This
+penalizes ruin and determines both ticket composition and stake fraction;
+positive expected edge alone cannot force a full-bankroll allocation.
+Unevaluable vectors receive a finite search-disqualification score, while the
+no-bet vector retains value zero. Every GA candidate is repriced as a whole;
+the selected vector alone is rerun with ticket-removal marginal diagnostics.
+The module is diagnostic-only and has no path to the wagering API.
 
 The pool lower bound can be attached to every generated path while retaining
 that path's final 120-way market shares. The settlement adapter then allocates
@@ -367,7 +371,8 @@ the purchase gate when outer or tail evidence is insufficient. It does not
 generate joint scenarios. Shared-state generation, partial pooling, and
 closing-market distribution fitting now live in the separate diagnostic
 `joint_scenario_model`; generated paths are now connected to integer settlement
-and complete-vector policy GA. Exact nationwide pool labels, sealed bankroll
+and complete-vector policy GA. A chronological provisional bankroll evaluator
+is connected, but exact nationwide pool labels, a 30-day sealed bankroll
 evaluation and production promotion remain unfinished. The current
 market-residual GA uses market-relative probability metrics and is not
 described as a joint-value GA.
@@ -421,8 +426,30 @@ residual inner product, 0.03802, was close to the observed 0.03823.
 The result supports retaining the shared market-path component but rejects a
 full-strength probability residual for deployment. Probability and market
 residual strengths must be selected separately on inner prior-day folds before
-each outer day. Job 11785 is diagnostic only and remains disconnected from
-settlement, policy GA and automated purchasing.
+each outer day. Job 11785 was diagnostic only; later jobs connected its retained
+successor to settlement and policy evaluation, never to automated purchasing.
+
+### 2026-08-03 provisional joint bankroll correction
+
+Job 11845 applied the first connected chronological policy to the same five
+days and 713 races. Generated trifecta LogLoss improved by 0.003128, but the
+policy staked JPY 63,200 for JPY 13,250 return: ROI 0.20965 and profit
+JPY -49,950. Only one race returned money, all return depended on that hit,
+the complete-day bootstrap ROI lower bound was zero, and five of six promotion
+gates failed.
+
+The probability result does not validate the purchase policy. The v0 GA
+maximized conservative expected profit in yen, which is conservative about
+unit edge but still scales a positive edge toward the stake ceiling. It spent
+the opening bankroll in the first one or two opportunities on most days. This
+objective is rejected.
+
+Policy v1 instead integrates each terminal settlement state and maximizes the
+lower parameter quantile of scenario-tail expected log bankroll growth. The
+expected-edge gate remains mandatory, while the growth objective selects the
+stake fraction and penalizes terminal ruin. Matched-window job 11852 compares
+this correction with job 11845. It remains provisional regardless of its point
+result because only five complete operating days are available.
 
 ### 2026-08-03 residual and dependence calibration comparison
 
