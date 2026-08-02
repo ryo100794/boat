@@ -282,6 +282,16 @@ zero. Every GA candidate is repriced as a whole; the selected vector alone is
 rerun with ticket-removal marginal diagnostics. Version v0 is diagnostic-only
 and has no path to the wagering API.
 
+`boatrace_ai.joint_parameter_uncertainty` supplies genuine outer parameter
+draws rather than duplicating paths from one fit. It resamples complete strictly
+prior race days with replacement, refits the terminal/market residual model for
+each draw, and then generates an independent inner path set from every refit.
+Repeated blocks carry an internal resample key while retaining the original OOF
+teacher race ID and prediction hash. Each draw manifest hashes the sampled day
+sequence, teacher prediction/schema hashes, fit options and calibration seed;
+the manifest and draw index are copied into every generated path. Any current
+or future-day training observation is rejected before fitting.
+
 Parameter uncertainty and future-path uncertainty are kept separate.  For each
 outer parameter/refit draw `r`, future paths `s` are integrated to produce an
 expected edge `mu_i(r)`.  The default purchase gate is a preregistered lower
