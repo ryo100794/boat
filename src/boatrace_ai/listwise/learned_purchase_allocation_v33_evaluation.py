@@ -37,6 +37,7 @@ from .learned_purchase_allocation_v33 import (
     AllocationConfig,
     AllocationDecision,
     DEFAULT_CONFIGS,
+    EXHAUSTIVE_CONFIGS_V1,
     LearnedAllocationArtifact,
     allocation_decision,
     fit_learned_allocation_head,
@@ -806,6 +807,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=1e-3)
     parser.add_argument("--allocation-validation-fraction", type=float, default=0.25)
     parser.add_argument("--allocation-max-iterations", type=int, default=200)
+    parser.add_argument(
+        "--allocation-grid",
+        choices=("default", "exhaustive-v1"),
+        default="default",
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=BOOTSTRAP_SAMPLES)
     return parser
 
@@ -878,6 +884,11 @@ def main(argv: list[str] | None = None) -> int:
             },
             allocation_validation_fraction=args.allocation_validation_fraction,
             allocation_max_iterations=args.allocation_max_iterations,
+            allocation_configs=(
+                EXHAUSTIVE_CONFIGS_V1
+                if args.allocation_grid == "exhaustive-v1"
+                else DEFAULT_CONFIGS
+            ),
             max_snapshot_age_seconds=args.max_snapshot_age_seconds,
             bootstrap_samples=args.bootstrap_samples,
             artifact_output=Path(args.model_output),

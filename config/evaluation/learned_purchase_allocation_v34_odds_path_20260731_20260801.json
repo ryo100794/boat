@@ -13,6 +13,7 @@
   "alpha": 0.001,
   "allocation_validation_fraction": 0.25,
   "allocation_max_iterations": 200,
+  "allocation_grid": "exhaustive-v1",
   "bootstrap_samples": 20000,
   "max_snapshot_age_seconds": 300,
   "odds_path_schema": "t5_odds_path_v1",
