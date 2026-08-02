@@ -143,10 +143,10 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
         "evaluation_days": 5,
         "evaluated_races": 713,
         "probability_metrics": {
-            "model_winner_log_loss": 0.7,
-            "model_winner_top1_accuracy": 0.55,
-            "model_trifecta_log_loss": 3.8,
-            "model_trifecta_top5_hit_rate": 0.38,
+            "generated_winner_log_loss": 0.7,
+            "generated_winner_top1_accuracy": 0.55,
+            "generated_log_loss": 3.8,
+            "generated_top5": 0.38,
         },
         "primary_bankroll": {
             "stake_yen": 20_000,
@@ -154,9 +154,18 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
             "profit_yen": 1_000,
             "roi": 1.05,
             "max_drawdown_yen": 3_000,
-            "roi_without_largest_hit": 1.01,
             "daily_cluster_bootstrap_roi_lower_95": 0.98,
         },
+        "promotion_gate": {
+            "minimum_30_complete_days": False,
+            "positive_profit": True,
+        },
+        "daily": [{
+            "races": [
+                {"stake_yen": 10_000, "return_yen": 12_000},
+                {"stake_yen": 10_000, "return_yen": 9_000},
+            ],
+        }],
     })
 
     assert summary["winner_log_loss"] == 0.7
@@ -164,5 +173,8 @@ def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -
     assert summary["model_trifecta_log_loss"] == 3.8
     assert summary["trifecta_top5_hit_rate"] == 0.38
     assert summary["roi"] == 1.05
-    assert summary["roi_without_largest_hit"] == 1.01
     assert summary["daily_cluster_bootstrap_roi_lower_95"] == 0.98
+    assert summary["largest_hit_return_share"] == pytest.approx(12_000 / 21_000)
+    assert summary["roi_without_largest_hit"] == 0.45
+    assert summary["promotion_gate_passed"] == 1
+    assert summary["promotion_gate_total"] == 2

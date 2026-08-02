@@ -3372,6 +3372,53 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if payload.get("model") == "joint_bankroll_strict_walk_forward_v1":
+        probability = payload.get("probability_metrics")
+        probability = probability if isinstance(probability, dict) else {}
+        aliases = {
+            "model_winner_log_loss": "generated_winner_log_loss",
+            "model_winner_top1_accuracy": "generated_winner_top1_accuracy",
+            "model_trifecta_log_loss": "generated_log_loss",
+            "model_trifecta_top5_hit_rate": "generated_top5",
+        }
+        for target, source in aliases.items():
+            value = probability.get(target, probability.get(source))
+            if value is not None:
+                summary[target] = value
+        summary.setdefault(
+            "evaluation_days",
+            payload.get("evaluation_days", payload.get("evaluated_days")),
+        )
+        if summary.get("daily_cluster_bootstrap_roi_lower_95") is None:
+            summary["daily_cluster_bootstrap_roi_lower_95"] = summary.get(
+                "roi_ci95_lower"
+            )
+        daily = payload.get("daily")
+        if isinstance(daily, list) and summary.get("stake_yen"):
+            returns = [
+                int(race.get("return_yen") or 0)
+                for day in daily if isinstance(day, dict)
+                for race in (day.get("races") or []) if isinstance(race, dict)
+                if int(race.get("stake_yen") or 0) > 0
+            ]
+            largest = max(returns, default=0)
+            total_return = int(summary.get("return_yen") or 0)
+            total_stake = int(summary["stake_yen"])
+            summary.setdefault(
+                "largest_hit_return_share",
+                largest / total_return if total_return else None,
+            )
+            summary.setdefault(
+                "roi_without_largest_hit",
+                (total_return - largest) / total_stake,
+            )
+        gate = payload.get("promotion_gate")
+        if isinstance(gate, dict):
+            summary["promotion_gate_passed"] = sum(bool(value) for value in gate.values())
+            summary["promotion_gate_total"] = len(gate)
+            summary["promotion_gate_failed"] = [
+                key for key, passed in gate.items() if not passed
+            ]
     deployment = payload.get("deployment_configuration")
     genetic_selection = (
         deployment.get("calibrator_selection")
