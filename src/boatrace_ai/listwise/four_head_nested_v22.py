@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -13,9 +14,29 @@ from sklearn.linear_model import LogisticRegression, PoissonRegressor, TweedieRe
 
 MODEL_KEY = "four_head_nested_v22"
 ARTIFACT_VERSION = 3
+T5_ODDS_PATH_SCHEMA = "t5_odds_path_v1"
+T5_ODDS_PATH_OFFSETS_SECONDS = (1800, 1200, 600, 420, 300)
 STACKED_TWEEDIE_LOSS = (
     "multinomial_market_offset_oof_scaled_payout_stacked_tweedie"
 )
+
+
+@dataclass(frozen=True)
+class DecisionOddsPoint:
+    """One complete market snapshot selected for an exact pre-T5 target."""
+
+    target_offset_seconds: int
+    captured_at: str
+    target_at: str
+    odds: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class DecisionOddsPath:
+    """Leakage-safe decision context; settlement fields are intentionally absent."""
+
+    schema: str
+    snapshots: tuple[DecisionOddsPoint, ...]
 
 
 @dataclass(frozen=True)
@@ -26,6 +47,7 @@ class DecisionRace:
     race_date: str
     features: tuple[tuple[float, ...], ...]
     current_odds: tuple[float, ...]
+    odds_path: DecisionOddsPath | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +149,76 @@ def _array(values: Sequence[Sequence[float]]) -> np.ndarray:
     return result
 
 
+def _aware_timestamp(value: str, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid odds path {field}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def validate_decision_odds_path(
+    path: DecisionOddsPath,
+    *,
+    choices: int,
+    expected_t300_odds: Sequence[float] | None = None,
+) -> dict[int, DecisionOddsPoint]:
+    """Validate exact-offset complete snapshots without interpolation."""
+
+    if not isinstance(path, DecisionOddsPath) or path.schema != T5_ODDS_PATH_SCHEMA:
+        raise ValueError(f"decision odds path schema must be {T5_ODDS_PATH_SCHEMA}")
+    by_offset: dict[int, DecisionOddsPoint] = {}
+    previous_offset = math.inf
+    for point in path.snapshots:
+        if not isinstance(point, DecisionOddsPoint):
+            raise ValueError("decision odds path contains an invalid snapshot")
+        if (
+            isinstance(point.target_offset_seconds, bool)
+            or not isinstance(point.target_offset_seconds, int)
+        ):
+            raise ValueError("decision odds path offset must be an integer")
+        offset = point.target_offset_seconds
+        if offset not in T5_ODDS_PATH_OFFSETS_SECONDS or offset < 300:
+            raise ValueError("decision odds path contains a forbidden target offset")
+        if offset in by_offset or offset >= previous_offset:
+            raise ValueError(
+                "decision odds path snapshots must be unique canonical order"
+            )
+        previous_offset = offset
+        odds = np.asarray(point.odds, dtype=np.float64)
+        if (
+            odds.shape != (choices,)
+            or not np.isfinite(odds).all()
+            or np.any(odds <= 1.0)
+        ):
+            raise ValueError(
+                "each decision odds snapshot must contain complete valid odds"
+            )
+        captured = _aware_timestamp(point.captured_at, field="captured_at")
+        target = _aware_timestamp(point.target_at, field="target_at")
+        if captured > target:
+            raise ValueError("decision odds snapshot was captured after its target")
+        by_offset[offset] = point
+    if 300 not in by_offset:
+        raise ValueError("decision odds path requires the T300 snapshot")
+    t300_target = _aware_timestamp(by_offset[300].target_at, field="target_at")
+    for offset, point in by_offset.items():
+        target = _aware_timestamp(point.target_at, field="target_at")
+        expected = t300_target.timestamp() - (offset - 300)
+        if abs(target.timestamp() - expected) > 1e-6:
+            raise ValueError(
+                "snapshot target_at does not match target_offset_seconds"
+            )
+    if expected_t300_odds is not None:
+        expected = np.asarray(expected_t300_odds, dtype=np.float64)
+        actual = np.asarray(by_offset[300].odds, dtype=np.float64)
+        if expected.shape != actual.shape or not np.array_equal(expected, actual):
+            raise ValueError("T300 path odds must equal decision current_odds")
+    return by_offset
+
+
 def _validate_races(races: Sequence[LabeledRace]) -> tuple[int, int]:
     if not races:
         raise ValueError("at least one labeled race is required")
@@ -145,6 +237,12 @@ def _validate_races(races: Sequence[LabeledRace]) -> tuple[int, int]:
         seen.add(decision.race_id)
         if _array(decision.features).shape != (choices, feature_count):
             raise ValueError("all races must share choice and feature dimensions")
+        if decision.odds_path is not None:
+            validate_decision_odds_path(
+                decision.odds_path,
+                choices=choices,
+                expected_t300_odds=decision.current_odds,
+            )
         current = np.asarray(decision.current_odds, dtype=np.float64)
         closing = np.asarray(outcome.closing_odds, dtype=np.float64)
         if current.shape != (choices,) or closing.shape != (choices,):

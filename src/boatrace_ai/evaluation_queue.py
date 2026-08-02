@@ -1845,6 +1845,7 @@ def build_command(
             "allocation_validation_fraction", "allocation_max_iterations",
             "bootstrap_samples", "max_races_per_day",
             "max_snapshot_age_seconds", "timeout_seconds",
+            "odds_path_schema",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -1901,6 +1902,9 @@ def build_command(
         max_snapshot_age = _number(
             params, "max_snapshot_age_seconds", 300.0, 0.0, 300.0
         )
+        odds_path_schema = params.get("odds_path_schema")
+        if odds_path_schema not in (None, "t5_odds_path_v1"):
+            raise ValueError("unsupported learned allocation odds_path_schema")
         _integer(params, "timeout_seconds", 7200, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         source_model = (app_root / str(params["source_model"])).resolve()
@@ -1918,12 +1922,15 @@ def build_command(
             "max_snapshot_age_seconds": max_snapshot_age,
             "max_races_per_day": params.get("max_races_per_day"),
         }
+        if odds_path_schema is not None:
+            cache_identity["odds_path_schema"] = odds_path_schema
         cache_digest = hashlib.sha256(
             _json(cache_identity).encode("utf-8")
         ).hexdigest()[:20]
         data_cache = (
             app_root / "data" / "models" / "evaluation_cache"
-            / "four_head_v22" / f"{cache_digest}.joblib"
+            / ("learned_allocation_v34" if odds_path_schema else "four_head_v22")
+            / f"{cache_digest}.joblib"
         )
         command = [
             str(python), "-m",
@@ -1949,6 +1956,8 @@ def build_command(
             "--model-output", str(output.with_suffix(".joblib")),
             "--output", str(output),
         ]
+        if odds_path_schema is not None:
+            command.extend(["--odds-path-schema", str(odds_path_schema)])
         if params.get("max_races_per_day") is not None:
             command.extend([
                 "--max-races-per-day",

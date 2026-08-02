@@ -18,6 +18,7 @@ import numpy as np
 from .four_head_nested_v22 import (
     LabeledRace,
     RacePrediction,
+    T5_ODDS_PATH_SCHEMA,
     fit_four_head_nested_v22,
     predict_race,
 )
@@ -42,6 +43,7 @@ from .learned_purchase_allocation_v33 import (
 )
 
 MODEL_KEY = "learned_purchase_allocation_head_v33"
+ODDS_PATH_MODEL_KEY = "learned_purchase_allocation_odds_path_v34"
 INITIAL_BANKROLL_YEN = 10_000
 STAKE_UNIT_YEN = 100
 MAX_T5_AGE_SECONDS = 300.0
@@ -602,14 +604,23 @@ def evaluate_learned_purchase_allocation_v33(
     bootstrap_samples: int = BOOTSTRAP_SAMPLES,
     bootstrap_seed: int = BOOTSTRAP_SEED,
     artifact_output: Path | None = None,
+    odds_path_schema: str | None = None,
 ) -> dict[str, Any]:
     """Fit V33-LPA and run a production-equivalent, unseen T-5 backtest."""
     if initial_bankroll_yen != INITIAL_BANKROLL_YEN:
         raise ValueError("formal V33-LPA evaluation requires JPY10000 per day")
     if stake_unit_yen != STAKE_UNIT_YEN:
         raise ValueError("formal V33-LPA evaluation requires JPY100 units")
+    if odds_path_schema not in (None, T5_ODDS_PATH_SCHEMA):
+        raise ValueError(f"unsupported odds path schema: {odds_path_schema}")
     training = _ordered_races(data.training_races, label="training")
     outer = _ordered_races(data.outer_races, label="outer")
+    if odds_path_schema is not None:
+        for race in (*training, *outer):
+            path = race.decision.odds_path
+            if path is None or path.schema != odds_path_schema:
+                raise ValueError("formal odds-path evaluation requires uniform context")
+    model_key = ODDS_PATH_MODEL_KEY if odds_path_schema else MODEL_KEY
     if training[-1].decision.race_date >= outer[0].decision.race_date:
         raise ValueError("outer period must be completely unseen and after training")
     indexed = _settlement_index(
@@ -640,6 +651,7 @@ def evaluate_learned_purchase_allocation_v33(
         configs=tuple(allocation_configs),
         validation_fraction=allocation_validation_fraction,
         max_iterations=allocation_max_iterations,
+        model_key=model_key,
     )
 
     # Refit only base heads on all training. Outer labels/results stay inaccessible.
@@ -672,7 +684,7 @@ def evaluate_learned_purchase_allocation_v33(
     gates = _promotion_gate(formal, stress)
     artifact_bundle = {
         "schema_version": 1,
-        "model_key": MODEL_KEY,
+        "model_key": model_key,
         "trained_through_date": training[-1].decision.race_date,
         "base_model": final_base,
         "allocation_model": lpa_artifact,
@@ -680,6 +692,7 @@ def evaluate_learned_purchase_allocation_v33(
             "base_predictions_fixed_before_lpa_teacher": True,
             "outer_outcomes_used_for_fit_or_selection": False,
             "decision_odds": "complete_official_trifecta_snapshot_at_T-5",
+            "odds_path_schema": odds_path_schema,
         },
     }
     artifact_record: dict[str, Any] = {
@@ -703,7 +716,7 @@ def evaluate_learned_purchase_allocation_v33(
                 "sha256": hashlib.file_digest(artifact_file, "sha256").hexdigest(),
             }
     return {
-        "model_key": MODEL_KEY,
+        "model_key": model_key,
         "evaluation_role": "formal_production_equivalent_t5_bankroll_outer_only",
         "training_split": {
             "base_head_from": base_training[0].decision.race_date,
@@ -735,6 +748,7 @@ def evaluate_learned_purchase_allocation_v33(
             "outer_outcomes_used_for_fit_or_selection": False,
             "outer_official_payout_read_at_settlement_only": True,
             "decision_odds": "complete_official_trifecta_snapshot_at_T-5",
+            "odds_path_schema": odds_path_schema,
         },
         "frozen_base_artifact_sha256": _digest(frozen_base),
         "final_base_artifact_sha256": _digest(final_base),
@@ -778,6 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-output", required=True)
     parser.add_argument("--data-cache")
+    parser.add_argument("--odds-path-schema", choices=(T5_ODDS_PATH_SCHEMA,))
     parser.add_argument("--max-races-per-day", type=int)
     parser.add_argument("--max-snapshot-age-seconds", type=float, default=300.0)
     parser.add_argument(
@@ -811,6 +826,8 @@ def main(argv: list[str] | None = None) -> int:
         "projection_dimensions": args.projection_dimensions,
         "max_races_per_day": args.max_races_per_day,
     }
+    if args.odds_path_schema is not None:
+        cache_signature["odds_path_schema"] = args.odds_path_schema
     from ..db import connection
 
     with connection(args.db) as conn:
@@ -830,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_snapshot_age_seconds=args.max_snapshot_age_seconds,
                 projection_dimensions=args.projection_dimensions,
                 max_races_per_day=args.max_races_per_day,
+                odds_path_schema=args.odds_path_schema,
             )
             if cache_path is not None:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -863,6 +881,7 @@ def main(argv: list[str] | None = None) -> int:
             max_snapshot_age_seconds=args.max_snapshot_age_seconds,
             bootstrap_samples=args.bootstrap_samples,
             artifact_output=Path(args.model_output),
+            odds_path_schema=args.odds_path_schema,
         )
     encoded = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
     output = Path(args.output)
