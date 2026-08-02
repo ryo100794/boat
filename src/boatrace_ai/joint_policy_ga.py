@@ -399,7 +399,7 @@ def optimize_joint_portfolio(
         and selected.fitness > 0.0
     )
     return {
-        "version": "joint_portfolio_policy_ga_v1",
+        "version": "joint_portfolio_policy_ga_v2",
         "role": "diagnostic_only_never_submits_wagers",
         "parameter_draws": len(parameter_draws),
         "candidate_tickets": list(tickets),

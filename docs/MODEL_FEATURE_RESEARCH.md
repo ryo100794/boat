@@ -289,7 +289,7 @@ does not establish nationwide historical coverage or a realtime endpoint:
 - <https://www.boatrace-tokoname.jp/uploads/cdn/pdf/syussou/08_20260629_2.pdf>
 
 `boatrace_ai.joint_policy_ga` connects pre-generated parameter/path draws to
-the settlement callback and searches complete 100-yen stake vectors. Version v1
+the settlement callback and searches complete 100-yen stake vectors. Version v2
 maximizes the lower parameter quantile of scenario-tail expected
 `log(terminal wealth / available bankroll)`, subject to the existing
 portfolio expected-edge gate. The terminal wealth calculation integrates every
