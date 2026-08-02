@@ -174,3 +174,39 @@ def test_purpose_page_shows_contract_scope_and_objective_specific_diagnostics() 
     assert "失敗ゲート" in MODEL_REPORT_HTML
     assert "purposeCompleteness" in MODEL_REPORT_HTML
     assert "purposeScope" in MODEL_REPORT_HTML
+
+
+
+def test_ticket_utility_ranking_uses_role_specific_required_metrics() -> None:
+    job = {
+        "name": "archive-role-models-v31",
+        "kind": "archive_market_oracle",
+        "status": "完了",
+        "evaluation_from": "2026-07-18",
+        "evaluation_through": "2026-08-01",
+        "evaluated_races": 2268,
+        "residual_selection": {
+            "label_scheme": "winner",
+            "tree_preset": "balanced",
+            "top_k": 3,
+        },
+        "residual_ranking_metrics": {
+            "hit_rate": 0.2478,
+            "roi": 0.7720,
+            "roi_ci95_lower": 0.7041,
+        },
+    }
+
+    groups = {group["key"]: group for group in evaluation_purpose_groups([job])}
+    evaluation = groups["ticket_value"]["models"][0]["purpose_evaluation"]
+    assert evaluation["metric_profile"] == "ticket_utility_ranking"
+    assert evaluation["complete"] is True
+    assert evaluation["comparison_ready"] is True
+    assert "ticket_ranking_roi_ci95_lower" in evaluation["required_metrics"]
+
+
+def test_purpose_page_separates_ranking_diagnostic_from_formal_bankroll() -> None:
+    assert "役割 / 教師" in MODEL_REPORT_HTML
+    assert "順位診断 的中/ROI/LCB" in MODEL_REPORT_HTML
+    assert "正式資金BT" in MODEL_REPORT_HTML
+    assert "ticketRankingDiagnostic" in MODEL_REPORT_HTML

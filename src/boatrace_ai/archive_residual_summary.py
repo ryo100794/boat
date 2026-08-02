@@ -97,6 +97,8 @@ def apply_archive_residual_summary(
         "residual_calibration_through": temporal.get("calibration_through"),
         "residual_evaluation_from": temporal.get("evaluation_from"),
         "residual_evaluation_through": temporal.get("evaluation_through"),
+        "evaluation_from": temporal.get("evaluation_from"),
+        "evaluation_through": temporal.get("evaluation_through"),
     })
     artifact = selected.get(str(selected_artifact_key))
     if isinstance(artifact, Mapping):
