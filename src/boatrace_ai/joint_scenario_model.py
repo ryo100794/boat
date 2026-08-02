@@ -65,6 +65,7 @@ class ConditionalJointScenarioModel:
     rank: int
     probability_mean_residual_scale: float
     market_mean_residual_scale: float
+    shared_shock_scale: float
     residual_scale_selection: Mapping[str, Any]
 
 
@@ -252,6 +253,7 @@ def fit_conditional_joint_scenario_model(
     diagonal_noise_fraction: float = 0.05,
     learn_residual_scales: bool = False,
     residual_scale_candidates: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0),
+    shock_scale_candidates: Sequence[float] = (0.5, 0.75, 0.9, 1.0, 1.1, 1.25),
     scale_selection_scenarios: int = 32,
     scale_selection_seed: int = 33037,
 ) -> ConditionalJointScenarioModel:
@@ -333,13 +335,15 @@ def fit_conditional_joint_scenario_model(
     dates = sorted(_iso_date(row.race_date, "race_date") for row in observations)
     probability_scale = 1.0
     market_scale = 1.0
+    shock_scale = 1.0
     scale_selection: dict[str, Any] = {
         "method": "fixed_full_residual",
         "selected_probability_scale": probability_scale,
         "selected_market_scale": market_scale,
+        "selected_shared_shock_scale": shock_scale,
     }
     if learn_residual_scales:
-        probability_scale, market_scale, scale_selection = (
+        probability_scale, market_scale, shock_scale, scale_selection = (
             _select_residual_scales_on_last_training_day(
                 observations,
                 expected_outcomes=outcomes,
@@ -347,6 +351,7 @@ def fit_conditional_joint_scenario_model(
                 pooling_strength=pooling_strength,
                 diagonal_noise_fraction=diagonal_noise_fraction,
                 candidates=residual_scale_candidates,
+                shock_candidates=shock_scale_candidates,
                 scenarios=scale_selection_scenarios,
                 seed=scale_selection_seed,
             )
@@ -377,6 +382,7 @@ def fit_conditional_joint_scenario_model(
         rank=selected_rank,
         probability_mean_residual_scale=probability_scale,
         market_mean_residual_scale=market_scale,
+        shared_shock_scale=shock_scale,
         residual_scale_selection=scale_selection,
     )
 
@@ -393,6 +399,7 @@ def generate_joint_market_scenarios(
     seed: int = 33036,
     probability_mean_residual_scale: float | None = None,
     market_mean_residual_scale: float | None = None,
+    shared_shock_scale: float | None = None,
 ) -> list[JointMarketScenario]:
     if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
         raise ValueError("scenarios must be a positive integer")
@@ -408,12 +415,19 @@ def generate_joint_market_scenarios(
         if market_mean_residual_scale is None
         else float(market_mean_residual_scale)
     )
+    shock_scale = (
+        model.shared_shock_scale
+        if shared_shock_scale is None
+        else float(shared_shock_scale)
+    )
     if not isfinite(probability_scale) or not 0.0 <= probability_scale <= 2.0:
         raise ValueError(
             "probability_mean_residual_scale must be finite and in [0, 2]"
         )
     if not isfinite(market_scale) or not 0.0 <= market_scale <= 2.0:
         raise ValueError("market_mean_residual_scale must be finite and in [0, 2]")
+    if not isfinite(shock_scale) or not 0.0 <= shock_scale <= 2.0:
+        raise ValueError("shared_shock_scale must be finite and in [0, 2]")
     decision = validate_probability_simplex(
         decision_probabilities, expected_outcomes=model.outcomes
     )
@@ -453,13 +467,13 @@ def generate_joint_market_scenarios(
         terminal_probability = _softmax_mapping(
             base_probability
             + probability_scale * conditional_mean[:dimension]
-            + stochastic_residual[:dimension],
+            + shock_scale * stochastic_residual[:dimension],
             model.outcomes,
         )
         final_market = _softmax_mapping(
             base_market
             + market_scale * conditional_mean[dimension:]
-            + stochastic_residual[dimension:],
+            + shock_scale * stochastic_residual[dimension:],
             model.outcomes,
         )
         result.append(JointMarketScenario(
@@ -472,6 +486,7 @@ def generate_joint_market_scenarios(
                 "scenario_index": index,
                 "probability_mean_residual_scale": probability_scale,
                 "market_mean_residual_scale": market_scale,
+                "shared_shock_scale": shock_scale,
             },
             weight=weight,
         ))
@@ -496,20 +511,23 @@ def _select_residual_scales_on_last_training_day(
     pooling_strength: float,
     diagonal_noise_fraction: float,
     candidates: Sequence[float],
+    shock_candidates: Sequence[float],
     scenarios: int,
     seed: int,
-) -> tuple[float, float, dict[str, Any]]:
+) -> tuple[float, float, float, dict[str, Any]]:
     candidates = _validated_scale_candidates(candidates)
+    shock_candidates = _validated_scale_candidates(shock_candidates)
     if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
         raise ValueError("scale_selection_scenarios must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("scale_selection_seed must be a non-negative integer")
     dates = sorted({_iso_date(row.race_date, "race_date") for row in observations})
     if len(dates) < 2:
-        return 1.0, 1.0, {
+        return 1.0, 1.0, 1.0, {
             "method": "insufficient_dates_full_residual",
             "selected_probability_scale": 1.0,
             "selected_market_scale": 1.0,
+            "selected_shared_shock_scale": 1.0,
         }
     validation_date = dates[-1]
     inner_training = [
@@ -519,11 +537,12 @@ def _select_residual_scales_on_last_training_day(
         row for row in observations if str(row.race_date) == validation_date
     ]
     if len(inner_training) < 3 or not validation:
-        return 1.0, 1.0, {
+        return 1.0, 1.0, 1.0, {
             "method": "insufficient_inner_training_full_residual",
             "validation_date": validation_date,
             "selected_probability_scale": 1.0,
             "selected_market_scale": 1.0,
+            "selected_shared_shock_scale": 1.0,
         }
     inner_model = fit_conditional_joint_scenario_model(
         inner_training,
@@ -584,8 +603,83 @@ def _select_residual_scales_on_last_training_day(
         candidates, key=lambda value: (probability_loss[value], value)
     )
     market_scale = min(candidates, key=lambda value: (market_loss[value], value))
+    dimension = len(expected_outcomes)
+    observed_dependency = fsum(
+        float(
+            (
+                _clr(row.terminal_probability_teacher, expected_outcomes)
+                - _clr(row.decision_probabilities, expected_outcomes)
+            )
+            @ (
+                _clr(row.final_market_shares, expected_outcomes)
+                - _clr(row.decision_market_shares, expected_outcomes)
+            )
+        )
+        / dimension
+        for row in validation
+    ) / len(validation)
+    generated_dependency = {value: 0.0 for value in shock_candidates}
+    for observation in validation:
+        race_seed = int.from_bytes(
+            hashlib.sha256(
+                f"{seed}:{observation.race_id}".encode("utf-8")
+            ).digest()[:8],
+            byteorder="big",
+            signed=False,
+        )
+        decision_probability = validate_probability_simplex(
+            observation.decision_probabilities,
+            expected_outcomes=expected_outcomes,
+        )
+        decision_market = validate_probability_simplex(
+            observation.decision_market_shares,
+            expected_outcomes=expected_outcomes,
+        )
+        for candidate in shock_candidates:
+            generated = generate_joint_market_scenarios(
+                inner_model,
+                decision_probabilities=decision_probability,
+                decision_market_shares=decision_market,
+                venue=observation.venue,
+                decision_horizon_seconds=observation.decision_horizon_seconds,
+                popularity_band=observation.popularity_band,
+                scenarios=scenarios,
+                seed=race_seed,
+                probability_mean_residual_scale=probability_scale,
+                market_mean_residual_scale=market_scale,
+                shared_shock_scale=candidate,
+            )
+            generated_dependency[candidate] += fsum(
+                float(
+                    (
+                        _clr(scenario.probabilities, expected_outcomes)
+                        - _clr(decision_probability, expected_outcomes)
+                    )
+                    @ (
+                        _clr(
+                            scenario.market_state["final_market_shares"],
+                            expected_outcomes,
+                        )
+                        - _clr(decision_market, expected_outcomes)
+                    )
+                )
+                / dimension
+                * scenario.weight
+                for scenario in generated
+            )
+    generated_dependency = {
+        value: total / len(validation)
+        for value, total in generated_dependency.items()
+    }
+    shock_scale = min(
+        shock_candidates,
+        key=lambda value: (
+            abs(generated_dependency[value] - observed_dependency),
+            abs(value - 1.0),
+        ),
+    )
     count = len(validation)
-    return probability_scale, market_scale, {
+    return probability_scale, market_scale, shock_scale, {
         "method": "last_prior_day_distribution_cross_entropy",
         "validation_date": validation_date,
         "inner_training_through": dates[-2],
@@ -600,6 +694,12 @@ def _select_residual_scales_on_last_training_day(
         },
         "selected_probability_scale": probability_scale,
         "selected_market_scale": market_scale,
+        "observed_residual_inner_product": observed_dependency,
+        "generated_residual_inner_product": {
+            str(value): generated_dependency[value]
+            for value in shock_candidates
+        },
+        "selected_shared_shock_scale": shock_scale,
     }
 
 
@@ -634,6 +734,7 @@ def joint_scenario_model_diagnostics(
             model.probability_mean_residual_scale
         ),
         "market_mean_residual_scale": model.market_mean_residual_scale,
+        "shared_shock_scale": model.shared_shock_scale,
         "residual_scale_selection": dict(model.residual_scale_selection),
     }
 
@@ -862,6 +963,7 @@ def evaluate_joint_scenario_walk_forward(
                 model.probability_mean_residual_scale
             ),
             "market_mean_residual_scale": model.market_mean_residual_scale,
+            "shared_shock_scale": model.shared_shock_scale,
             "residual_scale_selection": dict(model.residual_scale_selection),
             "metrics": _walk_forward_metric_summary(day_metrics),
         })
