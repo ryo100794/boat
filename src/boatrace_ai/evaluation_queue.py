@@ -1830,11 +1830,12 @@ def build_command(
             "pairwise_contextual_rank_calibrated": 10,
             "multinomial_offset_uncapped_lognormal": 11,
             "multinomial_offset_all_choice_closing": 12,
+            "multinomial_offset_all_choice_closing_temperature": 13,
         }
         if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 12
+            params, "purchase_teacher_version", 3, 3, 13
         )
         expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:

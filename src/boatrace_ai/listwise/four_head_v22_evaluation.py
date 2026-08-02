@@ -760,6 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
             "pairwise_contextual_rank_calibrated",
             "multinomial_offset_uncapped_lognormal",
             "multinomial_offset_all_choice_closing",
+            "multinomial_offset_all_choice_closing_temperature",
         ),
         default="ridge_capped_net",
     )
