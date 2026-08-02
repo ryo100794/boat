@@ -210,3 +210,32 @@ def test_purpose_page_separates_ranking_diagnostic_from_formal_bankroll() -> Non
     assert "順位診断 的中/ROI/LCB" in MODEL_REPORT_HTML
     assert "正式資金BT" in MODEL_REPORT_HTML
     assert "ticketRankingDiagnostic" in MODEL_REPORT_HTML
+
+
+
+def test_no_bet_bankroll_does_not_count_roi_as_evaluated() -> None:
+    job = {
+        "name": "no-bet",
+        "status": "完了",
+        "roi": 0.0,
+        "profit_yen": 0,
+        "stake_yen": 0,
+        "max_drawdown_yen": 0,
+        "roi_without_largest_hit": 0.0,
+        "daily_cluster_bootstrap_roi_lower_95": 0.0,
+    }
+
+    group = {
+        row["key"]: row for row in evaluation_purpose_groups([job])
+    }["bankroll_policy"]
+    evaluation = group["models"][0]["purpose_evaluation"]
+    assert evaluation["complete"] is False
+    assert "roi" in evaluation["missing_metrics"]
+    assert "roi_without_largest_hit" in evaluation["missing_metrics"]
+    assert "daily_cluster_bootstrap_roi_lower_95" in evaluation["missing_metrics"]
+
+
+def test_purpose_page_labels_no_bet_roi_as_unavailable() -> None:
+    assert "ROI算出不能" in MODEL_REPORT_HTML
+    assert "formalBankrollResult" in MODEL_REPORT_HTML
+    assert "formalBankrollCi" in MODEL_REPORT_HTML

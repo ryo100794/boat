@@ -482,10 +482,19 @@ function top5Delta(x){
   const lo=x.market_day_top5_delta_ci95_lower??x.market_top5_delta_ci95_lower,hi=x.market_day_top5_delta_ci95_upper??x.market_top5_delta_ci95_upper;
   return `${pct(x.market_top5_delta)} [${pct(lo)}, ${pct(hi)}]`;
 }
+function formalBankrollResult(x){
+  if(!(Number(x.stake_yen||0)>0)) return `購入なし / ${fmt(x.tickets)}券 / ROI算出不能`;
+  return `ROI ${ratio(x.roi)} / ${yen(x.profit_yen)}`;
+}
+function formalBankrollCi(x){
+  if(!(Number(x.stake_yen||0)>0)) return "算出不能";
+  return `${ratio(x.daily_cluster_bootstrap_roi_lower_95)} .. ${ratio(x.roi_ci95_upper)}`;
+}
 function ticketRole(x){
   const e=x.purpose_evaluation||{},selection=x.residual_selection||{};
   if(e.metric_profile==="ticket_utility_ranking"){
-    return `券効用rank / ${selection.label_scheme||"-"} ${selection.tree_preset||"-"} Top${fmt(selection.top_k)}`;
+    const oracle=String(x.comparison_role||"").includes("closing_oracle")?" / 終値oracle研究":"";
+    return `券効用rank / ${selection.label_scheme||"-"} ${selection.tree_preset||"-"} Top${fmt(selection.top_k)}${oracle}`;
   }
   return "券別期待値";
 }
@@ -509,10 +518,10 @@ function purposeTable(group){
     cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${corr(x.closing_odds_log_mae)}</td>`,`<td>${corr(x.closing_odds_rank_correlation)}</td>`,`<td>${pct(x.closing_odds_interval_coverage)}</td>`,`<td>${x.closing_snapshot_age_seconds==null?"-":ratio(x.closing_snapshot_age_seconds)+"秒"}</td>`,`<td>${ratio(x.closing_q20_pinball_loss)} / ${pct(x.closing_q20_lower_coverage)}</td>`];
   }else if(key==="ticket_value"){
     headers=["モデル","状態","評価充足","バックテスト条件","母数","役割 / 教師","順位診断 的中/ROI/LCB","価値相関 / MAE","的中LL / 市場 / Δ","的中Top5","払戻 外側/OOF MAE","収益指数 H/P/D","正予測群","正式資金BT"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${esc(ticketRole(x))}</td>`,`<td>${ticketRankingDiagnostic(x)}</td>`,`<td>${corr(x.purchase_value_pearson_correlation)} / ${corr(x.purchase_value_calibration_mae)}</td>`,`<td>${ratio(x.purchase_hit_log_loss)} / ${ratio(x.t5_market_log_loss)} / ${ratio(x.purchase_hit_log_loss_delta_vs_market)}</td>`,`<td>${pct(x.purchase_hit_top5_rate)}</td>`,`<td>${ratio(x.purchase_payout_log_mae)} / ${ratio(x.purchase_oof_base_payout_log_mae)}→${ratio(x.purchase_oof_scaled_payout_log_mae)}</td>`,`<td>${ratio(x.purchase_gross_hit_exponent)} / ${ratio(x.purchase_gross_payout_exponent)} / ${ratio(x.purchase_gross_direct_value_exponent)}</td>`,`<td>${fmt(x.purchase_value_positive_predicted_tickets)}券 / ROI ${ratio(x.purchase_value_positive_observed_capped_roi)}</td>`,`<td>${x.roi==null?`購入なし / ${fmt(x.tickets)}券`:`ROI ${ratio(x.roi)} / ${yen(x.profit_yen)}`}</td>`];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${esc(ticketRole(x))}</td>`,`<td>${ticketRankingDiagnostic(x)}</td>`,`<td>${corr(x.purchase_value_pearson_correlation)} / ${corr(x.purchase_value_calibration_mae)}</td>`,`<td>${ratio(x.purchase_hit_log_loss)} / ${ratio(x.t5_market_log_loss)} / ${ratio(x.purchase_hit_log_loss_delta_vs_market)}</td>`,`<td>${pct(x.purchase_hit_top5_rate)}</td>`,`<td>${ratio(x.purchase_payout_log_mae)} / ${ratio(x.purchase_oof_base_payout_log_mae)}→${ratio(x.purchase_oof_scaled_payout_log_mae)}</td>`,`<td>${ratio(x.purchase_gross_hit_exponent)} / ${ratio(x.purchase_gross_payout_exponent)} / ${ratio(x.purchase_gross_direct_value_exponent)}</td>`,`<td>${fmt(x.purchase_value_positive_predicted_tickets)}券 / ROI ${ratio(x.purchase_value_positive_observed_capped_roi)}</td>`,`<td>${formalBankrollResult(x)}</td>`];
   }else if(key==="bankroll_policy"){
     headers=["モデル","状態","評価充足","資金バックテスト条件","日/R","投資 / 券 / 的中","ROI・損益","日次ROI 95%CI","最大1的中除外","最大DD / 勝日率","最大払戻比 / 有効的中"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${x.stake_yen==null?"-":yen(x.stake_yen)} / ${fmt(x.tickets)} / ${fmt(x.hit_tickets)}</td>`,`<td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95)} .. ${ratio(x.roi_ci95_upper)}</td>`,`<td>${ratio(x.roi_without_largest_hit)}</td>`,`<td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)} / ${pct(x.profitable_day_fraction)}</td>`,`<td>${pct(x.largest_hit_return_share)} / ${ratio(x.effective_hit_count)}</td>`];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${x.stake_yen==null?"-":yen(x.stake_yen)} / ${fmt(x.tickets)} / ${fmt(x.hit_tickets)}</td>`,`<td class="${Number(x.stake_yen||0)>0?(Number(x.profit_yen||0)>=0?"pos":"neg"):"muted"}">${formalBankrollResult(x)}</td>`,`<td>${formalBankrollCi(x)}</td>`,`<td>${ratio(x.roi_without_largest_hit)}</td>`,`<td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)} / ${pct(x.profitable_day_fraction)}</td>`,`<td>${pct(x.largest_hit_return_share)} / ${ratio(x.effective_hit_count)}</td>`];
   }else{
     headers=["モデル","状態","評価充足","統一未見条件","母数","確率性能","資金性能","安定性LCB","ゲート","失敗ゲート","本番適格 / 成果物","判定"];
     cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${probabilityHeadline(x)}</td>`,`<td>${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95)}</td>`,`<td>${fmt(x.promotion_gate_passed)}/${fmt(x.promotion_gate_total)}</td>`,`<td title="${esc(promotionFailures(x))}">${esc(promotionFailures(x))}</td>`,`<td>${x.prediction_deployment_eligible===true?"適格":x.prediction_deployment_eligible===false?"不適格":"未評価"} / ${x.deployment_model_artifact_saved===true?"保存済":"未保存"}</td>`,`<td>${esc(x.decision||"評価中")}</td>`];

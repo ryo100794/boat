@@ -230,6 +230,16 @@ def _purpose_evaluation(job: dict[str, Any], key: str) -> dict[str, Any]:
         required = PURPOSE_REQUIREMENTS[key]
         values = job
         profile = "direct_expected_value" if key == "ticket_value" else key
+    if key in {"bankroll_policy", "production_validation"} and not (
+        float(job.get("stake_yen") or 0) > 0
+    ):
+        values = dict(values)
+        for metric in (
+            "roi",
+            "roi_without_largest_hit",
+            "daily_cluster_bootstrap_roi_lower_95",
+        ):
+            values[metric] = None
     available = [metric for metric in required if values.get(metric) is not None]
     missing = [metric for metric in required if metric not in available]
     backtest = _backtest_scope(job)
