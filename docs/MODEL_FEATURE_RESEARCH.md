@@ -265,13 +265,23 @@ Racing Act and Article 28 / Appendix 2 of its enforcement regulation:
 - <https://laws.e-gov.go.jp/law/326AC1000000242>
 - <https://laws.e-gov.go.jp/document?lawid=326M50000800059>
 
-The adapter deliberately requires absolute external ticket stakes in every
-scenario. Closing odds or normalized market shares identify relative prices but
-not absolute pool size, so they cannot identify the price impact of a JPY 100
-or JPY 10,000 order. No nominal pool size is invented. Until an audited pool
-size source or conservative pool-size model is attached, the production
-purchase gate is unavailable even when probability and closing-share scenarios
-exist.
+The adapter deliberately requires either absolute external ticket stakes or an
+absolute total wager-pool amount plus the 120-way market shares in every
+scenario. In the latter case, total face units are allocated by deterministic
+largest remainder before adding the system's order. Closing odds or normalized
+market shares alone identify relative prices but not absolute pool size, so they
+cannot identify the price impact of a JPY 100 or JPY 10,000 order. No nominal
+pool size is invented. Until an audited pool-size source or conservative
+pool-size model is attached, the production purchase gate is unavailable even
+when probability and closing-share scenarios exist.
+
+An initial source probe found race-level wager-type sales in venue-published
+official record sheets. For example, the 2026-06-25 Tokoname record sheet lists
+trifecta sales and winning ticket counts for each race in addition to total
+race sales. This establishes that absolute trifecta pool labels exist, but it
+does not establish nationwide historical coverage or a realtime endpoint:
+
+- <https://www.boatrace-tokoname.jp/uploads/cdn/pdf/syussou/08_20260629_2.pdf>
 
 `boatrace_ai.joint_policy_ga` connects pre-generated parameter/path draws to
 the settlement callback and searches complete 100-yen stake vectors. Fitness is

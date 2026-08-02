@@ -8,6 +8,7 @@ from boatrace_ai.joint_market_value import (
 )
 from boatrace_ai.parimutuel_settlement import (
     ParimutuelSettlementRules,
+    apportion_external_stakes,
     build_parimutuel_gross_payoff_model,
 )
 
@@ -66,8 +67,33 @@ def test_absolute_pool_is_required_for_self_impact() -> None:
         {"final_market_shares": {"A": 0.25, "B": 0.75}},
     )
 
-    with pytest.raises(ValueError, match="absolute external_ticket_stakes_yen"):
+    with pytest.raises(ValueError, match="external_total_sales_yen"):
         settle(shares_only, {"A": 100})
+
+
+def test_absolute_total_pool_and_shares_are_apportioned_in_integer_units() -> None:
+    stakes = apportion_external_stakes(
+        total_sales_yen=1_000,
+        market_shares={"A": 0.333, "B": 0.667},
+        ordinary_outcomes=OUTCOMES,
+    )
+    assert stakes == {"A": 330, "B": 670}
+    assert sum(stakes.values()) == 1_000
+    assert apportion_external_stakes(
+        total_sales_yen=50,
+        market_shares={"A": 0.5, "B": 0.5},
+        ordinary_outcomes=OUTCOMES,
+    ) == {"A": 30, "B": 20}
+
+    settle = build_parimutuel_gross_payoff_model(ordinary_outcomes=OUTCOMES)
+    scenario = JointMarketScenario(
+        {"A": 0.5, "B": 0.5},
+        {
+            "external_total_sales_yen": 1_000,
+            "final_market_shares": {"A": 0.333, "B": 0.667},
+        },
+    )
+    assert set(settle(scenario, {"A": 100})) == {"A"}
 
 
 def test_partial_refund_returns_only_affected_ticket_principal() -> None:
