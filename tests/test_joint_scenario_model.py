@@ -280,6 +280,77 @@ def test_generation_is_deterministic_and_reports_teacher_boundary() -> None:
     assert diagnostics["role"].endswith("not_yet_policy_connected")
 
 
+def test_shared_shock_is_calibrated_to_full_training_dependency() -> None:
+    candidates = (0.5, 1.0, 1.5)
+    model = fit_conditional_joint_scenario_model(
+        _training_rows(),
+        rank=2,
+        learn_residual_scales=True,
+        shock_scale_candidates=candidates,
+        scale_selection_scenarios=64,
+        scale_selection_seed=31,
+    )
+
+    calibration = model.residual_scale_selection["shared_shock_calibration"]
+    generated = calibration["generated_residual_inner_product"]
+    observed = calibration["observed_residual_inner_product"]
+    expected = min(
+        candidates,
+        key=lambda value: (
+            abs(generated[str(value)] - observed),
+            abs(value - 1.0),
+        ),
+    )
+
+    assert calibration["method"] == "full_training_moment_match"
+    assert calibration["sampled_races"] == len(_training_rows())
+    assert model.shared_shock_scale == expected
+    assert calibration["selected_shared_shock_scale"] == expected
+
+
+def test_shared_shock_calibration_uses_bounded_deterministic_sample() -> None:
+    rows = []
+    for copy_index in range(25):
+        for row in _training_rows():
+            race_id = f"{row.race_id}-{copy_index:02d}"
+            rows.append(replace(
+                row,
+                race_id=race_id,
+                terminal_probability_prediction_sha256=(
+                    terminal_probability_prediction_fingerprint(
+                        race_id=race_id,
+                        probabilities=row.terminal_probability_teacher,
+                        artifact_sha256=(
+                            row.terminal_probability_artifact_sha256
+                        ),
+                        fold_id=row.terminal_probability_fold_id,
+                        fold_manifest_sha256=(
+                            row.terminal_probability_fold_manifest_sha256
+                        ),
+                        feature_cutoff_seconds=0,
+                        outcomes=("A", "B"),
+                    )
+                ),
+            ))
+    kwargs = {
+        "rank": 2,
+        "learn_residual_scales": True,
+        "shock_scale_candidates": (0.5, 1.0),
+        "scale_selection_scenarios": 4,
+        "scale_selection_seed": 37,
+    }
+
+    first = fit_conditional_joint_scenario_model(rows, **kwargs)
+    second = fit_conditional_joint_scenario_model(rows, **kwargs)
+    first_calibration = first.residual_scale_selection[
+        "shared_shock_calibration"
+    ]
+
+    assert first_calibration["training_races"] == 300
+    assert first_calibration["sampled_races"] == 256
+    assert first.residual_scale_selection == second.residual_scale_selection
+
+
 def test_walk_forward_uses_only_strictly_prior_joint_observations() -> None:
     rows = _training_rows()
     actual = {

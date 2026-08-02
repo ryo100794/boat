@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import hashlib
 import json
@@ -343,7 +343,7 @@ def fit_conditional_joint_scenario_model(
         "selected_shared_shock_scale": shock_scale,
     }
     if learn_residual_scales:
-        probability_scale, market_scale, shock_scale, scale_selection = (
+        probability_scale, market_scale, scale_selection = (
             _select_residual_scales_on_last_training_day(
                 observations,
                 expected_outcomes=outcomes,
@@ -351,12 +351,11 @@ def fit_conditional_joint_scenario_model(
                 pooling_strength=pooling_strength,
                 diagonal_noise_fraction=diagonal_noise_fraction,
                 candidates=residual_scale_candidates,
-                shock_candidates=shock_scale_candidates,
                 scenarios=scale_selection_scenarios,
                 seed=scale_selection_seed,
             )
         )
-    return ConditionalJointScenarioModel(
+    model = ConditionalJointScenarioModel(
         version=MODEL_VERSION,
         outcomes=outcomes,
         residual_mean=residual_mean,
@@ -385,6 +384,24 @@ def fit_conditional_joint_scenario_model(
         shared_shock_scale=shock_scale,
         residual_scale_selection=scale_selection,
     )
+    if learn_residual_scales:
+        shock_scale, shock_diagnostics = _calibrate_shared_shock_on_training(
+            model,
+            observations,
+            candidates=shock_scale_candidates,
+            scenarios=scale_selection_scenarios,
+            seed=scale_selection_seed,
+        )
+        model = replace(
+            model,
+            shared_shock_scale=shock_scale,
+            residual_scale_selection={
+                **scale_selection,
+                "shared_shock_calibration": shock_diagnostics,
+                "selected_shared_shock_scale": shock_scale,
+            },
+        )
+    return model
 
 
 def generate_joint_market_scenarios(
@@ -511,19 +528,17 @@ def _select_residual_scales_on_last_training_day(
     pooling_strength: float,
     diagonal_noise_fraction: float,
     candidates: Sequence[float],
-    shock_candidates: Sequence[float],
     scenarios: int,
     seed: int,
-) -> tuple[float, float, float, dict[str, Any]]:
+) -> tuple[float, float, dict[str, Any]]:
     candidates = _validated_scale_candidates(candidates)
-    shock_candidates = _validated_scale_candidates(shock_candidates)
     if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
         raise ValueError("scale_selection_scenarios must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("scale_selection_seed must be a non-negative integer")
     dates = sorted({_iso_date(row.race_date, "race_date") for row in observations})
     if len(dates) < 2:
-        return 1.0, 1.0, 1.0, {
+        return 1.0, 1.0, {
             "method": "insufficient_dates_full_residual",
             "selected_probability_scale": 1.0,
             "selected_market_scale": 1.0,
@@ -537,7 +552,7 @@ def _select_residual_scales_on_last_training_day(
         row for row in observations if str(row.race_date) == validation_date
     ]
     if len(inner_training) < 3 or not validation:
-        return 1.0, 1.0, 1.0, {
+        return 1.0, 1.0, {
             "method": "insufficient_inner_training_full_residual",
             "validation_date": validation_date,
             "selected_probability_scale": 1.0,
@@ -603,83 +618,8 @@ def _select_residual_scales_on_last_training_day(
         candidates, key=lambda value: (probability_loss[value], value)
     )
     market_scale = min(candidates, key=lambda value: (market_loss[value], value))
-    dimension = len(expected_outcomes)
-    observed_dependency = fsum(
-        float(
-            (
-                _clr(row.terminal_probability_teacher, expected_outcomes)
-                - _clr(row.decision_probabilities, expected_outcomes)
-            )
-            @ (
-                _clr(row.final_market_shares, expected_outcomes)
-                - _clr(row.decision_market_shares, expected_outcomes)
-            )
-        )
-        / dimension
-        for row in validation
-    ) / len(validation)
-    generated_dependency = {value: 0.0 for value in shock_candidates}
-    for observation in validation:
-        race_seed = int.from_bytes(
-            hashlib.sha256(
-                f"{seed}:{observation.race_id}".encode("utf-8")
-            ).digest()[:8],
-            byteorder="big",
-            signed=False,
-        )
-        decision_probability = validate_probability_simplex(
-            observation.decision_probabilities,
-            expected_outcomes=expected_outcomes,
-        )
-        decision_market = validate_probability_simplex(
-            observation.decision_market_shares,
-            expected_outcomes=expected_outcomes,
-        )
-        for candidate in shock_candidates:
-            generated = generate_joint_market_scenarios(
-                inner_model,
-                decision_probabilities=decision_probability,
-                decision_market_shares=decision_market,
-                venue=observation.venue,
-                decision_horizon_seconds=observation.decision_horizon_seconds,
-                popularity_band=observation.popularity_band,
-                scenarios=scenarios,
-                seed=race_seed,
-                probability_mean_residual_scale=probability_scale,
-                market_mean_residual_scale=market_scale,
-                shared_shock_scale=candidate,
-            )
-            generated_dependency[candidate] += fsum(
-                float(
-                    (
-                        _clr(scenario.probabilities, expected_outcomes)
-                        - _clr(decision_probability, expected_outcomes)
-                    )
-                    @ (
-                        _clr(
-                            scenario.market_state["final_market_shares"],
-                            expected_outcomes,
-                        )
-                        - _clr(decision_market, expected_outcomes)
-                    )
-                )
-                / dimension
-                * scenario.weight
-                for scenario in generated
-            )
-    generated_dependency = {
-        value: total / len(validation)
-        for value, total in generated_dependency.items()
-    }
-    shock_scale = min(
-        shock_candidates,
-        key=lambda value: (
-            abs(generated_dependency[value] - observed_dependency),
-            abs(value - 1.0),
-        ),
-    )
     count = len(validation)
-    return probability_scale, market_scale, shock_scale, {
+    return probability_scale, market_scale, {
         "method": "last_prior_day_distribution_cross_entropy",
         "validation_date": validation_date,
         "inner_training_through": dates[-2],
@@ -694,12 +634,112 @@ def _select_residual_scales_on_last_training_day(
         },
         "selected_probability_scale": probability_scale,
         "selected_market_scale": market_scale,
+    }
+
+
+def _calibrate_shared_shock_on_training(
+    model: ConditionalJointScenarioModel,
+    observations: Sequence[JointScenarioObservation],
+    *,
+    candidates: Sequence[float],
+    scenarios: int,
+    seed: int,
+    maximum_races: int = 256,
+) -> tuple[float, dict[str, Any]]:
+    candidates = _validated_scale_candidates(candidates)
+    ordered = sorted(
+        observations,
+        key=lambda row: (str(row.race_date), str(row.race_id)),
+    )
+    if len(ordered) > maximum_races:
+        indexes = np.linspace(
+            0, len(ordered) - 1, maximum_races, dtype=np.int64
+        )
+        selected = [ordered[int(index)] for index in indexes]
+    else:
+        selected = ordered
+    dimension = len(model.outcomes)
+    observed_dependency = fsum(
+        float(
+            (
+                _clr(row.terminal_probability_teacher, model.outcomes)
+                - _clr(row.decision_probabilities, model.outcomes)
+            )
+            @ (
+                _clr(row.final_market_shares, model.outcomes)
+                - _clr(row.decision_market_shares, model.outcomes)
+            )
+        )
+        / dimension
+        for row in selected
+    ) / len(selected)
+    generated_dependency = {value: 0.0 for value in candidates}
+    for observation in selected:
+        race_seed = int.from_bytes(
+            hashlib.sha256(
+                f"{seed}:{observation.race_id}".encode("utf-8")
+            ).digest()[:8],
+            byteorder="big",
+            signed=False,
+        )
+        decision_probability = validate_probability_simplex(
+            observation.decision_probabilities,
+            expected_outcomes=model.outcomes,
+        )
+        decision_market = validate_probability_simplex(
+            observation.decision_market_shares,
+            expected_outcomes=model.outcomes,
+        )
+        for candidate in candidates:
+            generated = generate_joint_market_scenarios(
+                model,
+                decision_probabilities=decision_probability,
+                decision_market_shares=decision_market,
+                venue=observation.venue,
+                decision_horizon_seconds=observation.decision_horizon_seconds,
+                popularity_band=observation.popularity_band,
+                scenarios=scenarios,
+                seed=race_seed,
+                shared_shock_scale=candidate,
+            )
+            generated_dependency[candidate] += fsum(
+                float(
+                    (
+                        _clr(scenario.probabilities, model.outcomes)
+                        - _clr(decision_probability, model.outcomes)
+                    )
+                    @ (
+                        _clr(
+                            scenario.market_state["final_market_shares"],
+                            model.outcomes,
+                        )
+                        - _clr(decision_market, model.outcomes)
+                    )
+                )
+                / dimension
+                * scenario.weight
+                for scenario in generated
+            )
+    generated_dependency = {
+        value: total / len(selected)
+        for value, total in generated_dependency.items()
+    }
+    scale = min(
+        candidates,
+        key=lambda value: (
+            abs(generated_dependency[value] - observed_dependency),
+            abs(value - 1.0),
+        ),
+    )
+    return scale, {
+        "method": "full_training_moment_match",
+        "sampled_races": len(selected),
+        "training_races": len(observations),
         "observed_residual_inner_product": observed_dependency,
         "generated_residual_inner_product": {
-            str(value): generated_dependency[value]
-            for value in shock_candidates
+            str(value): generated_dependency[value] for value in candidates
         },
-        "selected_shared_shock_scale": shock_scale,
+        "selected_shared_shock_scale": scale,
     }
 
 
