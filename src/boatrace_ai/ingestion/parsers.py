@@ -488,25 +488,42 @@ def parse_beforeinfo_html(html: str) -> dict[str, Any]:
             weather[key] = to_float(match.group(1))
 
     rows: list[dict[str, Any]] = []
-    starts: list[tuple[int, int]] = []
+    candidates: list[tuple[int, int]] = []
     for index, line in enumerate(lines):
         lane = _lane_marker(line)
         if lane is None:
             continue
         lookahead = "\n".join(lines[index + 1 : index + 8])
         if "R" in lookahead or re.search(r"\d{2,3}(?:\.\d)?kg", lookahead):
-            starts.append((index, lane))
-    for pos, (start, lane) in enumerate(starts[:6]):
+            candidates.append((index, lane))
+
+    starts: list[tuple[int, int]] = []
+    expected_lane = 1
+    for candidate in candidates:
+        if candidate[1] != expected_lane:
+            continue
+        starts.append(candidate)
+        expected_lane += 1
+        if expected_lane == 7:
+            break
+
+    for pos, (start, lane) in enumerate(starts):
         end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)
         block_text = "\n".join(lines[start:end])
-        nums = [to_float(token) for token in re.findall(r"\d+\.\d+|\d+", block_text)]
-        nums = [value for value in nums if value is not None]
+        detail = re.search(
+            r"(?P<weight>\d+(?:\.\d+)?)kg\s+"
+            r"(?P<exhibition>[5-8]\.\d{1,2})\s+"
+            r"(?P<tilt>-?\d+(?:\.\d+)?)",
+            " ".join(block_text.split()),
+        )
         rows.append(
             {
                 "lane": lane,
-                "weight_kg": next((value for value in nums if 40 <= value <= 70), None),
-                "exhibition_time": next((value for value in nums if 5.0 <= value <= 8.5), None),
-                "tilt": next((value for value in nums if -2.0 <= value <= 3.0), None),
+                "weight_kg": to_float(detail.group("weight")) if detail else None,
+                "exhibition_time": (
+                    to_float(detail.group("exhibition")) if detail else None
+                ),
+                "tilt": to_float(detail.group("tilt")) if detail else None,
                 "raw_text": block_text,
                 **weather,
             }
