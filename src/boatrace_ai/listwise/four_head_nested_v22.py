@@ -417,6 +417,42 @@ def _fit_uncapped_payout_residual_head(
     )
 
 
+def _fit_all_choice_closing_residual_head(
+    matrices: Sequence[np.ndarray],
+    conditional_gross_payouts: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> LinearHead:
+    """Learn conditional return from every ticket's official closing odds."""
+    if not matrices or len(matrices) != len(conditional_gross_payouts):
+        raise ValueError("all-choice closing teacher requires aligned races")
+    rows: list[np.ndarray] = []
+    residuals: list[np.ndarray] = []
+    dimension = int(matrices[0].shape[1])
+    for matrix, gross_payouts in zip(
+        matrices, conditional_gross_payouts, strict=True
+    ):
+        gross = np.asarray(gross_payouts, dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[1] != dimension:
+            raise ValueError("all-choice closing matrices must share dimensions")
+        if gross.shape != (len(matrix),) or np.any(gross <= 1.0):
+            raise ValueError("all-choice closing odds must be finite and above one")
+        if not np.isfinite(gross).all():
+            raise ValueError("all-choice closing odds must be finite and above one")
+        predicted_log_closing = np.asarray(matrix[:, 2], dtype=np.float64)
+        rows.append(np.asarray(matrix, dtype=np.float64))
+        residuals.append(np.log(gross) - predicted_log_closing)
+    return _head(
+        "purchase_all_choice_closing_residual_head",
+        "all_choice_log_closing_odds_residual_from_strict_prior_base_head_oof",
+        _fit_ridge(
+            np.vstack(rows),
+            np.concatenate(residuals),
+            alpha=alpha,
+        ),
+    )
+
+
 def _fit_pairwise_purchase_head(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
@@ -475,9 +511,21 @@ def _fit_purchase_heads(
     *,
     alpha: float,
     purchase_loss: str,
+    conditional_gross_payouts: Sequence[np.ndarray] | None = None,
 ) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
+    if purchase_loss == "multinomial_offset_all_choice_closing":
+        if conditional_gross_payouts is None:
+            raise ValueError("all-choice closing teacher targets are required")
+        return (
+            _fit_multinomial_offset_purchase_head(
+                matrices, realized_returns, alpha=alpha
+            ),
+            _fit_all_choice_closing_residual_head(
+                matrices, conditional_gross_payouts, alpha=alpha
+            ),
+        )
     if purchase_loss == "multinomial_offset_uncapped_lognormal":
         return (
             _fit_multinomial_offset_purchase_head(
@@ -613,7 +661,10 @@ def _purchase_net_scores(
     linear = _scores(head, matrix)
     if head.teacher.startswith("multinomial_probability_residual"):
         if payout_head is None or not payout_head.teacher.startswith(
-            "uncapped_log_payout_residual"
+            (
+                "uncapped_log_payout_residual",
+                "all_choice_log_closing_odds_residual",
+            )
         ):
             raise ValueError("offset purchase head requires payout residual head")
         base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
@@ -661,6 +712,7 @@ def fit_four_head_nested_v22(
         ),
         "pairwise_contextual_rank_calibrated": "decision_context_v2",
         "multinomial_offset_uncapped_lognormal": "decision_context_v2",
+        "multinomial_offset_all_choice_closing": "decision_context_v2",
     }.get(purchase_loss, "base_outputs_v1")
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")
@@ -671,7 +723,7 @@ def fit_four_head_nested_v22(
     folds: list[InnerOOFFold] = []
     oof_payloads: list[dict[str, Any]] = []
     base_oof_by_date: dict[
-        str, list[tuple[str, np.ndarray, np.ndarray]]
+        str, list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]
     ] = {}
     for validation_index in range(minimum_inner_training_dates, len(dates)):
         validation_date = dates[validation_index]
@@ -698,7 +750,12 @@ def fit_four_head_nested_v22(
                 float(race.outcome.closing_odds[race.outcome.winner_index]) - 1.0
             )
             base_oof_by_date[validation_date].append(
-                (race.decision.race_id, purchase_matrix, realized)
+                (
+                    race.decision.race_id,
+                    purchase_matrix,
+                    realized,
+                    np.asarray(race.outcome.closing_odds, dtype=np.float64),
+                )
             )
             oof_payloads.append(_oof_payload(race, probability, ranking, closing))
         folds.append(
@@ -734,10 +791,11 @@ def fit_four_head_nested_v22(
             [record[2] for record in training_records],
             alpha=alpha,
             purchase_loss=purchase_loss,
+            conditional_gross_payouts=[record[3] for record in training_records],
         )
         date_score_payloads: list[dict[str, Any]] = []
         date_threshold_payloads: list[dict[str, Any]] = []
-        for race_id, matrix, realized in validation_records:
+        for race_id, matrix, realized, _conditional_gross in validation_records:
             scores = _purchase_net_scores(
                 fold_head, fold_payout_head, matrix
             )
@@ -818,6 +876,7 @@ def fit_four_head_nested_v22(
         [record[2] for record in all_base_oof_records],
         alpha=alpha,
         purchase_loss=purchase_loss,
+        conditional_gross_payouts=[record[3] for record in all_base_oof_records],
     )
     probability_head, ranking_head, closing_head = _fit_base_heads(
         ordered, alpha=alpha

@@ -412,6 +412,82 @@ def test_nested_offset_tail_artifact_uses_context_without_oof_calibration() -> N
     )
 
 
+def test_all_choice_closing_head_uses_every_ticket_teacher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matrices = [
+        np.column_stack(
+            (
+                np.asarray([0.6, 0.3, 0.1]),
+                np.asarray([1.0, 0.0, -1.0]),
+                np.log(np.asarray([8.0, 16.0, 40.0])),
+            )
+        ),
+        np.column_stack(
+            (
+                np.asarray([0.2, 0.3, 0.5]),
+                np.asarray([-1.0, 0.0, 1.0]),
+                np.log(np.asarray([50.0, 20.0, 7.0])),
+            )
+        ),
+    ]
+    gross = [
+        np.asarray([10.0, 18.0, 44.0]),
+        np.asarray([55.0, 22.0, 8.0]),
+    ]
+    captured: dict[str, np.ndarray] = {}
+
+    def fake_ridge(
+        matrix: np.ndarray,
+        target: np.ndarray,
+        *,
+        alpha: float,
+        sample_weight: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, float]:
+        captured["matrix"] = matrix.copy()
+        captured["target"] = target.copy()
+        return np.zeros(matrix.shape[1]), 0.0
+
+    monkeypatch.setattr(v22, "_fit_ridge", fake_ridge)
+    head = v22._fit_all_choice_closing_residual_head(
+        matrices, gross, alpha=0.01
+    )
+
+    assert captured["matrix"].shape == (6, 3)
+    assert captured["target"] == pytest.approx(
+        np.concatenate(
+            [
+                np.log(gross[0]) - matrices[0][:, 2],
+                np.log(gross[1]) - matrices[1][:, 2],
+            ]
+        )
+    )
+    assert head.teacher.startswith("all_choice_log_closing_odds_residual")
+
+
+def test_nested_all_choice_closing_artifact_routes_full_closing_targets() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_offset_all_choice_closing",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_feature_map == "decision_context_v2"
+    assert artifact.purchase_head.teacher.startswith(
+        "multinomial_probability_residual"
+    )
+    assert artifact.purchase_payout_head is not None
+    assert artifact.purchase_payout_head.teacher.startswith(
+        "all_choice_log_closing_odds_residual"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64
