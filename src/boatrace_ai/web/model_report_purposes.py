@@ -179,6 +179,7 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
         ),
         "daily_budget_yen": _first_value(
             job.get("daily_budget_yen"),
+            parameters.get("initial_daily_bankroll_yen"),
             parameters.get("daily_budget_yen"),
             parameters.get("budget_yen"),
             parameters.get("budget"),
@@ -304,6 +305,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "venue_conditional",
             "four_head",
             "standardized_365d",
+            "joint_bankroll",
         )
     )):
         purposes.append("outcome_probability")
@@ -356,6 +358,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
             "four_head",
             "conditional_payout",
             "standardized_365d",
+            "joint_bankroll",
         )
     )):
         purposes.append("bankroll_policy")
@@ -363,6 +366,7 @@ def evaluation_purpose_keys(job: dict[str, Any]) -> list[str]:
         job.get("promotion_gate_total") is not None
         or job.get("prediction_deployment_eligible") is not None
         or tokens(("standardized_365d", "nested_annual", "promotion", "prospective"))
+        or (pending and tokens(("joint_bankroll",)))
     ):
         purposes.append("production_validation")
     return purposes

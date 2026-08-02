@@ -5,7 +5,11 @@ from pathlib import Path
 import joblib
 import pytest
 
-from boatrace_ai.evaluation_queue import build_command, result_decision
+from boatrace_ai.evaluation_queue import (
+    build_command,
+    result_decision,
+    summarize_result,
+)
 from boatrace_ai.joint_scenario_evaluation import (
     run_joint_scenario_evaluation,
 )
@@ -127,3 +131,38 @@ def test_joint_bankroll_queue_command_is_distinct_and_restricted(
     assert result_decision("joint_bankroll_walk_forward", {}) == (
         "accumulate_sealed_bankroll_evidence"
     )
+
+
+def test_joint_bankroll_result_uses_unified_probability_and_bankroll_metrics() -> None:
+    summary = summarize_result({
+        "model": "joint_bankroll_strict_walk_forward_v1",
+        "status": "provisional_accumulate_sealed_days",
+        "promotion_eligible": False,
+        "evaluation_from": "2026-07-28",
+        "evaluation_through": "2026-08-01",
+        "evaluation_days": 5,
+        "evaluated_races": 713,
+        "probability_metrics": {
+            "model_winner_log_loss": 0.7,
+            "model_winner_top1_accuracy": 0.55,
+            "model_trifecta_log_loss": 3.8,
+            "model_trifecta_top5_hit_rate": 0.38,
+        },
+        "primary_bankroll": {
+            "stake_yen": 20_000,
+            "return_yen": 21_000,
+            "profit_yen": 1_000,
+            "roi": 1.05,
+            "max_drawdown_yen": 3_000,
+            "roi_without_largest_hit": 1.01,
+            "daily_cluster_bootstrap_roi_lower_95": 0.98,
+        },
+    })
+
+    assert summary["winner_log_loss"] == 0.7
+    assert summary["winner_top1_accuracy"] == 0.55
+    assert summary["model_trifecta_log_loss"] == 3.8
+    assert summary["trifecta_top5_hit_rate"] == 0.38
+    assert summary["roi"] == 1.05
+    assert summary["roi_without_largest_hit"] == 1.01
+    assert summary["daily_cluster_bootstrap_roi_lower_95"] == 0.98

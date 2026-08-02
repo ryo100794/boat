@@ -173,7 +173,37 @@ def _probability_metrics(
     outcomes: Sequence[str],
 ) -> dict[str, float]:
     one_hot = {outcome: float(outcome == actual) for outcome in outcomes}
+    lanes = tuple(sorted({outcome.split("-")[0] for outcome in outcomes}))
+    actual_lane = actual.split("-")[0]
+    predicted_winner = {
+        lane: fsum(
+            float(predicted[outcome])
+            for outcome in outcomes
+            if outcome.split("-")[0] == lane
+        )
+        for lane in lanes
+    }
+    decision_winner = {
+        lane: fsum(
+            float(decision[outcome])
+            for outcome in outcomes
+            if outcome.split("-")[0] == lane
+        )
+        for lane in lanes
+    }
     return {
+        "generated_winner_log_loss": -log(
+            max(EPSILON, predicted_winner[actual_lane])
+        ),
+        "decision_model_winner_log_loss": -log(
+            max(EPSILON, decision_winner[actual_lane])
+        ),
+        "generated_winner_top1_accuracy": float(
+            max(predicted_winner, key=predicted_winner.get) == actual_lane
+        ),
+        "decision_model_winner_top1_accuracy": float(
+            max(decision_winner, key=decision_winner.get) == actual_lane
+        ),
         "generated_log_loss": -log(max(EPSILON, float(predicted[actual]))),
         "decision_model_log_loss": -log(
             max(EPSILON, float(decision[actual]))
@@ -494,8 +524,27 @@ def run_joint_bankroll_evaluation(
 
     total_stake = sum(day["stake_yen"] for day in daily)
     total_return = sum(day["return_yen"] for day in daily)
+    realized_returns = [
+        int(race["return_yen"])
+        for day in daily
+        for race in day["races"]
+        if int(race["stake_yen"]) > 0
+    ]
+    largest_return = max(realized_returns, default=0)
     probability_metrics = _average_metrics(all_probability_rows)
     probability_metrics.update({
+        "model_winner_log_loss": probability_metrics.get(
+            "generated_winner_log_loss"
+        ),
+        "model_winner_top1_accuracy": probability_metrics.get(
+            "generated_winner_top1_accuracy"
+        ),
+        "model_trifecta_log_loss": probability_metrics.get(
+            "generated_log_loss"
+        ),
+        "model_trifecta_top5_hit_rate": probability_metrics.get(
+            "generated_top5"
+        ),
         "generated_log_loss_delta_vs_decision_model": (
             probability_metrics.get("generated_log_loss", 0.0)
             - probability_metrics.get("decision_model_log_loss", 0.0)
@@ -520,6 +569,22 @@ def run_joint_bankroll_evaluation(
         "roi": total_return / total_stake if total_stake else None,
         "bet_count": sum(day["bet_races"] for day in daily),
         "ticket_orders": sum(day["ticket_orders"] for day in daily),
+        "race_days": len(daily),
+        "evaluated_races": len(all_probability_rows),
+        "selected_races": sum(day["bet_races"] for day in daily),
+        "tickets": sum(day["ticket_orders"] for day in daily),
+        "winning_days": sum(day["profit_yen"] > 0 for day in daily),
+        "profitable_day_fraction": (
+            sum(day["profit_yen"] > 0 for day in daily) / len(daily)
+            if daily else 0.0
+        ),
+        "largest_hit_return_share": (
+            largest_return / total_return if total_return else None
+        ),
+        "roi_without_largest_hit": (
+            (total_return - largest_return) / total_stake
+            if total_stake else None
+        ),
         "max_drawdown_yen": max(
             (day["max_drawdown_yen"] for day in daily), default=0
         ),
@@ -529,6 +594,10 @@ def run_joint_bankroll_evaluation(
         "roi_ci95_lower": confidence["roi_lower"],
         "roi_ci95_upper": confidence["roi_upper"],
         "probability_roi_above_one": confidence[
+            "probability_roi_above_one"
+        ],
+        "daily_cluster_bootstrap_roi_lower_95": confidence["roi_lower"],
+        "bootstrap_probability_roi_above_one": confidence[
             "probability_roi_above_one"
         ],
     }
@@ -587,6 +656,7 @@ def run_joint_bankroll_evaluation(
             "prediction_dates": terminal["prediction_dates"],
         },
         "evaluated_days": len(daily),
+        "evaluation_days": len(daily),
         "evaluated_races": len(all_probability_rows),
         "evaluation_from": daily[0]["race_date"] if daily else None,
         "evaluation_through": daily[-1]["race_date"] if daily else None,
@@ -595,6 +665,11 @@ def run_joint_bankroll_evaluation(
         "primary_bankroll": primary_bankroll,
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
+        "promotion_gate_passed": sum(gate.values()),
+        "promotion_gate_total": len(gate),
+        "promotion_gate_failed": [
+            key for key, passed in gate.items() if not passed
+        ],
         "daily": daily,
     }
 
