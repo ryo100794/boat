@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from boatrace_ai.web.dashboard import MODEL_REPORT_HTML
 from boatrace_ai.web.model_report_purposes import (
+    PURPOSE_DECISION_RULES,
+    PURPOSE_REQUIREMENTS,
     PURPOSE_SPECS,
     evaluation_purpose_groups,
     evaluation_purpose_keys,
@@ -19,6 +21,13 @@ def test_probability_only_job_is_not_assigned_bankroll_metrics() -> None:
     }
 
     assert evaluation_purpose_keys(job) == ["outcome_probability"]
+
+
+def test_unknown_completed_job_is_not_misclassified_as_probability() -> None:
+    job = {"name": "database-backup", "kind": "backup", "status": "完了"}
+
+    assert evaluation_purpose_keys(job) == []
+    assert all(not group["models"] for group in evaluation_purpose_groups([job]))
 
 
 def test_multi_head_purchase_job_is_reported_under_each_objective() -> None:
@@ -85,9 +94,83 @@ def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     assert 'id="purposeGroups"' in MODEL_REPORT_HTML
     assert "renderPurposeGroups(data.evaluation_purposes||[])" in MODEL_REPORT_HTML
     assert "正予測群" in MODEL_REPORT_HTML
-    assert "的中LL / 市場LL / Δ" in MODEL_REPORT_HTML
-    assert "払戻倍率 / OOF MAE" in MODEL_REPORT_HTML
-    assert "外側払戻MAE" in MODEL_REPORT_HTML
+    assert "的中LL / 市場 / Δ" in MODEL_REPORT_HTML
+    assert "払戻 外側/OOF MAE" in MODEL_REPORT_HTML
+    assert "q20 pinball / 下側被覆" in MODEL_REPORT_HTML
     assert "収益指数 H/P" in MODEL_REPORT_HTML
     assert "評価期間" in MODEL_REPORT_HTML
     assert "最大1的中除外" in MODEL_REPORT_HTML
+
+
+
+def test_purpose_group_reports_metric_completeness_and_backtest_scope() -> None:
+    job = {
+        "db_job_id": 22,
+        "name": "candidate",
+        "status": "完了",
+        "winner_log_loss": 1.12,
+        "winner_top1_accuracy": 0.58,
+        "calibrated_trifecta_log_loss": 3.7,
+        "trifecta_top5_hit_rate": 0.37,
+        "evaluation_days": 31,
+        "evaluated_races": 1520,
+        "parameters": {
+            "from_date": "2026-06-01",
+            "through_date": "2026-07-01",
+            "decision_minutes_before": 5,
+            "daily_budget_yen": 10_000,
+            "include_odds": True,
+        },
+    }
+
+    group = evaluation_purpose_groups([job])[0]
+    evaluation = group["models"][0]["purpose_evaluation"]
+    assert evaluation["complete"] is True
+    assert evaluation["metric_count"] == evaluation["metric_total"] == 4
+    assert evaluation["backtest"] == {
+        "start": "2026-06-01",
+        "end": "2026-07-01",
+        "days": 31,
+        "races": 1520,
+        "folds": None,
+        "decision_minutes_before": 5,
+        "daily_budget_yen": 10_000,
+        "odds_mode": "T-5",
+        "race_set_sha256": None,
+        "protocol_sha256": None,
+        "policy_sha256": None,
+        "allocation_mode": None,
+        "profit_reinvestment": None,
+    }
+    assert evaluation["comparison_ready"] is True
+    assert len(evaluation["comparison_id"]) == 10
+    assert group["required_metrics"] == list(
+        PURPOSE_REQUIREMENTS["outcome_probability"]
+    )
+    assert group["decision_rule"] == PURPOSE_DECISION_RULES["outcome_probability"]
+
+
+def test_incomplete_purpose_metrics_are_explicit() -> None:
+    group = evaluation_purpose_groups([
+        {
+            "name": "closing-candidate",
+            "status": "完了",
+            "closing_odds_log_mae": 0.1,
+        }
+    ])[1]
+    evaluation = group["models"][0]["purpose_evaluation"]
+    assert evaluation["complete"] is False
+    assert evaluation["metric_count"] == 1
+    assert "closing_odds_rank_correlation" in evaluation["missing_metrics"]
+
+
+def test_purpose_page_shows_contract_scope_and_objective_specific_diagnostics() -> None:
+    assert "評価充足" in MODEL_REPORT_HTML
+    assert "バックテスト条件" in MODEL_REPORT_HTML
+    assert "ΔLL 日次95%CI" in MODEL_REPORT_HTML
+    assert "q20 pinball / 下側被覆" in MODEL_REPORT_HTML
+    assert "的中Top5" in MODEL_REPORT_HTML
+    assert "最大払戻比 / 有効的中" in MODEL_REPORT_HTML
+    assert "失敗ゲート" in MODEL_REPORT_HTML
+    assert "purposeCompleteness" in MODEL_REPORT_HTML
+    assert "purposeScope" in MODEL_REPORT_HTML

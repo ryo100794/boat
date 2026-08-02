@@ -23,7 +23,7 @@
     .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); } .pos { color:var(--ok); font-weight:700; } .neg { color:var(--bad); font-weight:700; } .tag { display:inline-block; padding:0 4px; border-radius:3px; color:#fff; background:var(--muted); } .tag.running { background:#a76300; } .tag.done { background:var(--ok); } .tag.failed { background:var(--bad); }
     .model-select-row { cursor:pointer; } .model-select-row:hover td { background:#eef6f6; } .model-select-row[aria-selected="true"] td { background:#d8eeee; box-shadow:inset 0 1px 0 var(--accent),inset 0 -1px 0 var(--accent); } .model-select-row:focus { outline:2px solid var(--accent); outline-offset:-2px; }
     .missing { color:var(--bad); text-decoration:underline dotted; text-underline-offset:2px; cursor:help; } .period-cell { text-align:left; white-space:normal; } .compact-note { margin:2px 0; color:var(--muted); }
-    .purpose-groups { display:grid; gap:5px; } .purpose-panel { border-top:2px solid var(--accent); padding-top:2px; min-width:0; } .purpose-closing_odds { border-color:#1769c2; } .purpose-ticket_value { border-color:#7b5a00; } .purpose-bankroll_policy { border-color:#a76300; } .purpose-production_validation { border-color:var(--accent2); } .purpose-heading { display:grid; grid-template-columns:minmax(130px,.7fr) auto minmax(180px,1fr) minmax(260px,1.4fr); align-items:center; gap:5px; min-height:20px; } .purpose-heading h3 { margin:0; font-size:11px; } .purpose-heading small { color:var(--muted); } .purpose-table .name-cell { width:22%; white-space:normal; overflow-wrap:anywhere; }
+    .purpose-groups { display:grid; gap:5px; } .purpose-panel { border-top:2px solid var(--accent); padding-top:2px; min-width:0; } .purpose-closing_odds { border-color:#1769c2; } .purpose-ticket_value { border-color:#7b5a00; } .purpose-bankroll_policy { border-color:#a76300; } .purpose-production_validation { border-color:var(--accent2); } .purpose-heading { display:grid; grid-template-columns:minmax(130px,.55fr) auto minmax(170px,.8fr) minmax(260px,1.35fr); align-items:center; gap:5px; min-height:20px; } .purpose-heading h3 { margin:0; font-size:11px; } .purpose-heading small { color:var(--muted); } .purpose-contract { grid-column:1/-1; display:grid; grid-template-columns:minmax(180px,.8fr) minmax(320px,1.7fr); gap:1px; border:1px solid var(--line); background:var(--line); } .purpose-contract span { padding:2px 4px; background:#fafbfb; } .purpose-table .name-cell { width:18%; white-space:normal; overflow-wrap:anywhere; } .coverage { font-weight:700; } .coverage.complete { color:var(--ok); } .coverage.partial { color:var(--bad); }
     .ga-panel { margin-top:5px; border-top-color:#a76300; } .ga-summary { display:grid; grid-template-columns:repeat(8,minmax(68px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }
     .ga-summary div { min-width:0; padding:2px 4px; background:#fff; } .ga-summary b { display:block; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ga-summary span { color:var(--muted); font-size:8px; }
     .ga-table { table-layout:auto; min-width:980px; } .ga-table th:first-child,.ga-table td:first-child { width:38px; text-align:right; }
@@ -40,7 +40,7 @@
   </nav>
 
   <section id="purposeSection" class="report-group purpose-report">
-    <div class="group-heading"><h2>目的別 現在評価中モデル</h2><span class="scope-note">目的ごとに適用指標とバックチェックを分離</span></div>
+    <div class="group-heading"><h2>目的別 モデル評価・バックテスト</h2><span class="scope-note">同一目的でも評価条件が違う結果は条件IDで区別</span></div>
     <div id="purposeGroups" class="purpose-groups"></div>
   </section>
 
@@ -449,32 +449,64 @@ function metricMarkup(value,formatter,reason){
   return value==null?`<span class="missing" title="${esc(reason)}">未評価</span>`:formatter(value);
 }
 function purposeSample(x){
-  const races=x.evaluated_races??x.evaluation_races,days=x.evaluation_days??x.race_days;
+  const e=x.purpose_evaluation||{},b=e.backtest||{},races=b.races??x.evaluated_races??x.evaluation_races,days=b.days??x.evaluation_days??x.race_days;
   return (races==null?"-":fmt(races)+"R")+(days==null?"":" / "+fmt(days)+"日");
 }
 function purposeStatus(x){ const state=trackState(x); return `<span class="tag ${state.cls}">${esc(state.status)}</span>`; }
 function purposeName(x){ const name=x.name||x.label||"-",key=x.model_key||modelKey(name); return `<td class="name-cell" title="${esc(name)}" data-model-key="${esc(key)}">${esc(name)}</td>`; }
+function purposeCompleteness(x){
+  const e=x.purpose_evaluation||{},count=Number(e.metric_count||0),total=Number(e.metric_total||0),complete=Boolean(e.complete),ready=Boolean(e.comparison_ready),missing=[...(e.missing_metrics||[]),...(e.missing_scope||[]).map(v=>"条件:"+v)].join(", ");
+  if(!total) return '<span class="coverage partial">未定義</span>';
+  return `<span class="coverage ${ready?"complete":"partial"}" title="${esc(missing||"必須指標と比較条件を記録済み")}">${count}/${total} ${ready?"比較可":complete?"条件不足":"指標不足"}</span>`;
+}
+function purposeScope(x){
+  const e=x.purpose_evaluation||{},b=e.backtest||{},parts=[];
+  const period=(b.start||b.end)?`${b.start||"-"}..${b.end||"継続中"}`:"期間未記録";
+  parts.push(`条件 ${e.comparison_id||"未記録"}`);
+  parts.push(period);
+  if(b.decision_minutes_before!=null) parts.push(`T-${fmt(b.decision_minutes_before)}`);
+  if(b.odds_mode) parts.push(String(b.odds_mode));
+  if(b.daily_budget_yen!=null) parts.push(`日額 ${yen(b.daily_budget_yen)}`);
+  if(b.allocation_mode) parts.push(String(b.allocation_mode));
+  if(b.profit_reinvestment!=null) parts.push(b.profit_reinvestment?"利益再投資":"日次リセット");
+  if(b.folds!=null) parts.push(`${fmt(b.folds)}fold`);
+  return parts.join(" / ");
+}
+function probabilityDelta(x){
+  if(x.market_log_loss_delta==null) return '<span class="missing" title="市場比較差と95%CIが未評価">未評価</span>';
+  const lo=x.market_day_log_loss_delta_ci95_lower??x.market_log_loss_delta_ci95_lower,hi=x.market_day_log_loss_delta_ci95_upper??x.market_log_loss_delta_ci95_upper;
+  return `${ratio(x.market_log_loss_delta)} [${ratio(lo)}, ${ratio(hi)}]`;
+}
+function top5Delta(x){
+  if(x.market_top5_delta==null) return '<span class="missing" title="市場3T5差と95%CIが未評価">未評価</span>';
+  const lo=x.market_day_top5_delta_ci95_lower??x.market_top5_delta_ci95_lower,hi=x.market_day_top5_delta_ci95_upper??x.market_top5_delta_ci95_upper;
+  return `${pct(x.market_top5_delta)} [${pct(lo)}, ${pct(hi)}]`;
+}
+function promotionFailures(x){
+  const failed=[...(x.promotion_gate_failed||[]),...(x.prediction_deployment_gate_failed||[])];
+  return failed.length?failed.join(", "):"-";
+}
 function purposeTable(group){
   const rows=group.models||[], key=group.key;
   let headers=[], cells;
   if(key==="outcome_probability"){
-    headers=["モデル","状態","評価期間","母数","1着 LogLoss","1着的中","3連単 LogLoss","3T5"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td class="period-cell">${esc(evaluationPeriod(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${ratio(x.winner_log_loss??x.entry_log_loss)}</td>`,`<td>${pct(x.winner_top1_accuracy)}</td>`,`<td>${ratio(x.calibrated_trifecta_log_loss??x.trifecta_log_loss)}</td>`,`<td>${pct(x.trifecta_top5_hit_rate)}</td>`];
+    headers=["モデル","状態","評価充足","バックテスト条件","母数","1着 LL / 市場","1着的中","3連単 LL / 市場","ΔLL 日次95%CI","3T5 / 市場","Δ3T5 日次95%CI"];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${ratio(x.winner_log_loss)} / ${ratio(x.market_winner_log_loss)}</td>`,`<td>${pct(x.winner_top1_accuracy)}</td>`,`<td>${ratio(x.calibrated_trifecta_log_loss)} / ${ratio(x.market_trifecta_log_loss)}</td>`,`<td class="mono">${probabilityDelta(x)}</td>`,`<td>${pct(x.trifecta_top5_hit_rate)} / ${pct(x.market_trifecta_top5_hit_rate)}</td>`,`<td class="mono">${top5Delta(x)}</td>`];
   }else if(key==="closing_odds"){
-    headers=["モデル","状態","評価期間","母数","log MAE","順位相関","区間被覆","取得時差"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td class="period-cell">${esc(evaluationPeriod(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${corr(x.closing_odds_log_mae)}</td>`,`<td>${corr(x.closing_odds_rank_correlation)}</td>`,`<td>${pct(x.closing_odds_interval_coverage)}</td>`,`<td>${x.closing_snapshot_age_seconds==null?"-":ratio(x.closing_snapshot_age_seconds)+"秒"}</td>`];
+    headers=["モデル","状態","評価充足","バックテスト条件","母数","log MAE","順位相関","区間被覆","取得時差","q20 pinball / 下側被覆"];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${corr(x.closing_odds_log_mae)}</td>`,`<td>${corr(x.closing_odds_rank_correlation)}</td>`,`<td>${pct(x.closing_odds_interval_coverage)}</td>`,`<td>${x.closing_snapshot_age_seconds==null?"-":ratio(x.closing_snapshot_age_seconds)+"秒"}</td>`,`<td>${ratio(x.closing_q20_pinball_loss)} / ${pct(x.closing_q20_lower_coverage)}</td>`];
   }else if(key==="ticket_value"){
-    headers=["モデル","状態","評価期間","母数","収益相関 / MAE","的中LL / 市場LL / Δ","的中倍率 / OOF LL","払戻倍率 / OOF MAE","外側払戻MAE","収益指数 H/P/D","正予測群","正式資金BT"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td class="period-cell">${esc(evaluationPeriod(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${corr(x.purchase_value_pearson_correlation)} / ${corr(x.purchase_value_calibration_mae)}</td>`,`<td>${ratio(x.purchase_hit_log_loss)} / ${ratio(x.t5_market_log_loss)} / ${ratio(x.purchase_hit_log_loss_delta_vs_market)}</td>`,`<td>${ratio(x.purchase_residual_scale)} / ${ratio(x.purchase_oof_market_log_loss)}→${ratio(x.purchase_oof_scaled_log_loss)}</td>`,`<td>${ratio(x.purchase_payout_residual_scale)} / ${ratio(x.purchase_oof_base_payout_log_mae)}→${ratio(x.purchase_oof_scaled_payout_log_mae)}</td>`,`<td>${ratio(x.purchase_payout_log_mae)}</td>`,`<td>${ratio(x.purchase_gross_hit_exponent)} / ${ratio(x.purchase_gross_payout_exponent)} / ${ratio(x.purchase_gross_direct_value_exponent)}</td>`,`<td>${fmt(x.purchase_value_positive_predicted_tickets)}券 / ROI ${ratio(x.purchase_value_positive_observed_capped_roi)}</td>`,`<td>${x.roi==null?"未評価":`ROI ${ratio(x.roi)} / ${yen(x.profit_yen)}`}</td>`];
+    headers=["モデル","状態","評価充足","バックテスト条件","母数","価値相関 / MAE","的中LL / 市場 / Δ","的中Top5","払戻 外側/OOF MAE","収益指数 H/P/D","正予測群","診断資金BT"];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${corr(x.purchase_value_pearson_correlation)} / ${corr(x.purchase_value_calibration_mae)}</td>`,`<td>${ratio(x.purchase_hit_log_loss)} / ${ratio(x.t5_market_log_loss)} / ${ratio(x.purchase_hit_log_loss_delta_vs_market)}</td>`,`<td>${pct(x.purchase_hit_top5_rate)}</td>`,`<td>${ratio(x.purchase_payout_log_mae)} / ${ratio(x.purchase_oof_base_payout_log_mae)}→${ratio(x.purchase_oof_scaled_payout_log_mae)}</td>`,`<td>${ratio(x.purchase_gross_hit_exponent)} / ${ratio(x.purchase_gross_payout_exponent)} / ${ratio(x.purchase_gross_direct_value_exponent)}</td>`,`<td>${fmt(x.purchase_value_positive_predicted_tickets)}券 / ROI ${ratio(x.purchase_value_positive_observed_capped_roi)}</td>`,`<td>${x.roi==null?"未評価":`ROI ${ratio(x.roi)} / ${yen(x.profit_yen)}`}</td>`];
   }else if(key==="bankroll_policy"){
-    headers=["モデル","状態","評価期間","日/R","投資/点数","ROI・損益","最大1的中除外","日次LCB95","最大DD/勝日率"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td class="period-cell">${esc(evaluationPeriod(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${x.stake_yen==null?"-":yen(x.stake_yen)} / ${fmt(x.tickets)}</td>`,`<td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.roi_without_largest_hit??x.largest_hit_excluded_roi)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95??x.roi_ci95_lower)}</td>`,`<td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)} / ${pct(x.profitable_day_fraction)}</td>`];
+    headers=["モデル","状態","評価充足","資金バックテスト条件","日/R","投資 / 券 / 的中","ROI・損益","日次ROI 95%CI","最大1的中除外","最大DD / 勝日率","最大払戻比 / 有効的中"];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${x.stake_yen==null?"-":yen(x.stake_yen)} / ${fmt(x.tickets)} / ${fmt(x.hit_tickets)}</td>`,`<td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95)} .. ${ratio(x.roi_ci95_upper)}</td>`,`<td>${ratio(x.roi_without_largest_hit)}</td>`,`<td>${x.max_drawdown_yen==null?"-":yen(x.max_drawdown_yen)} / ${pct(x.profitable_day_fraction)}</td>`,`<td>${pct(x.largest_hit_return_share)} / ${ratio(x.effective_hit_count)}</td>`];
   }else{
-    headers=["モデル","状態","評価期間","母数","予測","ROI・損益","安定性LCB","ゲート","判定"];
-    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td class="period-cell">${esc(evaluationPeriod(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${probabilityHeadline(x)}</td>`,`<td>${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95??x.roi_ci95_lower)}</td>`,`<td>${fmt(x.promotion_gate_passed)}/${fmt(x.promotion_gate_total)}</td>`,`<td>${esc(x.decision||"評価中")}</td>`];
+    headers=["モデル","状態","評価充足","統一未見条件","母数","確率性能","資金性能","安定性LCB","ゲート","失敗ゲート","本番適格 / 成果物","判定"];
+    cells=x=>[purposeName(x),`<td>${purposeStatus(x)}</td>`,`<td>${purposeCompleteness(x)}</td>`,`<td class="period-cell">${esc(purposeScope(x))}</td>`,`<td class="mono">${purposeSample(x)}</td>`,`<td>${probabilityHeadline(x)}</td>`,`<td>${ratio(x.roi)} / ${x.profit_yen==null?"-":yen(x.profit_yen)}</td>`,`<td>${ratio(x.daily_cluster_bootstrap_roi_lower_95)}</td>`,`<td>${fmt(x.promotion_gate_passed)}/${fmt(x.promotion_gate_total)}</td>`,`<td title="${esc(promotionFailures(x))}">${esc(promotionFailures(x))}</td>`,`<td>${x.prediction_deployment_eligible===true?"適格":x.prediction_deployment_eligible===false?"不適格":"未評価"} / ${x.deployment_model_artifact_saved===true?"保存済":"未保存"}</td>`,`<td>${esc(x.decision||"評価中")}</td>`];
   }
   const body=rows.map(x=>`<tr class="model-select-row" tabindex="0" role="button" aria-selected="false" data-model-key="${esc(x.model_key||modelKey(x.name))}">${cells(x).join("")}</tr>`).join("")||`<tr><td colspan="${headers.length}" class="muted">該当モデルなし</td></tr>`;
-  return `<article class="purpose-panel purpose-${esc(key)}"><div class="purpose-heading"><h3>${esc(group.label)}</h3><span class="tag ${group.active_models?"running":""}">実行中 ${fmt(group.active_models)}</span><span>${esc(group.objective)}</span><small>${esc(group.backtest_protocol)}</small></div><div class="table-scroll"><table class="purpose-table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div></article>`;
+  return `<article class="purpose-panel purpose-${esc(key)}"><div class="purpose-heading"><h3>${esc(group.label)}</h3><span class="tag ${group.active_models?"running":""}">実行中 ${fmt(group.active_models)}</span><span>${esc(group.objective)}</span><small>${esc(group.backtest_protocol)}</small><div class="purpose-contract"><span><b>必須評価</b> ${esc((group.required_metrics||[]).join(" / "))}</span><span><b>採用判断</b> ${esc(group.decision_rule||"-")}</span></div></div><div class="table-scroll"><table class="purpose-table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div></article>`;
 }
 function renderPurposeGroups(groups){
   $("purposeGroups").innerHTML=(groups||[]).map(purposeTable).join("")||'<div class="muted">目的別評価情報なし</div>';
