@@ -152,6 +152,37 @@ def test_analytic_gradient_matches_finite_difference() -> None:
         )
 
 
+def test_gate_intercept_is_not_zero_center_regularized() -> None:
+    races, predictions = _pairs(days=4, races_per_day=4)
+    prepared, _digest = _prepare_pairs(races, predictions, _payouts(races))
+    normalization = _normalization(prepared)
+    dimension = normalization[0].size + normalization[2].size + 1
+    parameters = np.zeros(dimension)
+    parameters[-1] = -4.0
+
+    low = _objective_gradient(
+        parameters,
+        prepared,
+        ticket_mean=normalization[0],
+        ticket_scale=normalization[1],
+        race_mean=normalization[2],
+        race_scale=normalization[3],
+        config=AllocationConfig("low", 0.01, 1.0),
+    )
+    high = _objective_gradient(
+        parameters,
+        prepared,
+        ticket_mean=normalization[0],
+        ticket_scale=normalization[1],
+        race_mean=normalization[2],
+        race_scale=normalization[3],
+        config=AllocationConfig("high", 10.0, 1.0),
+    )
+
+    assert low[0] == pytest.approx(high[0])
+    assert low[1][-1] == pytest.approx(high[1][-1])
+
+
 def test_fit_rejects_non_prior_base_heads() -> None:
     races, predictions = _pairs(days=4, races_per_day=4)
     with pytest.raises(ValueError, match="strictly before"):
