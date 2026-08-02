@@ -1,6 +1,6 @@
 # Boat-race outcome feature research
 
-Updated: 2026-07-20
+Updated: 2026-08-02
 
 ## Evidence incorporated
 
@@ -51,6 +51,95 @@ the prior model on the same chronological 365-day test set and the same JPY
 10,000/day bankroll policy. Promote only when calibration/ranking does not
 materially regress and out-of-sample ROI or loss improves across multiple time
 blocks rather than one venue or one month.
+
+## 2026-08-02 market-difference and two-stage genetic search
+
+The 2025 LightGBM study is a useful prediction baseline, not evidence of a
+profitable policy. Its 484,006-race experiment reports win-bet returns of
+93.4%/95.1% and trifecta returns of 83.5%-85.8%; its non-binary models use a
+7:3 data split rather than a documented rolling walk-forward protocol. The
+study also predicts finish positions separately. Production evaluation must
+therefore retain chronological folds and a jointly normalized 120-order
+distribution.
+
+Official guidance states that at least 75% of non-refunded sales are distributed
+to winning tickets. Define terminology precisely:
+
+- Raw break-even probability is 1 / observed_decimal_odds.
+- Market pool share is the normalized reciprocal-odds distribution.
+- Under the idealized payout relation odds = payout_rate / pool_share,
+  break-even probability is pool_share / payout_rate.
+
+The approximately 33% relative hurdle at a 75% payout rate applies when the
+20% number means pool share. It must not be applied a second time when 20%
+already means raw 1 / odds. Rounding, refunds, dead heats, late money, and
+the system's own order impact require separate execution adjustments.
+
+This ratio is a theoretical special case, not the production betting rule.
+For ticket i, use its own decision-time information set F_t and model the final
+decimal payout D_final as uncertain:
+
+    conditional_EV_i = E[p_i * D_i_final | F_t] - 1
+
+Probability and final payout are not assumed independent. New information that
+raises the estimated outcome probability can attract late money and lower the
+payout at the same time. Closing-price scenarios must therefore preserve their
+joint dependence by decision offset, venue, popularity band, and ticket.
+
+The executable gate is conservative:
+
+    p_i_LCB * D_i_final_low > 1 + safety_margin
+
+The safety margin covers payout rounding, late-price error, model drift, and
+order impact. The closing-price lower bound is estimated from snapshots that
+were available at the same decision offset; official final odds remain a label.
+
+The retained architecture is role-separated:
+
+1. A no-odds fundamental rank model estimates a joint 120-order distribution.
+2. A decision-time market model normalizes reciprocal T-5 odds.
+3. A residual model learns when the fundamental distribution adds information
+   to the market. Selection fitness is market-relative LogLoss, Brier score,
+   calibration slope/intercept, and 3T5 stability on strict prior-day folds.
+4. A closing-price model predicts the distribution of executable odds from
+   predecision snapshots. Final odds are a label, never a decision feature.
+5. A separate policy consumes frozen, calibrated probabilities and conservative
+   closing-price estimates. It may bet only when a lower-confidence probability
+   yields positive expected value after execution stress.
+
+Do not evolve prediction and bankroll genes under one realized-return fitness.
+The 2026-08-02 V34 GA evaluated 48 unique allocation candidates and converged
+to near-zero exposure; aggressive candidates suffered severe daily losses.
+This is evidence that a joint return teacher has a degenerate no-bet optimum,
+not evidence that the fundamental or market-residual probability models lack
+signal.
+
+Use two genetic stages:
+
+- Prediction GA: fundamental blend, residual regularization, calibration family,
+  and feature-group switches; fitness uses paired market-relative probability
+  metrics and worst-fold penalties.
+- Policy GA: EV lower-confidence quantile, closing-odds quantile, fractional
+  Kelly coefficient, race exposure, and daily exposure; fitness uses log
+  bankroll growth, worst-day loss, drawdown, activity, and odds stress.
+
+Hyperparameter discovery uses only selection folds. The final candidate is
+frozen before one untouched period and is applied to that period once. GA
+fitness, candidate rules, feature switches, thresholds, or bet types cannot be
+reselected from the sealed result. Confidence intervals use complete race-day
+blocks, with nested day-by-venue attribution where sample size permits; tickets
+from the same race are never resampled independently. Promotion still requires
+at least 30 complete days, 1,000 races, 300 tickets, 20 hits, paired probability
+confidence, positive profit, ROI above one under 5% odds stress, and robustness
+after removing the largest hit. Profit concentration by period and venue,
+probability calibration, and maximum drawdown must also pass. A positive ROI
+based on hundreds of high-variance tickets is research evidence only.
+
+Primary references:
+
+- <https://doi.org/10.11509/sci.SCI25.0_508>
+- <https://www.boatrace.jp/owsp/sp/extra/enjoy/guide/jiten/26/y_213.html>
+- <https://eprints.soton.ac.uk/51684/>
 
 
 ## 2026-07-22 market-residual structure probes
