@@ -293,3 +293,28 @@ pooling, closing-market distribution fitting, and connection of this evaluator
 to policy GA remain separate unfinished work. The current market-residual GA
 uses market-relative probability metrics and is not described as a joint-value
 GA.
+
+`boatrace_ai.terminal_probability_oof` now supplies the previously missing
+diagnostic terminal-probability teacher. For each evaluation day it fits a
+regularized log pool of the base probability and official closing market using
+strictly earlier dates, then emits a soft 120-outcome `P(Y | F_T)` prediction.
+The realized one-hot result is used only as a prior-fold likelihood target and
+is never exported as a terminal probability. Fold manifests, model hashes,
+prediction hashes, outcome schema and the artifact contract are verified before
+the teacher can enter the scenario fitter. Aggregate OOF LogLoss, Brier and 3T5
+remain reported against the closing-market identity baseline.
+
+`boatrace_ai.joint_scenario_model` is the first diagnostic shared-path
+generator. It fits paired CLR residuals from decision probability to terminal
+probability and from decision market share to closing market share. A low-rank
+shared latent draw produces both terminal simplexes, while venue, decision
+horizon and decision-time popularity effects use hierarchical shrinkage. This
+preserves empirical probability-price dependence without claiming that a
+single fit represents parameter uncertainty.
+
+Neither artifact is deployment eligible yet. The terminal teacher is partly
+conditioned on the final market by definition, the generator has not passed a
+real-data chronological diagnostic, and its scenarios are not connected to the
+purchase GA or settlement evaluator. Outer parameter uncertainty requires
+day-block refits. Promotion remains prohibited until those diagnostics and the
+sealed bankroll gates pass.
