@@ -301,6 +301,14 @@ no-bet vector retains value zero. Every GA candidate is repriced as a whole;
 the selected vector alone is rerun with ticket-removal marginal diagnostics.
 The module is diagnostic-only and has no path to the wagering API.
 
+Rejected GA vectors retain a continuous feasibility score based on their
+shortfall from the portfolio-edge and expected-log-growth gates. This score is
+used only to guide evolution; it cannot authorize a purchase. Feasible vectors
+always outrank rejected vectors, and when no feasible vector exists the final
+selection is the explicit zero-stake vector. This avoids the flat-penalty
+failure mode where every rejected initial candidate had identical fitness and
+subsequent evolution was effectively random.
+
 The pool lower bound can be attached to every generated path while retaining
 that path's final 120-way market shares. The settlement adapter then allocates
 the absolute lower-bound scale across those generated shares and reprices each
