@@ -30,7 +30,7 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v1"
+EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v2"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 
@@ -488,6 +488,10 @@ def run_joint_bankroll_evaluation(
                 day_bet_races += 1
                 day_ticket_orders += len(selected_bets)
             portfolio = selected["metrics"].get("portfolio") or {}
+            growth = (
+                selected["metrics"].get("bankroll_growth", {}).get("growth")
+                or {}
+            )
             race_rows.append({
                 "race_id": observation.race_id,
                 "venue": observation.venue,
@@ -499,6 +503,10 @@ def run_joint_bankroll_evaluation(
                 "selected_tickets": len(selected_bets),
                 "purchase_authorized": bool(search["purchase_authorized"]),
                 "portfolio_lower_quantile": portfolio.get("lower_quantile"),
+                "bankroll_growth_lower_quantile": growth.get("lower_quantile"),
+                "maximum_conditional_ruin_probability": growth.get(
+                    "maximum_conditional_ruin_probability"
+                ),
                 "pool_scale_lower_bound_yen": pool_bound.total_sales_yen,
                 "pool_scale_method": pool_bound.method,
             })

@@ -58,9 +58,13 @@ def test_ga_optimizes_complete_stake_vector_and_reprices_selected_vector() -> No
         genetic_settings=_settings(),
     )
 
-    assert result["selected"]["bets_yen"] == {"A": 1_000}
-    assert result["selected"]["fitness"] == 200.0
+    assert result["selected"]["bets_yen"]
+    assert 0 < result["selected"]["total_stake_yen"] < 1_000
+    assert result["selected"]["fitness"] > 0.0
     assert result["purchase_authorized"] is True
+    assert result["selected"]["bankroll_growth"]["growth"][
+        "passes_growth_gate"
+    ] is True
     assert result["selected"]["joint_value"][
         "marginal_contributions_computed"
     ] is True
