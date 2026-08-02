@@ -388,6 +388,74 @@ def _fit_multinomial_offset_purchase_head(
     )
 
 
+def _market_probability_from_purchase_matrix(matrix: np.ndarray) -> np.ndarray:
+    if matrix.ndim != 2 or matrix.shape[1] < 6:
+        raise ValueError("purchase matrix lacks current-odds feature")
+    current_odds = np.exp(np.asarray(matrix[:, 5], dtype=np.float64))
+    if not np.isfinite(current_odds).all() or np.any(current_odds <= 1.0):
+        raise ValueError("purchase matrix current odds are invalid")
+    inverse = 1.0 / current_odds
+    return inverse / float(inverse.sum())
+
+
+def _fit_market_offset_purchase_head(
+    matrices: Sequence[np.ndarray],
+    realized_returns: Sequence[np.ndarray],
+    *,
+    alpha: float,
+) -> LinearHead:
+    """Learn outcome residuals around the T-5 market-implied distribution."""
+    if not matrices:
+        raise ValueError("market-offset teacher requires at least one race")
+    dimension = int(matrices[0].shape[1])
+    winners: list[int] = []
+    offsets: list[np.ndarray] = []
+    for matrix, returns in zip(matrices, realized_returns, strict=True):
+        if matrix.ndim != 2 or matrix.shape[1] != dimension:
+            raise ValueError("market-offset matrices must share dimensions")
+        winner_indices = np.flatnonzero(np.asarray(returns) >= 0.0)
+        if len(winner_indices) != 1:
+            raise ValueError("market-offset teacher requires one winner per race")
+        winners.append(int(winner_indices[0]))
+        offsets.append(
+            np.log(np.clip(_market_probability_from_purchase_matrix(matrix), 1e-12, 1.0))
+        )
+
+    def objective(coefficients: np.ndarray) -> tuple[float, np.ndarray]:
+        loss = 0.0
+        gradient = np.zeros(dimension, dtype=np.float64)
+        for matrix, offset, winner in zip(
+            matrices, offsets, winners, strict=True
+        ):
+            probabilities = _softmax(offset + matrix @ coefficients)
+            loss -= math.log(max(float(probabilities[winner]), 1e-15))
+            errors = probabilities.copy()
+            errors[winner] -= 1.0
+            gradient += matrix.T @ errors
+        scale = 1.0 / len(matrices)
+        loss = loss * scale + 0.5 * float(alpha) * float(
+            coefficients @ coefficients
+        )
+        gradient = gradient * scale + float(alpha) * coefficients
+        return loss, gradient
+
+    fitted = minimize(
+        objective,
+        np.zeros(dimension, dtype=np.float64),
+        method="L-BFGS-B",
+        jac=True,
+        options={"maxiter": 500, "ftol": 1e-11, "gtol": 1e-7, "maxls": 30},
+    )
+    coefficients = np.asarray(fitted.x, dtype=np.float64)
+    if not np.isfinite(coefficients).all():
+        raise ValueError("market-offset fit produced non-finite coefficients")
+    return _head(
+        "purchase_t5_market_multinomial_offset_head",
+        "multinomial_probability_residual_from_t5_market_strict_prior_oof",
+        (coefficients, 0.0),
+    )
+
+
 def _fit_uncapped_payout_residual_head(
     matrices: Sequence[np.ndarray],
     realized_returns: Sequence[np.ndarray],
@@ -516,6 +584,17 @@ def _fit_purchase_heads(
 ) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
+    if purchase_loss == "multinomial_market_offset_all_choice_closing":
+        if conditional_gross_payouts is None:
+            raise ValueError("market-offset closing teacher targets are required")
+        return (
+            _fit_market_offset_purchase_head(
+                matrices, realized_returns, alpha=alpha
+            ),
+            _fit_all_choice_closing_residual_head(
+                matrices, conditional_gross_payouts, alpha=alpha
+            ),
+        )
     if purchase_loss in {
         "multinomial_offset_all_choice_closing",
         "multinomial_offset_all_choice_closing_temperature",
@@ -666,7 +745,10 @@ def _offset_hit_probabilities(
 ) -> np.ndarray:
     if not math.isfinite(temperature) or temperature <= 0.0:
         raise ValueError("purchase probability temperature must be positive")
-    base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
+    if "_from_t5_market_" in head.teacher:
+        base_probability = _market_probability_from_purchase_matrix(matrix)
+    else:
+        base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
     logits = np.log(base_probability) + _scores(head, matrix)
     return _softmax(logits / temperature)
 
@@ -784,6 +866,9 @@ def fit_four_head_nested_v22(
         "pairwise_contextual_rank_calibrated": "decision_context_v2",
         "multinomial_offset_uncapped_lognormal": "decision_context_v2",
         "multinomial_offset_all_choice_closing": "decision_context_v2",
+        "multinomial_market_offset_all_choice_closing": (
+            "decision_context_v2"
+        ),
         "multinomial_offset_all_choice_closing_temperature": (
             "decision_context_v2"
         ),

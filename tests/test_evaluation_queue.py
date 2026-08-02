@@ -590,6 +590,38 @@ def test_four_head_temperature_requires_teacher_version_thirteen(
         )
 
 
+def test_four_head_market_offset_requires_teacher_version_fourteen(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    params = {
+        "source_model": "data/models/source.joblib",
+        "training_from": "2026-07-20",
+        "training_through": "2026-07-30",
+        "outer_from": "2026-07-31",
+        "outer_through": "2026-08-01",
+        "purchase_loss": "multinomial_market_offset_all_choice_closing",
+        "purchase_teacher_version": 14,
+    }
+    command, _output = build_command(
+        _job("four_head_learned_value", params),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+    assert command[command.index("--purchase-loss") + 1] == (
+        "multinomial_market_offset_all_choice_closing"
+    )
+    params["purchase_teacher_version"] = 13
+    with pytest.raises(ValueError, match="does not match"):
+        build_command(
+            _job("four_head_learned_value", params),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_four_head_learned_value_rejects_training_outer_overlap(
     tmp_path: Path,
 ) -> None:
