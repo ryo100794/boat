@@ -65,6 +65,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "joint_scenario_walk_forward": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
+    "joint_bankroll_walk_forward": {"category": "evaluation", "memory_mb": 6144, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
     "learned_purchase_allocation_v33": {
         "category": "evaluation",
@@ -2367,6 +2368,97 @@ def build_command(
         if learn_scales:
             command.append("--learn-residual-scales")
         return command, output
+    if task_type == "joint_bankroll_walk_forward":
+        allowed = {
+            "scored_cache", "terminal_min_training_days",
+            "joint_min_training_days", "outer_draws", "scenarios_per_draw",
+            "rank", "pooling_strength", "learn_residual_scales",
+            "candidate_ticket_count", "initial_daily_bankroll_yen",
+            "maximum_portfolio_stake_yen", "maximum_ticket_stake_yen",
+            "maximum_selected_tickets", "buy_margin", "inner_tail_fraction",
+            "population_size", "generations", "bootstrap_samples", "seed",
+            "settlement_delay_seconds", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported joint_bankroll_walk_forward parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "scored_cache" not in params:
+            raise ValueError("scored_cache is required")
+        cache_root = (
+            app_root / "data/models/evaluation_cache/market_scored"
+        ).resolve()
+        scored_cache = (app_root / str(params["scored_cache"])).resolve()
+        if cache_root not in scored_cache.parents or scored_cache.suffix != ".joblib":
+            raise ValueError(
+                "scored_cache must be a joblib artifact inside market_scored"
+            )
+        if not scored_cache.is_file():
+            raise JobDependencyUnavailable(
+                f"joint bankroll scored cache is not available: {scored_cache}"
+            )
+        terminal_days = _integer(
+            params, "terminal_min_training_days", 5, 2, 30
+        )
+        joint_days = _integer(params, "joint_min_training_days", 3, 2, 30)
+        outer_draws = _integer(params, "outer_draws", 20, 20, 100)
+        scenarios = _integer(params, "scenarios_per_draw", 64, 50, 512)
+        rank = _integer(params, "rank", 8, 1, 32)
+        pooling = _number(params, "pooling_strength", 20.0, 0.1, 1000.0)
+        candidates = _integer(params, "candidate_ticket_count", 12, 2, 120)
+        daily_bankroll = _integer(
+            params, "initial_daily_bankroll_yen", 10_000, 100, 1_000_000
+        )
+        portfolio_stake = _integer(
+            params, "maximum_portfolio_stake_yen", 10_000, 100, 1_000_000
+        )
+        ticket_stake = _integer(
+            params, "maximum_ticket_stake_yen", 5_000, 100, 1_000_000
+        )
+        selected_tickets = _integer(
+            params, "maximum_selected_tickets", 12, 1, 120
+        )
+        buy_margin = _number(params, "buy_margin", 0.0, 0.0, 10.0)
+        tail = _number(params, "inner_tail_fraction", 0.10, 0.01, 1.0)
+        population = _integer(params, "population_size", 8, 4, 128)
+        generations = _integer(params, "generations", 3, 1, 100)
+        bootstrap = _integer(params, "bootstrap_samples", 2000, 100, 100000)
+        settlement_delay = _integer(
+            params, "settlement_delay_seconds", 600, 0, 3600
+        )
+        seed = _integer(params, "seed", 33041, 0, 2_147_483_647)
+        learn_scales = params.get("learn_residual_scales", True)
+        if type(learn_scales) is not bool:
+            raise ValueError("learn_residual_scales must be a boolean")
+        _integer(params, "timeout_seconds", 43200, 1800, 86400)
+        command = [
+            str(python), "-m", "boatrace_ai.joint_bankroll_evaluation",
+            "--scored-cache", str(scored_cache),
+            "--output", str(output),
+            "--terminal-min-training-days", str(terminal_days),
+            "--joint-min-training-days", str(joint_days),
+            "--outer-draws", str(outer_draws),
+            "--scenarios-per-draw", str(scenarios),
+            "--rank", str(rank),
+            "--pooling-strength", str(pooling),
+            "--candidate-ticket-count", str(candidates),
+            "--initial-daily-bankroll-yen", str(daily_bankroll),
+            "--maximum-portfolio-stake-yen", str(portfolio_stake),
+            "--maximum-ticket-stake-yen", str(ticket_stake),
+            "--maximum-selected-tickets", str(selected_tickets),
+            "--buy-margin", str(buy_margin),
+            "--inner-tail-fraction", str(tail),
+            "--population-size", str(population),
+            "--generations", str(generations),
+            "--bootstrap-samples", str(bootstrap),
+            "--settlement-delay-seconds", str(settlement_delay),
+            "--seed", str(seed),
+        ]
+        if not learn_scales:
+            command.append("--no-learn-residual-scales")
+        return command, output
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",
@@ -4224,6 +4316,10 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         return "accumulate_formal_evidence"
     if task_type == "joint_scenario_walk_forward":
         return "diagnostic_complete_not_policy_connected"
+    if task_type == "joint_bankroll_walk_forward":
+        if summary.get("promotion_eligible") is True:
+            return "promotion_candidate"
+        return "accumulate_sealed_bankroll_evidence"
     if task_type == "bankroll_policy_nested_annual":
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"

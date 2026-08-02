@@ -91,3 +91,39 @@ def test_joint_scenario_queue_command_is_path_restricted(tmp_path: Path) -> None
             python=root / ".venv/bin/python",
             db="postgresql://test",
         )
+
+
+def test_joint_bankroll_queue_command_is_distinct_and_restricted(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    cache = root / "data/models/evaluation_cache/market_scored/races.joblib"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"cache")
+    job = {
+        "job_id": 20,
+        "task_type": "joint_bankroll_walk_forward",
+        "parameters": {
+            "scored_cache": str(cache.relative_to(root)),
+            "outer_draws": 20,
+            "scenarios_per_draw": 64,
+            "initial_daily_bankroll_yen": 10_000,
+            "population_size": 8,
+            "generations": 3,
+        },
+    }
+
+    command, output = build_command(
+        job,
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == ["-m", "boatrace_ai.joint_bankroll_evaluation"]
+    assert command[command.index("--outer-draws") + 1] == "20"
+    assert command[command.index("--initial-daily-bankroll-yen") + 1] == "10000"
+    assert output.name == "job-00000020.json"
+    assert result_decision("joint_bankroll_walk_forward", {}) == (
+        "accumulate_sealed_bankroll_evidence"
+    )
