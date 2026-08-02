@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import hashlib
 import json
 import math
+import random
 from collections import defaultdict
 from typing import Any, Iterable
 
 import numpy as np
+
+from boatrace_ai.genetic_search import GeneticSearchSettings, evolve_population
 
 
 EPSILON = 1e-12
@@ -44,6 +48,38 @@ POST_DECISION_TEACHER_FIELDS = (
     "closing_odds_changed",
     "official_closing_source_key",
 )
+MARKET_RESIDUAL_GA_PROTOCOL = "genetic_t5_market_residual_v1"
+
+
+@dataclass(frozen=True)
+class MarketResidualGenome:
+    family: str
+    regularization: float
+    lookback_days: int
+
+    def validate(self) -> None:
+        if self.family not in {"market_identity", "global_log_pool"}:
+            raise ValueError(f"unsupported market residual family: {self.family}")
+        if not math.isfinite(self.regularization) or self.regularization < 0.0:
+            raise ValueError("regularization must be finite and non-negative")
+        if self.lookback_days not in {0, 14, 30, 60, 120}:
+            raise ValueError("lookback_days is outside the registered search space")
+
+
+def _market_identity_calibrator(training_races: int) -> dict[str, Any]:
+    return {
+        "model_coefficient": 0.0,
+        "market_coefficient": 1.0,
+        "model_weight": 0.0,
+        "temperature": 1.0,
+        "regularization": 0.0,
+        "objective": None,
+        "gradient_norm": None,
+        "iterations": 0,
+        "converged": True,
+        "training_races": int(training_races),
+        "market_identity": True,
+    }
 
 
 def project_scored_race_for_residual(race: dict[str, Any]) -> dict[str, Any]:
@@ -302,6 +338,8 @@ def residual_probability_metrics(
     loss = 0.0
     market_loss = 0.0
     raw_model_loss = 0.0
+    brier = 0.0
+    market_brier = 0.0
     top5_hits = 0
     market_top5_hits = 0
     for race in races:
@@ -315,6 +353,19 @@ def residual_probability_metrics(
         loss -= math.log(max(EPSILON, probabilities.get(actual, 0.0)))
         market = race["market_probabilities"]
         market_loss -= math.log(max(EPSILON, float(market.get(actual, 0.0))))
+        combinations = sorted(set(probabilities) & set(market))
+        brier += sum(
+            (
+                float(probabilities[combination])
+                - float(combination == actual)
+            )
+            ** 2
+            for combination in combinations
+        )
+        market_brier += sum(
+            (float(market[combination]) - float(combination == actual)) ** 2
+            for combination in combinations
+        )
         if include_raw_model:
             raw_model = race["model_probabilities"]
             raw_model_loss -= math.log(
@@ -331,6 +382,8 @@ def residual_probability_metrics(
         "evaluated_races": count,
         "trifecta_log_loss": loss / count if count else None,
         "market_trifecta_log_loss": market_loss / count if count else None,
+        "trifecta_brier_score": brier / count if count else None,
+        "market_trifecta_brier_score": market_brier / count if count else None,
         "trifecta_top5_hit_rate": top5_hits / count if count else None,
         "market_trifecta_top5_hit_rate": market_top5_hits / count if count else None,
     }
@@ -339,6 +392,283 @@ def residual_probability_metrics(
             raw_model_loss / count if count else None
         )
     return result
+
+
+def _genome_key(genome: MarketResidualGenome) -> str:
+    return json.dumps(
+        {
+            "family": genome.family,
+            "regularization": round(genome.regularization, 12),
+            "lookback_days": genome.lookback_days,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _serialize_genome(genome: MarketResidualGenome) -> dict[str, Any]:
+    return {
+        "family": genome.family,
+        "regularization": float(genome.regularization),
+        "lookback_days": int(genome.lookback_days),
+    }
+
+
+def _random_genome(rng: random.Random) -> MarketResidualGenome:
+    return MarketResidualGenome(
+        family="global_log_pool",
+        regularization=10.0 ** rng.uniform(-5.0, 1.0),
+        lookback_days=rng.choice((0, 14, 30, 60, 120)),
+    )
+
+
+def _crossover_genome(
+    left: MarketResidualGenome,
+    right: MarketResidualGenome,
+    rng: random.Random,
+) -> MarketResidualGenome:
+    if left.family == "market_identity" and right.family == "market_identity":
+        return left
+    regularizations = [
+        value
+        for value in (left.regularization, right.regularization)
+        if value > 0.0
+    ]
+    regularization = (
+        math.sqrt(regularizations[0] * regularizations[-1])
+        if regularizations
+        else 1.0
+    )
+    return MarketResidualGenome(
+        family="global_log_pool",
+        regularization=regularization,
+        lookback_days=rng.choice((left.lookback_days, right.lookback_days)),
+    )
+
+
+def _mutate_genome(
+    genome: MarketResidualGenome,
+    rng: random.Random,
+    mutation_rate: float,
+) -> MarketResidualGenome:
+    if genome.family == "market_identity":
+        return _random_genome(rng) if rng.random() < mutation_rate else genome
+    regularization = genome.regularization
+    lookback_days = genome.lookback_days
+    if rng.random() < mutation_rate:
+        regularization *= math.exp(rng.gauss(0.0, 1.0))
+        regularization = min(10.0, max(1e-5, regularization))
+    if rng.random() < mutation_rate:
+        lookback_days = rng.choice((0, 14, 30, 60, 120))
+    return MarketResidualGenome(
+        family="global_log_pool",
+        regularization=regularization,
+        lookback_days=lookback_days,
+    )
+
+
+def _genetic_training_rows(races: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for race in races:
+        projected = project_scored_race_for_residual(race)
+        teacher = projected["teacher"]
+        if "actual_combination" not in teacher:
+            raise ValueError("actual_combination teacher is required")
+        decision = projected["decision"]
+        result.append(
+            {
+                "race_id": decision["race_id"],
+                "race_date": decision["race_date"],
+                "model_probabilities": decision["model_probabilities"],
+                "market_probabilities": decision["market_probabilities"],
+                "actual_combination": teacher["actual_combination"],
+            }
+        )
+    return result
+
+
+def _bootstrap_log_loss_delta_upper(
+    folds: list[dict[str, Any]],
+    *,
+    samples: int,
+    seed: int,
+) -> float:
+    if samples < 1:
+        raise ValueError("bootstrap_samples must be positive")
+    counts = np.asarray([row["evaluated_races"] for row in folds], dtype=np.float64)
+    deltas = np.asarray([row["log_loss_delta"] for row in folds], dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    sampled = rng.integers(0, len(folds), size=(samples, len(folds)))
+    sampled_counts = counts[sampled]
+    values = np.sum(deltas[sampled] * sampled_counts, axis=1) / np.sum(
+        sampled_counts, axis=1
+    )
+    return float(np.quantile(values, 0.95))
+
+
+def _evaluate_market_residual_genome(
+    races: list[dict[str, Any]],
+    genome: MarketResidualGenome,
+    *,
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+) -> dict[str, Any]:
+    genome.validate()
+    by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in races:
+        by_day[str(race["race_date"])].append(race)
+    dates = sorted(by_day)
+    if len(dates) < 2:
+        raise ValueError("at least two dates are required for genetic selection")
+    folds = []
+    for index in range(1, len(dates)):
+        prior_dates = dates[:index]
+        if genome.lookback_days:
+            prior_dates = prior_dates[-genome.lookback_days :]
+        training = [race for day in prior_dates for race in by_day[day]]
+        calibrator = (
+            _market_identity_calibrator(len(training))
+            if genome.family == "market_identity"
+            else fit_log_pool_newton(
+                training, regularization=genome.regularization
+            )
+        )
+        metrics = residual_probability_metrics(by_day[dates[index]], calibrator)
+        folds.append(
+            {
+                "training_dates": prior_dates,
+                "evaluation_date": dates[index],
+                "evaluated_races": metrics["evaluated_races"],
+                "log_loss_delta": (
+                    metrics["trifecta_log_loss"]
+                    - metrics["market_trifecta_log_loss"]
+                ),
+                "brier_delta": (
+                    metrics["trifecta_brier_score"]
+                    - metrics["market_trifecta_brier_score"]
+                ),
+                "top5_delta": (
+                    metrics["trifecta_top5_hit_rate"]
+                    - metrics["market_trifecta_top5_hit_rate"]
+                ),
+            }
+        )
+    total = sum(row["evaluated_races"] for row in folds)
+
+    def weighted_mean(name: str) -> float:
+        return sum(row[name] * row["evaluated_races"] for row in folds) / total
+
+    return {
+        "genome": _serialize_genome(genome),
+        "prequential_races": total,
+        "evaluation_days": len(folds),
+        "mean_log_loss_delta": weighted_mean("log_loss_delta"),
+        "log_loss_delta_ci95_upper": _bootstrap_log_loss_delta_upper(
+            folds, samples=bootstrap_samples, seed=bootstrap_seed
+        ),
+        "worst_day_log_loss_delta": max(row["log_loss_delta"] for row in folds),
+        "mean_brier_delta": weighted_mean("brier_delta"),
+        "mean_top5_delta": weighted_mean("top5_delta"),
+        "folds": folds,
+    }
+
+
+def _market_residual_fitness(
+    metrics: dict[str, Any], genome: MarketResidualGenome
+) -> float:
+    del genome
+    upper = float(metrics["log_loss_delta_ci95_upper"])
+    mean = float(metrics["mean_log_loss_delta"])
+    worst = float(metrics["worst_day_log_loss_delta"])
+    brier = float(metrics["mean_brier_delta"])
+    top5 = float(metrics["mean_top5_delta"])
+    return (
+        -upper
+        - 0.25 * max(0.0, mean)
+        - 0.25 * max(0.0, worst)
+        - 0.10 * max(0.0, brier)
+        + 0.05 * top5
+    )
+
+
+def select_market_residual_genetic(
+    scored_races: list[dict[str, Any]],
+    *,
+    settings: GeneticSearchSettings | None = None,
+    bootstrap_samples: int = 2_000,
+    bootstrap_seed: int = 33035,
+) -> dict[str, Any]:
+    """Select a T-5 residual structure on market-relative prior-day metrics."""
+    training_rows = _genetic_training_rows(scored_races)
+    selected_settings = settings or GeneticSearchSettings()
+
+    def evaluator(genome: MarketResidualGenome) -> dict[str, Any]:
+        return _evaluate_market_residual_genome(
+            training_rows,
+            genome,
+            bootstrap_samples=bootstrap_samples,
+            bootstrap_seed=bootstrap_seed,
+        )
+
+    candidates, history = evolve_population(
+        settings=selected_settings,
+        evaluator=evaluator,
+        fitness=_market_residual_fitness,
+        random_candidate=_random_genome,
+        crossover=_crossover_genome,
+        mutate=_mutate_genome,
+        candidate_key=_genome_key,
+        serialize=_serialize_genome,
+        immigrants=(
+            MarketResidualGenome("market_identity", 0.0, 0),
+            MarketResidualGenome("global_log_pool", 1.0, 0),
+            MarketResidualGenome("global_log_pool", 0.01, 30),
+        ),
+    )
+    champion = candidates[0]
+    final_calibrator = (
+        _market_identity_calibrator(len(training_rows))
+        if champion.candidate.family == "market_identity"
+        else fit_log_pool_newton(
+            training_rows,
+            regularization=champion.candidate.regularization,
+        )
+    )
+    return {
+        "protocol": MARKET_RESIDUAL_GA_PROTOCOL,
+        "input_contract": "t300_residual_decision_v1",
+        "selection_data": "strict_prior_daily_prequential_only",
+        "outer_holdout_used": False,
+        "fitness_definition": (
+            "market-relative day-block LogLoss upper bound, mean/worst-day "
+            "LogLoss, Brier and 3T5"
+        ),
+        "settings": {
+            "population_size": selected_settings.population_size,
+            "generations": selected_settings.generations,
+            "elite_count": selected_settings.elite_count,
+            "mutation_rate": selected_settings.mutation_rate,
+            "random_injections": selected_settings.random_injections,
+            "max_workers": selected_settings.max_workers,
+            "seed": selected_settings.seed,
+            "bootstrap_samples": bootstrap_samples,
+            "bootstrap_seed": bootstrap_seed,
+        },
+        "champion": _serialize_genome(champion.candidate),
+        "champion_fitness": champion.fitness,
+        "champion_metrics": dict(champion.metrics),
+        "final_calibrator": final_calibrator,
+        "generation_history": history,
+        "candidate_metrics": [
+            {
+                "genome": _serialize_genome(row.candidate),
+                "fitness": row.fitness,
+                "first_generation": row.first_generation,
+                **dict(row.metrics),
+            }
+            for row in candidates
+        ],
+    }
 
 
 def select_regularization_prequential(

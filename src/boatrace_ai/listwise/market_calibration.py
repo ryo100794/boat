@@ -226,6 +226,7 @@ V35_FIXED_DAILY_TICKET_LIMIT = 10
 V35_MIN_DAILY_TICKET_LIMIT = 5
 V35_MAX_DAILY_TICKET_LIMIT = 20
 V35_FAMILY_WISE_ALPHA = 0.05
+GENETIC_MARKET_RESIDUAL_STRATEGY = "genetic_t5_market_residual_v1"
 V18_TICKET_LIMIT_QUANTILE = 0.25
 V17_POLICY_BOOTSTRAP_SAMPLES = 2_000
 MIN_PROSPECTIVE_ARCHITECTURE_DAYS = 30
@@ -245,6 +246,7 @@ EVALUATION_ONLY_STRATEGIES = frozenset({
     V20_STRATEGY_NAME,
     V21_STRATEGY_NAME,
     V35_STRATEGY_NAME,
+    GENETIC_MARKET_RESIDUAL_STRATEGY,
 })
 CHRONOLOGICAL_BANKROLL_STRATEGIES = frozenset({
     *ROBUST_POLICY_STRATEGIES,
@@ -3417,6 +3419,11 @@ def fit_deployment_configuration(
                 calibrator_strategy=calibrator_strategy,
             )
             calibrator = dict(calibrator_selection["final_calibrator"])
+    elif calibrator_strategy == GENETIC_MARKET_RESIDUAL_STRATEGY:
+        from .market_residual import select_market_residual_genetic
+
+        calibrator_selection = select_market_residual_genetic(races)
+        calibrator = dict(calibrator_selection["final_calibrator"])
     elif calibrator_strategy == "newton_residual":
         from .market_residual import (
             fit_fixed_regularization,
@@ -3997,6 +4004,14 @@ def walk_forward_evaluate(
                     calibrator_strategy=calibrator_strategy,
                 )
                 calibrator = dict(calibrator_selection["final_calibrator"])
+            calibrator_grid = []
+        elif calibrator_strategy == GENETIC_MARKET_RESIDUAL_STRATEGY:
+            from .market_residual import select_market_residual_genetic
+
+            calibrator_selection = select_market_residual_genetic(
+                calibration_races
+            )
+            calibrator = dict(calibrator_selection["final_calibrator"])
             calibrator_grid = []
         elif calibrator_strategy == "newton_residual":
             from .market_residual import (
@@ -6973,6 +6988,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "grid",
             "newton_residual",
+            GENETIC_MARKET_RESIDUAL_STRATEGY,
             "orthogonal_residual",
             "odds_path_return",
             "odds_path_probability",
