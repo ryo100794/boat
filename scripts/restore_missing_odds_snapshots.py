@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from boatrace_ai.db import insert_odds_snapshot
 from boatrace_ai.ingestion.parsers import parse_odds3t_html
-from boatrace_ai.odds_quality import TRIFECTA_PARSER_VERSION, plausible_trifecta_odds
+from boatrace_ai.odds_quality import TRIFECTA_PARSER_VERSION, describe_trifecta_market
 from boatrace_ai.postgresql import connection
 
 
@@ -55,13 +55,15 @@ def restore_pages(
         race_id, filename_time = page_identity(path)
         parsed = parse_odds3t_html(path.read_text(encoding="utf-8", errors="replace"))
         odds = parsed.get("odds") or {}
+        market_shape = describe_trifecta_market(odds, allow_zero=True)
         if (
             parsed.get("parser_version") != TRIFECTA_PARSER_VERSION
             or int(parsed.get("parsed_count") or 0) != 120
-            or not plausible_trifecta_odds(odds)
+            or market_shape is None
         ):
             summary["parse_failed"] += 1
             continue
+        parsed["market_shape"] = market_shape
 
         metadata = conn.execute(
             """
@@ -103,7 +105,11 @@ def restore_pages(
             race_id,
             captured_at,
             parsed.get("source_update_time"),
-            odds,
+            {
+                combination: value
+                for combination, value in odds.items()
+                if value is not None
+            },
             str(metadata["source_url"]),
             parsed,
         )
