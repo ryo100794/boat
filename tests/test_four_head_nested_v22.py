@@ -488,6 +488,40 @@ def test_nested_all_choice_closing_artifact_routes_full_closing_targets() -> Non
     assert np.isfinite(prediction.purchase_scores).all()
 
 
+def test_multinomial_temperature_softens_overconfident_oof_probabilities() -> None:
+    temperature = v22._fit_multinomial_temperature(
+        [
+            np.asarray([0.99, 0.01]),
+            np.asarray([0.99, 0.01]),
+        ],
+        [0, 1],
+        alpha=1e-3,
+    )
+
+    assert temperature > 1.0
+
+
+def test_nested_temperature_artifact_learns_from_strict_purchase_oof() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss="multinomial_offset_all_choice_closing_temperature",
+    )
+    prediction = predict_race(
+        artifact, labeled_races(start_day=9, days=1)[0].decision
+    )
+
+    assert artifact.purchase_probability_temperature > 0.0
+    assert artifact.purchase_oof_folds
+    assert artifact.purchase_payout_head is not None
+    assert artifact.purchase_payout_head.teacher.startswith(
+        "all_choice_log_closing_odds_residual"
+    )
+    assert np.isfinite(prediction.purchase_scores).all()
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64

@@ -89,6 +89,7 @@ class FourHeadArtifact:
     purchase_payout_head: LinearHead | None = None
     purchase_calibration_head: LinearHead | None = None
     purchase_feature_map: str = "base_outputs_v1"
+    purchase_probability_temperature: float = 1.0
     information_boundary: str = "decision_features_and_current_odds_only"
     purchase_teacher_source: str = "strict_prior_base_head_oof_predictions"
     purchase_threshold_source: str = "learned_unit_return_break_even_zero"
@@ -515,7 +516,11 @@ def _fit_purchase_heads(
 ) -> tuple[LinearHead, LinearHead | None]:
     matrix = np.vstack(matrices)
     returns = np.concatenate(realized_returns)
-    if purchase_loss == "multinomial_offset_all_choice_closing":
+    if purchase_loss in {
+        "multinomial_offset_all_choice_closing",
+        "multinomial_offset_all_choice_closing_temperature",
+    }:
+
         if conditional_gross_payouts is None:
             raise ValueError("all-choice closing teacher targets are required")
         return (
@@ -653,10 +658,75 @@ def _fit_purchase_head(
     return head
 
 
+def _offset_hit_probabilities(
+    head: LinearHead,
+    matrix: np.ndarray,
+    *,
+    temperature: float = 1.0,
+) -> np.ndarray:
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError("purchase probability temperature must be positive")
+    base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
+    logits = np.log(base_probability) + _scores(head, matrix)
+    return _softmax(logits / temperature)
+
+
+def _fit_multinomial_temperature(
+    probabilities: Sequence[np.ndarray],
+    winner_indices: Sequence[int],
+    *,
+    alpha: float,
+) -> float:
+    """Calibrate probability sharpness on strict-prior purchase OOF races."""
+    if not probabilities or len(probabilities) != len(winner_indices):
+        raise ValueError("temperature calibration requires aligned OOF races")
+    log_probabilities = [
+        np.log(np.clip(np.asarray(values, dtype=np.float64), 1e-15, 1.0))
+        for values in probabilities
+    ]
+    for values, winner in zip(log_probabilities, winner_indices, strict=True):
+        if values.ndim != 1 or not 0 <= int(winner) < len(values):
+            raise ValueError("temperature calibration winner is invalid")
+
+    def objective(theta_values: np.ndarray) -> tuple[float, np.ndarray]:
+        theta = float(theta_values[0])
+        temperature = math.exp(theta)
+        loss = 0.0
+        gradient = 0.0
+        for logits, winner in zip(
+            log_probabilities, winner_indices, strict=True
+        ):
+            calibrated = _softmax(logits / temperature)
+            loss -= math.log(max(float(calibrated[int(winner)]), 1e-15))
+            gradient += (
+                float(logits[int(winner)]) - float(calibrated @ logits)
+            ) / temperature
+        scale = 1.0 / len(log_probabilities)
+        return (
+            loss * scale + 0.5 * float(alpha) * theta * theta,
+            np.asarray([gradient * scale + float(alpha) * theta]),
+        )
+
+    fitted = minimize(
+        objective,
+        np.zeros(1, dtype=np.float64),
+        method="L-BFGS-B",
+        jac=True,
+        bounds=((-4.0, 4.0),),
+        options={"maxiter": 200, "ftol": 1e-12, "gtol": 1e-9},
+    )
+    temperature = math.exp(float(fitted.x[0]))
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError("temperature calibration produced an invalid value")
+    return temperature
+
+
 def _purchase_net_scores(
     head: LinearHead,
     payout_head: LinearHead | None,
     matrix: np.ndarray,
+    *,
+    probability_temperature: float = 1.0,
 ) -> np.ndarray:
     linear = _scores(head, matrix)
     if head.teacher.startswith("multinomial_probability_residual"):
@@ -667,8 +737,9 @@ def _purchase_net_scores(
             )
         ):
             raise ValueError("offset purchase head requires payout residual head")
-        base_probability = np.clip(matrix[:, 0], 1e-12, 1.0)
-        hit_probability = _softmax(np.log(base_probability) + linear)
+        hit_probability = _offset_hit_probabilities(
+            head, matrix, temperature=probability_temperature
+        )
         conditional_payout = np.exp(
             np.clip(
                 matrix[:, 2] + _scores(payout_head, matrix),
@@ -713,6 +784,9 @@ def fit_four_head_nested_v22(
         "pairwise_contextual_rank_calibrated": "decision_context_v2",
         "multinomial_offset_uncapped_lognormal": "decision_context_v2",
         "multinomial_offset_all_choice_closing": "decision_context_v2",
+        "multinomial_offset_all_choice_closing_temperature": (
+            "decision_context_v2"
+        ),
     }.get(purchase_loss, "base_outputs_v1")
     if len(dates) <= minimum_inner_training_dates:
         raise ValueError("not enough whole dates for strict-prior inner OOF")
@@ -777,6 +851,8 @@ def fit_four_head_nested_v22(
     threshold_sha_by_date: list[tuple[str, str]] = []
     purchase_oof_scores_for_calibration: list[float] = []
     purchase_oof_returns_for_calibration: list[float] = []
+    purchase_oof_probabilities_for_temperature: list[np.ndarray] = []
+    purchase_oof_winners_for_temperature: list[int] = []
     for validation_index in range(
         minimum_purchase_training_dates, len(base_oof_dates)
     ):
@@ -801,6 +877,16 @@ def fit_four_head_nested_v22(
             )
             purchase_oof_scores_for_calibration.extend(scores.tolist())
             purchase_oof_returns_for_calibration.extend(realized.tolist())
+            if purchase_loss == "multinomial_offset_all_choice_closing_temperature":
+                purchase_oof_probabilities_for_temperature.append(
+                    _offset_hit_probabilities(fold_head, matrix)
+                )
+                winner_indices = np.flatnonzero(realized >= 0.0)
+                if len(winner_indices) != 1:
+                    raise ValueError("temperature OOF race requires one winner")
+                purchase_oof_winners_for_temperature.append(
+                    int(winner_indices[0])
+                )
             score_payload = {
                 "race_id": race_id,
                 "race_date": validation_date,
@@ -832,6 +918,13 @@ def fit_four_head_nested_v22(
                     record[0] for record in validation_records
                 ),
             )
+        )
+    purchase_probability_temperature = 1.0
+    if purchase_loss == "multinomial_offset_all_choice_closing_temperature":
+        purchase_probability_temperature = _fit_multinomial_temperature(
+            purchase_oof_probabilities_for_temperature,
+            purchase_oof_winners_for_temperature,
+            alpha=alpha,
         )
     purchase_calibration_head = None
     if purchase_loss in {
@@ -895,6 +988,7 @@ def fit_four_head_nested_v22(
         purchase_payout_head=purchase_payout_head,
         purchase_calibration_head=purchase_calibration_head,
         purchase_feature_map=purchase_feature_map,
+        purchase_probability_temperature=purchase_probability_temperature,
         purchase_threshold=threshold,
         inner_oof_folds=tuple(folds),
         inner_oof_race_ids=oof_ids,
@@ -942,6 +1036,9 @@ def artifact_fingerprint(artifact: FourHeadArtifact) -> str:
                 else None
             ),
             "purchase_feature_map": artifact.purchase_feature_map,
+            "purchase_probability_temperature": getattr(
+                artifact, "purchase_probability_temperature", 1.0
+            ),
             "purchase_threshold": artifact.purchase_threshold,
             "inner_oof_folds": [fold.__dict__ for fold in artifact.inner_oof_folds],
             "inner_oof_race_ids": artifact.inner_oof_race_ids,
@@ -993,6 +1090,9 @@ def predict_race(
             ranking,
             closing,
             feature_map=artifact.purchase_feature_map,
+        ),
+        probability_temperature=getattr(
+            artifact, "purchase_probability_temperature", 1.0
         ),
     )
     if artifact.purchase_calibration_head is not None:
