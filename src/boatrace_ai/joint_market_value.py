@@ -224,8 +224,8 @@ def _scenario_paths(
                 for state, amount in receipts.items()
             }
             gross = fsum(
-                probabilities[state] * parsed_receipts.get(state, 0)
-                for state in probabilities
+                probabilities[state] * receipt
+                for state, receipt in parsed_receipts.items()
             )
             portfolio_gross += gross
             if include_ticket_diagnostics:
@@ -500,7 +500,7 @@ def evaluate_joint_bankroll_growth(
                 raise ValueError(
                     "payoff model ticket keys must match the complete bet vector"
                 )
-            gross_by_outcome = {outcome: 0 for outcome in probabilities}
+            gross_by_outcome: dict[str, int] = {}
             for ticket, receipts in payoff_table.items():
                 if not isinstance(receipts, Mapping):
                     raise ValueError("payoff table values must map outcomes to yen")
@@ -511,19 +511,32 @@ def evaluate_joint_bankroll_growth(
                         + ", ".join(sorted(unknown))
                     )
                 for outcome, amount in receipts.items():
-                    gross_by_outcome[outcome] += _non_negative_yen(
-                        amount, "gross receipt"
+                    gross_by_outcome[outcome] = (
+                        gross_by_outcome.get(outcome, 0)
+                        + _non_negative_yen(amount, "gross receipt")
                     )
-            expected_growth = 0.0
-            ruin_probability = 0.0
             cash_after_outlay = bankroll - total_outlay
-            for outcome, probability in probabilities.items():
-                terminal_wealth = cash_after_outlay + gross_by_outcome[outcome]
-                if terminal_wealth <= 0:
-                    ruin_probability += probability
-                expected_growth += probability * log(
-                    max(wealth_floor, terminal_wealth) / bankroll
+            base_wealth = max(wealth_floor, cash_after_outlay)
+            base_growth = log(base_wealth / bankroll)
+            expected_growth = base_growth
+            positive_receipt_probability = 0.0
+            for outcome, gross in gross_by_outcome.items():
+                if gross <= 0:
+                    continue
+                probability = probabilities[outcome]
+                positive_receipt_probability += probability
+                expected_growth += probability * (
+                    log(
+                        max(wealth_floor, cash_after_outlay + gross)
+                        / bankroll
+                    )
+                    - base_growth
                 )
+            ruin_probability = (
+                max(0.0, 1.0 - positive_receipt_probability)
+                if cash_after_outlay <= 0
+                else 0.0
+            )
             scenario_growth[scenario_index] = expected_growth
             draw_ruin_probability += float(weights[scenario_index]) * ruin_probability
         ruin_probability_upper = max(

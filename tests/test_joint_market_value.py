@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from boatrace_ai.joint_market_value import (
@@ -41,6 +43,36 @@ def test_bankroll_growth_penalizes_ruin_and_prefers_fractional_stake() -> None:
     assert all_in["growth"]["maximum_conditional_ruin_probability"] == pytest.approx(
         0.4
     )
+
+
+def test_bankroll_growth_sparse_settlement_matches_terminal_state_sum() -> None:
+    scenario = JointMarketScenario(
+        {"A": 0.3, "B": 0.2, "cancelled": 0.5},
+        {},
+    )
+
+    def payoffs(_scenario, _bets):
+        return {
+            "A": {"A": 400, "cancelled": 100},
+            "B": {"B": 1_000, "cancelled": 200},
+        }
+
+    result = evaluate_joint_bankroll_growth(
+        [[scenario]],
+        bets_yen={"A": 100, "B": 200},
+        gross_payoff_model=payoffs,
+        available_bankroll_yen=1_000,
+        expected_outcomes=("A", "B", "cancelled"),
+        minimum_outer_draws=1,
+    )
+    expected = (
+        0.3 * math.log(1_100 / 1_000)
+        + 0.2 * math.log(1_700 / 1_000)
+        + 0.5 * math.log(1_000 / 1_000)
+    )
+
+    assert result["growth"]["mean"] == pytest.approx(expected)
+    assert result["growth"]["maximum_conditional_ruin_probability"] == 0.0
 
 
 def _ordinary_payoffs(scenario, bets):
