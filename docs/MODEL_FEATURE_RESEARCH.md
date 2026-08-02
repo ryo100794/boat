@@ -1,6 +1,6 @@
 # Boat-race outcome feature research
 
-Updated: 2026-08-02
+Updated: 2026-08-03
 
 ## Evidence incorporated
 
@@ -288,11 +288,11 @@ Selection resampling and sealed evaluation are distinct:
 computes portfolio-path lower-tail expectation before outer aggregation, uses
 an `inverted_cdf` empirical outer quantile, reports scenario ESS, and disables
 the purchase gate when outer or tail evidence is insufficient. It does not
-generate joint scenarios. Conditional copula/shared-state generation, partial
-pooling, closing-market distribution fitting, and connection of this evaluator
-to policy GA remain separate unfinished work. The current market-residual GA
-uses market-relative probability metrics and is not described as a joint-value
-GA.
+generate joint scenarios. Shared-state generation, partial pooling, and
+closing-market distribution fitting now live in the separate diagnostic
+`joint_scenario_model`; connection of generated paths to settlement and policy
+GA remains unfinished. The current market-residual GA uses market-relative
+probability metrics and is not described as a joint-value GA.
 
 `boatrace_ai.terminal_probability_oof` now supplies the previously missing
 diagnostic terminal-probability teacher. For each evaluation day it fits a
@@ -313,11 +313,11 @@ preserves empirical probability-price dependence without claiming that a
 single fit represents parameter uncertainty.
 
 Neither artifact is deployment eligible yet. The terminal teacher is partly
-conditioned on the final market by definition, the generator has not passed a
-real-data chronological diagnostic, and its scenarios are not connected to the
-purchase GA or settlement evaluator. Outer parameter uncertainty requires
-day-block refits. Promotion remains prohibited until those diagnostics and the
-sealed bankroll gates pass.
+conditioned on the final market by definition. The generator has passed an
+initial real-data chronological diagnostic, but only across five outer days,
+and its scenarios are not connected to the purchase GA or settlement evaluator.
+Outer parameter uncertainty requires day-block refits. Promotion remains
+prohibited until at least 30 complete days and the sealed bankroll gates pass.
 
 ### 2026-08-03 strict joint walk-forward diagnostic
 
@@ -345,3 +345,31 @@ full-strength probability residual for deployment. Probability and market
 residual strengths must be selected separately on inner prior-day folds before
 each outer day. Job 11785 is diagnostic only and remains disconnected from
 settlement, policy GA and automated purchasing.
+
+### 2026-08-03 residual and dependence calibration comparison
+
+Jobs 11799, 11805, 11806 and 11808 reused the exact job-11785 population: 713
+races on five outer days. This is a controlled diagnostic comparison, not a
+sealed promotion test.
+
+| Job | Residual treatment | LogLoss delta | Brier delta | 3T5 delta | Generated dependency |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 11799 | Scale the mean and shared shock together | -0.002944 | -0.000092 | -0.004208 | 0.01074 |
+| 11805 | Scale means; keep shared shock at 1.0 | -0.002360 | +0.000017 | +0.001403 | 0.04747 |
+| 11806 | Select shock on only the last prior day | -0.002796 | -0.000026 | 0.000000 | 0.04644 |
+| 11808 | Match the full-training dependency moment | -0.002878 | -0.000012 | +0.001403 | 0.04353 |
+
+The observed dependency inner product was 0.03823. Scaling the whole residual
+destroyed the shared-path dependence, while last-day shock selection was
+unstable and overreacted to one day. Job 11808 therefore becomes the retained
+diagnostic design: mean probability and market residuals remain role-separated,
+and the shared shock is selected by deterministic moment matching over at most
+256 date-spread training races. The outer evaluation day is never used for
+that selection.
+
+Job 11808 improved LogLoss by 0.002878, Brier by 0.000012 and 3T5 by 0.140
+percentage points versus the decision model. It improved closing-market cross
+entropy by 0.01595 and total-variation error by 0.01895. Dependency error fell
+from 0.00821 in job 11806 to 0.00531, a 35% reduction. The five-day sample is
+too short, daily outcome performance is mixed, and no bankroll result exists;
+the artifact remains diagnostic-only and cannot be promoted or purchased from.
