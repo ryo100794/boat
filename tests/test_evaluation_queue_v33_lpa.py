@@ -61,6 +61,10 @@ def test_v33_lpa_command_is_fixed_and_saves_deployment_artifact(
     )
     assert output == root / "data/models/evaluation_queue/job-00012001.json"
     assert "learned_purchase_allocation_v33" in TASK_PROFILES
+    profile = TASK_PROFILES["learned_purchase_allocation_v33"]
+    assert profile["memory_mb"] == 6144
+    assert profile["idle_cpu"] == 0.0
+    assert profile["max_parallel"] == 1
 
 
 def test_v33_lpa_reuses_the_exact_v22_input_cache_identity(tmp_path: Path) -> None:
