@@ -59,6 +59,7 @@ def test_purpose_contract_and_page_use_objective_specific_metrics() -> None:
     assert "purchase_payout_log_mae" in metrics["ticket_value"]
     assert "purchase_gross_hit_exponent" in metrics["ticket_value"]
     assert "purchase_gross_payout_exponent" in metrics["ticket_value"]
+    assert "purchase_gross_direct_value_exponent" in metrics["ticket_value"]
     assert "daily_cluster_bootstrap_roi_lower_95" in metrics["bankroll_policy"]
     assert 'id="purposeSection"' in MODEL_REPORT_HTML
     assert 'id="purposeGroups"' in MODEL_REPORT_HTML
