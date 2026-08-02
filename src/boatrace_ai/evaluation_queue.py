@@ -4864,7 +4864,62 @@ def advance_genetic_islands(
     return inserted
 
 
-def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
+def periodic_model_cache_archive_paths(
+    conn: Any,
+    *,
+    app_root: Path,
+    now: datetime,
+    minimum_age_seconds: int = 24 * 3600,
+    maximum_files: int = 8,
+    maximum_bytes: int = 12 * 1024**3,
+) -> list[str]:
+    """Select old, reproducible matrices while excluding active job caches."""
+
+    if minimum_age_seconds < 0 or maximum_files < 1 or maximum_bytes < 1:
+        raise ValueError("invalid periodic model-cache archive limits")
+    rows = conn.execute(
+        """
+        SELECT job_id
+        FROM model_evaluation_jobs
+        WHERE status IN ('queued', 'running')
+        """
+    ).fetchall()
+    active_job_ids = {int(row["job_id"]) for row in rows}
+    root = app_root / "data" / "models" / "evaluation_cache"
+    if not root.is_dir():
+        return []
+    cutoff = now.timestamp() - minimum_age_seconds
+    candidates: list[tuple[float, int, Path]] = []
+    for path in root.rglob("*.matrix.npz"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime > cutoff or Path(f"{path}.gdrive.json").exists():
+            continue
+        match = re.search(r"(?:^|/)job-(\d{8})(?:-|/)", path.as_posix())
+        if match and int(match.group(1)) in active_job_ids:
+            continue
+        candidates.append((stat.st_mtime, -stat.st_size, path))
+    selected: list[str] = []
+    selected_bytes = 0
+    for _mtime, negative_size, path in sorted(candidates):
+        size = -negative_size
+        if selected and selected_bytes + size > maximum_bytes:
+            continue
+        selected.append(str(path.relative_to(app_root)))
+        selected_bytes += size
+        if len(selected) >= maximum_files:
+            break
+    return selected
+
+
+def seed_periodic_jobs(
+    conn: Any,
+    *,
+    now: datetime | None = None,
+    app_root: Path | None = None,
+) -> list[int]:
     now = now or datetime.now(timezone.utc)
     inserted: list[int] = []
 
@@ -4913,6 +4968,28 @@ def seed_periodic_jobs(conn: Any, *, now: datetime | None = None) -> list[int]:
         )
         if job_id is not None:
             inserted.append(job_id)
+    if app_root is not None:
+        paths = periodic_model_cache_archive_paths(
+            conn, app_root=app_root, now=now
+        )
+        if paths:
+            parameters = {"paths": paths, "timeout_seconds": 86400}
+            key = dedupe_key(
+                "gdrive_model_cache_archive",
+                "evaluation-cache-auto",
+                parameters,
+            )
+            if not already_scheduled("gdrive_model_cache_archive", key):
+                job_id = enqueue_job(
+                    conn,
+                    task_type="gdrive_model_cache_archive",
+                    model_key="evaluation-cache-auto",
+                    parameters=parameters,
+                    priority=12,
+                    max_attempts=3,
+                )
+                if job_id is not None:
+                    inserted.append(job_id)
     return inserted
 
 
@@ -5816,7 +5893,7 @@ def run_worker(args: argparse.Namespace) -> int:
                         args.schedule_periodic
                         and now - last_schedule >= 60.0
                     ):
-                        seed_periodic_jobs(conn)
+                        seed_periodic_jobs(conn, app_root=app_root)
                         scheduled_periodic = True
                 if seeded_defaults:
                     last_seed = now
@@ -5903,11 +5980,14 @@ def run_scheduler(args: argparse.Namespace) -> int:
     app_root = Path(args.app_root).resolve()
     last_seed = 0.0
     last_schedule = 0.0
-    with connection(args.db) as conn:
-        ensure_schema(conn)
-        seed_work_tickets(conn)
+    initialized = False
     while True:
         try:
+            if not initialized:
+                with connection(args.db) as conn:
+                    ensure_schema(conn)
+                    seed_work_tickets(conn)
+                initialized = True
             now = time.monotonic()
             seeded_defaults = False
             scheduled_periodic = False
@@ -5949,7 +6029,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
                         )
                     seeded_defaults = True
                 if now - last_schedule >= args.schedule_interval:
-                    seed_periodic_jobs(conn)
+                    seed_periodic_jobs(conn, app_root=app_root)
                     scheduled_periodic = True
             if seeded_defaults:
                 last_seed = now
