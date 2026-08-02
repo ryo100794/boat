@@ -90,7 +90,7 @@ PURPOSE_REQUIREMENTS = {
     "outcome_probability": (
         "winner_log_loss",
         "winner_top1_accuracy",
-        "calibrated_trifecta_log_loss",
+        "trifecta_log_loss",
         "trifecta_top5_hit_rate",
     ),
     "closing_odds": (
@@ -155,6 +155,8 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
             job.get("holdout_start"),
             job.get("evaluation_start"),
             job.get("formal_evaluation_from"),
+            job.get("evaluation_from"),
+            parameters.get("outer_from"),
             parameters.get("evaluation_from"),
             parameters.get("from_date"),
         ),
@@ -162,6 +164,8 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
             job.get("holdout_end"),
             job.get("evaluation_end"),
             job.get("market_comparison_date"),
+            job.get("evaluation_through"),
+            parameters.get("outer_through"),
             parameters.get("evaluation_through"),
             parameters.get("through_date"),
         ),
@@ -174,11 +178,13 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
             parameters.get("snapshot_minutes_before"),
         ),
         "daily_budget_yen": _first_value(
+            job.get("daily_budget_yen"),
             parameters.get("daily_budget_yen"),
             parameters.get("budget_yen"),
             parameters.get("budget"),
         ),
         "odds_mode": _first_value(
+            job.get("odds_mode"),
             parameters.get("odds_mode"),
             parameters.get("market_source"),
             "T-5" if parameters.get("include_odds") is True else None,
@@ -193,8 +199,11 @@ def _backtest_scope(job: dict[str, Any]) -> dict[str, Any]:
         "policy_sha256": _first_value(
             parameters.get("policy_sha256"), job.get("policy_sha256")
         ),
-        "allocation_mode": parameters.get("allocation_mode"),
+        "allocation_mode": _first_value(
+            job.get("allocation_mode"), parameters.get("allocation_mode")
+        ),
         "profit_reinvestment": _first_value(
+            job.get("profit_reinvestment"),
             parameters.get("profit_reinvestment"),
             parameters.get("reinvest_profit"),
         ),

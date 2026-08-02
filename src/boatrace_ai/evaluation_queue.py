@@ -3047,6 +3047,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "holdout_prediction_metrics", "selection_prediction_metrics",
             "bankroll_confidence",
             "closing_odds_forecast",
+            "evaluation", "formal_bankroll", "prediction_metrics",
             "conditional_order", "venue_conditional_order",
             "momentum_newton_residual",
         ):
@@ -3054,6 +3055,42 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    periods = payload.get("periods")
+    if isinstance(periods, dict):
+        summary.setdefault(
+            "evaluation_from",
+            periods.get("outer_from") or periods.get("evaluation_from"),
+        )
+        summary.setdefault(
+            "evaluation_through",
+            periods.get("outer_through") or periods.get("evaluation_through"),
+        )
+    evaluation = payload.get("evaluation")
+    formal_bankroll = payload.get("formal_bankroll")
+    coverage = payload.get("coverage")
+    for source in (evaluation, formal_bankroll, coverage):
+        if not isinstance(source, dict):
+            continue
+        races = (
+            source.get("races")
+            or source.get("outer_races")
+            or source.get("evaluated_races")
+        )
+        if races is not None:
+            summary.setdefault("evaluated_races", races)
+            break
+    if isinstance(formal_bankroll, dict):
+        policy = formal_bankroll.get("policy")
+        if isinstance(policy, dict):
+            summary.setdefault(
+                "daily_budget_yen",
+                policy.get("initial_bankroll_yen_per_day"),
+            )
+            summary.setdefault("allocation_mode", policy.get("allocation_api"))
+            summary.setdefault(
+                "profit_reinvestment", policy.get("profit_reinvestment")
+            )
+            summary.setdefault("odds_mode", policy.get("decision_odds"))
     apply_archive_residual_summary(payload, summary)
     chronological = payload.get("chronological_bankroll")
     if isinstance(chronological, dict):
