@@ -63,8 +63,8 @@ class ConditionalJointScenarioModel:
     teacher_sources: tuple[str, ...]
     teacher_artifact_sha256s: tuple[str, ...]
     rank: int
-    probability_residual_scale: float
-    market_residual_scale: float
+    probability_mean_residual_scale: float
+    market_mean_residual_scale: float
     residual_scale_selection: Mapping[str, Any]
 
 
@@ -375,8 +375,8 @@ def fit_conditional_joint_scenario_model(
             for row in observations
         })),
         rank=selected_rank,
-        probability_residual_scale=probability_scale,
-        market_residual_scale=market_scale,
+        probability_mean_residual_scale=probability_scale,
+        market_mean_residual_scale=market_scale,
         residual_scale_selection=scale_selection,
     )
 
@@ -391,27 +391,29 @@ def generate_joint_market_scenarios(
     popularity_band: str,
     scenarios: int = 1_000,
     seed: int = 33036,
-    probability_residual_scale: float | None = None,
-    market_residual_scale: float | None = None,
+    probability_mean_residual_scale: float | None = None,
+    market_mean_residual_scale: float | None = None,
 ) -> list[JointMarketScenario]:
     if isinstance(scenarios, bool) or not isinstance(scenarios, int) or scenarios < 1:
         raise ValueError("scenarios must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("seed must be a non-negative integer")
     probability_scale = (
-        model.probability_residual_scale
-        if probability_residual_scale is None
-        else float(probability_residual_scale)
+        model.probability_mean_residual_scale
+        if probability_mean_residual_scale is None
+        else float(probability_mean_residual_scale)
     )
     market_scale = (
-        model.market_residual_scale
-        if market_residual_scale is None
-        else float(market_residual_scale)
+        model.market_mean_residual_scale
+        if market_mean_residual_scale is None
+        else float(market_mean_residual_scale)
     )
     if not isfinite(probability_scale) or not 0.0 <= probability_scale <= 2.0:
-        raise ValueError("probability_residual_scale must be finite and in [0, 2]")
+        raise ValueError(
+            "probability_mean_residual_scale must be finite and in [0, 2]"
+        )
     if not isfinite(market_scale) or not 0.0 <= market_scale <= 2.0:
-        raise ValueError("market_residual_scale must be finite and in [0, 2]")
+        raise ValueError("market_mean_residual_scale must be finite and in [0, 2]")
     decision = validate_probability_simplex(
         decision_probabilities, expected_outcomes=model.outcomes
     )
@@ -434,23 +436,30 @@ def generate_joint_market_scenarios(
     conditional_mean = model.group_means.get(key, additive_main)
     rng = np.random.default_rng(seed)
     factors = rng.normal(size=(scenarios, model.rank))
-    residuals = conditional_mean + (
+    stochastic_residuals = (
         factors * model.factor_scales
     ) @ model.factor_components
     if np.any(model.diagonal_noise_scale > 0.0):
-        residuals += rng.normal(size=residuals.shape) * model.diagonal_noise_scale
+        stochastic_residuals += (
+            rng.normal(size=stochastic_residuals.shape)
+            * model.diagonal_noise_scale
+        )
     dimension = len(model.outcomes)
     base_probability = _clr(decision, model.outcomes)
     base_market = _clr(market, model.outcomes)
     weight = 1.0 / scenarios
     result = []
-    for index, residual in enumerate(residuals):
+    for index, stochastic_residual in enumerate(stochastic_residuals):
         terminal_probability = _softmax_mapping(
-            base_probability + probability_scale * residual[:dimension],
+            base_probability
+            + probability_scale * conditional_mean[:dimension]
+            + stochastic_residual[:dimension],
             model.outcomes,
         )
         final_market = _softmax_mapping(
-            base_market + market_scale * residual[dimension:],
+            base_market
+            + market_scale * conditional_mean[dimension:]
+            + stochastic_residual[dimension:],
             model.outcomes,
         )
         result.append(JointMarketScenario(
@@ -461,8 +470,8 @@ def generate_joint_market_scenarios(
                 "context_key": key,
                 "context_fallback": key not in model.group_means,
                 "scenario_index": index,
-                "probability_residual_scale": probability_scale,
-                "market_residual_scale": market_scale,
+                "probability_mean_residual_scale": probability_scale,
+                "market_mean_residual_scale": market_scale,
             },
             weight=weight,
         ))
@@ -552,8 +561,8 @@ def _select_residual_scales_on_last_training_day(
                 popularity_band=observation.popularity_band,
                 scenarios=scenarios,
                 seed=race_seed,
-                probability_residual_scale=scale,
-                market_residual_scale=scale,
+                probability_mean_residual_scale=scale,
+                market_mean_residual_scale=scale,
             )
             probability_mean = _mean_scenario_simplex(
                 generated, expected_outcomes, market=False
@@ -621,8 +630,10 @@ def joint_scenario_model_diagnostics(
         "parameter_uncertainty": (
             "not_in_single_fit; outer day-block refits are required"
         ),
-        "probability_residual_scale": model.probability_residual_scale,
-        "market_residual_scale": model.market_residual_scale,
+        "probability_mean_residual_scale": (
+            model.probability_mean_residual_scale
+        ),
+        "market_mean_residual_scale": model.market_mean_residual_scale,
         "residual_scale_selection": dict(model.residual_scale_selection),
     }
 
@@ -847,8 +858,10 @@ def evaluate_joint_scenario_walk_forward(
             "trained_through_date": training_dates[-1],
             "training_races": len(training),
             "evaluated_races": len(day_metrics),
-            "probability_residual_scale": model.probability_residual_scale,
-            "market_residual_scale": model.market_residual_scale,
+            "probability_mean_residual_scale": (
+                model.probability_mean_residual_scale
+            ),
+            "market_mean_residual_scale": model.market_mean_residual_scale,
             "residual_scale_selection": dict(model.residual_scale_selection),
             "metrics": _walk_forward_metric_summary(day_metrics),
         })

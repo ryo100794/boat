@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -161,8 +163,13 @@ def test_generated_probability_and_market_vectors_remain_simplexes() -> None:
 
 def test_probability_and_market_residual_scales_are_role_separated() -> None:
     model = fit_conditional_joint_scenario_model(_training_rows(), rank=2)
-    scenarios = generate_joint_market_scenarios(
+    deterministic_model = replace(
         model,
+        factor_scales=np.zeros_like(model.factor_scales),
+        diagonal_noise_scale=np.zeros_like(model.diagonal_noise_scale),
+    )
+    scenarios = generate_joint_market_scenarios(
+        deterministic_model,
         decision_probabilities={"A": 0.55, "B": 0.45},
         decision_market_shares={"A": 0.6, "B": 0.4},
         venue="01",
@@ -170,14 +177,15 @@ def test_probability_and_market_residual_scales_are_role_separated() -> None:
         popularity_band="favorite",
         scenarios=20,
         seed=29,
-        probability_residual_scale=0.0,
-        market_residual_scale=1.0,
+        probability_mean_residual_scale=0.0,
+        market_mean_residual_scale=1.0,
     )
 
     assert all(row.probabilities["A"] == pytest.approx(0.55) for row in scenarios)
-    assert np.std([
-        row.market_state["final_market_shares"]["A"] for row in scenarios
-    ]) > 0.0
+    assert all(
+        row.market_state["final_market_shares"]["A"] != pytest.approx(0.6)
+        for row in scenarios
+    )
 
 
 def test_shared_factor_preserves_learned_negative_probability_market_dependence() -> None:
@@ -343,6 +351,6 @@ def test_walk_forward_current_teacher_cannot_change_own_prediction() -> None:
         == pytest.approx(baseline["days"][0]["metrics"]["generated_log_loss"])
     )
     assert (
-        mutated["days"][0]["probability_residual_scale"]
-        == baseline["days"][0]["probability_residual_scale"]
+        mutated["days"][0]["probability_mean_residual_scale"]
+        == baseline["days"][0]["probability_mean_residual_scale"]
     )
