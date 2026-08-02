@@ -125,6 +125,7 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
             })
     cache = tmp_path / "races.joblib"
     joblib.dump({"races": races}, cache)
+    progress = []
 
     result = run_joint_bankroll_evaluation(
         cache,
@@ -147,6 +148,7 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
         bootstrap_samples=100,
         seed=11,
         expected_outcomes=("A", "B"),
+        progress_callback=progress.append,
     )
 
     assert result["evaluated_days"] == 4
@@ -157,3 +159,16 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["primary_bankroll"]["roi"] is None
     assert result["promotion_eligible"] is False
     assert "generated_log_loss" in result["probability_metrics"]
+    completed = [
+        row for row in progress
+        if row["event"] == "joint_bankroll_day_completed"
+    ]
+    assert [row["completed_days"] for row in completed] == [1, 2, 3, 4]
+    assert all(row["total_evaluation_days"] == 4 for row in completed)
+    assert {
+        row["evaluation_date"]
+        for row in progress
+        if row["event"] == "joint_bankroll_race_progress"
+    } == {
+        "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08"
+    }
