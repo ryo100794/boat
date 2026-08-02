@@ -622,6 +622,40 @@ def test_four_head_market_offset_requires_teacher_version_fourteen(
         )
 
 
+def test_four_head_oof_scaled_market_requires_teacher_version_fifteen(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    params = {
+        "source_model": "data/models/source.joblib",
+        "training_from": "2026-07-20",
+        "training_through": "2026-07-30",
+        "outer_from": "2026-07-31",
+        "outer_through": "2026-08-01",
+        "purchase_loss": (
+            "multinomial_market_offset_oof_scaled_all_choice_closing"
+        ),
+        "purchase_teacher_version": 15,
+    }
+    command, _output = build_command(
+        _job("four_head_learned_value", params),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+    assert command[command.index("--purchase-loss") + 1] == (
+        "multinomial_market_offset_oof_scaled_all_choice_closing"
+    )
+    params["purchase_teacher_version"] = 14
+    with pytest.raises(ValueError, match="does not match"):
+        build_command(
+            _job("four_head_learned_value", params),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+
+
 def test_four_head_learned_value_rejects_training_outer_overlap(
     tmp_path: Path,
 ) -> None:
@@ -3796,7 +3830,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
 
     assert TASK_PROFILES["market_residual_walk_forward"] == {
         "category": "evaluation",
-        "memory_mb": 2048,
+        "memory_mb": 8192,
         "disk_mb": 256,
         "idle_cpu": 5.0,
         "max_parallel": 2,

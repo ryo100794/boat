@@ -552,6 +552,53 @@ def test_nested_market_offset_artifact_learns_residual_from_t5_odds() -> None:
     assert np.isfinite(prediction.purchase_scores).all()
 
 
+def test_oof_residual_scale_learns_signal_and_rejects_noise() -> None:
+    market = [np.asarray([0.5, 0.5])] * 6
+    signal = [np.asarray([1.0, -1.0])] * 6
+    scale, market_loss, scaled_loss = v22._fit_multinomial_residual_scale(
+        market, signal, [0] * 6, alpha=0.001
+    )
+
+    assert scale > 0.0
+    assert scaled_loss < market_loss
+
+    balanced_winners = [0, 1, 0, 1, 0, 1]
+    noise_scale, noise_market_loss, noise_scaled_loss = (
+        v22._fit_multinomial_residual_scale(
+            market, signal, balanced_winners, alpha=0.001
+        )
+    )
+    assert noise_scale == pytest.approx(0.0, abs=1e-7)
+    assert noise_scaled_loss == pytest.approx(noise_market_loss)
+
+
+def test_nested_oof_scaled_market_artifact_freezes_learned_scale() -> None:
+    artifact = fit_four_head_nested_v22(
+        labeled_races(start_day=1, days=8, races_per_day=3),
+        minimum_inner_training_dates=2,
+        minimum_purchase_training_dates=2,
+        alpha=0.01,
+        purchase_loss=(
+            "multinomial_market_offset_oof_scaled_all_choice_closing"
+        ),
+    )
+    race = labeled_races(start_day=9, days=1)[0]
+    hit_probability = v22.predict_purchase_hit_probabilities(
+        artifact, race.decision
+    )
+
+    assert 0.0 <= artifact.purchase_residual_scale <= 2.0
+    assert artifact.purchase_oof_market_log_loss is not None
+    assert artifact.purchase_oof_scaled_log_loss is not None
+    assert (
+        artifact.purchase_oof_scaled_log_loss
+        <= artifact.purchase_oof_market_log_loss + 1e-10
+    )
+    assert hit_probability is not None
+    assert hit_probability.sum() == pytest.approx(1.0)
+    assert np.isfinite(predict_race(artifact, race.decision).purchase_scores).all()
+
+
 def test_hurdle_purchase_heads_learn_hit_probability_and_conditional_payout() -> None:
     matrix = np.asarray(
         [[-2.0], [-1.0], [0.0], [1.0], [2.0]], dtype=np.float64

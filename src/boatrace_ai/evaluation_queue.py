@@ -63,7 +63,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
-    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
+    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
     "four_head_temporal_aggregate": {"category": "evaluation", "memory_mb": 512, "idle_cpu": 0.0, "max_parallel": 2, "disk_mb": 128},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
@@ -125,6 +125,11 @@ ALTER TABLE model_evaluation_jobs ADD COLUMN IF NOT EXISTS min_free_memory_mb IN
 ALTER TABLE model_evaluation_jobs ADD COLUMN IF NOT EXISTS min_free_disk_mb INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE model_evaluation_jobs ADD COLUMN IF NOT EXISTS min_idle_cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE model_evaluation_jobs ADD COLUMN IF NOT EXISTS max_parallel INTEGER NOT NULL DEFAULT 4;
+UPDATE model_evaluation_jobs
+SET min_free_memory_mb = 8192
+WHERE task_type = 'market_residual_walk_forward'
+  AND status IN ('queued', 'running')
+  AND min_free_memory_mb < 8192;
 ALTER TABLE model_evaluation_jobs ADD COLUMN IF NOT EXISTS last_resource_snapshot JSONB;
 CREATE INDEX IF NOT EXISTS idx_model_evaluation_jobs_claim
   ON model_evaluation_jobs(status, available_at, priority DESC, job_id);
@@ -1867,11 +1872,12 @@ def build_command(
             "multinomial_offset_all_choice_closing": 12,
             "multinomial_offset_all_choice_closing_temperature": 13,
             "multinomial_market_offset_all_choice_closing": 14,
+            "multinomial_market_offset_oof_scaled_all_choice_closing": 15,
         }
         if purchase_loss not in teacher_versions:
             raise ValueError("unsupported four-head purchase_loss")
         teacher_version = _integer(
-            params, "purchase_teacher_version", 3, 3, 14
+            params, "purchase_teacher_version", 3, 3, 15
         )
         expected_version = teacher_versions[purchase_loss]
         if teacher_version != expected_version:
@@ -2984,6 +2990,13 @@ METRIC_KEYS = (
     "profit_without_largest_hit_yen", "largest_hit_excluded_roi",
     "closing_odds_log_mae", "baseline_closing_odds_log_mae",
     "purchase_probability_temperature",
+    "purchase_residual_scale",
+    "purchase_oof_market_log_loss",
+    "purchase_oof_scaled_log_loss",
+    "purchase_hit_log_loss",
+    "t5_market_log_loss",
+    "purchase_hit_log_loss_delta_vs_market",
+    "purchase_hit_top5_rate",
     "profitable_day_fraction",
     "purchase_value_positive_predicted_tickets",
     "purchase_value_positive_observed_capped_roi",
