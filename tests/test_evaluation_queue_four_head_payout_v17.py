@@ -12,6 +12,7 @@ from boatrace_ai.evaluation_queue import build_command
     (
         ("multinomial_market_offset_oof_scaled_payout_closing", 16),
         ("multinomial_market_offset_oof_scaled_payout_tweedie", 17),
+        ("multinomial_market_offset_oof_scaled_payout_factor_tweedie", 18),
     ),
 )
 def test_payout_models_require_matching_teacher_version(
