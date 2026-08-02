@@ -1873,7 +1873,6 @@ def build_command(
             "projection_dimensions": projection_dimensions,
             "max_snapshot_age_seconds": max_snapshot_age,
             "max_races_per_day": params.get("max_races_per_day"),
-            "parent_job_id": job.get("parent_job_id"),
         }
         cache_digest = hashlib.sha256(
             _json(cache_identity).encode("utf-8")

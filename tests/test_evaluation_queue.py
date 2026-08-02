@@ -206,6 +206,40 @@ def test_four_head_learned_value_command_records_learning_and_outer_periods(
     assert "four_head_learned_value" in TASK_PROFILES
 
 
+def test_four_head_data_cache_identity_ignores_job_lineage(tmp_path: Path) -> None:
+    root = tmp_path / "boat"
+    params = {
+        "source_model": "data/models/evaluation_queue/job-00002707.joblib",
+        "training_from": "2026-07-20",
+        "training_through": "2026-07-30",
+        "outer_from": "2026-07-31",
+        "outer_through": "2026-08-01",
+        "purchase_teacher_version": 3,
+        "purchase_loss": "ridge_capped_net",
+    }
+    first = _job("four_head_learned_value", params, job_id=8)
+    second = _job("four_head_learned_value", params, job_id=9)
+    first["parent_job_id"] = 100
+    second["parent_job_id"] = 200
+
+    first_command, _ = build_command(
+        first,
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+    second_command, _ = build_command(
+        second,
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert first_command[first_command.index("--data-cache") + 1] == (
+        second_command[second_command.index("--data-cache") + 1]
+    )
+
+
 def test_four_head_poisson_purchase_loss_requires_teacher_version_four(
     tmp_path: Path,
 ) -> None:
