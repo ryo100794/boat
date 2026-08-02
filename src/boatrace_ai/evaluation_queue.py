@@ -65,6 +65,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
+    "learned_purchase_allocation_v33": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
     "four_head_temporal_aggregate": {"category": "evaluation", "memory_mb": 512, "idle_cpu": 0.0, "max_parallel": 2, "disk_mb": 128},
     "listwise_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "combined_feature_search": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
@@ -1833,6 +1834,126 @@ def build_command(
         for source_job_id in source_job_ids:
             command.extend(["--source-job-id", str(source_job_id)])
         command.extend(["--output", str(output)])
+        return command, output
+    if task_type == "learned_purchase_allocation_v33":
+        allowed = {
+            "source_model", "training_from", "training_through",
+            "outer_from", "outer_through", "projection_dimensions",
+            "base_training_fraction", "minimum_base_training_dates",
+            "minimum_lpa_teacher_dates", "minimum_inner_training_dates",
+            "minimum_purchase_training_dates", "alpha",
+            "allocation_validation_fraction", "allocation_max_iterations",
+            "bootstrap_samples", "max_races_per_day",
+            "max_snapshot_age_seconds", "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported learned_purchase_allocation_v33 parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        required = {
+            "source_model", "training_from", "training_through",
+            "outer_from", "outer_through",
+        }
+        missing = required - set(params)
+        if missing:
+            raise ValueError(
+                "missing learned_purchase_allocation_v33 parameters: "
+                + ", ".join(sorted(missing))
+            )
+        training_from = _date(params, "training_from")
+        training_through = _date(params, "training_through")
+        outer_from = _date(params, "outer_from")
+        outer_through = _date(params, "outer_through")
+        if training_from > training_through or outer_from > outer_through:
+            raise ValueError("V33-LPA evaluation periods must be chronological")
+        if training_through >= outer_from:
+            raise ValueError("V33-LPA outer period must follow training")
+        projection_dimensions = _integer(
+            params, "projection_dimensions", 8, 1, 128
+        )
+        base_fraction = _number(
+            params, "base_training_fraction", 0.60, 0.1, 0.9
+        )
+        minimum_base = _integer(
+            params, "minimum_base_training_dates", 5, 1, 120
+        )
+        minimum_lpa = _integer(
+            params, "minimum_lpa_teacher_dates", 4, 4, 120
+        )
+        minimum_inner = _integer(
+            params, "minimum_inner_training_dates", 2, 1, 60
+        )
+        minimum_purchase = _integer(
+            params, "minimum_purchase_training_dates", 2, 1, 60
+        )
+        alpha = _number(params, "alpha", 1e-3, 1e-9, 1000.0)
+        allocation_validation = _number(
+            params, "allocation_validation_fraction", 0.25, 0.1, 0.5
+        )
+        allocation_iterations = _integer(
+            params, "allocation_max_iterations", 200, 20, 1000
+        )
+        bootstrap_samples = _integer(
+            params, "bootstrap_samples", 20000, 100, 100000
+        )
+        max_snapshot_age = _number(
+            params, "max_snapshot_age_seconds", 300.0, 0.0, 300.0
+        )
+        _integer(params, "timeout_seconds", 7200, 300, 86400)
+        model_root = (app_root / "data" / "models").resolve()
+        source_model = (app_root / str(params["source_model"])).resolve()
+        if model_root not in source_model.parents or source_model.suffix != ".joblib":
+            raise ValueError(
+                "source_model must be a joblib artifact inside data/models"
+            )
+        cache_identity = {
+            "source_model": str(source_model),
+            "training_from": training_from,
+            "training_through": training_through,
+            "outer_from": outer_from,
+            "outer_through": outer_through,
+            "projection_dimensions": projection_dimensions,
+            "max_snapshot_age_seconds": max_snapshot_age,
+            "max_races_per_day": params.get("max_races_per_day"),
+        }
+        cache_digest = hashlib.sha256(
+            _json(cache_identity).encode("utf-8")
+        ).hexdigest()[:20]
+        data_cache = (
+            app_root / "data" / "models" / "evaluation_cache"
+            / "four_head_v22" / f"{cache_digest}.joblib"
+        )
+        command = [
+            str(python), "-m",
+            "boatrace_ai.listwise.learned_purchase_allocation_v33_evaluation",
+            "--db", db,
+            "--source-model", str(source_model),
+            "--data-cache", str(data_cache),
+            "--training-from", training_from,
+            "--training-through", training_through,
+            "--outer-from", outer_from,
+            "--outer-through", outer_through,
+            "--projection-dimensions", str(projection_dimensions),
+            "--base-training-fraction", str(base_fraction),
+            "--minimum-base-training-dates", str(minimum_base),
+            "--minimum-lpa-teacher-dates", str(minimum_lpa),
+            "--minimum-inner-training-dates", str(minimum_inner),
+            "--minimum-purchase-training-dates", str(minimum_purchase),
+            "--alpha", str(alpha),
+            "--allocation-validation-fraction", str(allocation_validation),
+            "--allocation-max-iterations", str(allocation_iterations),
+            "--bootstrap-samples", str(bootstrap_samples),
+            "--max-snapshot-age-seconds", str(max_snapshot_age),
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--output", str(output),
+        ]
+        if params.get("max_races_per_day") is not None:
+            command.extend([
+                "--max-races-per-day",
+                str(_integer(params, "max_races_per_day", 144, 1, 1000)),
+            ])
         return command, output
     if task_type == "four_head_learned_value":
         allowed = {
