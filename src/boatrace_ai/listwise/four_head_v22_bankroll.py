@@ -188,6 +188,76 @@ def _prediction_metrics(
     }
 
 
+def _bankroll_stability(bankroll: dict[str, Any]) -> dict[str, Any]:
+    stake = int(bankroll.get("stake_yen") or 0)
+    returned = int(bankroll.get("return_yen") or 0)
+    largest = int(bankroll.get("largest_hit_return_yen") or 0)
+    square_sum = float(bankroll.get("hit_return_square_sum_yen2") or 0.0)
+    evaluation_days = int(bankroll.get("race_days") or 0)
+    winning_days = int(bankroll.get("winning_days") or 0)
+    active_daily = [
+        row
+        for row in bankroll.get("daily") or []
+        if int(row.get("stake_yen") or 0) > 0
+    ]
+    bootstrap_lower = None
+    if active_daily:
+        stakes = np.asarray(
+            [float(row["stake_yen"]) for row in active_daily], dtype=np.float64
+        )
+        returns = np.asarray(
+            [float(row["return_yen"]) for row in active_daily], dtype=np.float64
+        )
+        rng = np.random.default_rng(20260802)
+        sampled = rng.integers(0, len(active_daily), size=(20_000, len(active_daily)))
+        bootstrap_lower = float(
+            np.quantile(returns[sampled].sum(axis=1) / stakes[sampled].sum(axis=1), 0.05)
+        )
+    return {
+        "evaluation_days": evaluation_days,
+        "tickets": int(bankroll.get("tickets") or 0),
+        "hit_tickets": int(bankroll.get("hit_tickets") or 0),
+        "winning_days": winning_days,
+        "profitable_day_fraction": (
+            winning_days / evaluation_days if evaluation_days else None
+        ),
+        "roi_without_largest_hit": (
+            (returned - largest) / stake if stake else None
+        ),
+        "largest_hit_return_share": largest / returned if returned else None,
+        "effective_hit_count": (
+            returned * returned / square_sum if square_sum else 0.0
+        ),
+        "daily_cluster_bootstrap_roi_lower_95": bootstrap_lower,
+    }
+
+
+def _promotion_gate(
+    bankroll: dict[str, Any], stability: dict[str, Any]
+) -> dict[str, bool]:
+    return {
+        "minimum_30_evaluation_days": stability["evaluation_days"] >= 30,
+        "minimum_1000_evaluated_races": int(
+            bankroll.get("evaluated_races") or 0
+        ) >= 1_000,
+        "minimum_100_tickets": stability["tickets"] >= 100,
+        "positive_profit": int(bankroll.get("profit_yen") or 0) > 0,
+        "roi_above_one": float(bankroll.get("roi") or 0.0) > 1.0,
+        "roi_without_largest_hit_above_one": float(
+            stability["roi_without_largest_hit"] or 0.0
+        ) > 1.0,
+        "daily_bootstrap_lower_above_one": float(
+            stability["daily_cluster_bootstrap_roi_lower_95"] or 0.0
+        ) > 1.0,
+        "minimum_20_effective_hits": float(
+            stability["effective_hit_count"] or 0.0
+        ) >= 20.0,
+        "minimum_60_percent_profitable_days": float(
+            stability["profitable_day_fraction"] or 0.0
+        ) >= 0.60,
+    }
+
+
 def evaluate_four_head_v22_bankroll(
     artifact: FourHeadArtifact,
     outer_races: Iterable[LabeledRace],
@@ -295,6 +365,8 @@ def evaluate_four_head_v22_bankroll(
         daily.append(day_result)
 
     bankroll = summarize_chronological_bankroll_days(daily)
+    stability = _bankroll_stability(bankroll)
+    promotion_gate = _promotion_gate(bankroll, stability)
     metrics = _prediction_metrics(races, predictions)
     return {
         "model_key": artifact.model_key,
@@ -310,6 +382,9 @@ def evaluate_four_head_v22_bankroll(
         "return_yen": bankroll["return_yen"],
         "profit_yen": bankroll["profit_yen"],
         "max_drawdown_yen": bankroll["max_drawdown_yen"],
+        **stability,
+        "promotion_gate": promotion_gate,
+        "promotion_eligible": all(promotion_gate.values()),
         "daily": bankroll["daily"],
         "policy": {
             "initial_bankroll_yen_per_day": initial_bankroll_yen,
