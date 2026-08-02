@@ -304,6 +304,23 @@ complete GA vector. The attachment records its method, decision-time as-of
 label and deterministic allocation audit hash. It refuses to overwrite an
 exact pool amount or exact ticket stakes already present in a scenario.
 
+`boatrace_ai.joint_bankroll_evaluation` is the chronological operating
+evaluation that connects these components. For each evaluation day it refits
+outer parameter draws from strictly earlier complete days, generates paired
+terminal-probability and closing-share paths, attaches the decision-time pool
+lower bound, and asks the complete-vector GA for zero or more 100-yen units.
+The realized ledger uses only the official final payout. Each day opens with
+JPY 10,000; stake is removed at purchase, and a return is unavailable to later
+purchases until ten minutes after that race's recorded odds deadline. This
+prevents same-day bankroll leakage from a result that was not yet knowable.
+
+Promotion requires at least 30 complete operating days, 1,000 ticket orders,
+positive aggregate profit, a complete-day bootstrap ROI lower bound above
+1.0, maximum within-day drawdown no greater than half the opening bankroll,
+and generated LogLoss no worse than the decision model. Current evidence has
+fewer than 30 collected market days, so every result is provisional even if
+its point ROI is above one. The evaluator never submits a wager.
+
 `boatrace_ai.joint_parameter_uncertainty` supplies genuine outer parameter
 draws rather than duplicating paths from one fit. It resamples complete strictly
 prior race days with replacement, refits the terminal/market residual model for
