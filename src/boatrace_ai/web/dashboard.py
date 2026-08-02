@@ -37,6 +37,7 @@ from ..standard_evaluation import (
     protocol_sha256 as standard_protocol_sha256,
 )
 from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulations
+from .model_evaluation_identity import evaluation_identity
 from .model_report_purposes import evaluation_purpose_groups
 from .prediction_summary import attach_latest_prediction_summaries
 from .roadmap_model_status import queue_model_roadmap_status
@@ -1158,8 +1159,8 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 "roi_delta_ci95_lower": bankroll_confidence.get("roi_delta_ci95_lower"),
                 "roi_delta_ci95_upper": bankroll_confidence.get("roi_delta_ci95_upper"),
             }
-            backtests.append(_backtest_summary(path, label, probability_result))
-            bankroll.append(_bankroll_summary(path, label, bankroll_result))
+            backtests.append(_backtest_summary(path, label, probability_result, identity_data=data))
+            bankroll.append(_bankroll_summary(path, label, bankroll_result, identity_data=data))
             daily_rows = _daily_report_rows(direct_bankroll.get("daily") or [])
             if daily_rows:
                 bankroll_daily[label] = daily_rows
@@ -1188,7 +1189,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                         "roi_delta_ci95_upper"
                     ),
                 }
-                bankroll.append(_bankroll_summary(path, walk_label, walk_result))
+                bankroll.append(_bankroll_summary(path, walk_label, walk_result, identity_data=data, component="conditional_payout_walk_forward"))
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
                     bankroll_daily[walk_label] = walk_daily
@@ -1218,7 +1219,13 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                     ),
                 }
                 bankroll.append(
-                    _bankroll_summary(path, return_label, return_result)
+                    _bankroll_summary(
+                        path,
+                        return_label,
+                        return_result,
+                        identity_data=data,
+                        component="expected_return_calibration",
+                    )
                 )
                 return_daily = _daily_report_rows(return_bankroll.get("daily") or [])
                 if return_daily:
@@ -1256,7 +1263,11 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 }
                 bankroll.append(
                     _bankroll_summary(
-                        path, fixed_return_label, fixed_return_result
+                        path,
+                        fixed_return_label,
+                        fixed_return_result,
+                        identity_data=data,
+                        component="expected_return_fixed_threshold",
                     )
                 )
                 fixed_return_daily = _daily_report_rows(
@@ -1299,16 +1310,8 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         standardized,
     )
     feature_diagnostics.extend(_remote_feature_correlation_summaries(remote_evaluations))
-    backtests.extend(
-        row
-        for row in _remote_backtest_report_summaries(remote_evaluations)
-        if row.get("name") not in standardized_labels
-    )
-    bankroll.extend(
-        row
-        for row in _remote_bankroll_report_summaries(remote_evaluations)
-        if row.get("name") not in standardized_labels
-    )
+    backtests.extend(_remote_backtest_report_summaries(remote_evaluations))
+    bankroll.extend(_remote_bankroll_report_summaries(remote_evaluations))
     bankroll_daily.update(
         {
             label: rows
@@ -1324,14 +1327,8 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         queued_evaluations,
         model_dir,
     )
-    existing_backtests = {str(row.get("name")) for row in backtests}
-    existing_bankroll = {str(row.get("name")) for row in bankroll}
-    backtests.extend(
-        row for row in queue_backtests if str(row.get("name")) not in existing_backtests
-    )
-    bankroll.extend(
-        row for row in queue_bankroll if str(row.get("name")) not in existing_bankroll
-    )
+    backtests = _distinct_evaluation_results([*backtests, *queue_backtests])
+    bankroll = _distinct_evaluation_results([*bankroll, *queue_bankroll])
     bankroll_daily.update(queue_daily)
     legacy_evaluation_jobs = _remote_evaluation_job_summaries(remote_evaluations)
     if queued_evaluations["jobs"]:
@@ -1883,6 +1880,12 @@ def _merge_standardized_v2_status(
                         "file": f"standardized_365d_v2/{model_id}.json",
                         "modified_at": generated_at,
                         "protocol_id": data.get("protocol_id"),
+                        "generated_at": data.get("generated_at"),
+                        "evaluation_from": (data.get("protocol") or {}).get("holdout_start"),
+                        "evaluation_through": (data.get("protocol") or {}).get("holdout_end"),
+                        "evaluation_race_set_sha256": data.get("evaluation_race_set_sha256"),
+                        "protocol_sha256": data.get("protocol_sha256"),
+                        "policy": data.get("policy") or {},
                         "metrics": {
                             key: data.get(key)
                             for key in (
@@ -3751,7 +3754,7 @@ def _bankroll_component_summaries(
             "model": f"{model_name}_{component_key}",
             "generated_at": data.get("generated_at"),
         }
-        rows.append(_bankroll_summary(path, component_label, component_result))
+        rows.append(_bankroll_summary(path, component_label, component_result, identity_data=data, component=component_key))
         component_daily = _daily_report_rows(component.get("daily") or [])
         if component_daily:
             daily[component_label] = component_daily
@@ -3767,7 +3770,7 @@ def _database_evaluation_artifacts(
     backtests: list[dict[str, Any]] = []
     bankroll_rows: list[dict[str, Any]] = []
     daily: dict[str, list[dict[str, Any]]] = {}
-    seen_models: set[str] = set()
+    seen_artifacts: set[tuple[str, str, str]] = set()
     root = model_dir.resolve()
     candidates = list(queue_status.get("candidates") or [])
     # Search jobs can emit one artifact per GA island. Keep this bounded scan
@@ -3784,7 +3787,7 @@ def _database_evaluation_artifacts(
     )
     for candidate in candidates:
         model_key = str(candidate.get("model_key") or "").strip()
-        if not model_key or model_key in seen_models:
+        if not model_key:
             continue
         result_path = str(candidate.get("result_path") or "").strip()
         if not result_path:
@@ -3806,7 +3809,14 @@ def _database_evaluation_artifacts(
             continue
         if not isinstance(data, dict):
             continue
-        seen_models.add(model_key)
+        artifact_key = (
+            str(path),
+            str(candidate.get("db_job_id") or candidate.get("job_id") or ""),
+            str(candidate.get("attempt") or ""),
+        )
+        if artifact_key in seen_artifacts:
+            continue
+        seen_artifacts.add(artifact_key)
         label = model_key
         prediction_metrics = _bankroll_prediction_metrics(data)
         if prediction_metrics.get("entry_log_loss") is not None:
@@ -3815,6 +3825,8 @@ def _database_evaluation_artifacts(
                     path,
                     label,
                     {**data, **prediction_metrics},
+                    identity_data=data,
+                    job=candidate,
                 )
             )
         direct = data.get("bankroll")
@@ -3826,7 +3838,7 @@ def _database_evaluation_artifacts(
                 "generated_at": data.get("generated_at"),
                 "daily": direct.get("daily") or data.get("daily") or [],
             }
-            bankroll_rows.append(_bankroll_summary(path, label, direct_result))
+            bankroll_rows.append(_bankroll_summary(path, label, direct_result, identity_data=data, job=candidate))
             direct_daily = _daily_report_rows(direct_result["daily"])
             if direct_daily:
                 daily[label] = direct_daily
@@ -3851,7 +3863,7 @@ def _database_evaluation_artifacts(
                     ),
                 }
                 bankroll_rows.append(
-                    _bankroll_summary(path, walk_label, walk_result)
+                    _bankroll_summary(path, walk_label, walk_result, identity_data=data, job=candidate, component="conditional_payout_walk_forward")
                 )
                 walk_daily = _daily_report_rows(walk_bankroll.get("daily") or [])
                 if walk_daily:
@@ -3864,7 +3876,7 @@ def _database_evaluation_artifacts(
         )
         bankroll_rows.extend(component_rows)
         daily.update(component_daily)
-        if len(seen_models) >= max(1, int(maximum_artifacts)):
+        if len(seen_artifacts) >= max(1, int(maximum_artifacts)):
             break
     return backtests, bankroll_rows, daily
 
@@ -3966,6 +3978,21 @@ def _remote_feature_correlation_summaries(remote_evaluations: dict[str, Any]) ->
     return rows
 
 
+def _distinct_evaluation_results(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    distinct: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        result_id = str(row.get("result_id") or "")
+        if result_id and result_id in seen:
+            continue
+        if result_id:
+            seen.add(result_id)
+        distinct.append(row)
+    return distinct
+
+
 def _report_label(path: Path, data: dict[str, Any]) -> str:
     model = str(data.get("model") or "").strip()
     if model:
@@ -3987,9 +4014,25 @@ def _evaluation_scope(path: Path, daily: list[dict[str, Any]]) -> str:
     return "legacy:unknown"
 
 
-def _backtest_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
-
+def _backtest_summary(
+    path: Path,
+    label: str,
+    data: dict[str, Any],
+    *,
+    identity_data: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
+    component: str | None = None,
+) -> dict[str, Any]:
+    identity = evaluation_identity(
+        identity_data or data,
+        path=path,
+        label=label,
+        result_kind="prediction",
+        component=component,
+        job=job,
+    )
     return {
+        **identity,
         "name": label,
         "file": path.name,
         "generated_at": data.get("generated_at"),
@@ -4091,8 +4134,25 @@ def _latest_named_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(latest.values(), key=lambda row: str(row.get("name") or ""))
 
 
-def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str, Any]:
+def _bankroll_summary(
+    path: Path,
+    label: str,
+    data: dict[str, Any],
+    *,
+    identity_data: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
+    component: str | None = None,
+) -> dict[str, Any]:
+    identity_source = identity_data or data
     data = canonicalize_primary_bankroll(data)
+    identity = evaluation_identity(
+        identity_source,
+        path=path,
+        label=label,
+        result_kind="bankroll",
+        component=component,
+        job=job,
+    )
     policy = data.get("policy") or {}
     policy_selection = data.get("policy_selection") or {}
     tickets = data.get("tickets")
@@ -4106,6 +4166,7 @@ def _bankroll_summary(path: Path, label: str, data: dict[str, Any]) -> dict[str,
         ticket_hit_rate = float(data.get("hit_tickets") or 0) / float(tickets)
 
     return {
+        **identity,
         "name": label,
         "file": path.name,
         "generated_at": data.get("generated_at"),
@@ -4183,9 +4244,19 @@ def _remote_bankroll_report_summaries(remote_evaluations: dict[str, Any]) -> lis
         if metrics.get("roi") is None:
             continue
         attribution = result.get("ticket_roi_attribution")
+        label = job.get("name") or result.get("file") or "remote_bankroll"
+        identity_data = {**result, **metrics, "daily": result.get("daily") or []}
+        identity = evaluation_identity(
+            identity_data,
+            path=result.get("file") or job.get("output"),
+            label=str(label),
+            result_kind="bankroll",
+            job=job,
+        )
         rows.append(
             {
-                "name": job.get("name") or result.get("file") or "remote_bankroll",
+                **identity,
+                "name": label,
                 "file": result.get("file") or job.get("output"),
                 "generated_at": result.get("modified_at") or remote_evaluations.get("generated_at"),
                 "evaluation_scope": _evaluation_scope(
@@ -4246,9 +4317,19 @@ def _remote_backtest_report_summaries(
         if metrics.get("entry_log_loss") is None:
             continue
         file_name = str(result.get("file") or job.get("output") or "")
+        label = job.get("name") or file_name or "remote_backtest"
+        identity_data = {**result, **metrics}
+        identity = evaluation_identity(
+            identity_data,
+            path=file_name,
+            label=str(label),
+            result_kind="prediction",
+            job=job,
+        )
         rows.append(
             {
-                "name": job.get("name") or file_name or "remote_backtest",
+                **identity,
+                "name": label,
                 "file": file_name,
                 "generated_at": result.get("modified_at")
                 or remote_evaluations.get("generated_at"),
