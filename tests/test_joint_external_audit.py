@@ -33,6 +33,7 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
                 "expected_probability_times_multiplier": 1.08,
                 "independence_probability_times_multiplier": 1.80,
                 "probability_multiplier_covariance": -0.72,
+                "independence_approximation_bias": 0.72,
                 "joint_expected_edge": 0.08,
                 "ordinary_hit_independence_approximation_edge": 0.80,
             }}},
@@ -40,6 +41,7 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
                 "expected_probability_times_multiplier": 1.02,
                 "independence_probability_times_multiplier": 1.20,
                 "probability_multiplier_covariance": -0.18,
+                "independence_approximation_bias": 0.18,
                 "joint_expected_edge": 0.02,
                 "ordinary_hit_independence_approximation_edge": 0.20,
             }}},
@@ -71,6 +73,10 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
     assert audit["product_identity_consistent"] is True
     assert audit["probability_multiplier_covariance_mean"] == pytest.approx(-0.45)
     assert audit["negative_covariance_fraction"] == 1.0
+    assert audit["independence_approximation_bias_mean"] == pytest.approx(0.45)
+    assert audit["independence_approximation_bias_min"] == pytest.approx(0.18)
+    assert audit["independence_approximation_bias_max"] == pytest.approx(0.72)
+    assert audit["positive_independence_bias_fraction"] == 1.0
     assert audit["independence_approximation_overstatement_mean"] == pytest.approx(0.45)
 
 
@@ -135,6 +141,10 @@ def test_joint_audit_survives_queue_summary() -> None:
             "product_identity_consistent": True,
             "probability_multiplier_covariance_mean": -0.12,
             "negative_covariance_fraction": 0.75,
+            "independence_approximation_bias_mean": 0.12,
+            "independence_approximation_bias_min": 0.02,
+            "independence_approximation_bias_max": 0.31,
+            "positive_independence_bias_fraction": 0.75,
             "independence_approximation_overstatement_mean": 0.12,
         },
         "evaluation_protocol_id": "protocol123",
@@ -191,6 +201,10 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_product_identity_residual_max_abs"] == 0.0
     assert summary["joint_product_identity_consistent"] is True
     assert summary["joint_covariance_mean"] == -0.12
+    assert summary["joint_independence_bias_mean"] == 0.12
+    assert summary["joint_independence_bias_min"] == 0.02
+    assert summary["joint_independence_bias_max"] == 0.31
+    assert summary["joint_positive_independence_bias_fraction"] == 0.75
     assert summary["joint_independence_overstatement_mean"] == 0.12
     assert summary["joint_outer_sample_count_r_min"] == 20
     assert summary["joint_search_outer_sample_count_r_requested"] == 20
@@ -261,6 +275,10 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_product_identity_residual_max_abs": 0.0,
             "joint_product_identity_consistent": True,
             "joint_covariance_mean": -0.03125,
+            "joint_independence_bias_mean": 0.03125,
+            "joint_independence_bias_min": 0.002,
+            "joint_independence_bias_max": 0.142,
+            "joint_positive_independence_bias_fraction": 1.0,
             "joint_independence_overstatement_mean": 0.03125,
             "settlement_integer_yen": True,
             "settlement_self_impact_repricing": True,
@@ -286,7 +304,11 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
         "独立近似倍率 E[pi]E[D] 1.111250"
     ) in section
     assert "恒等式 合格 (max残差 0.000000000)" in section
-    assert "共分散補正 Cov -0.031250 (減額)" in section
+    assert "確率・倍率共分散 Cov -0.031250 (減額)" in section
+    assert (
+        "独立近似バイアス 0.031250 (過大評価) "
+        "[0.002000..0.142000]"
+    ) in section
     assert (
         "探索R 20 / 検証R 100 / 非重複 合格 / "
         "R 20..20 / 下側 1/5 不足 / α 0.05"
