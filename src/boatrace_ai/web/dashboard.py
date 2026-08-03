@@ -8277,7 +8277,7 @@ def model_performance_audit_snapshot(
         '<span class="scope-note">JavaScript不要・公開HTMLに埋込</span></div>'
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
-        '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
+        '<th>ROI / 日LCB</th><th>E[πD] / 独立近似 / Cov(π,D)</th>'
         '<th>探索R / 検証R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
         '<th>再標本化条件ID</th></tr></thead><tbody>'
