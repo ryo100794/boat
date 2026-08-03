@@ -1378,6 +1378,9 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_purposes": evaluation_purpose_groups(evaluation_jobs),
         "evaluation_candidates": queued_evaluations["candidates"],
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
+        "production_trend_point_prospective_evidence": (
+            _production_trend_point_prospective_evidence(evaluation_jobs)
+        ),
         "remote_generated_at": remote_evaluations.get("generated_at"),
         "standardized_evaluation": _standardized_v2_public_status(
             standardized,
@@ -1392,6 +1395,111 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
     return payload
+
+
+def _production_trend_point_prospective_evidence(
+    evaluation_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    model_key = "production_trend_point_job_12012"
+    candidates = [
+        row for row in evaluation_jobs
+        if str(row.get("model_key") or "") == model_key
+    ]
+    if not candidates:
+        return {
+            "schema_version": 1,
+            "evidence_kind": (
+                "fixed_model_trend_point_fully_unseen_prospective"
+            ),
+            "model_key": model_key,
+            "status": "waiting_for_first_unseen_day",
+            "registered_after": "2026-08-03",
+            "latest_job_id": None,
+            "model_identity": {
+                "expected_model_sha256": None,
+                "observed_model_sha256": None,
+                "fixed": None,
+            },
+            "promotion_gate": None,
+        }
+    latest = max(
+        candidates,
+        key=lambda row: int(row.get("db_job_id") or row.get("job_id") or 0),
+    )
+    parameters = latest.get("parameters")
+    parameters = parameters if isinstance(parameters, dict) else {}
+    registration = parameters.get("prospective_candidate")
+    registration = registration if isinstance(registration, dict) else {}
+    expected_sha256 = str(
+        parameters.get("expected_model_sha256")
+        or registration.get("expected_model_sha256")
+        or ""
+    ) or None
+    observed_sha256 = str(latest.get("source_model_sha256") or "") or None
+    completed = str(latest.get("status") or "") in {"completed", "完了"}
+    return {
+        "schema_version": 1,
+        "evidence_kind": "fixed_model_trend_point_fully_unseen_prospective",
+        "model_key": model_key,
+        "status": latest.get("status"),
+        "registered_after": (
+            parameters.get("trend_point_registered_after")
+            or registration.get("registered_after")
+            or "2026-08-03"
+        ),
+        "evaluation_through": parameters.get("through_date"),
+        "latest_job_id": latest.get("db_job_id") or latest.get("job_id"),
+        "source_model_job_id": registration.get("source_model_job_id"),
+        "source_evaluation_job_id": registration.get(
+            "source_evaluation_job_id"
+        ),
+        "selection_data_is_diagnostic_only": registration.get(
+            "selection_data_is_diagnostic_only"
+        ),
+        "real_betting_enabled": registration.get("real_betting_enabled"),
+        "model_identity": {
+            "expected_model_sha256": expected_sha256,
+            "observed_model_sha256": observed_sha256,
+            "fixed": (
+                observed_sha256 == expected_sha256
+                if completed and observed_sha256 and expected_sha256
+                else None
+            ),
+        },
+        "clean_days": latest.get("trend_point_prospective_evaluation_days"),
+        "races": latest.get("trend_point_prospective_evaluated_races"),
+        "tickets": latest.get("trend_point_prospective_tickets"),
+        "hit_tickets": latest.get("trend_point_prospective_hit_tickets"),
+        "effective_hit_count": latest.get(
+            "trend_point_prospective_effective_hit_count"
+        ),
+        "stake_yen": latest.get("trend_point_prospective_stake_yen"),
+        "return_yen": latest.get("trend_point_prospective_return_yen"),
+        "profit_yen": latest.get("trend_point_prospective_profit_yen"),
+        "roi": latest.get("trend_point_prospective_roi"),
+        "roi_without_largest_hit": latest.get(
+            "trend_point_prospective_roi_without_largest_hit"
+        ),
+        "daily_cluster_bootstrap_roi_lower_95": latest.get(
+            "trend_point_prospective_daily_cluster_bootstrap_roi_lower_95"
+        ),
+        "profitable_day_fraction": latest.get(
+            "trend_point_prospective_profitable_day_fraction"
+        ),
+        "market_log_loss_confidence": latest.get(
+            "trend_point_prospective_market_challenger_improvement_confidence"
+        ),
+        "market_top5_confidence": latest.get(
+            "trend_point_prospective_market_challenger_top5_improvement_confidence"
+        ),
+        "purchase_probability_calibration": latest.get(
+            "trend_point_prospective_probability_calibration"
+        ),
+        "promotion_gate": latest.get(
+            "trend_point_prospective_promotion_gate"
+        ),
+        "error": latest.get("error"),
+    }
 
 
 def model_performance_public_report(report: dict[str, Any]) -> dict[str, Any]:

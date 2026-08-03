@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from boatrace_ai.web.dashboard import MODEL_REPORT_HTML, _model_track_summaries
+from boatrace_ai.web.dashboard import (
+    MODEL_REPORT_HTML,
+    _model_track_summaries,
+    _production_trend_point_prospective_evidence,
+)
 
 
 def test_model_tables_are_the_selector_and_dropdown_is_removed() -> None:
@@ -22,6 +26,62 @@ def test_model_selection_uses_backend_catalog_and_stable_key() -> None:
     assert "row.model_key" in source
     assert "comparisonRows||[]" in source
     assert "modelSelect" not in source
+
+
+def test_production_trend_point_evidence_waits_before_first_unseen_job() -> None:
+    evidence = _production_trend_point_prospective_evidence([])
+
+    assert evidence["status"] == "waiting_for_first_unseen_day"
+    assert evidence["registered_after"] == "2026-08-03"
+    assert evidence["model_identity"]["fixed"] is None
+
+
+def test_production_trend_point_evidence_uses_latest_fixed_job() -> None:
+    older = {
+        "db_job_id": 13000,
+        "model_key": "production_trend_point_job_12012",
+        "status": "完了",
+        "parameters": {"through_date": "2026-08-04"},
+    }
+    expected_sha256 = "a" * 64
+    latest = {
+        "db_job_id": 13001,
+        "model_key": "production_trend_point_job_12012",
+        "status": "完了",
+        "parameters": {
+            "through_date": "2026-08-05",
+            "trend_point_registered_after": "2026-08-03",
+            "expected_model_sha256": expected_sha256,
+            "prospective_candidate": {
+                "source_model_job_id": 12012,
+                "source_evaluation_job_id": 12051,
+                "selection_data_is_diagnostic_only": True,
+                "real_betting_enabled": False,
+            },
+        },
+        "source_model_sha256": expected_sha256,
+        "trend_point_prospective_evaluation_days": 2,
+        "trend_point_prospective_evaluated_races": 288,
+        "trend_point_prospective_tickets": 51,
+        "trend_point_prospective_hit_tickets": 8,
+        "trend_point_prospective_roi": 1.21,
+        "trend_point_prospective_promotion_gate": {"pass": False},
+    }
+
+    evidence = _production_trend_point_prospective_evidence([older, latest])
+
+    assert evidence["latest_job_id"] == 13001
+    assert evidence["evaluation_through"] == "2026-08-05"
+    assert evidence["model_identity"] == {
+        "expected_model_sha256": expected_sha256,
+        "observed_model_sha256": expected_sha256,
+        "fixed": True,
+    }
+    assert evidence["clean_days"] == 2
+    assert evidence["races"] == 288
+    assert evidence["tickets"] == 51
+    assert evidence["roi"] == 1.21
+    assert evidence["promotion_gate"] == {"pass": False}
 
 
 def test_daily_series_uses_canonical_backend_data_and_reason() -> None:
