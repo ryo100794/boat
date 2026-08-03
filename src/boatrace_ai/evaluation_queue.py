@@ -3472,7 +3472,9 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
-    if str(payload.get("model") or "") == "joint_edge_calibrated_replay_v1":
+    if str(payload.get("model") or "").startswith(
+        "joint_edge_calibrated_replay_v"
+    ):
         formal_value = payload.get("formal_purchase_value")
         formal_value = formal_value if isinstance(formal_value, dict) else {}
         confidence = payload.get("bankroll_confidence")
