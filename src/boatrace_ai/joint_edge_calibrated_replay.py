@@ -19,8 +19,8 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v1"
-CALIBRATION_VERSION = "strict_prior_portfolio_isotonic_lcb_v1"
+MODEL_VERSION = "joint_edge_calibrated_replay_v2"
+CALIBRATION_VERSION = "strict_prior_independent_validation_isotonic_lcb_v2"
 
 
 def _sha256_file(path: Path) -> str:
@@ -74,10 +74,37 @@ def _candidate_record(
     buy_margin: float,
 ) -> dict[str, object] | None:
     stake = int(race.get("best_search_stake_yen") or 0)
-    edge_excess = race.get("best_search_edge_excess")
-    if stake <= 0 or edge_excess is None:
+    separate_validation = bool(
+        race.get("validation_uses_separate_draw_set")
+    )
+    if separate_validation:
+        validated_edge = race.get("portfolio_lower_quantile")
+        if validated_edge is None:
+            return None
+        edge_excess = float(validated_edge) - buy_margin
+        raw_value_source = "independent_validation_portfolio_lower_quantile"
+        structural_feasible = bool(
+            race.get("purchase_value_gate_passed")
+            and race.get("bankroll_growth_lower_quantile") is not None
+            and float(race["bankroll_growth_lower_quantile"]) > 0.0
+        )
+    else:
+        edge_excess = race.get("best_search_edge_excess")
+        if edge_excess is None:
+            return None
+        edge_excess = float(edge_excess)
+        raw_value_source = "legacy_search_edge_fallback"
+        structural_feasible = bool(
+            edge_excess > 0.0
+            and float(race.get("best_search_growth_excess") or 0.0) > 0.0
+            and (
+                race.get("best_search_constraint_violation") is None
+                or float(race["best_search_constraint_violation"]) <= 0.0
+            )
+        )
+    if stake <= 0:
         return None
-    raw_gross_return = max(0.0, 1.0 + float(edge_excess) + buy_margin)
+    raw_gross_return = max(0.0, 1.0 + edge_excess + buy_margin)
     realized_return = int(
         race.get("best_search_hypothetical_return_yen") or 0
     )
@@ -85,6 +112,8 @@ def _candidate_record(
         "race_date": race_date,
         "raw_estimated_ev": raw_gross_return,
         "gross_return_per_yen": realized_return / stake,
+        "raw_value_source": raw_value_source,
+        "structural_feasible": structural_feasible,
     }
 
 
@@ -243,13 +272,7 @@ def run_joint_edge_calibrated_replay(
             )
             calibrated_lcb = prediction.get("empirical_ev_lcb95")
             structural_feasible = bool(
-                record is not None
-                and float(race.get("best_search_edge_excess") or 0.0) > 0.0
-                and float(race.get("best_search_growth_excess") or 0.0) > 0.0
-                and (
-                    race.get("best_search_constraint_violation") is None
-                    or float(race["best_search_constraint_violation"]) <= 0.0
-                )
+                record is not None and record["structural_feasible"]
             )
             authorized = bool(
                 calibrator.ready
@@ -305,6 +328,9 @@ def run_joint_edge_calibrated_replay(
                 "race_id": race.get("race_id"),
                 "evaluation_time_t": purchase_at.isoformat(),
                 "raw_portfolio_gross_return_estimate": raw_gross,
+                "raw_value_source": (
+                    record.get("raw_value_source") if record else None
+                ),
                 "calibrated_gross_return": prediction.get("empirical_ev"),
                 "calibrated_gross_return_lcb95": calibrated_lcb,
                 "calibration_support": prediction.get("support"),
@@ -384,7 +410,25 @@ def run_joint_edge_calibrated_replay(
             int(day["max_drawdown_yen"]) for day in replay_days
         ),
     }
+    calibration_input_sources = {
+        source: sum(
+            record.get("raw_value_source") == source
+            for record in training_records
+        )
+        for source in sorted({
+            str(record.get("raw_value_source") or "unknown")
+            for record in training_records
+        })
+    }
     formal_gate = {
+        "independent_validation_value_only": bool(
+            purchased
+            and all(
+                race.get("raw_value_source")
+                == "independent_validation_portfolio_lower_quantile"
+                for race in purchased
+            )
+        ),
         "minimum_30_calibration_ready_days": ready_days >= 30,
         "minimum_1000_ready_races": ready_races >= 1_000,
         "minimum_200_tickets": bankroll["tickets"] >= 200,
@@ -407,7 +451,7 @@ def run_joint_edge_calibrated_replay(
     base_protocol = payload.get("evaluation_protocol")
     base_protocol = base_protocol if isinstance(base_protocol, dict) else {}
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v1",
+        "version": "joint_edge_calibrated_replay_protocol_v2",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -422,8 +466,12 @@ def run_joint_edge_calibrated_replay(
             "min_candidate_days": calibration_min_candidate_days,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
-            "teacher": "best_GA_portfolio_realized_gross_return_per_yen",
+            "teacher": "fixed_candidate_realized_gross_return_per_yen",
             "information_boundary": "strictly_prior_complete_days_only",
+            "primary_input": (
+                "independent_validation_portfolio_lower_quantile"
+            ),
+            "legacy_input": "search_edge_explicit_fallback_only",
         },
         "bankroll": {
             "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
@@ -459,6 +507,7 @@ def run_joint_edge_calibrated_replay(
         "calibration_ready_races": ready_races,
         "calibrated_candidates": calibrated_candidates,
         "calibration_training_records": len(training_records),
+        "calibration_input_sources": calibration_input_sources,
         "calibration_folds": calibration_folds,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,

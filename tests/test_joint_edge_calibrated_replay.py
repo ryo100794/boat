@@ -35,6 +35,10 @@ def _base_artifact(path: Path, *, day3_payout: int = 200) -> Path:
                 "best_search_growth_excess": 0.01,
                 "best_search_constraint_violation": 0.0,
                 "best_search_bets_yen": {"1-2-3": 100},
+                "validation_uses_separate_draw_set": True,
+                "portfolio_lower_quantile": 0.20,
+                "purchase_value_gate_passed": True,
+                "bankroll_growth_lower_quantile": 0.01,
             }],
         })
     payload = {
@@ -72,6 +76,9 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     first_ready = profitable["daily"][2]["races"][0]
     changed_first_ready = changed_current["daily"][2]["races"][0]
     assert first_ready["purchase_authorized"] is True
+    assert first_ready["raw_value_source"] == (
+        "independent_validation_portfolio_lower_quantile"
+    )
     assert changed_first_ready["purchase_authorized"] is True
     assert first_ready["calibrated_gross_return_lcb95"] == (
         changed_first_ready["calibrated_gross_return_lcb95"]
@@ -86,9 +93,54 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     ] == "base-protocol"
     assert profitable["deployment_eligible"] is False
     assert profitable["promotion_eligible"] is False
+    assert profitable["promotion_gate"][
+        "independent_validation_value_only"
+    ] is True
+    assert profitable["calibration_input_sources"] == {
+        "independent_validation_portfolio_lower_quantile": 4
+    }
     assert "minimum_30_calibration_ready_days" in (
         profitable["promotion_gate_failed"]
     )
+
+
+def test_independent_validation_gate_is_required_after_calibration_ready(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "validation-reject.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["daily"][2]["races"][0]["purchase_value_gate_passed"] = False
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+    rejected = result["daily"][2]["races"][0]
+    assert rejected["calibrated_gross_return_lcb95"] > 1.0
+    assert rejected["base_joint_gate_feasible"] is False
+    assert rejected["purchase_authorized"] is False
+    assert rejected["rejection_reason"] == "base_joint_gate_not_feasible"
+
+
+def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "legacy.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    for day in payload["daily"]:
+        race = day["races"][0]
+        race["validation_uses_separate_draw_set"] = False
+        race.pop("portfolio_lower_quantile")
+        race.pop("purchase_value_gate_passed")
+        race.pop("bankroll_growth_lower_quantile")
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+    assert result["daily"][2]["races"][0]["raw_value_source"] == (
+        "legacy_search_edge_fallback"
+    )
+    assert result["promotion_gate"][
+        "independent_validation_value_only"
+    ] is False
+    assert result["promotion_eligible"] is False
 
 
 def test_replay_no_bets_until_calibration_support_is_ready(
@@ -165,7 +217,7 @@ def test_queue_builds_constrained_calibrated_replay_command(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v1",
+        "model": "joint_edge_calibrated_replay_v2",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_days": 5,
         "evaluated_races": 713,
