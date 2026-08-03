@@ -669,6 +669,11 @@ def _aggregate_joint_value_audits(
         for row in recorded
         if row.get("minimum_inner_tail_effective_samples") is not None
     ]
+    inner_tail_fractions = [
+        float(row["inner_tail_fraction"])
+        for row in recorded
+        if row.get("inner_tail_fraction") is not None
+    ]
     inner_scenario_min_values = [
         int(row["inner_scenario_count_s_min"])
         for row in recorded
@@ -769,6 +774,12 @@ def _aggregate_joint_value_audits(
         ),
         "inner_tail_effective_samples_max": (
             max(tail_ess_max_values) if tail_ess_max_values else None
+        ),
+        "inner_tail_fraction_min": (
+            min(inner_tail_fractions) if inner_tail_fractions else None
+        ),
+        "inner_tail_fraction_max": (
+            max(inner_tail_fractions) if inner_tail_fractions else None
         ),
         "minimum_inner_tail_effective_samples_max": (
             max(minimum_tail_ess_values) if minimum_tail_ess_values else None

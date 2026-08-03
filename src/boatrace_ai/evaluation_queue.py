@@ -3501,6 +3501,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         joint_distribution = (
             joint_distribution if isinstance(joint_distribution, dict) else {}
         )
+        purchase_rule = protocol.get("purchase_rule")
+        purchase_rule = purchase_rule if isinstance(purchase_rule, dict) else {}
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -3599,6 +3601,16 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_inner_tail_ess_min": joint_audit.get(
                 "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_beta_min": (
+                joint_audit.get("inner_tail_fraction_min")
+                if joint_audit.get("inner_tail_fraction_min") is not None
+                else purchase_rule.get("inner_tail_fraction")
+            ),
+            "joint_inner_tail_beta_max": (
+                joint_audit.get("inner_tail_fraction_max")
+                if joint_audit.get("inner_tail_fraction_max") is not None
+                else purchase_rule.get("inner_tail_fraction")
             ),
             "joint_inner_tail_ess_mean": joint_audit.get(
                 "inner_tail_effective_samples_mean"
@@ -3740,6 +3752,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         evaluation_protocol = (
             evaluation_protocol if isinstance(evaluation_protocol, dict) else {}
         )
+        purchase_rule = evaluation_protocol.get("purchase_rule")
+        purchase_rule = purchase_rule if isinstance(purchase_rule, dict) else {}
         evaluation_time_t = evaluation_protocol.get("evaluation_time_t")
         evaluation_time_t = (
             evaluation_time_t if isinstance(evaluation_time_t, dict) else {}
@@ -3829,6 +3843,16 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_inner_tail_ess_min": joint_audit.get(
                 "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_beta_min": (
+                joint_audit.get("inner_tail_fraction_min")
+                if joint_audit.get("inner_tail_fraction_min") is not None
+                else purchase_rule.get("inner_tail_fraction")
+            ),
+            "joint_inner_tail_beta_max": (
+                joint_audit.get("inner_tail_fraction_max")
+                if joint_audit.get("inner_tail_fraction_max") is not None
+                else purchase_rule.get("inner_tail_fraction")
             ),
             "joint_inner_tail_ess_mean": joint_audit.get(
                 "inner_tail_effective_samples_mean"

@@ -3091,6 +3091,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "joint_inner_tail_ess_mean": _float_or_none(
                     metrics.get("joint_inner_tail_ess_mean")
                 ),
+                "joint_inner_tail_beta_min": _float_or_none(
+                    metrics.get("joint_inner_tail_beta_min")
+                ),
+                "joint_inner_tail_beta_max": _float_or_none(
+                    metrics.get("joint_inner_tail_beta_max")
+                ),
                 "joint_inner_tail_ess_max": _float_or_none(
                     metrics.get("joint_inner_tail_ess_max")
                 ),
@@ -3778,6 +3784,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "joint_inner_tail_ess_mean": _float_or_none(
                     candidate_metrics.get("joint_inner_tail_ess_mean")
+                ),
+                "joint_inner_tail_beta_min": _float_or_none(
+                    candidate_metrics.get("joint_inner_tail_beta_min")
+                ),
+                "joint_inner_tail_beta_max": _float_or_none(
+                    candidate_metrics.get("joint_inner_tail_beta_max")
                 ),
                 "joint_inner_tail_ess_max": _float_or_none(
                     candidate_metrics.get("joint_inner_tail_ess_max")
@@ -8096,6 +8108,7 @@ def model_performance_audit_snapshot(
                 "joint_inner_s_max", "joint_inner_ess_min",
                 "joint_inner_ess_mean", "joint_inner_ess_max",
                 "joint_inner_tail_ess_min",
+                "joint_inner_tail_beta_min", "joint_inner_tail_beta_max",
                 "joint_inner_tail_ess_mean", "joint_inner_tail_ess_max",
                 "joint_inner_tail_ess_required",
                 "joint_inner_tail_support",
@@ -8205,6 +8218,16 @@ def model_performance_audit_snapshot(
         inner_ess_mean = audit.get("joint_inner_ess_mean")
         inner_ess_max = audit.get("joint_inner_ess_max")
         inner_tail_ess = audit.get("joint_inner_tail_ess_min")
+        inner_tail_beta_min = audit.get("joint_inner_tail_beta_min")
+        inner_tail_beta_max = audit.get("joint_inner_tail_beta_max")
+        inner_tail_beta = (
+            _audit_number(inner_tail_beta_min, 2)
+            if inner_tail_beta_min == inner_tail_beta_max
+            else (
+                f"{_audit_number(inner_tail_beta_min, 2)}.."
+                f"{_audit_number(inner_tail_beta_max, 2)}"
+            )
+        )
         inner_tail_ess_mean = audit.get("joint_inner_tail_ess_mean")
         inner_tail_ess_max = audit.get("joint_inner_tail_ess_max")
         inner_tail_required = audit.get("joint_inner_tail_ess_required")
@@ -8261,6 +8284,7 @@ def model_performance_audit_snapshot(
                 f"{outer_support} / α {_audit_number(audit.get('joint_outer_alpha_min'), 2)} / "
                 f"S {inner_s_min if inner_s_min is not None else '未記録'}.."
                 f"{inner_s_max if inner_s_max is not None else '未記録'} / "
+                f"内側tail β {inner_tail_beta} / "
                 f"下側ESS {_audit_number(inner_tail_ess, 2)}.."
                 f"{_audit_number(inner_tail_ess_mean, 2)}.."
                 f"{_audit_number(inner_tail_ess_max, 2)} / "

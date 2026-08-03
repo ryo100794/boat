@@ -150,6 +150,7 @@ def test_joint_audit_survives_queue_summary() -> None:
         "evaluation_protocol_id": "protocol123",
         "evaluation_protocol": {
             "version": "joint_evaluation_protocol_v2",
+            "purchase_rule": {"inner_tail_fraction": 0.1},
             "evaluation_time_t": {
                 "definition": "purchase_decision_timestamp",
                 "source_field": "decision_at_else_odds_deadline_at",
@@ -220,6 +221,8 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_inner_ess_mean"] == 64.0
     assert summary["joint_inner_ess_max"] == 64.0
     assert summary["joint_inner_tail_ess_min"] == 6.4
+    assert summary["joint_inner_tail_beta_min"] == 0.1
+    assert summary["joint_inner_tail_beta_max"] == 0.1
     assert summary["joint_inner_tail_ess_mean"] == 6.4
     assert summary["joint_inner_tail_ess_max"] == 6.4
     assert summary["joint_inner_tail_ess_required"] == 5.0
@@ -264,6 +267,8 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_inner_ess_mean": 64.0,
             "joint_inner_ess_max": 64.0,
             "joint_inner_tail_ess_min": 6.4,
+            "joint_inner_tail_beta_min": 0.1,
+            "joint_inner_tail_beta_max": 0.1,
             "joint_inner_tail_ess_mean": 6.4,
             "joint_inner_tail_ess_max": 6.4,
             "joint_inner_tail_ess_required": 5.0,
@@ -314,7 +319,7 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
         "R 20..20 / 下側 1/5 不足 / α 0.05"
     ) in section
     assert (
-        "S 64..64 / 下側ESS 6.40..6.40..6.40 / "
+        "S 64..64 / 内側tail β 0.10 / 下側ESS 6.40..6.40..6.40 / "
         "必要 5.00 合格 / ESS 64.00..64.00..64.00"
     ) in section
     assert "共同経路 / portfolio ES / 完全vector再価格" in section
