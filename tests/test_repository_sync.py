@@ -355,6 +355,43 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
     assert "pg_advisory_unlock" in sql_events[2]
 
 
+def test_refresh_services_accepts_supervisor_partial_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    head = "e" * 40
+    status_text = "\n".join(
+        [
+            "boatrace-dashboard RUNNING pid 1, uptime 1:00:00",
+            "boatrace-daily-shadow-bundle-update STOPPED Not started",
+        ]
+    )
+    monkeypatch.setattr(
+        maintenance_tasks,
+        "_git_value",
+        lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
+    )
+    monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            3 if command[-1] == "status" else 0,
+            status_text if command[-1] == "status" else "ok",
+            "",
+        )
+
+    monkeypatch.setattr(maintenance_tasks.subprocess, "run", run)
+
+    payload = maintenance_tasks.refresh_services(
+        tmp_path, db="test", head=head, delay_seconds=0
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["restarted"] == ["boatrace-dashboard"]
+    assert "boatrace-daily-shadow-bundle-update" in payload["skipped_stopped"]
+
+
 def test_refresh_services_uses_sibling_service_manager_supervisorctl(
     tmp_path: Path,
     monkeypatch,

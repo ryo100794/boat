@@ -581,7 +581,11 @@ def refresh_services(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    if status.returncode != 0:
+    # supervisorctl returns 3 when at least one configured process is not
+    # running. That is expected here: optional shadow programs may be
+    # intentionally stopped, and the refresh below already selects only
+    # programs reported as RUNNING.
+    if status.returncode not in {0, 3}:
         raise RuntimeError(
             "supervisor status failed: " + status.stdout.strip()
         )
