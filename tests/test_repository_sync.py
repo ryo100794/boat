@@ -96,6 +96,74 @@ def test_repository_sync_fetches_but_defers_during_evaluation(
     assert json.loads(output.read_text(encoding="utf-8"))["action"] == payload["action"]
 
 
+def test_repository_sync_drain_survives_until_idle_then_forces_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    seed, checkout = _repositories(tmp_path)
+    _commit(seed, "two\n", "upstream")
+    _git("push", cwd=seed)
+    state = {"active": 1, "enabled": False, "target_head": ""}
+
+    class Result:
+        def __init__(self, row=None):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def execute(self, statement, parameters=()):
+            sql = " ".join(str(statement).split())
+            if "COUNT(*) AS count" in sql:
+                return Result({"count": state["active"]})
+            if "SELECT enabled" in sql:
+                return Result({
+                    "enabled": state["enabled"],
+                    "reason": "repository_update",
+                    "target_head": state["target_head"],
+                    "requested_at": None,
+                    "updated_at": None,
+                })
+            if "INSERT INTO model_evaluation_control" in sql:
+                state["enabled"] = True
+                state["target_head"] = parameters[0]
+                return Result()
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            raise AssertionError(sql)
+
+    @contextmanager
+    def connect(_db):
+        yield Connection()
+
+    monkeypatch.setattr(maintenance_tasks, "connection", connect)
+    first = maintenance_tasks.repository_sync(
+        checkout, tmp_path / "draining.json", db="test", now=MIDDAY_UTC
+    )
+    assert first["action"] == "deferred_active_evaluation"
+    assert state["enabled"] is True
+    assert first["evaluation_drain"]["enabled"] is True
+
+    state["active"] = 0
+    scheduled = []
+
+    def schedule(app_root: Path, *, db: str, head: str, now: datetime):
+        scheduled.append(head)
+        return {"action": "scheduled", "head": head}
+
+    second = maintenance_tasks.repository_sync(
+        checkout,
+        tmp_path / "idle.json",
+        db="test",
+        now=MIDDAY_UTC,
+        schedule_refresh=schedule,
+    )
+    assert second["action"] == "fast_forwarded"
+    assert second["service_refresh"]["action"] == "scheduled"
+    assert scheduled == [second["after_head"]]
+
+
 def test_repository_sync_fast_forwards_clean_idle_checkout(
     tmp_path: Path,
     monkeypatch,

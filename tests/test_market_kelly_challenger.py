@@ -261,6 +261,9 @@ def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> No
     assert result["promotion_gate"]["market_log_loss_confidence_pass"] is False
     assert result["promotion_gate"]["market_top5_confidence_pass"] is False
     assert result["promotion_gate"]["selected_probability_not_overconfident"] is True
+    assert result["promotion_gate"]["no_lookahead_pass"] is True
+    assert result["promotion_gate"]["operational_data_errors_zero"] is False
+    assert result["data_quality"]["market_calibration_fallback_races"] == 1
     assert result["promotion_gate"]["pass"] is False
 
 

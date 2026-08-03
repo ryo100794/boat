@@ -27,6 +27,7 @@ from ..evaluation_probability_summary import (
     market_comparison_fields,
 )
 from ..evaluation_result_summary import canonicalize_primary_bankroll
+from ..evaluation_queue import production_trend_point_readiness
 from ..official import race_page_url, ymd
 from ..odds_quality import TRIFECTA_PARSER_VERSION
 from ..standard_evaluation import (
@@ -1380,7 +1381,10 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
         "repository_deployment": _repository_deployment_status(db_path),
         "production_trend_point_prospective_evidence": (
-            _production_trend_point_prospective_evidence(evaluation_jobs)
+            _production_trend_point_prospective_evidence(
+                evaluation_jobs,
+                app_root=db_path.parent.parent,
+            )
         ),
         "remote_generated_at": remote_evaluations.get("generated_at"),
         "standardized_evaluation": _standardized_v2_public_status(
@@ -1427,28 +1431,45 @@ def _repository_deployment_status(db_path: Path) -> dict[str, Any]:
 
 def _production_trend_point_prospective_evidence(
     evaluation_jobs: list[dict[str, Any]],
+    *,
+    app_root: Path | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     model_key = "production_trend_point_job_12012"
+    readiness = production_trend_point_readiness(
+        app_root or PROJECT_ROOT,
+        now=now,
+    )
     candidates = [
         row for row in evaluation_jobs
         if str(row.get("model_key") or "") == model_key
     ]
     if not candidates:
+        status = str(readiness["status"])
+        if status == "ready_evaluation_schedule_due":
+            status = "overdue_missing_evaluation_job"
         return {
             "schema_version": 1,
             "evidence_kind": (
                 "fixed_model_trend_point_fully_unseen_prospective"
             ),
             "model_key": model_key,
-            "status": "waiting_for_first_unseen_day",
+            "status": status,
             "registered_after": "2026-08-03",
+            "next_evidence_date": readiness["next_evidence_date"],
+            "first_scheduled_at_jst": readiness["first_scheduled_at_jst"],
             "latest_job_id": None,
             "model_identity": {
-                "expected_model_sha256": None,
-                "observed_model_sha256": None,
-                "fixed": None,
+                "expected_model_sha256": readiness[
+                    "expected_model_sha256"
+                ],
+                "observed_model_sha256": readiness[
+                    "observed_model_sha256"
+                ],
+                "fixed": readiness["fixed"],
             },
             "promotion_gate": None,
+            "error": readiness["error"],
         }
     latest = max(
         candidates,
@@ -1465,16 +1486,28 @@ def _production_trend_point_prospective_evidence(
     ) or None
     observed_sha256 = str(latest.get("source_model_sha256") or "") or None
     completed = str(latest.get("status") or "") in {"completed", "完了"}
+    resolved_expected_sha256 = (
+        expected_sha256 or readiness["expected_model_sha256"]
+    )
+    resolved_observed_sha256 = (
+        observed_sha256
+        if completed
+        else readiness["observed_model_sha256"]
+    )
     return {
         "schema_version": 1,
         "evidence_kind": "fixed_model_trend_point_fully_unseen_prospective",
         "model_key": model_key,
         "status": latest.get("status"),
+        "readiness_status": readiness["status"],
+        "readiness_error": readiness["error"],
         "registered_after": (
             parameters.get("trend_point_registered_after")
             or registration.get("registered_after")
             or "2026-08-03"
         ),
+        "next_evidence_date": readiness["next_evidence_date"],
+        "first_scheduled_at_jst": readiness["first_scheduled_at_jst"],
         "evaluation_through": parameters.get("through_date"),
         "latest_job_id": latest.get("db_job_id") or latest.get("job_id"),
         "source_model_job_id": registration.get("source_model_job_id"),
@@ -1486,12 +1519,12 @@ def _production_trend_point_prospective_evidence(
         ),
         "real_betting_enabled": registration.get("real_betting_enabled"),
         "model_identity": {
-            "expected_model_sha256": expected_sha256,
-            "observed_model_sha256": observed_sha256,
+            "expected_model_sha256": resolved_expected_sha256,
+            "observed_model_sha256": resolved_observed_sha256,
             "fixed": (
-                observed_sha256 == expected_sha256
-                if completed and observed_sha256 and expected_sha256
-                else None
+                resolved_observed_sha256 == resolved_expected_sha256
+                if resolved_observed_sha256 and resolved_expected_sha256
+                else False
             ),
         },
         "clean_days": latest.get("trend_point_prospective_evaluation_days"),

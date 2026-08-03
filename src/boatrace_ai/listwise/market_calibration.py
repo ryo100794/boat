@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 import joblib
 import numpy as np
@@ -6646,6 +6646,91 @@ def filter_clean_market_days(
     }
 
 
+def apply_trend_point_formal_coverage_gate(
+    result: dict[str, Any],
+    *,
+    coverage_gate: Mapping[str, Any],
+    registered_after: str,
+) -> None:
+    candidate = result.get("trend_point_market_offset_kelly_walk_forward")
+    if not isinstance(candidate, dict):
+        return
+    expected_dates = sorted(
+        str(value)
+        for value in (coverage_gate.get("formal_evaluation_dates") or [])
+        if str(value) > registered_after
+    )
+    observed_dates = sorted({
+        str(value) for value in (candidate.get("evaluation_dates") or [])
+    })
+    day_rows = {
+        str(row.get("race_date")): row
+        for row in (coverage_gate.get("days") or [])
+        if isinstance(row, Mapping)
+    }
+    evaluated_days = [day_rows.get(value, {}) for value in observed_dates]
+    full_coverage = bool(
+        float(coverage_gate.get("minimum_day_coverage") or 0.0) >= 1.0
+        and all(
+            bool(row.get("clean"))
+            and bool(row.get("payout_complete"))
+            and float(row.get("coverage") or 0.0) >= 1.0
+            for row in evaluated_days
+        )
+    )
+    expected_races = sum(
+        int(row.get("eligible_t5_races") or 0) for row in evaluated_days
+    )
+    date_set_complete = observed_dates == expected_dates
+    race_set_complete = int(candidate.get("evaluated_races") or 0) == expected_races
+    coverage_errors = (
+        len(set(expected_dates) - set(observed_dates))
+        + len(set(observed_dates) - set(expected_dates))
+        + int(not full_coverage)
+        + int(not race_set_complete)
+    )
+    quality = dict(candidate.get("data_quality") or {})
+    quality.update({
+        "minimum_day_coverage": coverage_gate.get("minimum_day_coverage"),
+        "complete_payouts_required": True,
+        "expected_evaluation_dates": expected_dates,
+        "observed_evaluation_dates": observed_dates,
+        "date_set_complete": date_set_complete,
+        "race_set_complete": race_set_complete,
+        "full_t5_coverage": full_coverage,
+        "coverage_errors": coverage_errors,
+    })
+    base_operational_errors = int(
+        quality.get(
+            "noncoverage_operational_data_errors",
+            quality.get("operational_data_errors") or 0,
+        )
+    )
+    quality["noncoverage_operational_data_errors"] = base_operational_errors
+    quality["operational_data_errors"] = (
+        base_operational_errors + coverage_errors
+    )
+    quality["pass"] = bool(
+        quality["operational_data_errors"] == 0
+        and int(quality.get("lookahead_violations") or 0) == 0
+    )
+    candidate["data_quality"] = quality
+    gate = dict(candidate.get("promotion_gate") or {})
+    gate["complete_market_data_pass"] = bool(
+        full_coverage and date_set_complete and race_set_complete
+    )
+    gate["operational_data_errors_zero"] = bool(
+        quality["operational_data_errors"] == 0
+    )
+    gate["pass"] = bool(
+        gate.get("pass")
+        and gate["complete_market_data_pass"]
+        and gate["operational_data_errors_zero"]
+    )
+    candidate["promotion_gate"] = gate
+    candidate["promotion_eligible"] = gate["pass"]
+
+
 def fixed_benchmark_population(
     races: list[dict[str, Any]],
     *,
@@ -7191,6 +7276,11 @@ def main(argv: list[str] | None = None) -> int:
         closing_odds_min_training_days=args.closing_odds_min_training_days,
         closing_odds_min_training_races=args.closing_odds_min_training_races,
         trend_point_registered_after=args.trend_point_registered_after,
+    )
+    apply_trend_point_formal_coverage_gate(
+        result,
+        coverage_gate=coverage_gate,
+        registered_after=args.trend_point_registered_after,
     )
     benchmark_evaluated = sum(
         str(race["race_date"]) in set(benchmark["benchmark_dates"])

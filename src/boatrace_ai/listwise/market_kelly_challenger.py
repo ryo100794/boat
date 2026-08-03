@@ -101,6 +101,7 @@ def evaluate_attached_market_kelly_challenger(
     )
     log_loss = _log_loss_comparison(evaluation_races)
     probability_calibration = _purchase_probability_calibration(daily)
+    data_quality = _prospective_data_quality(evaluation_races)
     winning_days = sum(int(row["profit_yen"] > 0) for row in daily)
     purchase_days = sum(int(row["stake_yen"] > 0) for row in daily)
     return {
@@ -138,6 +139,7 @@ def evaluate_attached_market_kelly_challenger(
         "calibration": dict(calibration),
         "log_loss": log_loss,
         "purchase_probability_calibration": probability_calibration,
+        "data_quality": data_quality,
         **reliability,
         "reliability": reliability,
         "edge_diagnostics": _edge_diagnostics(evaluation_races),
@@ -148,6 +150,7 @@ def evaluate_attached_market_kelly_challenger(
             bootstrap,
             market=log_loss,
             probability_calibration=probability_calibration,
+            data_quality=data_quality,
             evaluated_races=evaluated_races,
         ),
         "daily": daily,
@@ -161,6 +164,7 @@ def _promotion_gate(
     *,
     market: Mapping[str, Any],
     probability_calibration: Mapping[str, Any],
+    data_quality: Mapping[str, Any],
     evaluated_races: int,
 ) -> dict[str, Any]:
     tickets = sum(int(row["tickets"]) for row in daily)
@@ -203,6 +207,12 @@ def _promotion_gate(
         "selected_probability_not_overconfident": (
             probability_calibration_pvalue >= 0.05
         ),
+        "no_lookahead_pass": int(
+            data_quality.get("lookahead_violations") or 0
+        ) == 0,
+        "operational_data_errors_zero": int(
+            data_quality.get("operational_data_errors") or 0
+        ) == 0,
         "roi_pass": bool(stake_yen and return_yen > stake_yen),
         "largest_hit_excluded_roi_pass": bool(
             float(reliability.get("roi_without_largest_hit") or 0.0) > 1.0
@@ -226,6 +236,8 @@ def _promotion_gate(
             "market_log_loss_confidence_pass",
             "market_top5_confidence_pass",
             "selected_probability_not_overconfident",
+            "no_lookahead_pass",
+            "operational_data_errors_zero",
             "roi_pass",
             "largest_hit_excluded_roi_pass",
             "bootstrap_lower_95_pass",
@@ -233,6 +245,44 @@ def _promotion_gate(
         )
     )
     return gates
+
+
+def _prospective_data_quality(
+    races: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    rows = list(races)
+    duplicate_race_ids = len(rows) - len({
+        str(row.get("race_id") or "") for row in rows
+    })
+    lookahead_violations = 0
+    market_fallback_races = 0
+    closing_policy_fallback_races = 0
+    for race in rows:
+        race_date = _iso_day(race.get("race_date"), "race_date")
+        audit = race.get("_market_kelly_calibration") or {}
+        if not bool(audit.get("ready")):
+            market_fallback_races += 1
+        trained_through = audit.get("trained_through_date")
+        if trained_through is not None and _iso_day(
+            trained_through, "trained_through_date"
+        ) >= race_date:
+            lookahead_violations += 1
+        if bool(race.get("closing_odds_policy_fallback")):
+            closing_policy_fallback_races += 1
+    operational_data_errors = (
+        max(0, duplicate_race_ids)
+        + market_fallback_races
+        + closing_policy_fallback_races
+    )
+    return {
+        "evaluated_races": len(rows),
+        "duplicate_race_ids": max(0, duplicate_race_ids),
+        "market_calibration_fallback_races": market_fallback_races,
+        "closing_policy_fallback_races": closing_policy_fallback_races,
+        "lookahead_violations": lookahead_violations,
+        "operational_data_errors": operational_data_errors,
+        "pass": operational_data_errors == 0 and lookahead_violations == 0,
+    }
 
 
 def _purchase_probability_calibration(

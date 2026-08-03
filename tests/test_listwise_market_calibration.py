@@ -1158,6 +1158,49 @@ def test_clean_day_gate_validates_coverage_threshold() -> None:
         )
 
 
+def test_trend_point_formal_gate_requires_exact_full_coverage() -> None:
+    result = {
+        "trend_point_market_offset_kelly_walk_forward": {
+            "evaluation_dates": ["2026-08-04"],
+            "evaluated_races": 2,
+            "data_quality": {
+                "operational_data_errors": 0,
+                "lookahead_violations": 0,
+            },
+            "promotion_gate": {"pass": True},
+            "promotion_eligible": True,
+        }
+    }
+    coverage = {
+        "minimum_day_coverage": 1.0,
+        "formal_evaluation_dates": ["2026-08-04"],
+        "days": [{
+            "race_date": "2026-08-04",
+            "eligible_t5_races": 2,
+            "coverage": 1.0,
+            "payout_complete": True,
+            "clean": True,
+        }],
+    }
+
+    market_calibration.apply_trend_point_formal_coverage_gate(
+        result, coverage_gate=coverage, registered_after="2026-08-03"
+    )
+    candidate = result["trend_point_market_offset_kelly_walk_forward"]
+    assert candidate["data_quality"]["pass"] is True
+    assert candidate["promotion_gate"]["complete_market_data_pass"] is True
+    assert candidate["promotion_eligible"] is True
+
+    candidate["evaluated_races"] = 1
+    candidate["promotion_gate"]["pass"] = True
+    market_calibration.apply_trend_point_formal_coverage_gate(
+        result, coverage_gate=coverage, registered_after="2026-08-03"
+    )
+    assert candidate["data_quality"]["race_set_complete"] is False
+    assert candidate["promotion_gate"]["operational_data_errors_zero"] is False
+    assert candidate["promotion_eligible"] is False
+
+
 def test_empty_registered_policy_summary_waits_for_unseen_day() -> None:
     result = summarize_registered_policy_daily([], evaluated_races=0)
 

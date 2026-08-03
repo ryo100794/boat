@@ -26,7 +26,10 @@ def test_project_status_uses_current_evaluation_state() -> None:
     assert "どちらも30日・1,000Rと市場比較信頼区間を満たさず、本番昇格不可" in STATUS
     assert "レースcluster 95%下限で補正" in STATUS
     assert "正式開始日を成果物へ記録" in STATUS
-    assert "M6 資金運用モデル | 未完了/正式評価待ち" in STATUS
+    assert (
+        "M6 資金運用モデル | 未完了/固定候補の完全未見評価待ち"
+        in STATUS
+    )
     assert "M7 ソース整理 | 完了/運用監視" in STATUS
     assert "M6-11: T-10→T-5モメンタム" in STATUS
     assert "T-10価格推移は過去日の価格holdoutで1%以上改善した場合だけ終値予測へ採用" in STATUS

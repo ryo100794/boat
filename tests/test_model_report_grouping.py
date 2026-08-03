@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime, timezone
+
 from boatrace_ai.web.dashboard import (
     MODEL_REPORT_HTML,
     _model_track_summaries,
@@ -29,12 +33,48 @@ def test_model_selection_uses_backend_catalog_and_stable_key() -> None:
     assert "modelSelect" not in source
 
 
-def test_production_trend_point_evidence_waits_before_first_unseen_job() -> None:
-    evidence = _production_trend_point_prospective_evidence([])
+def test_production_trend_point_evidence_reports_missing_registration(
+    tmp_path,
+) -> None:
+    evidence = _production_trend_point_prospective_evidence(
+        [], app_root=tmp_path
+    )
 
-    assert evidence["status"] == "waiting_for_first_unseen_day"
+    assert evidence["status"] == "blocked_missing_or_invalid_source_evaluation"
     assert evidence["registered_after"] == "2026-08-03"
-    assert evidence["model_identity"]["fixed"] is None
+    assert evidence["model_identity"]["fixed"] is False
+    assert evidence["error"]
+
+
+def test_production_trend_point_evidence_proves_identity_before_first_job(
+    tmp_path,
+) -> None:
+    model = tmp_path / "data/models/evaluation_queue/job-00012012.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixed model")
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    (model.parent / "job-00012051.json").write_text(
+        json.dumps({
+            "source_model": str(model),
+            "source_model_sha256": digest,
+        }),
+        encoding="utf-8",
+    )
+
+    evidence = _production_trend_point_prospective_evidence(
+        [],
+        app_root=tmp_path,
+        now=datetime(2026, 8, 3, 15, tzinfo=timezone.utc),
+    )
+
+    assert evidence["status"] == "ready_waiting_for_first_unseen_day"
+    assert evidence["next_evidence_date"] == "2026-08-04"
+    assert evidence["first_scheduled_at_jst"] == "2026-08-05T03:00:00+09:00"
+    assert evidence["model_identity"] == {
+        "expected_model_sha256": digest,
+        "observed_model_sha256": digest,
+        "fixed": True,
+    }
 
 
 def test_production_trend_point_evidence_uses_latest_fixed_job() -> None:

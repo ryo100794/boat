@@ -390,6 +390,18 @@ def _git_value(app_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _git_dirty_paths(app_root: Path) -> list[str]:
+    generated_state = "data/runtime/repository-deployment-state.json"
+    return [
+        line
+        for line in _git_value(
+            app_root.resolve(), "status", "--porcelain=v1",
+            "--untracked-files=all"
+        ).splitlines()
+        if line and line[3:] != generated_state
+    ]
+
+
 def _deployment_state_path(app_root: Path) -> Path:
     return app_root / "data" / "runtime" / "repository-deployment-state.json"
 
@@ -402,6 +414,66 @@ def _deployment_state(app_root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _deployment_drain_state(conn: Any) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT enabled, reason, target_head, requested_at, updated_at
+        FROM model_evaluation_control
+        WHERE control_key = 'deployment_drain'
+        """
+    ).fetchone()
+    if not row:
+        return {"enabled": False}
+    try:
+        enabled = bool(row["enabled"])
+    except (KeyError, TypeError):
+        return {"enabled": False}
+    return {
+        "enabled": enabled,
+        "reason": str(row["reason"] or ""),
+        "target_head": str(row["target_head"] or ""),
+        "requested_at": (
+            row["requested_at"].isoformat()
+            if hasattr(row["requested_at"], "isoformat")
+            else row["requested_at"]
+        ),
+    }
+
+
+def _request_deployment_drain(conn: Any, *, target_head: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO model_evaluation_control (
+          control_key, enabled, reason, target_head, requested_at, updated_at
+        ) VALUES (
+          'deployment_drain', TRUE, 'repository_update', ?,
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT(control_key) DO UPDATE SET
+          enabled = TRUE,
+          reason = EXCLUDED.reason,
+          target_head = EXCLUDED.target_head,
+          requested_at = COALESCE(
+            model_evaluation_control.requested_at, EXCLUDED.requested_at
+          ),
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (target_head,),
+    )
+
+
+def _clear_deployment_drain(conn: Any, *, target_head: str) -> None:
+    conn.execute(
+        """
+        UPDATE model_evaluation_control
+        SET enabled = FALSE, reason = '', target_head = ?, requested_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE control_key = 'deployment_drain'
+        """,
+        (target_head,),
+    )
 
 
 def _refresh_pending(state: dict[str, Any], head: str, now: datetime) -> bool:
@@ -497,13 +569,7 @@ def refresh_services(
     current_head = _git_value(app_root.resolve(), "rev-parse", "HEAD")
     if current_head != head:
         raise RuntimeError("repository HEAD changed before service refresh")
-    dirty_paths = [
-        line
-        for line in _git_value(
-            app_root.resolve(), "status", "--porcelain=v1"
-        ).splitlines()
-        if line
-    ]
+    dirty_paths = _git_dirty_paths(app_root)
     if dirty_paths:
         raise RuntimeError("repository became dirty before service refresh")
     supervisorctl = _supervisorctl_path(app_root)
@@ -608,6 +674,8 @@ def refresh_services(
                 failures.append(str(exc))
     if failures:
         raise RuntimeError("; ".join(failures))
+    with connection(db) as conn:
+        _clear_deployment_drain(conn, target_head=head)
     payload = {
         "status": "completed",
         "head": head,
@@ -643,13 +711,7 @@ def repository_sync(
     branch = _git_value(
         app_root, "symbolic-ref", "--quiet", "--short", "HEAD"
     )
-    dirty_paths = [
-        line
-        for line in _git_value(
-            app_root, "status", "--porcelain=v1"
-        ).splitlines()
-        if line
-    ]
+    dirty_paths = _git_dirty_paths(app_root)
     with connection(db) as conn:
         active_row = conn.execute(
             """
@@ -658,6 +720,7 @@ def repository_sync(
             WHERE category = 'evaluation' AND status = 'running'
             """
         ).fetchone()
+        drain = _deployment_drain_state(conn)
     active_evaluations = int(active_row["count"] if active_row else 0)
 
     fetched = _git_command(app_root, "fetch", "--prune", remote)
@@ -682,6 +745,29 @@ def repository_sync(
         raise RuntimeError("git rev-list returned an invalid ahead/behind count")
     ahead, behind = (int(value) for value in counts)
 
+    if behind and not dirty_paths and not (ahead and behind):
+        from .evaluation_queue import CLAIM_LOCK_ID
+
+        with connection(db) as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(?)", (CLAIM_LOCK_ID,))
+            active_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM model_evaluation_jobs
+                WHERE category = 'evaluation' AND status = 'running'
+                """
+            ).fetchone()
+            active_evaluations = int(
+                active_row["count"] if active_row else 0
+            )
+            if active_evaluations:
+                _request_deployment_drain(
+                    conn, target_head=_git_value(
+                        app_root, "rev-parse", "@{upstream}"
+                    )
+                )
+            drain = _deployment_drain_state(conn)
+
     action = "up_to_date"
     if dirty_paths:
         action = "deferred_dirty_worktree"
@@ -699,6 +785,14 @@ def repository_sync(
         action = "fast_forwarded"
 
     after_head = _git_value(app_root, "rev-parse", "HEAD")
+    if action == "deferred_active_evaluation" and drain.get("enabled"):
+        _json_file(_deployment_state_path(app_root), {
+            "status": "draining_active_evaluation",
+            "head": drain.get("target_head") or after_head,
+            "checked_at": observed_at.astimezone(timezone.utc).isoformat(),
+            "active_evaluations": active_evaluations,
+            "restarted": [],
+        })
     deployment = _deployment_state(app_root)
     if action not in {"up_to_date", "fast_forwarded"}:
         service_refresh = {
@@ -720,7 +814,11 @@ def repository_sync(
             "head": after_head,
             "scheduled_at": deployment.get("scheduled_at"),
         }
-    elif observed_at.astimezone(JST).hour not in SERVICE_REFRESH_WINDOW_HOURS_JST:
+    elif (
+        not bool(drain.get("enabled"))
+        and observed_at.astimezone(JST).hour
+        not in SERVICE_REFRESH_WINDOW_HOURS_JST
+    ):
         service_refresh = {
             "action": "deferred_outside_maintenance_window",
             "head": after_head,
@@ -747,6 +845,7 @@ def repository_sync(
         "ahead": ahead,
         "behind": behind,
         "active_evaluations": active_evaluations,
+        "evaluation_drain": drain,
         "dirty_paths": dirty_paths,
         "service_refresh": service_refresh,
     }

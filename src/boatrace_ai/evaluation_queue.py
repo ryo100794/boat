@@ -155,6 +155,14 @@ CREATE INDEX IF NOT EXISTS idx_model_evaluation_jobs_claim
   ON model_evaluation_jobs(status, available_at, priority DESC, job_id);
 CREATE INDEX IF NOT EXISTS idx_model_evaluation_jobs_model
   ON model_evaluation_jobs(model_key, completed_at DESC);
+CREATE TABLE IF NOT EXISTS model_evaluation_control (
+  control_key TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  reason TEXT NOT NULL DEFAULT '',
+  target_head TEXT NOT NULL DEFAULT '',
+  requested_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS model_improvement_candidates (
   candidate_id BIGSERIAL PRIMARY KEY,
   job_id BIGINT NOT NULL UNIQUE REFERENCES model_evaluation_jobs(job_id),
@@ -899,6 +907,14 @@ def claim_job(
         WHERE jobs.status = 'queued'
           AND jobs.available_at <= CURRENT_TIMESTAMP
           AND jobs.attempt < jobs.max_attempts
+          AND (
+            jobs.category <> 'evaluation'
+            OR NOT EXISTS (
+              SELECT 1 FROM model_evaluation_control control
+              WHERE control.control_key = 'deployment_drain'
+                AND control.enabled = TRUE
+            )
+          )
           AND (
             jobs.parent_job_id IS NULL
             OR EXISTS (
@@ -6064,6 +6080,73 @@ def _production_trend_point_model_sha256(
     ):
         return None
     return source_model_sha256
+
+
+def production_trend_point_readiness(
+    app_root: Path | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the fixed candidate identity and first-evidence schedule audit."""
+    registered_after = datetime.fromisoformat(
+        PRODUCTION_TREND_POINT_REGISTERED_AFTER
+    ).date()
+    first_evidence_date = registered_after + timedelta(days=1)
+    first_scheduled_at = datetime.combine(
+        first_evidence_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=JST,
+    ).replace(hour=3)
+    current = (now or datetime.now(timezone.utc)).astimezone(JST)
+    expected_sha256 = _production_trend_point_model_sha256(app_root)
+    model_path = (
+        app_root / PRODUCTION_TREND_POINT_MODEL_INPUT
+        if app_root is not None else None
+    )
+    observed_sha256 = None
+    if model_path is not None and model_path.is_file():
+        try:
+            observed_sha256 = _file_sha256(model_path)
+        except OSError:
+            observed_sha256 = None
+    if expected_sha256 is None:
+        status = "blocked_missing_or_invalid_source_evaluation"
+        error = (
+            "source evaluation result is missing or does not pin the production "
+            "model filename and SHA-256"
+        )
+    elif observed_sha256 is None:
+        status = "blocked_missing_model_artifact"
+        error = "fixed production model artifact is missing or unreadable"
+    elif observed_sha256 != expected_sha256:
+        status = "blocked_model_sha256_mismatch"
+        error = "fixed production model SHA-256 differs from its registration"
+    elif current < first_scheduled_at:
+        status = "ready_waiting_for_first_unseen_day"
+        error = None
+    else:
+        status = "ready_evaluation_schedule_due"
+        error = None
+    return {
+        "status": status,
+        "error": error,
+        "model_key": PRODUCTION_TREND_POINT_MODEL_KEY,
+        "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+        "source_evaluation_job_id": (
+            PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
+        ),
+        "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+        "next_evidence_date": first_evidence_date.isoformat(),
+        "first_scheduled_at_jst": first_scheduled_at.isoformat(),
+        "expected_model_sha256": expected_sha256,
+        "observed_model_sha256": observed_sha256,
+        "fixed": bool(
+            expected_sha256
+            and observed_sha256
+            and expected_sha256 == observed_sha256
+        ),
+        "real_betting_enabled": False,
+    }
 
 
 DEFAULT_WORK_TICKETS = (
