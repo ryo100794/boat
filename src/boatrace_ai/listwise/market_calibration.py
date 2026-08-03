@@ -115,6 +115,7 @@ EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
 CONFORMAL_LOWER_KELLY_REGISTERED_AFTER = "2026-07-28"
 TREND_POINT_KELLY_REGISTERED_AFTER = "2026-07-28"
+TREND_POINT_ODDS_SAFETY_SWEEP_FACTORS = (1.0, 1.05, 1.10, 1.15, 1.20)
 # exp(0.177 observed closing-odds log-MAE) is about 1.19. Register the
 # rounded 1.20 haircut before evaluating any later unseen day.
 CONSERVATIVE_MARKET_KELLY_ODDS_SAFETY_FACTOR = 1.20
@@ -3589,6 +3590,7 @@ def walk_forward_evaluate(
     closing_odds_min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
     closing_odds_min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
     trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
+    trend_point_odds_safety_sweep: bool = False,
 ) -> dict[str, Any]:
     try:
         date.fromisoformat(trend_point_registered_after)
@@ -4702,6 +4704,59 @@ def walk_forward_evaluate(
             trend_point_prospective["promotion_gate"]["pass"]
         ),
     })
+    trend_point_safety_sweep = None
+    if trend_point_odds_safety_sweep:
+        def compact_safety_result(value: Mapping[str, Any]) -> dict[str, Any]:
+            keys = (
+                "evaluation_days", "evaluation_dates", "evaluated_races",
+                "tickets", "hit_tickets", "stake_yen", "return_yen",
+                "profit_yen", "roi", "winning_days", "purchase_days",
+                "profitable_day_fraction", "roi_without_largest_hit",
+                "largest_hit_return_yen", "effective_hit_count",
+                "daily_cluster_bootstrap_roi_lower_95",
+                "purchase_probability_calibration", "data_quality",
+                "bootstrap", "log_loss", "promotion_gate",
+            )
+            return {key: value.get(key) for key in keys}
+
+        sweep_rows = []
+        for factor in TREND_POINT_ODDS_SAFETY_SWEEP_FACTORS:
+            retrospective = (
+                trend_point_diagnostic
+                if factor == 1.0
+                else evaluate_attached_market_kelly_challenger(
+                    trend_point_market_races,
+                    calibration=trend_point_market_calibration,
+                    evaluation_dates=evaluation_date_set,
+                    odds_safety_factor=factor,
+                )
+            )
+            prior_registered = (
+                trend_point_prospective
+                if factor == 1.0
+                else evaluate_attached_market_kelly_challenger(
+                    trend_point_market_races,
+                    calibration=trend_point_market_calibration,
+                    evaluation_dates=trend_point_evaluation_dates,
+                    odds_safety_factor=factor,
+                )
+            )
+            sweep_rows.append({
+                "odds_safety_factor": factor,
+                "retrospective": compact_safety_result(retrospective),
+                "prior_registered_window": compact_safety_result(
+                    prior_registered
+                ),
+            })
+        trend_point_safety_sweep = {
+            "status": "diagnostic_only_not_promotion_evidence",
+            "selection_data_through": max(evaluation_date_set, default=None),
+            "next_registration_must_be_after": max(
+                evaluation_date_set, default=None
+            ),
+            "factors": list(TREND_POINT_ODDS_SAFETY_SWEEP_FACTORS),
+            "rows": sweep_rows,
+        }
 
     stake_yen = sum(int(row["stake_yen"]) for row in daily_rows)
     return_yen = sum(int(row["return_yen"]) for row in daily_rows)
@@ -5227,6 +5282,7 @@ def walk_forward_evaluate(
         ),
         "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
+        "trend_point_odds_safety_sweep": trend_point_safety_sweep,
         "deployment_configuration": deployment_configuration,
         **(
             {
@@ -7133,6 +7189,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--trend-point-registered-after",
         default=TREND_POINT_KELLY_REGISTERED_AFTER,
     )
+    parser.add_argument(
+        "--trend-point-odds-safety-sweep",
+        action="store_true",
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -7276,6 +7336,7 @@ def main(argv: list[str] | None = None) -> int:
         closing_odds_min_training_days=args.closing_odds_min_training_days,
         closing_odds_min_training_races=args.closing_odds_min_training_races,
         trend_point_registered_after=args.trend_point_registered_after,
+        trend_point_odds_safety_sweep=args.trend_point_odds_safety_sweep,
     )
     apply_trend_point_formal_coverage_gate(
         result,

@@ -2172,6 +2172,7 @@ def build_command(
             "closing_odds_min_training_days",
             "closing_odds_min_training_races",
             "trend_point_registered_after",
+            "trend_point_odds_safety_sweep",
             "expected_model_sha256",
             "prospective_candidate",
         }
@@ -2337,6 +2338,13 @@ def build_command(
             command.extend([
                 "--trend-point-registered-after", registered_after,
             ])
+        safety_sweep = params.get("trend_point_odds_safety_sweep", False)
+        if not isinstance(safety_sweep, bool):
+            raise ValueError(
+                "trend_point_odds_safety_sweep must be a boolean"
+            )
+        if safety_sweep:
+            command.append("--trend-point-odds-safety-sweep")
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",

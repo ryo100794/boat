@@ -1103,6 +1103,35 @@ def test_partial_t5_days_calibrate_only_clean_evaluation_day() -> None:
     assert result["folds"][0]["evaluation_date"] == "2026-07-22"
     assert result["deployment_configuration"]["training_races"] == 9
     assert max(result["folds"][0]["calibration_dates"]) < "2026-07-22"
+
+
+def test_trend_point_odds_safety_sweep_is_explicit_and_diagnostic_only() -> None:
+    races = [
+        _race("2026-07-20", 1),
+        _race("2026-07-21", 1),
+        _race("2026-07-22", 1),
+    ]
+
+    disabled = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=["2026-07-22"],
+    )
+    enabled = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=["2026-07-22"],
+        trend_point_odds_safety_sweep=True,
+    )
+
+    assert disabled["trend_point_odds_safety_sweep"] is None
+    sweep = enabled["trend_point_odds_safety_sweep"]
+    assert sweep["status"] == "diagnostic_only_not_promotion_evidence"
+    assert sweep["factors"] == [1.0, 1.05, 1.10, 1.15, 1.20]
+    assert [row["odds_safety_factor"] for row in sweep["rows"]] == sweep[
+        "factors"
+    ]
+    assert all("daily" not in row["retrospective"] for row in sweep["rows"])
 def test_fixed_benchmark_population_is_provisional_until_seven_days() -> None:
 
 
