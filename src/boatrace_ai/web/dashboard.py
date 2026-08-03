@@ -1378,6 +1378,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_purposes": evaluation_purpose_groups(evaluation_jobs),
         "evaluation_candidates": queued_evaluations["candidates"],
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
+        "repository_deployment": _repository_deployment_status(db_path),
         "production_trend_point_prospective_evidence": (
             _production_trend_point_prospective_evidence(evaluation_jobs)
         ),
@@ -1395,6 +1396,31 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
     }
     _MODEL_REPORT_CACHE[model_dir] = (now, payload)
     return payload
+
+
+def _repository_deployment_status(db_path: Path) -> dict[str, Any]:
+    path = db_path.parent / "runtime" / "repository-deployment-state.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        value = {}
+    state = value if isinstance(value, dict) else {}
+    fields = (
+        "status",
+        "head",
+        "scheduled_at",
+        "checked_at",
+        "completed_at",
+        "active_evaluations",
+        "active_before",
+        "restarted",
+        "skipped_stopped",
+    )
+    return {
+        "schema_version": 1,
+        "state_path": str(path),
+        **{key: state[key] for key in fields if key in state},
+    }
 
 
 def _production_trend_point_prospective_evidence(

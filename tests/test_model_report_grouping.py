@@ -4,6 +4,7 @@ from boatrace_ai.web.dashboard import (
     MODEL_REPORT_HTML,
     _model_track_summaries,
     _production_trend_point_prospective_evidence,
+    _repository_deployment_status,
 )
 
 
@@ -82,6 +83,25 @@ def test_production_trend_point_evidence_uses_latest_fixed_job() -> None:
     assert evidence["tickets"] == 51
     assert evidence["roi"] == 1.21
     assert evidence["promotion_gate"] == {"pass": False}
+
+
+def test_repository_deployment_status_exposes_only_verification_fields(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "runtime" / "repository-deployment-state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        '{"status":"completed","head":"abc","completed_at":"now",'
+        '"restarted":["boatrace-dashboard"],"secret":"must-not-leak"}',
+        encoding="utf-8",
+    )
+
+    status = _repository_deployment_status(tmp_path / "boatrace.sqlite")
+
+    assert status["status"] == "completed"
+    assert status["head"] == "abc"
+    assert status["restarted"] == ["boatrace-dashboard"]
+    assert "secret" not in status
 
 
 def test_daily_series_uses_canonical_backend_data_and_reason() -> None:
