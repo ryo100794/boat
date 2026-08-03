@@ -117,4 +117,13 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     encoded = section.split(
         '<script id="joint-audit-data" type="application/json">', 1
     )[1].split("</script>", 1)[0]
-    assert json.loads(encoded)["rows"][0]["job_id"] == 12001
+    payload = json.loads(encoded)
+    assert payload["rows"][0]["job_id"] == 12001
+    assert payload["joint_rows"][0]["joint_covariance_mean"] == -0.03125
+    assert payload["models"][0]["name"] == (
+        "joint_bankroll_strict_walk_forward_v4"
+    )
+    assert "モデル実測値・サーバ描画" in section
+    assert "3連単LL" in section
+    assert "ROI / LCB" in section
+
