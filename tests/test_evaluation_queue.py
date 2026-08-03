@@ -1972,7 +1972,32 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
                 "roi_pass": True,
                 "pass": False,
             },
-        }
+        },
+        "trend_point_odds_safety_sweep": {
+            "status": "diagnostic_only_not_promotion_evidence",
+            "selection_data_through": "2026-08-03",
+            "next_registration_must_be_after": "2026-08-03",
+            "rows": [{
+                "odds_safety_factor": 1.1,
+                "retrospective": {
+                    "evaluation_days": 9,
+                    "evaluated_races": 1379,
+                    "tickets": 80,
+                    "hit_tickets": 13,
+                    "stake_yen": 9000,
+                    "return_yen": 12000,
+                    "profit_yen": 3000,
+                    "roi": 1.333,
+                    "roi_without_largest_hit": 1.14,
+                    "effective_hit_count": 11.2,
+                    "bootstrap": {
+                        "roi_ci95_lower": 0.92,
+                        "probability_roi_above_one": 0.89,
+                    },
+                    "daily": [{"must": "not leak into summary"}],
+                },
+            }],
+        },
     })
 
     assert summary["trend_point_prospective_registered_after"] == "2026-08-03"
@@ -1995,6 +2020,11 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
         "trend_point_prospective_probability_calibration"
     ]["probability_at_most_observed_hits"] == 0.71
     assert summary["trend_point_prospective_promotion_gate"]["pass"] is False
+    safety = summary["trend_point_odds_safety_sweep"]
+    assert safety["selection_data_through"] == "2026-08-03"
+    assert safety["rows"][0]["odds_safety_factor"] == 1.1
+    assert safety["rows"][0]["retrospective"]["roi_ci95_lower"] == 0.92
+    assert "daily" not in safety["rows"][0]["retrospective"]
 
 
 def test_result_summary_preserves_bankroll_model_protocol() -> None:

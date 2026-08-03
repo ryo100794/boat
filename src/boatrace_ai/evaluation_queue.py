@@ -4511,6 +4511,42 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             summary["trend_point_prospective_probability_calibration"] = dict(
                 trend_probability
             )
+    trend_sweep = payload.get("trend_point_odds_safety_sweep")
+    if isinstance(trend_sweep, dict):
+        sweep_metrics = (
+            "evaluation_days", "evaluated_races", "tickets", "hit_tickets",
+            "stake_yen", "return_yen", "profit_yen", "roi",
+            "profitable_day_fraction", "roi_without_largest_hit",
+            "effective_hit_count",
+        )
+        compact_rows = []
+        for row in trend_sweep.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            compact_row = {"odds_safety_factor": row.get("odds_safety_factor")}
+            for window in ("retrospective", "prior_registered_window"):
+                value = row.get(window)
+                if not isinstance(value, dict):
+                    continue
+                compact = {key: value.get(key) for key in sweep_metrics}
+                bootstrap = value.get("bootstrap")
+                if isinstance(bootstrap, dict):
+                    compact["roi_ci95_lower"] = bootstrap.get("roi_ci95_lower")
+                    compact["probability_roi_above_one"] = bootstrap.get(
+                        "probability_roi_above_one"
+                    )
+                compact_row[window] = compact
+            compact_rows.append(compact_row)
+        summary["trend_point_odds_safety_sweep"] = {
+            "status": trend_sweep.get("status"),
+            "selection_data_through": trend_sweep.get(
+                "selection_data_through"
+            ),
+            "next_registration_must_be_after": trend_sweep.get(
+                "next_registration_must_be_after"
+            ),
+            "rows": compact_rows,
+        }
     v33_forecast_diagnostic = payload.get(
         "v33_v25_top1_narrow_forecast_only_diagnostic"
     )
