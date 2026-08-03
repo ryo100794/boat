@@ -60,12 +60,18 @@ def test_joint_audit_survives_queue_summary() -> None:
         },
         "evaluation_protocol_id": "protocol123",
         "evaluation_protocol": {
-            "version": "joint_evaluation_protocol_v1",
+            "version": "joint_evaluation_protocol_v2",
             "evaluation_time_t": {
-                "definition": "latest_information_timestamp_available_to_purchase_decision",
-                "source_field": "captured_at",
+                "definition": "purchase_decision_timestamp",
+                "source_field": "decision_at_else_odds_deadline_at",
                 "earliest": "2026-07-01T10:00:00+09:00",
                 "latest": "2026-07-01T15:00:00+09:00",
+            },
+            "odds_snapshot_age": {
+                "definition": "evaluation_time_t_minus_odds_snapshot_captured_at",
+                "minimum": 4.0,
+                "mean": 12.5,
+                "maximum": 31.0,
             },
             "population": {
                 "venues": ["01"],
@@ -94,7 +100,10 @@ def test_joint_audit_survives_queue_summary() -> None:
     })
 
     assert summary["evaluation_protocol_id"] == "protocol123"
-    assert summary["evaluation_time_t_source"] == "captured_at"
+    assert summary["evaluation_time_t_source"] == (
+        "decision_at_else_odds_deadline_at"
+    )
+    assert summary["evaluation_snapshot_age_seconds_mean"] == 12.5
     assert summary["evaluation_wager_types"] == ["trifecta"]
     assert summary["joint_audit_recorded"] is True
     assert summary["joint_covariance_mean"] == -0.12
@@ -136,6 +145,9 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "evaluation_protocol_id": "protocol123",
             "evaluation_time_t_earliest": "2026-07-01T10:00:00+09:00",
             "evaluation_time_t_latest": "2026-07-30T16:00:00+09:00",
+            "evaluation_snapshot_age_seconds_min": 4.0,
+            "evaluation_snapshot_age_seconds_mean": 12.5,
+            "evaluation_snapshot_age_seconds_max": 31.0,
             "bootstrap_condition_id": "abc123",
         }],
     })
@@ -159,6 +171,8 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "3連単LL" in section
     assert "ROI / LCB" in section
     assert "評価プロトコルID / t" in section
+    assert "snapshot age" in section
+    assert "age 12.5s [4.0..31.0]" in section
     assert "再標本化条件ID" in section
     assert "protocol123" in section
 

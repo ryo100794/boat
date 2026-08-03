@@ -32,7 +32,7 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v5"
+EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v6"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 
@@ -77,10 +77,16 @@ def _evaluation_protocol(
         if observation.race_date not in evaluation_date_set:
             continue
         race = races_by_id[observation.race_id]
+        evaluation_time_t, snapshot_at, snapshot_age = _decision_context(race)
         population.append({
             "race_id": observation.race_id,
             "race_date": observation.race_date,
-            "evaluation_time_t": str(race.get("captured_at") or ""),
+            "evaluation_time_t": evaluation_time_t.isoformat(),
+            "evaluation_time_t_source": (
+                "decision_at" if race.get("decision_at") else "odds_deadline_at"
+            ),
+            "odds_snapshot_captured_at": snapshot_at.isoformat(),
+            "snapshot_age_seconds": snapshot_age,
             "odds_deadline_at": str(race.get("odds_deadline_at") or ""),
             "venue": observation.venue,
             "wager_type": "trifecta",
@@ -91,7 +97,7 @@ def _evaluation_protocol(
     evaluation_times = [row["evaluation_time_t"] for row in population]
     outcome_schema = tuple(str(value) for value in outcomes)
     protocol = {
-        "version": "joint_evaluation_protocol_v1",
+        "version": "joint_evaluation_protocol_v2",
         "identity_scope": (
             "model_data_time_venue_wager_popularity_purchase_settlement_"
             "resampling"
@@ -114,12 +120,37 @@ def _evaluation_protocol(
             "complete_days": len(evaluation_dates),
         },
         "evaluation_time_t": {
-            "definition": "latest_information_timestamp_available_to_purchase_decision",
-            "source_field": "captured_at",
+            "definition": "purchase_decision_timestamp",
+            "source_field": "decision_at_else_odds_deadline_at",
             "earliest": min(evaluation_times) if evaluation_times else None,
             "latest": max(evaluation_times) if evaluation_times else None,
             "race_time_manifest_sha256": _canonical_sha256([
                 [row["race_id"], row["evaluation_time_t"]]
+                for row in population
+            ]),
+        },
+        "odds_snapshot_age": {
+            "definition": "evaluation_time_t_minus_odds_snapshot_captured_at",
+            "unit": "seconds",
+            "minimum": min(
+                (row["snapshot_age_seconds"] for row in population),
+                default=None,
+            ),
+            "maximum": max(
+                (row["snapshot_age_seconds"] for row in population),
+                default=None,
+            ),
+            "mean": (
+                fsum(row["snapshot_age_seconds"] for row in population)
+                / len(population)
+                if population else None
+            ),
+            "manifest_sha256": _canonical_sha256([
+                [
+                    row["race_id"], row["evaluation_time_t"],
+                    row["odds_snapshot_captured_at"],
+                    row["snapshot_age_seconds"],
+                ]
                 for row in population
             ]),
         },
@@ -289,6 +320,20 @@ def _instant(value: object, name: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError(f"{name} must include a timezone")
     return parsed
+
+
+def _decision_context(
+    race: Mapping[str, Any],
+) -> tuple[datetime, datetime, float]:
+    source = "decision_at" if race.get("decision_at") else "odds_deadline_at"
+    decision_at = _instant(race.get(source), source)
+    captured_at = _instant(race.get("captured_at"), "captured_at")
+    snapshot_age = (
+        decision_at - captured_at.astimezone(decision_at.tzinfo)
+    ).total_seconds()
+    if snapshot_age < 0.0:
+        raise ValueError("odds snapshot was captured after purchase decision")
+    return decision_at, captured_at, snapshot_age
 
 
 def _release_matured_receipts(
@@ -784,7 +829,7 @@ def run_joint_bankroll_evaluation(
         current = sorted(
             observations_by_day[evaluation_date],
             key=lambda row: (
-                str(races_by_id[row.race_id].get("captured_at") or ""),
+                _decision_context(races_by_id[row.race_id])[0],
                 row.race_id,
             ),
         )
@@ -800,7 +845,7 @@ def run_joint_bankroll_evaluation(
                     "races_on_day": len(current),
                 })
             race = races_by_id[observation.race_id]
-            purchase_at = _instant(race.get("captured_at"), "captured_at")
+            purchase_at, snapshot_at, snapshot_age = _decision_context(race)
             pending_receipts, matured_receipt = _release_matured_receipts(
                 pending_receipts, asof=purchase_at
             )
@@ -941,6 +986,11 @@ def run_joint_bankroll_evaluation(
                 "wager_type": "trifecta",
                 "popularity_band_at_t": observation.popularity_band,
                 "evaluation_time_t": purchase_at.isoformat(),
+                "evaluation_time_t_source": (
+                    "decision_at" if race.get("decision_at") else "odds_deadline_at"
+                ),
+                "odds_snapshot_captured_at": snapshot_at.isoformat(),
+                "snapshot_age_seconds": snapshot_age,
                 "decision_horizon_seconds": observation.decision_horizon_seconds,
                 "actual_combination": str(race["actual_combination"]),
                 "actual_payout_yen": int(race["actual_payout_yen"]),
