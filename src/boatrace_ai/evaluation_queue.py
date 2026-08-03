@@ -2459,6 +2459,96 @@ def build_command(
         if not learn_scales:
             command.append("--no-learn-residual-scales")
         return command, output
+    if task_type == "joint_edge_calibrated_replay":
+        allowed = {
+            "base_artifact", "scored_cache", "initial_daily_bankroll_yen",
+            "calibration_margin", "calibration_bootstrap_samples",
+            "calibration_min_training_days", "calibration_min_portfolios",
+            "calibration_min_candidate_days", "bootstrap_samples", "seed",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported joint_edge_calibrated_replay parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        if "base_artifact" not in params:
+            raise ValueError("base_artifact is required")
+        result_root = (
+            app_root / "data/models/evaluation_queue"
+        ).resolve()
+        base_artifact = (
+            app_root / str(params["base_artifact"])
+        ).resolve()
+        if (
+            result_root not in base_artifact.parents
+            or base_artifact.suffix != ".json"
+        ):
+            raise ValueError(
+                "base_artifact must be a JSON artifact inside evaluation_queue"
+            )
+        if not base_artifact.is_file():
+            raise JobDependencyUnavailable(
+                f"joint calibration base artifact is unavailable: {base_artifact}"
+            )
+        scored_cache = None
+        if params.get("scored_cache"):
+            cache_root = (
+                app_root / "data/models/evaluation_cache/market_scored"
+            ).resolve()
+            scored_cache = (
+                app_root / str(params["scored_cache"])
+            ).resolve()
+            if (
+                cache_root not in scored_cache.parents
+                or scored_cache.suffix != ".joblib"
+            ):
+                raise ValueError(
+                    "scored_cache must be a joblib artifact inside market_scored"
+                )
+            if not scored_cache.is_file():
+                raise JobDependencyUnavailable(
+                    f"joint calibration scored cache is unavailable: {scored_cache}"
+                )
+        daily_bankroll = _integer(
+            params, "initial_daily_bankroll_yen", 10_000, 100, 1_000_000
+        )
+        margin = _number(params, "calibration_margin", 0.0, 0.0, 10.0)
+        calibration_bootstrap = _integer(
+            params, "calibration_bootstrap_samples", 2_000, 100, 100_000
+        )
+        calibration_days = _integer(
+            params, "calibration_min_training_days", 3, 2, 365
+        )
+        calibration_portfolios = _integer(
+            params, "calibration_min_portfolios", 200, 2, 1_000_000
+        )
+        calibration_candidate_days = _integer(
+            params, "calibration_min_candidate_days", 3, 2, 365
+        )
+        bootstrap = _integer(
+            params, "bootstrap_samples", 2_000, 100, 100_000
+        )
+        seed = _integer(params, "seed", 43_041, 0, 2_147_483_647)
+        _integer(params, "timeout_seconds", 3_600, 60, 86_400)
+        command = [
+            str(python), "-m", "boatrace_ai.joint_edge_calibrated_replay",
+            "--base-artifact", str(base_artifact),
+            "--output", str(output),
+            "--initial-daily-bankroll-yen", str(daily_bankroll),
+            "--calibration-margin", str(margin),
+            "--calibration-bootstrap-samples", str(calibration_bootstrap),
+            "--calibration-min-training-days", str(calibration_days),
+            "--calibration-min-portfolios", str(calibration_portfolios),
+            "--calibration-min-candidate-days",
+            str(calibration_candidate_days),
+            "--bootstrap-samples", str(bootstrap),
+            "--seed", str(seed),
+        ]
+        if scored_cache is not None:
+            command.extend(["--scored-cache", str(scored_cache)])
+        return command, output
     if task_type in {"listwise_feature_search", "combined_feature_search"}:
         allowed = {
             "evaluation_date",
@@ -3363,7 +3453,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "holdout_prediction_metrics", "selection_prediction_metrics",
             "bankroll_confidence",
             "probability_metrics", "primary_bankroll",
-            "closing_odds_forecast",
+            "closing_odds_forecast", "formal_purchase_value",
             "evaluation", "formal_bankroll", "prediction_metrics",
             "conditional_order", "venue_conditional_order",
             "momentum_newton_residual",
@@ -3372,6 +3462,110 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if str(payload.get("model") or "") == "joint_edge_calibrated_replay_v1":
+        formal_value = payload.get("formal_purchase_value")
+        formal_value = formal_value if isinstance(formal_value, dict) else {}
+        confidence = payload.get("bankroll_confidence")
+        confidence = confidence if isinstance(confidence, dict) else {}
+        joint_audit = payload.get("joint_value_audit")
+        joint_audit = joint_audit if isinstance(joint_audit, dict) else {}
+        settlement_audit = payload.get("settlement_audit")
+        settlement_audit = (
+            settlement_audit if isinstance(settlement_audit, dict) else {}
+        )
+        protocol = payload.get("evaluation_protocol")
+        protocol = protocol if isinstance(protocol, dict) else {}
+        evaluation_time_t = protocol.get("evaluation_time_t")
+        evaluation_time_t = (
+            evaluation_time_t if isinstance(evaluation_time_t, dict) else {}
+        )
+        population = protocol.get("population")
+        population = population if isinstance(population, dict) else {}
+        summary.update({
+            "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
+            "evaluation_protocol_version": protocol.get("version"),
+            "evaluation_time_t_definition": evaluation_time_t.get(
+                "definition"
+            ),
+            "evaluation_time_t_source": evaluation_time_t.get("source_field"),
+            "evaluation_time_t_earliest": evaluation_time_t.get("earliest"),
+            "evaluation_time_t_latest": evaluation_time_t.get("latest"),
+            "evaluation_venues": population.get("venues"),
+            "evaluation_wager_types": population.get("wager_types"),
+            "evaluation_popularity_bands_at_t": population.get(
+                "popularity_bands_at_t"
+            ),
+            "evaluation_days": payload.get("evaluation_days"),
+            "evaluated_races": payload.get("evaluated_races"),
+            "calibration_ready_days": payload.get("calibration_ready_days"),
+            "calibration_ready_races": payload.get("calibration_ready_races"),
+            "joint_purchase_value_minimum": formal_value.get("minimum"),
+            "joint_purchase_safety_margin": formal_value.get("safety_margin"),
+            "joint_purchase_value_selected_portfolios": formal_value.get(
+                "selected_portfolios"
+            ),
+            "joint_purchase_value_gate_passed": formal_value.get(
+                "all_above_safety_margin"
+            ),
+            "formal_roi_gate_method": "Q0.05_ROI_greater_than_1",
+            "formal_roi_gate_passed": confidence.get("formal_gate_passed"),
+            "bootstrap_condition_id": confidence.get("condition_id"),
+            "roi_probability_is_diagnostic_only": True,
+            "joint_audit_recorded": bool(joint_audit.get("recorded")),
+            "joint_audited_portfolios": joint_audit.get("audited_portfolios"),
+            "joint_moment_observations": joint_audit.get("moment_observations"),
+            "joint_shared_scenarios": joint_audit.get(
+                "shared_probability_price_scenarios"
+            ),
+            "joint_portfolio_path_aggregation": joint_audit.get(
+                "portfolio_path_aggregation"
+            ),
+            "joint_complete_vector_repricing": joint_audit.get(
+                "complete_vector_repricing"
+            ),
+            "joint_parameter_draws_min": joint_audit.get("parameter_draws_min"),
+            "joint_inner_ess_min": joint_audit.get(
+                "inner_effective_samples_min"
+            ),
+            "joint_covariance_mean": joint_audit.get(
+                "probability_multiplier_covariance_mean"
+            ),
+            "joint_negative_covariance_fraction": joint_audit.get(
+                "negative_covariance_fraction"
+            ),
+            "joint_independence_overstatement_mean": joint_audit.get(
+                "independence_approximation_overstatement_mean"
+            ),
+            "settlement_integer_yen": settlement_audit.get(
+                "integer_yen_accounting"
+            ),
+            "settlement_self_impact_repricing": settlement_audit.get(
+                "self_impact_repricing"
+            ),
+            "settlement_refund_supported": bool(
+                settlement_audit.get("full_refund_terminal_states")
+                or settlement_audit.get("partial_refund_supported")
+            ) if settlement_audit else None,
+            "settlement_special_payout_supported": settlement_audit.get(
+                "special_payout_addition_supported"
+            ),
+            "settlement_rounding": settlement_audit.get("rounding"),
+        })
+        condition = confidence.get("condition")
+        if isinstance(condition, dict):
+            summary["bootstrap_primary_block"] = condition.get("primary_block")
+            summary["bootstrap_quantile_method"] = condition.get(
+                "quantile_method"
+            )
+            summary["bootstrap_samples"] = condition.get("samples")
+        sensitivity = confidence.get("sensitivity")
+        if isinstance(sensitivity, dict):
+            summary["day_venue_roi_lower_95"] = (
+                sensitivity.get("day_venue") or {}
+            ).get("roi_lower")
+            summary["venue_meeting_roi_lower_95"] = (
+                sensitivity.get("venue_meeting") or {}
+            ).get("roi_lower")
     if str(payload.get("model") or "").startswith(
         "joint_bankroll_strict_walk_forward_v"
     ):

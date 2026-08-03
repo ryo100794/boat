@@ -63,6 +63,7 @@ class EmpiricalEVCalibrationArtifact:
     bootstrap_samples: int
     seed: int
     shape_constraint: str = "isotonic"
+    quantile_method: str = "linear"
 
     def predict(
         self,
@@ -91,6 +92,7 @@ class EmpiricalEVCalibrationArtifact:
             "bootstrap_samples": self.bootstrap_samples,
             "seed": self.seed,
             "shape_constraint": self.shape_constraint,
+            "quantile_method": self.quantile_method,
             "bins": [bin_.as_dict() for bin_ in self.bins],
         }
 
@@ -267,6 +269,7 @@ def _bootstrap_lcb(
     samples: int,
     seed: int,
     shape_constraint: str,
+    quantile_method: str,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     days, bin_count = day_sums.shape
@@ -284,7 +287,9 @@ def _bootstrap_lcb(
             predictions[sample, sampled_counts == 0] = 0.0
         if not np.all(np.isfinite(predictions[sample])):
             raise ValueError("bootstrap aggregates exceed float64 range")
-    return np.quantile(predictions, 0.05, axis=0)
+    return np.quantile(
+        predictions, 0.05, axis=0, method=quantile_method
+    )
 
 
 def fit_empirical_ev_calibration(
@@ -298,6 +303,7 @@ def fit_empirical_ev_calibration(
     min_candidate_days: int = 20,
     candidate_min_raw_ev: float = 1.0,
     shape_constraint: str = "isotonic",
+    quantile_method: str = "linear",
 ) -> EmpiricalEVCalibrationArtifact:
     """Fit a date-clustered empirical return calibration artifact.
 
@@ -307,6 +313,10 @@ def fit_empirical_ev_calibration(
     edges = _validate_edges(bin_edges)
     if shape_constraint not in {"isotonic", "bandwise"}:
         raise ValueError("shape_constraint must be isotonic or bandwise")
+    if quantile_method not in {"linear", "inverted_cdf"}:
+        raise ValueError(
+            "quantile_method must be linear or inverted_cdf"
+        )
     if bootstrap_samples < 100:
         raise ValueError("bootstrap_samples must be at least 100")
     if min_days < 1 or min_tickets < 1 or min_candidate_days < 1:
@@ -344,6 +354,7 @@ def fit_empirical_ev_calibration(
         _bootstrap_lcb(
             day_sums, day_counts, samples=bootstrap_samples, seed=seed,
             shape_constraint=shape_constraint,
+            quantile_method=quantile_method,
         )
         if rows
         else np.full(bin_count, np.nan, dtype=np.float64)
@@ -395,4 +406,5 @@ def fit_empirical_ev_calibration(
         bootstrap_samples=bootstrap_samples,
         seed=int(seed),
         shape_constraint=shape_constraint,
+        quantile_method=quantile_method,
     )
