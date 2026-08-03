@@ -5741,10 +5741,10 @@ DEFAULT_WORK_TICKETS = (
         "結合GAポートフォリオのstrict-prior実現収益校正",
         "モデル",
         "v6全レース反実候補台帳を教師に、購入判断時刻tとsnapshot ageを分離監査し、過去日だけで予測総受取倍率から実現総受取倍率へのisotonic日ブロックLCBを学習する",
-        "全レースでcaptured_at<=tとsnapshot ageを記録し、同日結果逆流0、inverted_cdf経験分位、100円単位・払戻利用時刻を再現し、30校正準備日・1000R・200券・20的中、ROI片側95%下限>1、最大1的中除外ROI>1、正損益を満たした後に完全joint walk-forwardで再確認する",
+        "全レースでcaptured_at<=tとsnapshot ageを記録し、同日結果逆流0、inverted_cdf経験分位、100円単位・払戻利用時刻を再現し、外側R>=100かつ5%下側支持5標本以上、30校正準備日・1000R・200券・20的中、ROI片側95%下限>1、最大1的中除外ROI>1、正損益を満たした後に完全joint walk-forwardで再確認する",
         99,
         "in_progress",
-        55,
+        65,
     ),
     (
         "MODEL-GENETIC-001",
