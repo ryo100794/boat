@@ -14,6 +14,7 @@ from boatrace_ai.evaluation_queue import (
     PRODUCTION_TREND_POINT_MODEL_KEY,
     PRODUCTION_TREND_POINT_REGISTERED_AFTER,
     PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
+    PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -217,8 +218,8 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
         app_root=root,
     )
 
-    assert inserted == [1, 2, 3, 4, 5, 6]
-    candidate = calls[-1]
+    assert inserted == [1, 2, 3, 4, 5, 6, 7]
+    candidate = calls[-2]
     assert candidate["task_type"] == "market_residual_walk_forward"
     assert candidate["model_key"] == PRODUCTION_TREND_POINT_MODEL_KEY
     assert candidate["parameters"]["model_input"] == PRODUCTION_TREND_POINT_MODEL_INPUT
@@ -239,6 +240,28 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
         "real_betting_enabled": False,
     }
     assert candidate["priority"] == 44
+    two_ticket = calls[-1]
+    assert two_ticket["task_type"] == "market_residual_walk_forward"
+    assert (
+        two_ticket["model_key"]
+        == PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY
+    )
+    assert two_ticket["parameters"]["trend_point_required_ticket_count"] == 2
+    assert two_ticket["parameters"]["prospective_candidate"] == {
+        "source_model_job_id": 12_012,
+        "source_evaluation_job_id": 12_051,
+        "expected_model_sha256": expected_sha256,
+        "policy": (
+            "trend_point_market_offset_discrete_multinomial_kelly_"
+            "exact_two_ticket"
+        ),
+        "required_ticket_count": 2,
+        "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+        "evidence_dates": "strictly_after_registered_after",
+        "selection_data_is_diagnostic_only": True,
+        "real_betting_enabled": False,
+    }
+    assert two_ticket["priority"] == 43
 
 
 def test_fixed_trend_candidate_command_preserves_registration_boundary(
@@ -259,6 +282,7 @@ def test_fixed_trend_candidate_command_preserves_registration_boundary(
                 "trend_point_registered_after": (
                     PRODUCTION_TREND_POINT_REGISTERED_AFTER
                 ),
+                "trend_point_required_ticket_count": 2,
                 "expected_model_sha256": hashlib.sha256(
                     b"fixed-model"
                 ).hexdigest(),
@@ -275,6 +299,8 @@ def test_fixed_trend_candidate_command_preserves_registration_boundary(
 
     boundary_index = command.index("--trend-point-registered-after")
     assert command[boundary_index + 1] == PRODUCTION_TREND_POINT_REGISTERED_AFTER
+    ticket_count_index = command.index("--trend-point-required-ticket-count")
+    assert command[ticket_count_index + 1] == "2"
 
     with pytest.raises(ValueError, match="prospective registration"):
         build_command(

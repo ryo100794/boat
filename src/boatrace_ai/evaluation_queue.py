@@ -34,6 +34,9 @@ from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 JST = ZoneInfo("Asia/Tokyo")
 PRODUCTION_TREND_POINT_REGISTERED_AFTER = "2026-08-03"
 PRODUCTION_TREND_POINT_MODEL_KEY = "production_trend_point_job_12012"
+PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY = (
+    "production_trend_point_two_ticket_job_12012"
+)
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
@@ -6047,48 +6050,73 @@ def seed_periodic_jobs(
         and jst_now.hour >= 3
         and expected_model_sha256 is not None
     ):
-        parameters = {
-            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
-            "from_date": PRODUCTION_TREND_POINT_EVALUATION_FROM,
-            "through_date": prospective_through.isoformat(),
-            "daily_budget_yen": 10_000,
-            "calibrator_strategy": PRODUCTION_TREND_POINT_STRATEGY,
-            "min_calibration_days": 2,
-            "minimum_day_coverage": 1.0,
-            "trend_point_registered_after": (
-                PRODUCTION_TREND_POINT_REGISTERED_AFTER
+        candidate_specs = (
+            (
+                PRODUCTION_TREND_POINT_MODEL_KEY,
+                "trend_point_market_offset_discrete_multinomial_kelly",
+                None,
+                44,
             ),
-            "expected_model_sha256": expected_model_sha256,
-            "timeout_seconds": 7_200,
-            "prospective_candidate": {
-                "source_model_job_id": 12_012,
-                "source_evaluation_job_id": (
-                    PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
+            (
+                PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
+                (
+                    "trend_point_market_offset_discrete_multinomial_kelly_"
+                    "exact_two_ticket"
+                ),
+                2,
+                43,
+            ),
+        )
+        for model_key, policy, required_ticket_count, priority in candidate_specs:
+            parameters = {
+                "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+                "from_date": PRODUCTION_TREND_POINT_EVALUATION_FROM,
+                "through_date": prospective_through.isoformat(),
+                "daily_budget_yen": 10_000,
+                "calibrator_strategy": PRODUCTION_TREND_POINT_STRATEGY,
+                "min_calibration_days": 2,
+                "minimum_day_coverage": 1.0,
+                "trend_point_registered_after": (
+                    PRODUCTION_TREND_POINT_REGISTERED_AFTER
                 ),
                 "expected_model_sha256": expected_model_sha256,
-                "policy": "trend_point_market_offset_discrete_multinomial_kelly",
-                "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
-                "evidence_dates": "strictly_after_registered_after",
-                "selection_data_is_diagnostic_only": True,
-                "real_betting_enabled": False,
-            },
-        }
-        key = dedupe_key(
-            "market_residual_walk_forward",
-            PRODUCTION_TREND_POINT_MODEL_KEY,
-            parameters,
-        )
-        if not already_scheduled("market_residual_walk_forward", key):
-            job_id = enqueue_job(
-                conn,
-                task_type="market_residual_walk_forward",
-                model_key=PRODUCTION_TREND_POINT_MODEL_KEY,
-                parameters=parameters,
-                priority=44,
-                max_attempts=3,
+                "timeout_seconds": 7_200,
+                "prospective_candidate": {
+                    "source_model_job_id": 12_012,
+                    "source_evaluation_job_id": (
+                        PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
+                    ),
+                    "expected_model_sha256": expected_model_sha256,
+                    "policy": policy,
+                    "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+                    "evidence_dates": "strictly_after_registered_after",
+                    "selection_data_is_diagnostic_only": True,
+                    "real_betting_enabled": False,
+                },
+            }
+            if required_ticket_count is not None:
+                parameters["trend_point_required_ticket_count"] = (
+                    required_ticket_count
+                )
+                parameters["prospective_candidate"][
+                    "required_ticket_count"
+                ] = required_ticket_count
+            key = dedupe_key(
+                "market_residual_walk_forward",
+                model_key,
+                parameters,
             )
-            if job_id is not None:
-                inserted.append(job_id)
+            if not already_scheduled("market_residual_walk_forward", key):
+                job_id = enqueue_job(
+                    conn,
+                    task_type="market_residual_walk_forward",
+                    model_key=model_key,
+                    parameters=parameters,
+                    priority=priority,
+                    max_attempts=3,
+                )
+                if job_id is not None:
+                    inserted.append(job_id)
     if app_root is not None:
         paths = periodic_model_cache_archive_paths(
             conn, app_root=app_root, now=now
