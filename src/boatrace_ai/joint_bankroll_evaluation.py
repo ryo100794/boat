@@ -36,6 +36,7 @@ EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v6"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 MINIMUM_OUTER_TAIL_OBSERVATIONS = 5
+MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES = 5.0
 
 
 def _canonical_sha256(value: object) -> str:
@@ -178,6 +179,10 @@ def _evaluation_protocol(
             "decision_rule": "V_buy_greater_than_buy_margin",
             "formal_value": "Q_alpha_outer_of_ES_beta_lower_portfolio_edge",
             "outer_alpha": 0.05,
+            "minimum_inner_tail_effective_samples": float(configuration.get(
+                "minimum_inner_tail_effective_samples",
+                MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES,
+            )),
             **{
                 key: configuration[key]
                 for key in (
@@ -185,7 +190,8 @@ def _evaluation_protocol(
                     "maximum_portfolio_stake_yen",
                     "maximum_ticket_stake_yen",
                     "maximum_selected_tickets", "buy_margin",
-                    "inner_tail_fraction", "settlement_delay_seconds",
+                    "inner_tail_fraction",
+                    "settlement_delay_seconds",
                 )
             },
         },
@@ -451,6 +457,11 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "outer_sample_count_r": outer_sample_count_r,
         "parameter_draws": outer_sample_count_r,
         "minimum_outer_draws": minimum_outer_draws,
+        "inner_scenario_count_s_definition": value.get(
+            "inner_scenario_count_s_definition"
+        ),
+        "inner_scenario_count_s_min": value.get("inner_scenario_count_s_min"),
+        "inner_scenario_count_s_max": value.get("inner_scenario_count_s_max"),
         "inner_aggregation": value.get("inner_aggregation"),
         "inner_tail_fraction": value.get("inner_tail_fraction"),
         "inner_effective_samples_min": value.get(
@@ -458,6 +469,12 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "inner_tail_effective_samples_min": value.get(
             "inner_tail_effective_samples_min"
+        ),
+        "minimum_inner_tail_effective_samples": value.get(
+            "minimum_inner_tail_effective_samples"
+        ),
+        "inner_tail_support_for_purchase": value.get(
+            "inner_tail_support_for_purchase"
         ),
         "outer_alpha": outer_alpha,
         "outer_tail_observations": outer_tail_observations,
@@ -529,6 +546,26 @@ def _aggregate_joint_value_audits(
         for row in recorded
         if row.get("inner_effective_samples_min") is not None
     ]
+    tail_ess_values = [
+        float(row["inner_tail_effective_samples_min"])
+        for row in recorded
+        if row.get("inner_tail_effective_samples_min") is not None
+    ]
+    minimum_tail_ess_values = [
+        float(row["minimum_inner_tail_effective_samples"])
+        for row in recorded
+        if row.get("minimum_inner_tail_effective_samples") is not None
+    ]
+    inner_scenario_min_values = [
+        int(row["inner_scenario_count_s_min"])
+        for row in recorded
+        if row.get("inner_scenario_count_s_min") is not None
+    ]
+    inner_scenario_max_values = [
+        int(row["inner_scenario_count_s_max"])
+        for row in recorded
+        if row.get("inner_scenario_count_s_max") is not None
+    ]
     outer_sample_counts = [
         int(row.get("outer_sample_count_r") or row.get("parameter_draws") or 0)
         for row in recorded
@@ -575,7 +612,27 @@ def _aggregate_joint_value_audits(
         "outer_tail_support_for_promotion": (
             min(outer_tail_observations) >= MINIMUM_OUTER_TAIL_OBSERVATIONS
         ),
+        "inner_scenario_count_s_definition": (
+            "future_joint_market_paths_per_outer_parameter_draw"
+        ),
+        "inner_scenario_count_s_min": (
+            min(inner_scenario_min_values) if inner_scenario_min_values else None
+        ),
+        "inner_scenario_count_s_max": (
+            max(inner_scenario_max_values) if inner_scenario_max_values else None
+        ),
         "inner_effective_samples_min": min(ess_values) if ess_values else None,
+        "inner_tail_effective_samples_min": (
+            min(tail_ess_values) if tail_ess_values else None
+        ),
+        "minimum_inner_tail_effective_samples_max": (
+            max(minimum_tail_ess_values) if minimum_tail_ess_values else None
+        ),
+        "inner_tail_support_for_promotion": bool(
+            tail_ess_values
+            and minimum_tail_ess_values
+            and min(tail_ess_values) >= max(minimum_tail_ess_values)
+        ),
         "probability_multiplier_covariance_mean": weighted(
             "probability_multiplier_covariance_mean"
         ),
@@ -959,6 +1016,9 @@ def run_joint_bankroll_evaluation(
                 buy_margin=buy_margin,
                 inner_tail_fraction=inner_tail_fraction,
                 minimum_outer_draws=outer_draws,
+                minimum_inner_tail_effective_samples=(
+                    MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES
+                ),
             )
             search = optimize_joint_portfolio(
                 priced_paths,
@@ -1233,6 +1293,10 @@ def run_joint_bankroll_evaluation(
         "minimum_outer_tail_observations_for_promotion": (
             MINIMUM_OUTER_TAIL_OBSERVATIONS
         ),
+        "inner_scenario_count_s_requested": scenarios_per_draw,
+        "minimum_inner_tail_effective_samples": (
+            MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES
+        ),
         "inner_tail_fraction": inner_tail_fraction,
         "outer_quantile_method": "inverted_cdf",
         "selected_portfolios": len(purchased_races),
@@ -1268,6 +1332,9 @@ def run_joint_bankroll_evaluation(
         "maximum_selected_tickets": maximum_selected_tickets,
         "buy_margin": buy_margin,
         "inner_tail_fraction": inner_tail_fraction,
+        "minimum_inner_tail_effective_samples": (
+            MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES
+        ),
         "population_size": population_size,
         "generations": generations,
         "bootstrap_samples": bootstrap_samples,
@@ -1346,6 +1413,9 @@ def run_joint_bankroll_evaluation(
         ),
         "minimum_outer_tail_support": bool(
             joint_value_audit.get("outer_tail_support_for_promotion")
+        ),
+        "minimum_inner_tail_support": bool(
+            joint_value_audit.get("inner_tail_support_for_promotion")
         ),
     }
     promotion_eligible = all(gate.values())

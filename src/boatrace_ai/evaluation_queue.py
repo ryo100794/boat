@@ -3559,8 +3559,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_outer_tail_support": joint_audit.get(
                 "outer_tail_support_for_promotion"
             ),
+            "joint_inner_s_definition": joint_audit.get(
+                "inner_scenario_count_s_definition"
+            ),
+            "joint_inner_s_min": joint_audit.get("inner_scenario_count_s_min"),
+            "joint_inner_s_max": joint_audit.get("inner_scenario_count_s_max"),
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_min": joint_audit.get(
+                "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_required": joint_audit.get(
+                "minimum_inner_tail_effective_samples_max"
+            ),
+            "joint_inner_tail_support": joint_audit.get(
+                "inner_tail_support_for_promotion"
             ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"
@@ -3733,8 +3747,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_outer_tail_support": joint_audit.get(
                 "outer_tail_support_for_promotion"
             ),
+            "joint_inner_s_definition": joint_audit.get(
+                "inner_scenario_count_s_definition"
+            ),
+            "joint_inner_s_min": joint_audit.get("inner_scenario_count_s_min"),
+            "joint_inner_s_max": joint_audit.get("inner_scenario_count_s_max"),
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_min": joint_audit.get(
+                "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_required": joint_audit.get(
+                "minimum_inner_tail_effective_samples_max"
+            ),
+            "joint_inner_tail_support": joint_audit.get(
+                "inner_tail_support_for_promotion"
             ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"

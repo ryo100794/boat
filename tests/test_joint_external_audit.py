@@ -12,10 +12,15 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
         "version": "joint_market_value_evaluator_v0",
         "parameter_draws": 20,
         "minimum_outer_draws": 20,
+        "inner_scenario_count_s_definition": "future_joint_market_paths_per_outer_parameter_draw",
+        "inner_scenario_count_s_min": 64,
+        "inner_scenario_count_s_max": 64,
         "inner_aggregation": "portfolio_path_weighted_lower_tail_mean",
         "inner_tail_fraction": 0.1,
         "inner_effective_samples_min": 64.0,
         "inner_tail_effective_samples_min": 6.4,
+        "minimum_inner_tail_effective_samples": 5.0,
+        "inner_tail_support_for_purchase": True,
         "outer_alpha": 0.05,
         "outer_quantile_method": "inverted_cdf",
         "marginal_contributions_computed": True,
@@ -40,6 +45,11 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
     assert audit["outer_tail_observations"] == 1
     assert audit["minimum_outer_tail_observations_for_promotion"] == 5
     assert audit["outer_tail_support_for_promotion"] is False
+    assert audit["inner_scenario_count_s_min"] == 64
+    assert audit["inner_scenario_count_s_max"] == 64
+    assert audit["inner_effective_samples_min"] == 64.0
+    assert audit["inner_tail_effective_samples_min"] == 6.4
+    assert audit["inner_tail_support_for_purchase"] is True
     assert audit["portfolio_path_aggregation"] is True
     assert audit["complete_vector_repricing"] is True
     assert audit["probability_multiplier_covariance_mean"] == pytest.approx(-0.45)
@@ -84,7 +94,13 @@ def test_joint_audit_survives_queue_summary() -> None:
             "outer_tail_observations_max": 1,
             "minimum_outer_tail_observations_for_promotion": 5,
             "outer_tail_support_for_promotion": False,
+            "inner_scenario_count_s_definition": "future_joint_market_paths_per_outer_parameter_draw",
+            "inner_scenario_count_s_min": 64,
+            "inner_scenario_count_s_max": 64,
             "inner_effective_samples_min": 64.0,
+            "inner_tail_effective_samples_min": 6.4,
+            "minimum_inner_tail_effective_samples_max": 5.0,
+            "inner_tail_support_for_promotion": True,
             "probability_multiplier_covariance_mean": -0.12,
             "negative_covariance_fraction": 0.75,
             "independence_approximation_overstatement_mean": 0.12,
@@ -144,6 +160,12 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_outer_tail_observations_min"] == 1
     assert summary["joint_outer_tail_required"] == 5
     assert summary["joint_outer_tail_support"] is False
+    assert summary["joint_inner_s_min"] == 64
+    assert summary["joint_inner_s_max"] == 64
+    assert summary["joint_inner_ess_min"] == 64.0
+    assert summary["joint_inner_tail_ess_min"] == 6.4
+    assert summary["joint_inner_tail_ess_required"] == 5.0
+    assert summary["joint_inner_tail_support"] is True
     assert summary["settlement_integer_yen"] is True
     assert summary["settlement_self_impact_repricing"] is True
     assert summary["settlement_refund_supported"] is True
@@ -175,7 +197,12 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_outer_tail_observations_min": 1,
             "joint_outer_tail_required": 5,
             "joint_outer_tail_support": False,
+            "joint_inner_s_min": 64,
+            "joint_inner_s_max": 64,
             "joint_inner_ess_min": 64.0,
+            "joint_inner_tail_ess_min": 6.4,
+            "joint_inner_tail_ess_required": 5.0,
+            "joint_inner_tail_support": True,
             "joint_covariance_mean": -0.03125,
             "joint_independence_overstatement_mean": 0.03125,
             "settlement_integer_yen": True,
@@ -199,6 +226,7 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "0.0612 &gt; 0.0200" in section
     assert "Cov -0.031250" in section
     assert "R 20..20 / 下側 1/5 不足 / α 0.05" in section
+    assert "S 64..64 / 下側ESS 6.40/5.00 合格 / ESS 64.00" in section
     assert "共同経路 / portfolio ES / 完全vector再価格" in section
     assert "整数円 / 自己投票 / 返還 / 特別払戻" in section
     encoded = section.split(

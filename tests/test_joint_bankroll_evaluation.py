@@ -202,6 +202,13 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["joint_purchase_value"][
         "minimum_outer_tail_observations_for_promotion"
     ] == 5
+    assert result["joint_purchase_value"]["inner_scenario_count_s_requested"] == 10
+    assert result["joint_purchase_value"][
+        "minimum_inner_tail_effective_samples"
+    ] == 5.0
+    assert result["evaluation_protocol"]["purchase_rule"][
+        "minimum_inner_tail_effective_samples"
+    ] == 5.0
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["evaluation_time_t"].endswith("+09:00")

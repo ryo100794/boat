@@ -39,6 +39,10 @@ def test_bankroll_growth_penalizes_ruin_and_prefers_fractional_stake() -> None:
 
     assert fractional["growth"]["lower_quantile"] > 0.0
     assert fractional["growth"]["passes_growth_gate"] is True
+    assert fractional["inner_scenario_count_s_min"] == 1
+    assert fractional["inner_scenario_count_s_max"] == 1
+    assert fractional["inner_effective_samples_min"] == 1.0
+    assert fractional["inner_tail_support_for_purchase"] is True
     assert all_in["growth"]["lower_quantile"] < 0.0
     assert all_in["growth"]["maximum_conditional_ruin_probability"] == pytest.approx(
         0.4
@@ -134,6 +138,12 @@ def test_portfolio_tail_is_taken_after_scenario_level_diversification() -> None:
     assert result["inner_aggregation"] == (
         "portfolio_path_weighted_lower_tail_mean"
     )
+    assert result["inner_scenario_count_s_min"] == 2
+    assert result["inner_scenario_count_s_max"] == 2
+    assert result["inner_effective_samples_min"] == 2.0
+    assert result["inner_tail_effective_samples_min"] == 1.0
+    assert result["minimum_inner_tail_effective_samples"] == 1.0
+    assert result["inner_tail_support_for_purchase"] is True
 
 
 def test_cancelled_terminal_state_returns_principal_without_hit() -> None:
@@ -245,6 +255,35 @@ def test_purchase_gate_is_disabled_when_outer_or_inner_evidence_is_small() -> No
         "insufficient_outer_parameter_draws",
         "insufficient_inner_tail_effective_samples",
     }
+    assert result["inner_scenario_count_s_min"] == 1
+    assert result["inner_tail_effective_samples_min"] == 1.0
+    assert result["minimum_inner_tail_effective_samples"] == 5.0
+    assert result["inner_tail_support_for_purchase"] is False
+
+
+def test_tail_ess_uses_actual_partial_scenario_mass() -> None:
+    draw = [
+        JointMarketScenario(
+            {"A": 1.0}, {"multipliers": {"A": 0.5}}, weight=0.1
+        ),
+        JointMarketScenario(
+            {"A": 1.0}, {"multipliers": {"A": 2.0}}, weight=0.9
+        ),
+    ]
+
+    result = evaluate_joint_market_value(
+        [draw],
+        bets_yen={"A": 100},
+        gross_payoff_model=_ordinary_payoffs,
+        inner_tail_fraction=0.2,
+        minimum_outer_draws=1,
+        minimum_inner_tail_effective_samples=2.0,
+    )
+
+    # Tail mass is 0.1 from each path, so normalized weights are 0.5/0.5.
+    assert result["inner_effective_samples_min"] == pytest.approx(1 / 0.82)
+    assert result["inner_tail_effective_samples_min"] == pytest.approx(2.0)
+    assert result["inner_tail_support_for_purchase"] is True
 
 
 def test_trifecta_adapter_requires_exactly_the_120_outcomes() -> None:

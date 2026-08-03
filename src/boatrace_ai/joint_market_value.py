@@ -119,6 +119,27 @@ def _weighted_lower_tail_mean(
     return total / fraction
 
 
+def _weighted_lower_tail_effective_sample_size(
+    values: np.ndarray,
+    weights: np.ndarray,
+    fraction: float,
+) -> float:
+    """ESS of the normalized scenario mass that actually forms the lower tail."""
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("inner_tail_fraction must be in (0, 1]")
+    order = np.argsort(values, kind="stable")
+    remaining = float(fraction)
+    squared_normalized_mass = 0.0
+    for index in order:
+        mass = min(remaining, float(weights[index]))
+        normalized_mass = mass / fraction
+        squared_normalized_mass += normalized_mass * normalized_mass
+        remaining -= mass
+        if remaining <= 1e-15:
+            break
+    return 1.0 / squared_normalized_mass
+
+
 def _aggregate_path(
     values: np.ndarray,
     weights: np.ndarray,
@@ -299,9 +320,12 @@ def evaluate_joint_market_value(
     outer_portfolio_values: list[float] = []
     moments_by_draw = []
     inner_effective_samples = []
+    inner_tail_effective_samples: list[float] = []
+    inner_scenario_counts: list[int] = []
 
     for draw_index, draw in enumerate(parameter_draws):
         scenarios = list(draw)
+        inner_scenario_counts.append(len(scenarios))
         weights, ticket_paths, portfolio_path, diagnostics = _scenario_paths(
             scenarios,
             bets=bets,
@@ -312,6 +336,12 @@ def evaluate_joint_market_value(
         )
         ess = 1.0 / float(np.dot(weights, weights))
         inner_effective_samples.append(ess)
+        if inner_tail_fraction is not None:
+            inner_tail_effective_samples.append(
+                _weighted_lower_tail_effective_sample_size(
+                    portfolio_path, weights, inner_tail_fraction
+                )
+            )
         draw_moments = {"draw": draw_index, "tickets": {}}
         for ticket in bets if include_ticket_diagnostics else ():
             outer_ticket_values[ticket].append(
@@ -355,9 +385,8 @@ def evaluate_joint_market_value(
     }
     portfolio = _outer_summary(outer_portfolio_values, outer_alpha)
     tail_effective_samples = (
-        min(inner_effective_samples) * inner_tail_fraction
-        if inner_tail_fraction is not None
-        else None
+        min(inner_tail_effective_samples)
+        if inner_tail_effective_samples else None
     )
     gate_reasons = []
     if len(parameter_draws) < minimum_outer_draws:
@@ -414,6 +443,11 @@ def evaluate_joint_market_value(
         "definition": "E[gross_receipt(b)|F_t]/stake - 1 - costs/stake",
         "parameter_draws": len(parameter_draws),
         "minimum_outer_draws": minimum_outer_draws,
+        "inner_scenario_count_s_definition": (
+            "future_joint_market_paths_per_outer_parameter_draw"
+        ),
+        "inner_scenario_count_s_min": min(inner_scenario_counts),
+        "inner_scenario_count_s_max": max(inner_scenario_counts),
         "inner_aggregation": (
             "weighted_mean"
             if inner_tail_fraction is None
@@ -423,6 +457,10 @@ def evaluate_joint_market_value(
         "inner_effective_samples_min": min(inner_effective_samples),
         "inner_tail_effective_samples_min": tail_effective_samples,
         "minimum_inner_tail_effective_samples": minimum_tail_ess,
+        "inner_tail_support_for_purchase": (
+            tail_effective_samples is None
+            or tail_effective_samples >= minimum_tail_ess
+        ),
         "outer_alpha": outer_alpha,
         "outer_quantile_method": "inverted_cdf",
         "buy_margin": threshold,
@@ -484,9 +522,12 @@ def evaluate_joint_bankroll_growth(
 
     outer_values: list[float] = []
     inner_effective_samples: list[float] = []
+    inner_tail_effective_samples: list[float] = []
+    inner_scenario_counts: list[int] = []
     ruin_probability_upper = 0.0
     for draw in parameter_draws:
         scenarios = list(draw)
+        inner_scenario_counts.append(len(scenarios))
         weights = _normalized_weights(scenarios)
         inner_effective_samples.append(1.0 / float(np.dot(weights, weights)))
         scenario_growth = np.empty(len(scenarios), dtype=np.float64)
@@ -545,11 +586,16 @@ def evaluate_joint_bankroll_growth(
         outer_values.append(
             _aggregate_path(scenario_growth, weights, inner_tail_fraction)
         )
+        if inner_tail_fraction is not None:
+            inner_tail_effective_samples.append(
+                _weighted_lower_tail_effective_sample_size(
+                    scenario_growth, weights, inner_tail_fraction
+                )
+            )
 
     tail_effective_samples = (
-        min(inner_effective_samples) * inner_tail_fraction
-        if inner_tail_fraction is not None
-        else None
+        min(inner_tail_effective_samples)
+        if inner_tail_effective_samples else None
     )
     gate_reasons = []
     if len(parameter_draws) < minimum_outer_draws:
@@ -574,6 +620,11 @@ def evaluate_joint_bankroll_growth(
         "available_bankroll_yen": bankroll,
         "total_outlay_yen": total_outlay,
         "minimum_terminal_wealth_yen": wealth_floor,
+        "inner_scenario_count_s_definition": (
+            "future_joint_market_paths_per_outer_parameter_draw"
+        ),
+        "inner_scenario_count_s_min": min(inner_scenario_counts),
+        "inner_scenario_count_s_max": max(inner_scenario_counts),
         "inner_aggregation": (
             "weighted_mean"
             if inner_tail_fraction is None
@@ -582,6 +633,11 @@ def evaluate_joint_bankroll_growth(
         "inner_tail_fraction": inner_tail_fraction,
         "inner_effective_samples_min": min(inner_effective_samples),
         "inner_tail_effective_samples_min": tail_effective_samples,
+        "minimum_inner_tail_effective_samples": minimum_tail_ess,
+        "inner_tail_support_for_purchase": (
+            tail_effective_samples is None
+            or tail_effective_samples >= minimum_tail_ess
+        ),
         "outer_alpha": outer_alpha,
         "outer_quantile_method": "inverted_cdf",
         "growth": summary,
