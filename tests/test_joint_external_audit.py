@@ -286,7 +286,7 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
         "独立近似倍率 E[pi]E[D] 1.111250"
     ) in section
     assert "恒等式 合格 (max残差 0.000000000)" in section
-    assert "Cov -0.031250" in section
+    assert "共分散補正 Cov -0.031250 (減額)" in section
     assert (
         "探索R 20 / 検証R 100 / 非重複 合格 / "
         "R 20..20 / 下側 1/5 不足 / α 0.05"
