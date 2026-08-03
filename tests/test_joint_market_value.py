@@ -105,6 +105,8 @@ def test_joint_value_keeps_probability_price_covariance() -> None:
         minimum_outer_draws=1,
     )
     moments = result["moments_by_draw"][0]["tickets"]["1-2-3"]
+    assert moments["expected_probability_times_multiplier"] == pytest.approx(1.08)
+    assert moments["independence_probability_times_multiplier"] == pytest.approx(1.80)
     assert moments["probability_multiplier_covariance"] == pytest.approx(-0.72)
     assert moments["joint_expected_edge"] == pytest.approx(0.08)
     assert moments["ordinary_hit_independence_approximation_edge"] == pytest.approx(
@@ -141,7 +143,11 @@ def test_portfolio_tail_is_taken_after_scenario_level_diversification() -> None:
     assert result["inner_scenario_count_s_min"] == 2
     assert result["inner_scenario_count_s_max"] == 2
     assert result["inner_effective_samples_min"] == 2.0
+    assert result["inner_effective_samples_mean"] == 2.0
+    assert result["inner_effective_samples_max"] == 2.0
     assert result["inner_tail_effective_samples_min"] == 1.0
+    assert result["inner_tail_effective_samples_mean"] == 1.0
+    assert result["inner_tail_effective_samples_max"] == 1.0
     assert result["minimum_inner_tail_effective_samples"] == 1.0
     assert result["inner_tail_support_for_purchase"] is True
 

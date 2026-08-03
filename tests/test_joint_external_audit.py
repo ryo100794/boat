@@ -18,7 +18,11 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
         "inner_aggregation": "portfolio_path_weighted_lower_tail_mean",
         "inner_tail_fraction": 0.1,
         "inner_effective_samples_min": 64.0,
+        "inner_effective_samples_mean": 64.0,
+        "inner_effective_samples_max": 64.0,
         "inner_tail_effective_samples_min": 6.4,
+        "inner_tail_effective_samples_mean": 6.4,
+        "inner_tail_effective_samples_max": 6.4,
         "minimum_inner_tail_effective_samples": 5.0,
         "inner_tail_support_for_purchase": True,
         "outer_alpha": 0.05,
@@ -26,11 +30,15 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
         "marginal_contributions_computed": True,
         "moments_by_draw": [
             {"tickets": {"1-2-3": {
+                "expected_probability_times_multiplier": 1.08,
+                "independence_probability_times_multiplier": 1.80,
                 "probability_multiplier_covariance": -0.72,
                 "joint_expected_edge": 0.08,
                 "ordinary_hit_independence_approximation_edge": 0.80,
             }}},
             {"tickets": {"1-3-2": {
+                "expected_probability_times_multiplier": 1.02,
+                "independence_probability_times_multiplier": 1.20,
                 "probability_multiplier_covariance": -0.18,
                 "joint_expected_edge": 0.02,
                 "ordinary_hit_independence_approximation_edge": 0.20,
@@ -48,10 +56,17 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
     assert audit["inner_scenario_count_s_min"] == 64
     assert audit["inner_scenario_count_s_max"] == 64
     assert audit["inner_effective_samples_min"] == 64.0
+    assert audit["inner_effective_samples_mean"] == 64.0
+    assert audit["inner_effective_samples_max"] == 64.0
     assert audit["inner_tail_effective_samples_min"] == 6.4
+    assert audit["inner_tail_effective_samples_mean"] == 6.4
+    assert audit["inner_tail_effective_samples_max"] == 6.4
     assert audit["inner_tail_support_for_purchase"] is True
     assert audit["portfolio_path_aggregation"] is True
     assert audit["complete_vector_repricing"] is True
+    assert audit["expected_probability_times_multiplier_mean"] == pytest.approx(1.05)
+    assert audit["independence_probability_times_multiplier_mean"] == pytest.approx(1.50)
+    assert audit["joint_expected_edge_mean"] == pytest.approx(0.05)
     assert audit["probability_multiplier_covariance_mean"] == pytest.approx(-0.45)
     assert audit["negative_covariance_fraction"] == 1.0
     assert audit["independence_approximation_overstatement_mean"] == pytest.approx(0.45)
@@ -103,9 +118,16 @@ def test_joint_audit_survives_queue_summary() -> None:
             "inner_scenario_count_s_min": 64,
             "inner_scenario_count_s_max": 64,
             "inner_effective_samples_min": 64.0,
+            "inner_effective_samples_mean": 64.0,
+            "inner_effective_samples_max": 64.0,
             "inner_tail_effective_samples_min": 6.4,
+            "inner_tail_effective_samples_mean": 6.4,
+            "inner_tail_effective_samples_max": 6.4,
             "minimum_inner_tail_effective_samples_max": 5.0,
             "inner_tail_support_for_promotion": True,
+            "expected_probability_times_multiplier_mean": 1.05,
+            "independence_probability_times_multiplier_mean": 1.17,
+            "joint_expected_edge_mean": 0.05,
             "probability_multiplier_covariance_mean": -0.12,
             "negative_covariance_fraction": 0.75,
             "independence_approximation_overstatement_mean": 0.12,
@@ -158,6 +180,9 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["evaluation_snapshot_age_seconds_mean"] == 12.5
     assert summary["evaluation_wager_types"] == ["trifecta"]
     assert summary["joint_audit_recorded"] is True
+    assert summary["joint_expected_pi_d_mean"] == 1.05
+    assert summary["joint_independent_pi_times_d_mean"] == 1.17
+    assert summary["joint_expected_edge_mean"] == 0.05
     assert summary["joint_covariance_mean"] == -0.12
     assert summary["joint_independence_overstatement_mean"] == 0.12
     assert summary["joint_outer_sample_count_r_min"] == 20
@@ -171,7 +196,11 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_inner_s_min"] == 64
     assert summary["joint_inner_s_max"] == 64
     assert summary["joint_inner_ess_min"] == 64.0
+    assert summary["joint_inner_ess_mean"] == 64.0
+    assert summary["joint_inner_ess_max"] == 64.0
     assert summary["joint_inner_tail_ess_min"] == 6.4
+    assert summary["joint_inner_tail_ess_mean"] == 6.4
+    assert summary["joint_inner_tail_ess_max"] == 6.4
     assert summary["joint_inner_tail_ess_required"] == 5.0
     assert summary["joint_inner_tail_support"] is True
     assert summary["settlement_integer_yen"] is True
@@ -211,9 +240,16 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_inner_s_min": 64,
             "joint_inner_s_max": 64,
             "joint_inner_ess_min": 64.0,
+            "joint_inner_ess_mean": 64.0,
+            "joint_inner_ess_max": 64.0,
             "joint_inner_tail_ess_min": 6.4,
+            "joint_inner_tail_ess_mean": 6.4,
+            "joint_inner_tail_ess_max": 6.4,
             "joint_inner_tail_ess_required": 5.0,
             "joint_inner_tail_support": True,
+            "joint_expected_pi_d_mean": 1.08,
+            "joint_independent_pi_times_d_mean": 1.11125,
+            "joint_expected_edge_mean": 0.08,
             "joint_covariance_mean": -0.03125,
             "joint_independence_overstatement_mean": 0.03125,
             "settlement_integer_yen": True,
@@ -235,12 +271,16 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert len(rows) == 1
     assert "joint_bankroll_strict_walk_forward_v4" in section
     assert "0.0612 &gt; 0.0200" in section
+    assert "E[piD] 1.080000 / E[pi]E[D] 1.111250" in section
     assert "Cov -0.031250" in section
     assert (
         "探索R 20 / 検証R 100 / 非重複 合格 / "
         "R 20..20 / 下側 1/5 不足 / α 0.05"
     ) in section
-    assert "S 64..64 / 下側ESS 6.40/5.00 合格 / ESS 64.00" in section
+    assert (
+        "S 64..64 / 下側ESS 6.40..6.40..6.40 / "
+        "必要 5.00 合格 / ESS 64.00..64.00..64.00"
+    ) in section
     assert "共同経路 / portfolio ES / 完全vector再価格" in section
     assert "整数円 / 自己投票 / 返還 / 特別払戻" in section
     encoded = section.split(

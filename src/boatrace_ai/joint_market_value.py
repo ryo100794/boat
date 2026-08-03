@@ -358,6 +358,10 @@ def evaluate_joint_market_value(
                 "mean_probability": mean_probability,
                 "mean_winning_multiplier": mean_multiplier,
                 "mean_hit_probability_times_multiplier": mean_product,
+                "expected_probability_times_multiplier": mean_product,
+                "independence_probability_times_multiplier": (
+                    mean_probability * mean_multiplier
+                ),
                 "probability_multiplier_covariance": (
                     mean_product - mean_probability * mean_multiplier
                 ),
@@ -455,7 +459,20 @@ def evaluate_joint_market_value(
         ),
         "inner_tail_fraction": inner_tail_fraction,
         "inner_effective_samples_min": min(inner_effective_samples),
+        "inner_effective_samples_mean": (
+            fsum(inner_effective_samples) / len(inner_effective_samples)
+        ),
+        "inner_effective_samples_max": max(inner_effective_samples),
         "inner_tail_effective_samples_min": tail_effective_samples,
+        "inner_tail_effective_samples_mean": (
+            fsum(inner_tail_effective_samples)
+            / len(inner_tail_effective_samples)
+            if inner_tail_effective_samples else None
+        ),
+        "inner_tail_effective_samples_max": (
+            max(inner_tail_effective_samples)
+            if inner_tail_effective_samples else None
+        ),
         "minimum_inner_tail_effective_samples": minimum_tail_ess,
         "inner_tail_support_for_purchase": (
             tail_effective_samples is None
@@ -466,6 +483,9 @@ def evaluate_joint_market_value(
         "buy_margin": threshold,
         "tickets": tickets,
         "ticket_diagnostics_computed": include_ticket_diagnostics,
+        "expected_probability_times_multiplier_definition": (
+            "sum_s normalized_weight_s * pi_s * D_s on shared paths"
+        ),
         "portfolio": portfolio,
         "marginal_contributions_computed": include_marginal_contributions,
         "marginal_contributions": marginal_contributions,
@@ -632,7 +652,20 @@ def evaluate_joint_bankroll_growth(
         ),
         "inner_tail_fraction": inner_tail_fraction,
         "inner_effective_samples_min": min(inner_effective_samples),
+        "inner_effective_samples_mean": (
+            fsum(inner_effective_samples) / len(inner_effective_samples)
+        ),
+        "inner_effective_samples_max": max(inner_effective_samples),
         "inner_tail_effective_samples_min": tail_effective_samples,
+        "inner_tail_effective_samples_mean": (
+            fsum(inner_tail_effective_samples)
+            / len(inner_tail_effective_samples)
+            if inner_tail_effective_samples else None
+        ),
+        "inner_tail_effective_samples_max": (
+            max(inner_tail_effective_samples)
+            if inner_tail_effective_samples else None
+        ),
         "minimum_inner_tail_effective_samples": minimum_tail_ess,
         "inner_tail_support_for_purchase": (
             tail_effective_samples is None

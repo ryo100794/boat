@@ -3591,14 +3591,35 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"
             ),
+            "joint_inner_ess_mean": joint_audit.get(
+                "inner_effective_samples_mean"
+            ),
+            "joint_inner_ess_max": joint_audit.get(
+                "inner_effective_samples_max"
+            ),
             "joint_inner_tail_ess_min": joint_audit.get(
                 "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_mean": joint_audit.get(
+                "inner_tail_effective_samples_mean"
+            ),
+            "joint_inner_tail_ess_max": joint_audit.get(
+                "inner_tail_effective_samples_max"
             ),
             "joint_inner_tail_ess_required": joint_audit.get(
                 "minimum_inner_tail_effective_samples_max"
             ),
             "joint_inner_tail_support": joint_audit.get(
                 "inner_tail_support_for_promotion"
+            ),
+            "joint_expected_pi_d_mean": joint_audit.get(
+                "expected_probability_times_multiplier_mean"
+            ),
+            "joint_independent_pi_times_d_mean": joint_audit.get(
+                "independence_probability_times_multiplier_mean"
+            ),
+            "joint_expected_edge_mean": joint_audit.get(
+                "joint_expected_edge_mean"
             ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"
@@ -3779,14 +3800,35 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"
             ),
+            "joint_inner_ess_mean": joint_audit.get(
+                "inner_effective_samples_mean"
+            ),
+            "joint_inner_ess_max": joint_audit.get(
+                "inner_effective_samples_max"
+            ),
             "joint_inner_tail_ess_min": joint_audit.get(
                 "inner_tail_effective_samples_min"
+            ),
+            "joint_inner_tail_ess_mean": joint_audit.get(
+                "inner_tail_effective_samples_mean"
+            ),
+            "joint_inner_tail_ess_max": joint_audit.get(
+                "inner_tail_effective_samples_max"
             ),
             "joint_inner_tail_ess_required": joint_audit.get(
                 "minimum_inner_tail_effective_samples_max"
             ),
             "joint_inner_tail_support": joint_audit.get(
                 "inner_tail_support_for_promotion"
+            ),
+            "joint_expected_pi_d_mean": joint_audit.get(
+                "expected_probability_times_multiplier_mean"
+            ),
+            "joint_independent_pi_times_d_mean": joint_audit.get(
+                "independence_probability_times_multiplier_mean"
+            ),
+            "joint_expected_edge_mean": joint_audit.get(
+                "joint_expected_edge_mean"
             ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"

@@ -1523,6 +1523,7 @@ def _model_performance_report_contract(
             "evaluation_snapshot_age": "購入判断に使用したオッズの鮮度。evaluation_time_t - odds_snapshot_captured_at（秒）",
             "outer_sample_count_r": "購入価値Q_alphaを計算する外側のモデル・パラメータ不確実性標本数R。5%分位の本番昇格には下側5標本以上を要求",
             "inner_scenario_count_s": "各外側標本から生成する購入判断時点から締切までの共同市場経路数S。シナリオESS=1/Σω_s²。下側ESSは下側β質量へ部分採用した重みをβで再正規化して算出",
+            "expected_probability_times_multiplier": "同一の共同市場経路上で重み付き集計したE[pi D]=Σ_s ω_s pi_s D_s。E[pi]E[D]との差は共分散",
             "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedだけを固定するSHA-256再標本化条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
@@ -3078,6 +3079,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "joint_inner_ess_min": _float_or_none(
                     metrics.get("joint_inner_ess_min")
                 ),
+                "joint_inner_ess_mean": _float_or_none(
+                    metrics.get("joint_inner_ess_mean")
+                ),
+                "joint_inner_ess_max": _float_or_none(
+                    metrics.get("joint_inner_ess_max")
+                ),
+                "joint_inner_tail_ess_mean": _float_or_none(
+                    metrics.get("joint_inner_tail_ess_mean")
+                ),
+                "joint_inner_tail_ess_max": _float_or_none(
+                    metrics.get("joint_inner_tail_ess_max")
+                ),
+                "joint_expected_pi_d_mean": _float_or_none(
+                    metrics.get("joint_expected_pi_d_mean")
+                ),
+                "joint_independent_pi_times_d_mean": _float_or_none(
+                    metrics.get("joint_independent_pi_times_d_mean")
+                ),
+                "joint_expected_edge_mean": _float_or_none(
+                    metrics.get("joint_expected_edge_mean")
+                ),
                 "joint_covariance_mean": _float_or_none(
                     metrics.get("joint_covariance_mean")
                 ),
@@ -3723,6 +3745,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "joint_inner_ess_min": _float_or_none(
                     candidate_metrics.get("joint_inner_ess_min")
+                ),
+                "joint_inner_ess_mean": _float_or_none(
+                    candidate_metrics.get("joint_inner_ess_mean")
+                ),
+                "joint_inner_ess_max": _float_or_none(
+                    candidate_metrics.get("joint_inner_ess_max")
+                ),
+                "joint_inner_tail_ess_mean": _float_or_none(
+                    candidate_metrics.get("joint_inner_tail_ess_mean")
+                ),
+                "joint_inner_tail_ess_max": _float_or_none(
+                    candidate_metrics.get("joint_inner_tail_ess_max")
+                ),
+                "joint_expected_pi_d_mean": _float_or_none(
+                    candidate_metrics.get("joint_expected_pi_d_mean")
+                ),
+                "joint_independent_pi_times_d_mean": _float_or_none(
+                    candidate_metrics.get("joint_independent_pi_times_d_mean")
+                ),
+                "joint_expected_edge_mean": _float_or_none(
+                    candidate_metrics.get("joint_expected_edge_mean")
                 ),
                 "joint_covariance_mean": _float_or_none(
                     candidate_metrics.get("joint_covariance_mean")
@@ -8006,9 +8049,14 @@ def model_performance_audit_snapshot(
                 "joint_search_validation_draw_sets_disjoint",
                 "joint_inner_s_definition", "joint_inner_s_min",
                 "joint_inner_s_max", "joint_inner_ess_min",
+                "joint_inner_ess_mean", "joint_inner_ess_max",
                 "joint_inner_tail_ess_min",
+                "joint_inner_tail_ess_mean", "joint_inner_tail_ess_max",
                 "joint_inner_tail_ess_required",
                 "joint_inner_tail_support",
+                "joint_expected_pi_d_mean",
+                "joint_independent_pi_times_d_mean",
+                "joint_expected_edge_mean",
                 "joint_covariance_mean",
                 "joint_negative_covariance_fraction",
                 "joint_independence_overstatement_mean",
@@ -8087,7 +8135,12 @@ def model_performance_audit_snapshot(
         )
         inner_s_min = audit.get("joint_inner_s_min")
         inner_s_max = audit.get("joint_inner_s_max")
+        inner_ess_min = audit.get("joint_inner_ess_min")
+        inner_ess_mean = audit.get("joint_inner_ess_mean")
+        inner_ess_max = audit.get("joint_inner_ess_max")
         inner_tail_ess = audit.get("joint_inner_tail_ess_min")
+        inner_tail_ess_mean = audit.get("joint_inner_tail_ess_mean")
+        inner_tail_ess_max = audit.get("joint_inner_tail_ess_max")
         inner_tail_required = audit.get("joint_inner_tail_ess_required")
         inner_support = (
             "合格" if audit.get("joint_inner_tail_support") is True
@@ -8099,7 +8152,10 @@ def model_performance_audit_snapshot(
             f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
             f"{_audit_number(audit.get('joint_purchase_value_minimum'))} > {_audit_number(audit.get('joint_purchase_safety_margin'))}",
             f"ROI {_audit_number(audit.get('roi'))} / LCB {_audit_number(audit.get('daily_cluster_bootstrap_roi_lower_95'))}",
-            f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / 独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
+            f"E[piD] {_audit_number(audit.get('joint_expected_pi_d_mean'), 6)} / "
+                f"E[pi]E[D] {_audit_number(audit.get('joint_independent_pi_times_d_mean'), 6)} / "
+                f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / "
+                f"独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
             f"探索R {search_r if search_r is not None else '未記録'} / "
                 f"検証R {validation_r if validation_r is not None else '未記録'} / "
                 f"非重複 {disjoint_support} / "
@@ -8109,9 +8165,13 @@ def model_performance_audit_snapshot(
                 f"{outer_support} / α {_audit_number(audit.get('joint_outer_alpha_min'), 2)} / "
                 f"S {inner_s_min if inner_s_min is not None else '未記録'}.."
                 f"{inner_s_max if inner_s_max is not None else '未記録'} / "
-                f"下側ESS {_audit_number(inner_tail_ess, 2)}/"
-                f"{_audit_number(inner_tail_required, 2)} {inner_support} / "
-                f"ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
+                f"下側ESS {_audit_number(inner_tail_ess, 2)}.."
+                f"{_audit_number(inner_tail_ess_mean, 2)}.."
+                f"{_audit_number(inner_tail_ess_max, 2)} / "
+                f"必要 {_audit_number(inner_tail_required, 2)} {inner_support} / "
+                f"ESS {_audit_number(inner_ess_min, 2)}.."
+                f"{_audit_number(inner_ess_mean, 2)}.."
+                f"{_audit_number(inner_ess_max, 2)}",
             structure,
             settlement,
             (
