@@ -75,7 +75,12 @@ def test_outer_r_requires_five_lower_tail_observations_for_promotion() -> None:
 def test_joint_audit_survives_queue_summary() -> None:
     summary = summarize_result({
         "model": "joint_bankroll_strict_walk_forward_v4",
-        "configuration": {"buy_margin": 0.05},
+        "configuration": {
+            "buy_margin": 0.05,
+            "outer_draws": 100,
+            "search_outer_draws": 20,
+            "search_validation_draw_sets_disjoint": True,
+        },
         "joint_value_audit": {
             "recorded": True,
             "audited_portfolios": 3,
@@ -156,6 +161,9 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_covariance_mean"] == -0.12
     assert summary["joint_independence_overstatement_mean"] == 0.12
     assert summary["joint_outer_sample_count_r_min"] == 20
+    assert summary["joint_search_outer_sample_count_r_requested"] == 20
+    assert summary["joint_validation_outer_sample_count_r_requested"] == 100
+    assert summary["joint_search_validation_draw_sets_disjoint"] is True
     assert summary["joint_outer_sample_count_r_max"] == 20
     assert summary["joint_outer_tail_observations_min"] == 1
     assert summary["joint_outer_tail_required"] == 5
@@ -197,6 +205,9 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_outer_tail_observations_min": 1,
             "joint_outer_tail_required": 5,
             "joint_outer_tail_support": False,
+            "joint_search_outer_sample_count_r_requested": 20,
+            "joint_validation_outer_sample_count_r_requested": 100,
+            "joint_search_validation_draw_sets_disjoint": True,
             "joint_inner_s_min": 64,
             "joint_inner_s_max": 64,
             "joint_inner_ess_min": 64.0,
@@ -225,7 +236,10 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "joint_bankroll_strict_walk_forward_v4" in section
     assert "0.0612 &gt; 0.0200" in section
     assert "Cov -0.031250" in section
-    assert "R 20..20 / 下側 1/5 不足 / α 0.05" in section
+    assert (
+        "探索R 20 / 検証R 100 / 非重複 合格 / "
+        "R 20..20 / 下側 1/5 不足 / α 0.05"
+    ) in section
     assert "S 64..64 / 下側ESS 6.40/5.00 合格 / ESS 64.00" in section
     assert "共同経路 / portfolio ES / 完全vector再価格" in section
     assert "整数円 / 自己投票 / 返還 / 特別払戻" in section

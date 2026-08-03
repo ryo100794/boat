@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from boatrace_ai.genetic_search import GeneticSearchSettings
 from boatrace_ai.joint_market_value import JointMarketScenario
 from boatrace_ai.joint_policy_ga import (
@@ -143,6 +145,57 @@ def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None
     assert len({
         row["metrics"]["constraint_violation"] for row in rejected
     }) > 1
+
+
+def test_validation_draws_must_not_reuse_search_draws() -> None:
+    draws = _draws(20)
+    with pytest.raises(ValueError, match="must be disjoint"):
+        optimize_joint_portfolio(
+            draws,
+            validation_parameter_draws=draws,
+            candidate_tickets=("A", "B", "C"),
+            gross_payoff_model=_payoffs,
+            available_bankroll_yen=1_000,
+        )
+
+
+def test_independent_validation_can_reject_search_winner() -> None:
+    validation = [
+        [JointMarketScenario(
+            {"A": 0.6, "B": 0.3, "C": 0.1},
+            {"multipliers": {"A": 0.5, "B": 0.5, "C": 0.5}},
+        )]
+        for _ in range(100)
+    ]
+    result = optimize_joint_portfolio(
+        _draws(20),
+        validation_parameter_draws=validation,
+        validation_minimum_outer_draws=100,
+        candidate_tickets=("A", "B", "C"),
+        gross_payoff_model=_payoffs,
+        available_bankroll_yen=1_000,
+        expected_outcomes=("A", "B", "C"),
+        config=JointPolicySearchConfig(
+            maximum_portfolio_stake_yen=1_000,
+            maximum_ticket_stake_yen=1_000,
+            maximum_selected_tickets=3,
+            inner_tail_fraction=None,
+            minimum_outer_draws=20,
+        ),
+        genetic_settings=_settings(),
+    )
+
+    assert result["search_parameter_draws"] == 20
+    assert result["validation_parameter_draws"] == 100
+    assert result["validation_uses_separate_draw_set"] is True
+    assert result["selected"]["bets_yen"]
+    assert result["selected"]["metrics"]["portfolio"][
+        "passes_purchase_gate"
+    ] is True
+    assert result["selected"]["joint_value"]["portfolio"][
+        "passes_purchase_gate"
+    ] is False
+    assert result["purchase_authorized"] is False
 
 
 def test_process_backend_matches_thread_backend() -> None:

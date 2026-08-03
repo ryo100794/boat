@@ -32,7 +32,7 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v6"
+EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v7_independent_validation"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 MINIMUM_OUTER_TAIL_OBSERVATIONS = 5
@@ -168,12 +168,21 @@ def _evaluation_protocol(
             "outcome_schema_sha256": _canonical_sha256(outcome_schema),
         },
         "training_and_joint_distribution": {
-            key: configuration[key]
-            for key in (
-                "terminal_min_training_days", "joint_min_training_days",
-                "outer_draws", "scenarios_per_draw", "rank",
-                "pooling_strength", "learn_residual_scales",
-            )
+            **{
+                key: configuration[key]
+                for key in (
+                    "terminal_min_training_days", "joint_min_training_days",
+                    "outer_draws", "scenarios_per_draw", "rank",
+                    "pooling_strength", "learn_residual_scales",
+                )
+            },
+            "search_outer_draws": configuration.get(
+                "search_outer_draws", configuration["outer_draws"]
+            ),
+            "validation_outer_draws": configuration["outer_draws"],
+            "search_validation_draw_sets_disjoint": bool(configuration.get(
+                "search_validation_draw_sets_disjoint", False
+            )),
         },
         "purchase_rule": {
             "decision_rule": "V_buy_greater_than_buy_margin",
@@ -844,6 +853,7 @@ def run_joint_bankroll_evaluation(
     terminal_min_training_days: int = 5,
     joint_min_training_days: int = 3,
     outer_draws: int = 20,
+    search_outer_draws: int | None = None,
     scenarios_per_draw: int = 64,
     rank: int = 8,
     pooling_strength: float = 20.0,
@@ -865,6 +875,16 @@ def run_joint_bankroll_evaluation(
 ) -> dict[str, Any]:
     if outer_draws < 1 or scenarios_per_draw < 1:
         raise ValueError("outer_draws and scenarios_per_draw must be positive")
+    if search_outer_draws is not None and search_outer_draws < 1:
+        raise ValueError("search_outer_draws must be positive when provided")
+    effective_search_outer_draws = (
+        outer_draws if search_outer_draws is None else search_outer_draws
+    )
+    separate_validation_draws = search_outer_draws is not None
+    total_parameter_draws = (
+        outer_draws + effective_search_outer_draws
+        if separate_validation_draws else outer_draws
+    )
     if (
         candidate_ticket_count < 1
         or candidate_ticket_count > len(expected_outcomes)
@@ -907,7 +927,7 @@ def run_joint_bankroll_evaluation(
         parameter_models = bootstrap_joint_parameter_models(
             prior,
             decision_date=evaluation_date,
-            draws=outer_draws,
+            draws=total_parameter_draws,
             seed=seed + day_index * 1000,
             expected_outcomes=outcomes,
             fit_options={
@@ -964,7 +984,18 @@ def run_joint_bankroll_evaluation(
                 scenarios_per_draw=scenarios_per_draw,
                 seed=path_seed,
             )
-            predicted = _mean_generated_probability(paths, outcomes)
+            if separate_validation_draws:
+                search_paths = paths[:effective_search_outer_draws]
+                validation_paths = paths[effective_search_outer_draws:]
+            else:
+                search_paths = paths
+                validation_paths = paths
+            if (
+                len(search_paths) != effective_search_outer_draws
+                or len(validation_paths) != outer_draws
+            ):
+                raise RuntimeError("joint parameter draw split is inconsistent")
+            predicted = _mean_generated_probability(validation_paths, outcomes)
             probability_row = _probability_metrics(
                 predicted,
                 observation.decision_probabilities,
@@ -987,8 +1018,14 @@ def run_joint_bankroll_evaluation(
             except ValueError:
                 skip_reasons["invalid_or_incomplete_decision_odds"] += 1
                 continue
+            if separate_validation_draws:
+                search_priced_paths = priced_paths[:effective_search_outer_draws]
+                validation_priced_paths = priced_paths[effective_search_outer_draws:]
+            else:
+                search_priced_paths = priced_paths
+                validation_priced_paths = priced_paths
             candidates = _rank_candidate_tickets(
-                priced_paths,
+                search_priced_paths,
                 outcomes,
                 limit=candidate_ticket_count,
                 payout_rate=(
@@ -1015,13 +1052,17 @@ def run_joint_bankroll_evaluation(
                 ),
                 buy_margin=buy_margin,
                 inner_tail_fraction=inner_tail_fraction,
-                minimum_outer_draws=outer_draws,
+                minimum_outer_draws=effective_search_outer_draws,
                 minimum_inner_tail_effective_samples=(
                     MINIMUM_INNER_TAIL_EFFECTIVE_SAMPLES
                 ),
             )
             search = optimize_joint_portfolio(
-                priced_paths,
+                search_priced_paths,
+                validation_parameter_draws=(
+                    validation_priced_paths if separate_validation_draws else None
+                ),
+                validation_minimum_outer_draws=outer_draws,
                 candidate_tickets=candidates,
                 gross_payoff_model=settle,
                 available_bankroll_yen=balance,
@@ -1067,14 +1108,11 @@ def run_joint_bankroll_evaluation(
             if stake:
                 day_bet_races += 1
                 day_ticket_orders += len(selected_bets)
-            portfolio = selected["metrics"].get("portfolio") or {}
-            growth = (
-                selected["metrics"].get("bankroll_growth", {}).get("growth")
-                or {}
-            )
-            joint_value_audit = _joint_value_audit(
-                selected.get("joint_value")
-            )
+            validated_joint_value = selected.get("joint_value") or {}
+            validated_joint_growth = selected.get("bankroll_growth") or {}
+            portfolio = validated_joint_value.get("portfolio") or {}
+            growth = validated_joint_growth.get("growth") or {}
+            joint_value_audit = _joint_value_audit(validated_joint_value)
             best_search = search.get("best_search_candidate") or {}
             best_search_metrics = best_search.get("metrics") or {}
             best_search_bets = dict(best_search.get("bets_yen") or {})
@@ -1108,6 +1146,15 @@ def run_joint_bankroll_evaluation(
                 "purchase_authorized": bool(search["purchase_authorized"]),
                 "feasible_candidates_found": int(
                     search.get("feasible_candidates_found") or 0
+                ),
+                "search_outer_sample_count_r": int(
+                    search.get("search_parameter_draws") or 0
+                ),
+                "validation_outer_sample_count_r": int(
+                    search.get("validation_parameter_draws") or 0
+                ),
+                "validation_uses_separate_draw_set": bool(
+                    search.get("validation_uses_separate_draw_set")
                 ),
                 "best_search_fitness": best_search.get("fitness"),
                 "best_search_constraint_violation": best_search_metrics.get(
@@ -1289,6 +1336,10 @@ def run_joint_bankroll_evaluation(
         ),
         "outer_alpha": 0.05,
         "outer_sample_count_r_requested": outer_draws,
+        "search_outer_sample_count_r_requested": (
+            effective_search_outer_draws
+        ),
+        "search_validation_draw_sets_disjoint": separate_validation_draws,
         "outer_tail_observations_requested": max(1, ceil(0.05 * outer_draws)),
         "minimum_outer_tail_observations_for_promotion": (
             MINIMUM_OUTER_TAIL_OBSERVATIONS
@@ -1321,6 +1372,8 @@ def run_joint_bankroll_evaluation(
         "terminal_min_training_days": terminal_min_training_days,
         "joint_min_training_days": joint_min_training_days,
         "outer_draws": outer_draws,
+        "search_outer_draws": effective_search_outer_draws,
+        "search_validation_draw_sets_disjoint": separate_validation_draws,
         "scenarios_per_draw": scenarios_per_draw,
         "rank": rank,
         "pooling_strength": pooling_strength,
@@ -1417,6 +1470,9 @@ def run_joint_bankroll_evaluation(
         "minimum_inner_tail_support": bool(
             joint_value_audit.get("inner_tail_support_for_promotion")
         ),
+        "independent_search_validation_draw_sets": (
+            separate_validation_draws
+        ),
     }
     promotion_eligible = all(gate.values())
     return {
@@ -1467,6 +1523,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--terminal-min-training-days", type=int, default=5)
     parser.add_argument("--joint-min-training-days", type=int, default=3)
     parser.add_argument("--outer-draws", type=int, default=20)
+    parser.add_argument("--search-outer-draws", type=int)
     parser.add_argument("--scenarios-per-draw", type=int, default=64)
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--pooling-strength", type=float, default=20.0)

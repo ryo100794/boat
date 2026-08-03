@@ -8001,6 +8001,9 @@ def model_performance_audit_snapshot(
                 "joint_outer_tail_observations_min",
                 "joint_outer_tail_observations_max",
                 "joint_outer_tail_required", "joint_outer_tail_support",
+                "joint_search_outer_sample_count_r_requested",
+                "joint_validation_outer_sample_count_r_requested",
+                "joint_search_validation_draw_sets_disjoint",
                 "joint_inner_s_definition", "joint_inner_s_min",
                 "joint_inner_s_max", "joint_inner_ess_min",
                 "joint_inner_tail_ess_min",
@@ -8071,6 +8074,17 @@ def model_performance_audit_snapshot(
             else "不足" if audit.get("joint_outer_tail_support") is False
             else "未記録"
         )
+        search_r = audit.get("joint_search_outer_sample_count_r_requested")
+        validation_r = audit.get(
+            "joint_validation_outer_sample_count_r_requested"
+        )
+        disjoint_support = (
+            "合格"
+            if audit.get("joint_search_validation_draw_sets_disjoint") is True
+            else "不足"
+            if audit.get("joint_search_validation_draw_sets_disjoint") is False
+            else "未記録"
+        )
         inner_s_min = audit.get("joint_inner_s_min")
         inner_s_max = audit.get("joint_inner_s_max")
         inner_tail_ess = audit.get("joint_inner_tail_ess_min")
@@ -8086,7 +8100,10 @@ def model_performance_audit_snapshot(
             f"{_audit_number(audit.get('joint_purchase_value_minimum'))} > {_audit_number(audit.get('joint_purchase_safety_margin'))}",
             f"ROI {_audit_number(audit.get('roi'))} / LCB {_audit_number(audit.get('daily_cluster_bootstrap_roi_lower_95'))}",
             f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / 独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
-            f"R {outer_r_min or '未記録'}..{outer_r_max or '未記録'} / "
+            f"探索R {search_r if search_r is not None else '未記録'} / "
+                f"検証R {validation_r if validation_r is not None else '未記録'} / "
+                f"非重複 {disjoint_support} / "
+                f"R {outer_r_min or '未記録'}..{outer_r_max or '未記録'} / "
                 f"下側 {outer_tail_min if outer_tail_min is not None else '未記録'}/"
                 f"{outer_tail_required if outer_tail_required is not None else '未記録'} "
                 f"{outer_support} / α {_audit_number(audit.get('joint_outer_alpha_min'), 2)} / "
@@ -8201,7 +8218,7 @@ def model_performance_audit_snapshot(
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
         '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
-        '<th>外側R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
+        '<th>探索R / 検証R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
         '<th>再標本化条件ID</th></tr></thead><tbody>'
         + "".join(rendered)
