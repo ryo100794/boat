@@ -287,6 +287,38 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
     assert "pg_advisory_unlock" in sql_events[2]
 
 
+def test_refresh_services_uses_sibling_service_manager_supervisorctl(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    head = "d" * 40
+    app_root = tmp_path / "boat"
+    supervisorctl = (
+        tmp_path / "service-manager" / ".venv" / "bin" / "supervisorctl"
+    )
+    supervisorctl.parent.mkdir(parents=True)
+    supervisorctl.touch()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        maintenance_tasks,
+        "_git_value",
+        lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
+    )
+    monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
+
+    def run(command, **_kwargs):
+        commands.append([str(value) for value in command])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(maintenance_tasks.subprocess, "run", run)
+
+    maintenance_tasks.refresh_services(
+        app_root, db="test", head=head, delay_seconds=0
+    )
+
+    assert commands[0][0] == str(supervisorctl)
+
+
 def test_refresh_services_defers_if_evaluation_started_during_delay(
     tmp_path: Path,
     monkeypatch,

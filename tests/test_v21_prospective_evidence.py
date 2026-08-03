@@ -276,7 +276,6 @@ def test_predecision_cancelled_race_is_not_required_for_clean_coverage() -> None
     assert result["daily"][0]["races"] == 2
     assert result["daily"][0]["coverage"]["six_boat_races"] == 2
 
-
 def test_scheduled_day_is_pending_instead_of_excluded() -> None:
     rows = evidence_rows()
     for race in rows["races"]:

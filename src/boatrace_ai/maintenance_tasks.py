@@ -467,6 +467,19 @@ def _schedule_service_refresh(
     }
 
 
+def _supervisorctl_path(app_root: Path) -> Path:
+    """Resolve supervisorctl across the app-local and service-manager layouts."""
+    candidates = (
+        app_root / ".venv" / "bin" / "supervisorctl",
+        app_root.parent / "service-manager" / ".venv" / "bin" / "supervisorctl",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    # Keep the historical path in errors and in lightweight test checkouts.
+    return candidates[0]
+
+
 def refresh_services(
     app_root: Path,
     *,
@@ -493,7 +506,7 @@ def refresh_services(
     ]
     if dirty_paths:
         raise RuntimeError("repository became dirty before service refresh")
-    supervisorctl = app_root / ".venv" / "bin" / "supervisorctl"
+    supervisorctl = _supervisorctl_path(app_root)
     config = app_root / "scripts" / "deployment" / "supervisord.conf"
     status = subprocess.run(
         [str(supervisorctl), "-c", str(config), "status"],
