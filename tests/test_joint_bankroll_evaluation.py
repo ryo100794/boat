@@ -134,6 +134,7 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
         terminal_min_training_days=2,
         joint_min_training_days=2,
         outer_draws=2,
+        search_outer_draws=1,
         scenarios_per_draw=10,
         rank=2,
         pooling_strength=4.0,
@@ -198,6 +199,15 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     ] is False
     assert result["promotion_gate"]["minimum_outer_tail_support"] is False
     assert result["joint_purchase_value"]["outer_sample_count_r_requested"] == 2
+    assert result["joint_purchase_value"][
+        "search_outer_sample_count_r_requested"
+    ] == 1
+    assert result["joint_purchase_value"][
+        "search_validation_draw_sets_disjoint"
+    ] is True
+    assert result["promotion_gate"][
+        "independent_search_validation_draw_sets"
+    ] is True
     assert result["joint_purchase_value"]["outer_tail_observations_requested"] == 1
     assert result["joint_purchase_value"][
         "minimum_outer_tail_observations_for_promotion"
@@ -209,6 +219,12 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["evaluation_protocol"]["purchase_rule"][
         "minimum_inner_tail_effective_samples"
     ] == 5.0
+    distribution = result["evaluation_protocol"][
+        "training_and_joint_distribution"
+    ]
+    assert distribution["search_outer_draws"] == 1
+    assert distribution["validation_outer_draws"] == 2
+    assert distribution["search_validation_draw_sets_disjoint"] is True
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["evaluation_time_t"].endswith("+09:00")
@@ -221,6 +237,9 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert diagnostic_race["actual_payout_yen"] == 150
     assert diagnostic_race["selected_bets_yen"] == {}
     assert diagnostic_race["feasible_candidates_found"] == 0
+    assert diagnostic_race["search_outer_sample_count_r"] == 1
+    assert diagnostic_race["validation_outer_sample_count_r"] == 2
+    assert diagnostic_race["validation_uses_separate_draw_set"] is True
     assert diagnostic_race["best_search_constraint_violation"] is not None
     completed = [
         row for row in progress

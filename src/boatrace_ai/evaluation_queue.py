@@ -2372,7 +2372,8 @@ def build_command(
     if task_type == "joint_bankroll_walk_forward":
         allowed = {
             "scored_cache", "terminal_min_training_days",
-            "joint_min_training_days", "outer_draws", "scenarios_per_draw",
+            "joint_min_training_days", "outer_draws", "search_outer_draws",
+            "scenarios_per_draw",
             "rank", "pooling_strength", "learn_residual_scales",
             "candidate_ticket_count", "initial_daily_bankroll_yen",
             "maximum_portfolio_stake_yen", "maximum_ticket_stake_yen",
@@ -2405,6 +2406,10 @@ def build_command(
         )
         joint_days = _integer(params, "joint_min_training_days", 3, 2, 30)
         outer_draws = _integer(params, "outer_draws", 20, 20, 100)
+        search_outer_draws = (
+            _integer(params, "search_outer_draws", 20, 20, 100)
+            if "search_outer_draws" in params else None
+        )
         scenarios = _integer(params, "scenarios_per_draw", 64, 50, 512)
         rank = _integer(params, "rank", 8, 1, 32)
         pooling = _number(params, "pooling_strength", 20.0, 0.1, 1000.0)
@@ -2457,6 +2462,10 @@ def build_command(
             "--settlement-delay-seconds", str(settlement_delay),
             "--seed", str(seed),
         ]
+        if search_outer_draws is not None:
+            command.extend([
+                "--search-outer-draws", str(search_outer_draws)
+            ])
         if not learn_scales:
             command.append("--no-learn-residual-scales")
         return command, output
@@ -3486,6 +3495,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         )
         population = protocol.get("population")
         population = population if isinstance(population, dict) else {}
+        joint_distribution = protocol.get("training_and_joint_distribution")
+        joint_distribution = (
+            joint_distribution if isinstance(joint_distribution, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -3506,6 +3519,15 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "evaluation_days": payload.get("evaluation_days"),
             "evaluated_races": payload.get("evaluated_races"),
+            "joint_search_outer_sample_count_r_requested": (
+                joint_distribution.get("search_outer_draws")
+            ),
+            "joint_validation_outer_sample_count_r_requested": (
+                joint_distribution.get("validation_outer_draws")
+            ),
+            "joint_search_validation_draw_sets_disjoint": (
+                joint_distribution.get("search_validation_draw_sets_disjoint")
+            ),
             "calibration_ready_days": payload.get("calibration_ready_days"),
             "calibration_ready_races": payload.get("calibration_ready_races"),
             "joint_purchase_value_minimum": formal_value.get("minimum"),
@@ -3817,6 +3839,15 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_purchase_value_selected_portfolios": selected_portfolios,
             "joint_purchase_value_gate_passed": purchase_value_gate,
+            "joint_search_outer_sample_count_r_requested": (
+                configuration.get("search_outer_draws")
+            ),
+            "joint_validation_outer_sample_count_r_requested": (
+                configuration.get("outer_draws")
+            ),
+            "joint_search_validation_draw_sets_disjoint": (
+                configuration.get("search_validation_draw_sets_disjoint")
+            ),
         })
         confidence = payload.get("bankroll_confidence")
         confidence = confidence if isinstance(confidence, dict) else {}

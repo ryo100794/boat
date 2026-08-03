@@ -98,6 +98,10 @@ def _repair_units(
 def optimize_joint_portfolio(
     parameter_draws: Sequence[Sequence[JointMarketScenario]],
     *,
+    validation_parameter_draws: (
+        Sequence[Sequence[JointMarketScenario]] | None
+    ) = None,
+    validation_minimum_outer_draws: int | None = None,
     candidate_tickets: Sequence[str],
     gross_payoff_model: GrossPayoffModel,
     available_bankroll_yen: int,
@@ -114,8 +118,32 @@ def optimize_joint_portfolio(
         raise ValueError("candidate_tickets must be unique non-empty strings")
     if not parameter_draws:
         raise ValueError("parameter_draws must not be empty")
+    validation_draws = (
+        parameter_draws
+        if validation_parameter_draws is None
+        else validation_parameter_draws
+    )
+    if not validation_draws:
+        raise ValueError("validation_parameter_draws must not be empty")
+    if validation_parameter_draws is not None:
+        search_draw_ids = {id(draw) for draw in parameter_draws}
+        if any(id(draw) in search_draw_ids for draw in validation_draws):
+            raise ValueError(
+                "search and validation parameter draws must be disjoint"
+            )
     policy = config or JointPolicySearchConfig()
     policy.validate(available_bankroll_yen=available_bankroll_yen)
+    validation_required = (
+        policy.minimum_outer_draws
+        if validation_minimum_outer_draws is None
+        else validation_minimum_outer_draws
+    )
+    if (
+        isinstance(validation_required, bool)
+        or not isinstance(validation_required, int)
+        or validation_required < 1
+    ):
+        raise ValueError("validation_minimum_outer_draws must be positive")
     settings = genetic_settings or GeneticSearchSettings(
         population_size=24,
         generations=12,
@@ -355,7 +383,7 @@ def optimize_joint_portfolio(
     detailed_value = None
     if selected_bets:
         detailed_value = evaluate_joint_market_value(
-            parameter_draws,
+            validation_draws,
             bets_yen=selected_bets,
             gross_payoff_model=gross_payoff_model,
             operational_costs_yen={
@@ -366,14 +394,14 @@ def optimize_joint_portfolio(
             outer_alpha=policy.outer_alpha,
             inner_tail_fraction=policy.inner_tail_fraction,
             buy_margin=policy.buy_margin,
-            minimum_outer_draws=policy.minimum_outer_draws,
+            minimum_outer_draws=validation_required,
             minimum_inner_tail_effective_samples=(
                 policy.minimum_inner_tail_effective_samples
             ),
             include_marginal_contributions=True,
         )
         detailed_growth = evaluate_joint_bankroll_growth(
-            parameter_draws,
+            validation_draws,
             bets_yen=selected_bets,
             gross_payoff_model=gross_payoff_model,
             available_bankroll_yen=available_bankroll_yen,
@@ -384,7 +412,7 @@ def optimize_joint_portfolio(
             expected_outcomes=expected_outcomes,
             outer_alpha=policy.outer_alpha,
             inner_tail_fraction=policy.inner_tail_fraction,
-            minimum_outer_draws=policy.minimum_outer_draws,
+            minimum_outer_draws=validation_required,
             minimum_inner_tail_effective_samples=(
                 policy.minimum_inner_tail_effective_samples
             ),
@@ -400,9 +428,15 @@ def optimize_joint_portfolio(
         and selected.fitness > 0.0
     )
     return {
-        "version": "joint_portfolio_policy_ga_v2",
+        "version": "joint_portfolio_policy_ga_v3_independent_validation",
         "role": "diagnostic_only_never_submits_wagers",
         "parameter_draws": len(parameter_draws),
+        "search_parameter_draws": len(parameter_draws),
+        "validation_parameter_draws": len(validation_draws),
+        "validation_minimum_outer_draws": validation_required,
+        "validation_uses_separate_draw_set": (
+            validation_parameter_draws is not None
+        ),
         "candidate_tickets": list(tickets),
         "available_bankroll_yen": available_bankroll_yen,
         "search_budget_yen": budget_yen,

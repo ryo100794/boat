@@ -109,7 +109,8 @@ def test_joint_bankroll_queue_command_is_distinct_and_restricted(
         "task_type": "joint_bankroll_walk_forward",
         "parameters": {
             "scored_cache": str(cache.relative_to(root)),
-            "outer_draws": 20,
+            "outer_draws": 100,
+            "search_outer_draws": 20,
             "scenarios_per_draw": 64,
             "initial_daily_bankroll_yen": 10_000,
             "population_size": 8,
@@ -125,7 +126,8 @@ def test_joint_bankroll_queue_command_is_distinct_and_restricted(
     )
 
     assert command[1:3] == ["-m", "boatrace_ai.joint_bankroll_evaluation"]
-    assert command[command.index("--outer-draws") + 1] == "20"
+    assert command[command.index("--outer-draws") + 1] == "100"
+    assert command[command.index("--search-outer-draws") + 1] == "20"
     assert command[command.index("--initial-daily-bankroll-yen") + 1] == "10000"
     assert output.name == "job-00000020.json"
     assert result_decision("joint_bankroll_walk_forward", {}) == (
