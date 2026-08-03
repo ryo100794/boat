@@ -158,6 +158,9 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
             "return_yen": 600,
             "profit_yen": 400,
             "roi": 3.0,
+            "refund_races": 0,
+            "refund_tickets": 0,
+            "refund_stake_yen": 0,
             "coverage": {
                 "six_boat_races": 2,
                 "model_decisions": 2,
@@ -187,6 +190,52 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
     assert result["market"]["market_noninferiority_confidence"] == 1.0
     assert result["market"]["top5_improvement_confidence"] == 1.0
     assert result["promotion_gate"]["pass"] is True
+
+
+def test_refund_is_audited_but_does_not_inflate_performance_support() -> None:
+    rows = evidence_rows()
+    rows["races"][1]["trifecta_evaluable"] = False
+    rows["settlements"][1].update({
+        "result_status": "refund",
+        "actual_combination": "__refund__",
+        "payout_yen_per_100": 100,
+        "return_yen": 100,
+        "profit_yen": 0,
+    })
+    rows["payouts"].pop()
+
+    result = aggregate(rows)
+
+    assert result["excluded_days"] == []
+    assert result["daily"][0]["races"] == 1
+    assert result["daily"][0]["tickets"] == 1
+    assert result["daily"][0]["stake_yen"] == 100
+    assert result["daily"][0]["return_yen"] == 300
+    assert result["daily"][0]["refund_races"] == 1
+    assert result["daily"][0]["refund_tickets"] == 1
+    assert result["daily"][0]["refund_stake_yen"] == 100
+    assert result["bankroll"]["races"] == 1
+    assert result["bankroll"]["tickets"] == 1
+    assert result["purchase_probability_calibration"]["selected_races"] == 1
+    assert result["market"]["races"] == 1
+    assert result["promotion_gate"]["checks"]["minimum_races"] is False
+
+
+def test_predecision_cancelled_race_is_not_required_for_clean_coverage() -> None:
+    rows = evidence_rows()
+    rows["races"].append({
+        "race_id": "2026-07-31-01-03",
+        "race_date": "2026-07-31",
+        "lane_count": 6,
+        "status": "final",
+        "trifecta_evaluable": False,
+    })
+
+    result = aggregate(rows)
+
+    assert result["excluded_days"] == []
+    assert result["daily"][0]["races"] == 2
+    assert result["daily"][0]["coverage"]["six_boat_races"] == 2
 
 
 def test_scheduled_day_is_pending_instead_of_excluded() -> None:

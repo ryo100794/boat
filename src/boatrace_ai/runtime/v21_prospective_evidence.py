@@ -28,6 +28,7 @@ COMBINATIONS = tuple(
 )
 COMBINATION_SET = frozenset(COMBINATIONS)
 EPSILON = 1e-15
+REFUND_COMBINATION = "__refund__"
 
 
 @dataclass(frozen=True)
@@ -342,15 +343,28 @@ def _audit_decision(
 def _evaluate_settlement(
     decision: Mapping[str, Any],
     settlement: Mapping[str, Any],
-    official: tuple[str, int],
+    official: tuple[str, int] | None,
 ) -> dict[str, Any]:
-    actual = _combination(settlement.get("actual_combination"), "actual_combination")
+    result_status = str(settlement.get("result_status") or "").strip().lower()
     payout = _integer(settlement.get("payout_yen_per_100"), "payout_yen_per_100")
-    if official != (actual, payout):
-        raise ValueError("settlement differs from official payout")
     stake = _integer(settlement.get("stake_yen"), "stake_yen")
     returned = _integer(settlement.get("return_yen"), "return_yen")
     profit = _integer(settlement.get("profit_yen"), "profit_yen", minimum=-10**12)
+    if result_status == "refund":
+        actual = str(settlement.get("actual_combination") or "")
+        if actual != REFUND_COMBINATION or payout != 100:
+            raise ValueError("refund settlement representation is invalid")
+        if stake != decision["stake_yen"] or returned != stake or profit != 0:
+            raise ValueError("refund settlement ledger is inconsistent")
+        return {
+            "actual": actual,
+            "stake_yen": stake,
+            "return_yen": returned,
+            "performance_eligible": False,
+        }
+    actual = _combination(settlement.get("actual_combination"), "actual_combination")
+    if official is None or official != (actual, payout):
+        raise ValueError("settlement differs from official payout")
     expected = sum(
         item["stake_yen"] * payout // 100
         for item in decision["selected"]
@@ -358,7 +372,12 @@ def _evaluate_settlement(
     )
     if stake != decision["stake_yen"] or returned != expected or profit != returned - stake:
         raise ValueError("settlement ledger is inconsistent")
-    return {"actual": actual, "stake_yen": stake, "return_yen": returned}
+    return {
+        "actual": actual,
+        "stake_yen": stake,
+        "return_yen": returned,
+        "performance_eligible": True,
+    }
 
 
 def _poisson_binomial_cdf(probabilities: Sequence[float], observed: int) -> float:
@@ -435,7 +454,19 @@ def aggregate_v21_prospective_evidence(
     hit_returns: list[int] = []
     selected_event_probabilities: list[float] = []
     for day in sorted(race_days):
-        day_races = race_days[day]
+        raw_day_races = race_days[day]
+        day_decisions = decision_days.get(day, [])
+        decision_race_ids = {
+            str(row.get("race_id") or "") for row in day_decisions
+        }
+        day_races = [
+            row
+            for row in raw_day_races
+            if bool(row.get("trifecta_evaluable", True))
+            or str(row.get("race_id") or "") in decision_race_ids
+        ]
+        if not day_races:
+            continue
         race_ids = [str(row.get("race_id") or "") for row in day_races]
         status_counts: dict[str, int] = defaultdict(int)
         for race in day_races:
@@ -451,7 +482,6 @@ def aggregate_v21_prospective_evidence(
                 }
             )
             continue
-        day_decisions = decision_days.get(day, [])
         decision_races = [str(row.get("race_id") or "") for row in day_decisions]
         reasons: set[str] = set()
         details: dict[str, Any] = {}
@@ -492,9 +522,17 @@ def aggregate_v21_prospective_evidence(
                 details.setdefault("settlement_count", {})[race_id] = len(rows)
                 continue
             try:
-                if race_id in duplicate_payouts or race_id not in official:
-                    raise ValueError("official payout is missing or ambiguous")
-                evaluated.append((item, _evaluate_settlement(item, rows[0], official[race_id])))
+                is_refund = str(
+                    rows[0].get("result_status") or ""
+                ).strip().lower() == "refund"
+                official_result = None
+                if not is_refund:
+                    if race_id in duplicate_payouts or race_id not in official:
+                        raise ValueError("official payout is missing or ambiguous")
+                    official_result = official[race_id]
+                evaluated.append(
+                    (item, _evaluate_settlement(item, rows[0], official_result))
+                )
             except (TypeError, ValueError) as exc:
                 reasons.add("settlement_or_payout_invalid")
                 details.setdefault("settlement_errors", {})[race_id] = str(exc)
@@ -511,24 +549,48 @@ def aggregate_v21_prospective_evidence(
                 {"race_date": day, "reasons": sorted(reasons), "coverage": coverage, "details": details}
             )
             continue
-        stake = sum(result["stake_yen"] for _, result in evaluated)
-        returned = sum(result["return_yen"] for _, result in evaluated)
-        day_hits = [result["return_yen"] for _, result in evaluated if result["return_yen"] > 0]
+        performance_evaluated = [
+            (item, result)
+            for item, result in evaluated
+            if result["performance_eligible"]
+        ]
+        refunds = [
+            (item, result)
+            for item, result in evaluated
+            if not result["performance_eligible"]
+        ]
+        if not performance_evaluated:
+            excluded.append({
+                "race_date": day,
+                "reasons": ["no_performance_evaluable_outcomes"],
+                "coverage": coverage,
+                "details": {},
+            })
+            continue
+        stake = sum(result["stake_yen"] for _, result in performance_evaluated)
+        returned = sum(result["return_yen"] for _, result in performance_evaluated)
+        day_hits = [
+            result["return_yen"]
+            for _, result in performance_evaluated
+            if result["return_yen"] > 0
+        ]
         hit_returns.extend(day_hits)
         day_selected_probabilities = [
             sum(item["probabilities"][ticket["combination"]] for ticket in item["selected"])
-            for item, _ in evaluated
+            for item, _ in performance_evaluated
             if item["selected"]
         ]
         selected_event_probabilities.extend(day_selected_probabilities)
         clean.append(
             {
                 "race_date": day,
-                "races": len(race_ids),
-                "tickets": sum(len(item["selected"]) for item, _ in evaluated),
+                "races": len(performance_evaluated),
+                "tickets": sum(
+                    len(item["selected"]) for item, _ in performance_evaluated
+                ),
                 "hit_tickets": sum(
                     sum(ticket["combination"] == result["actual"] for ticket in item["selected"])
-                    for item, result in evaluated
+                    for item, result in performance_evaluated
                 ),
                 "expected_hit_tickets": sum(day_selected_probabilities),
                 "expected_no_hit_probability": math.prod(
@@ -538,10 +600,15 @@ def aggregate_v21_prospective_evidence(
                 "return_yen": returned,
                 "profit_yen": returned - stake,
                 "roi": returned / stake if stake else None,
+                "refund_races": len(refunds),
+                "refund_tickets": sum(len(item["selected"]) for item, _ in refunds),
+                "refund_stake_yen": sum(
+                    result["stake_yen"] for _, result in refunds
+                ),
                 "coverage": coverage,
             }
         )
-        for item, result in evaluated:
+        for item, result in performance_evaluated:
             actual = result["actual"]
             model_loss = -math.log(max(EPSILON, item["probabilities"][actual]))
             market_loss = -math.log(max(EPSILON, item["market"][actual]))
@@ -764,10 +831,12 @@ def collect_v21_prospective_evidence(
     race_rows = _fetch(
         conn.execute(
             """SELECT r.race_id, r.race_date, r.status,
+                      COALESCE(rs.trifecta_evaluable, 1) AS trifecta_evaluable,
                       COUNT(DISTINCT e.lane) AS lane_count
                FROM races r LEFT JOIN entries e ON e.race_id = r.race_id
+               LEFT JOIN race_result_status rs ON rs.race_id = r.race_id
                WHERE r.race_date >= ? AND r.race_date <= ?
-               GROUP BY r.race_id, r.race_date, r.status
+               GROUP BY r.race_id, r.race_date, r.status, rs.trifecta_evaluable
                ORDER BY r.race_date, r.race_id""",
             period,
         )

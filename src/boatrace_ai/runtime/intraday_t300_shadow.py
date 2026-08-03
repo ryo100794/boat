@@ -78,6 +78,8 @@ from .top5_narrow_policy import (
 JST = timezone(timedelta(hours=9))
 STARTING_BANKROLL_YEN = 10_000
 T300_OFFSET_SECONDS = 300
+REFUND_COMBINATION = "__refund__"
+SETTLEMENT_LOOKBACK_DAYS = 7
 DECISION_BEFORE_START_SECONDS = 600
 DEFAULT_MAX_CHECKPOINT_AGE_SECONDS = 90.0
 DEFAULT_MAX_SOURCE_UPDATE_STALENESS_SECONDS = 130.0
@@ -499,13 +501,19 @@ class PostgresShadowStore:
             """
             SELECT d.decision_id, d.selected_candidates, d.total_stake_yen,
                    p.combination AS actual_combination, p.payout_yen,
-                   COALESCE(rs.status, 'final') AS result_status
+                   COALESCE(rs.status, 'final') AS result_status,
+                   COALESCE(rs.trifecta_evaluable, 1) AS trifecta_evaluable
             FROM intraday_t300_shadow_decisions d
-            JOIN payouts p ON p.race_id = d.race_id AND p.bet_type = '3連単'
-                          AND p.payout_yen IS NOT NULL
+            LEFT JOIN payouts p ON p.race_id = d.race_id AND p.bet_type = '3連単'
+                               AND p.payout_yen IS NOT NULL
             LEFT JOIN race_result_status rs ON rs.race_id = d.race_id
             LEFT JOIN intraday_t300_shadow_settlements s ON s.decision_id = d.decision_id
-            WHERE d.race_date = ? AND s.decision_id IS NULL ORDER BY d.decision_id
+            WHERE d.race_date = ? AND s.decision_id IS NULL
+              AND (
+                p.payout_yen IS NOT NULL
+                OR (rs.status = 'final' AND rs.trifecta_evaluable = 0)
+              )
+            ORDER BY d.decision_id
             """,
             (race_date,),
         ).fetchall()
@@ -514,13 +522,21 @@ class PostgresShadowStore:
             candidates = row["selected_candidates"]
             if isinstance(candidates, str):
                 candidates = json.loads(candidates)
-            actual = _canonical_combination(row["actual_combination"])
-            payout = int(row["payout_yen"])
-            returned = sum(
-                int(item["stake_yen"]) * payout // 100 for item in (candidates or [])
-                if _canonical_combination(item["combination"]) == actual
-            )
             stake = int(row["total_stake_yen"] or 0)
+            if int(row["trifecta_evaluable"]) == 0:
+                result_status = "refund"
+                actual = REFUND_COMBINATION
+                payout = 100
+                returned = stake
+            else:
+                result_status = str(row["result_status"])
+                actual = _canonical_combination(row["actual_combination"])
+                payout = int(row["payout_yen"])
+                returned = sum(
+                    int(item["stake_yen"]) * payout // 100
+                    for item in (candidates or [])
+                    if _canonical_combination(item["combination"]) == actual
+                )
             cursor = self.conn.execute(
                 """
                 INSERT INTO intraday_t300_shadow_settlements(
@@ -528,7 +544,7 @@ class PostgresShadowStore:
                   payout_yen_per_100, stake_yen, return_yen, profit_yen
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (decision_id) DO NOTHING
                 """,
-                (int(row["decision_id"]), now.isoformat(), str(row["result_status"]),
+                (int(row["decision_id"]), now.isoformat(), result_status,
                  actual, payout, stake, returned, returned - stake),
             )
             inserted += int(cursor.rowcount == 1)
@@ -2188,7 +2204,18 @@ def run_cycle(
             prewarm_timing[adapter.identity.model_key] = round(
                 time.perf_counter() - started, 6
             )
-    settlements = store.append_available_settlements(race_date=race_date, now=now)
+    settlement_dates = [
+        (
+            date.fromisoformat(race_date) - timedelta(days=days_ago)
+        ).isoformat()
+        for days_ago in range(SETTLEMENT_LOOKBACK_DAYS + 1)
+    ]
+    settlements = sum(
+        store.append_available_settlements(
+            race_date=settlement_date, now=now
+        )
+        for settlement_date in settlement_dates
+    )
     inserted = duplicate = model_errors = no_bets = selected = deferred = 0
     due_races = store.due_races(race_date=race_date, now=now)
     pending_backlog_max_seconds = 0.0

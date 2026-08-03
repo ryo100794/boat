@@ -230,6 +230,78 @@ def test_settlement_is_appended_later_without_changing_decision() -> None:
     assert store.decisions[(row.race_id, "v12")] == original
 
 
+def test_cycle_backfills_unsettled_decision_from_previous_week() -> None:
+    prior = race("2026-07-30")
+    current = race("2026-08-03")
+    store = MemoryStore(
+        [prior, current],
+        {
+            prior.race_id: snapshot(prior.target_t300_at),
+            current.race_id: snapshot(current.target_t300_at),
+        },
+    )
+    adapter = Adapter("v12")
+    run_cycle(store, [adapter], now=cycle_time(prior))
+    store.results[prior.race_id] = ("1-2-3", 1_500)
+
+    result = run_cycle(store, [adapter], now=cycle_time(current))
+
+    assert result["settlements_inserted"] == 1
+    assert store.settlements[(prior.race_id, "v12")]["profit_yen"] == 1_400
+
+
+def test_postgres_store_appends_full_refund_for_terminal_nonevaluable_race() -> None:
+    class Result:
+        def __init__(self, rows=(), rowcount=0):
+            self._rows = list(rows)
+            self.rowcount = rowcount
+
+        def fetchall(self):
+            return self._rows
+
+    class Connection:
+        dialect = "postgresql"
+
+        def __init__(self):
+            self.insert_params = None
+
+        def execute(self, sql, params):
+            if str(sql).lstrip().startswith("SELECT"):
+                assert "LEFT JOIN payouts" in sql
+                assert "rs.trifecta_evaluable = 0" in sql
+                return Result([{
+                    "decision_id": 17,
+                    "selected_candidates": json.dumps([
+                        {"combination": "1-2-3", "stake_yen": 200}
+                    ]),
+                    "total_stake_yen": 200,
+                    "actual_combination": None,
+                    "payout_yen": None,
+                    "result_status": "final",
+                    "trifecta_evaluable": 0,
+                }])
+            self.insert_params = params
+            return Result(rowcount=1)
+
+    conn = Connection()
+    store = PostgresShadowStore(conn)
+    now = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
+
+    assert store.append_available_settlements(
+        race_date="2026-08-03", now=now
+    ) == 1
+    assert conn.insert_params == (
+        17,
+        now.isoformat(),
+        "refund",
+        "__refund__",
+        100,
+        200,
+        200,
+        0,
+    )
+
+
 @pytest.mark.parametrize(
     ("age", "source_stale", "reason"),
     [(91.0, 20.0, "stale_t300_checkpoint"),
