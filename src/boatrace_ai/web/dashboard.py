@@ -1522,6 +1522,7 @@ def _model_performance_report_contract(
             "evaluation_time_t": "各レースで購入判断を実行した時刻。decision_at、履歴評価では事前固定したodds_deadline_at",
             "evaluation_snapshot_age": "購入判断に使用したオッズの鮮度。evaluation_time_t - odds_snapshot_captured_at（秒）",
             "outer_sample_count_r": "購入価値Q_alphaを計算する外側のモデル・パラメータ不確実性標本数R。5%分位の本番昇格には下側5標本以上を要求",
+            "inner_scenario_count_s": "各外側標本から生成する購入判断時点から締切までの共同市場経路数S。シナリオESS=1/Σω_s²。下側ESSは下側β質量へ部分採用した重みをβで再正規化して算出",
             "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedだけを固定するSHA-256再標本化条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
@@ -8000,7 +8001,12 @@ def model_performance_audit_snapshot(
                 "joint_outer_tail_observations_min",
                 "joint_outer_tail_observations_max",
                 "joint_outer_tail_required", "joint_outer_tail_support",
-                "joint_inner_ess_min", "joint_covariance_mean",
+                "joint_inner_s_definition", "joint_inner_s_min",
+                "joint_inner_s_max", "joint_inner_ess_min",
+                "joint_inner_tail_ess_min",
+                "joint_inner_tail_ess_required",
+                "joint_inner_tail_support",
+                "joint_covariance_mean",
                 "joint_negative_covariance_fraction",
                 "joint_independence_overstatement_mean",
                 "settlement_integer_yen", "settlement_self_impact_repricing",
@@ -8065,6 +8071,15 @@ def model_performance_audit_snapshot(
             else "不足" if audit.get("joint_outer_tail_support") is False
             else "未記録"
         )
+        inner_s_min = audit.get("joint_inner_s_min")
+        inner_s_max = audit.get("joint_inner_s_max")
+        inner_tail_ess = audit.get("joint_inner_tail_ess_min")
+        inner_tail_required = audit.get("joint_inner_tail_ess_required")
+        inner_support = (
+            "合格" if audit.get("joint_inner_tail_support") is True
+            else "不足" if audit.get("joint_inner_tail_support") is False
+            else "未記録"
+        )
         cells = [
             f"#{audit.get('job_id') or '-'} {audit.get('name') or '-'}",
             f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
@@ -8075,7 +8090,11 @@ def model_performance_audit_snapshot(
                 f"下側 {outer_tail_min if outer_tail_min is not None else '未記録'}/"
                 f"{outer_tail_required if outer_tail_required is not None else '未記録'} "
                 f"{outer_support} / α {_audit_number(audit.get('joint_outer_alpha_min'), 2)} / "
-                f"内側ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
+                f"S {inner_s_min if inner_s_min is not None else '未記録'}.."
+                f"{inner_s_max if inner_s_max is not None else '未記録'} / "
+                f"下側ESS {_audit_number(inner_tail_ess, 2)}/"
+                f"{_audit_number(inner_tail_required, 2)} {inner_support} / "
+                f"ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
             structure,
             settlement,
             (
@@ -8182,7 +8201,7 @@ def model_performance_audit_snapshot(
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
         '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
-        '<th>外側R / 下側支持 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
+        '<th>外側R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
         '<th>再標本化条件ID</th></tr></thead><tbody>'
         + "".join(rendered)
