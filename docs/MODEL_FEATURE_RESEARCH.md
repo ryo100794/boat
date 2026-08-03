@@ -416,9 +416,22 @@ portfolio-path lower-tail expected edge, `V_buy(b)`. A portfolio is authorized
 only when `V_buy(b) > m_buy`; ticket-level values remain diagnostics. The formal
 sealed return gate is exclusively `Q0.05(ROI) > 1` under complete operating-day
 resampling. `P(ROI > 1)` is displayed only as a diagnostic. Every result stores
-a condition ID covering the quantile method, sample count, block definition and
-seed, with independent day-by-venue and consecutive venue-meeting blocks shown
-as sensitivity analyses.
+a resampling condition ID covering only the quantile method, sample count, block
+definition and seed, with independent day-by-venue and consecutive
+venue-meeting blocks shown as sensitivity analyses. This ID is not the complete
+evaluation identity.
+
+Every new artifact additionally stores an evaluation protocol ID: the SHA-256
+of canonical model and terminal-teacher identities, exact scored-cache content,
+every per-race evaluation time `t`, venue, trifecta wager type, decision-time
+popularity band, outcome schema, joint-distribution controls, GA controls,
+purchase and bankroll rules, integer settlement rules, and the resampling
+condition ID. Here `t` is the `captured_at` timestamp of the odds snapshot and
+is the upper boundary of information available to the purchase decision
+`F_t`; deadline or closing information after `t` is not part of that decision.
+Changing `t` or any purchase rule changes the evaluation protocol ID even when
+the resampling condition ID remains unchanged. Legacy artifacts explicitly
+report both values as unrecorded instead of inferring an identity.
 
 Evaluation artifact v4 also persists the observed probability-multiplier
 covariance, the edge overstatement from the independent approximation, inner

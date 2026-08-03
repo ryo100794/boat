@@ -58,6 +58,21 @@ def test_joint_audit_survives_queue_summary() -> None:
             "negative_covariance_fraction": 0.75,
             "independence_approximation_overstatement_mean": 0.12,
         },
+        "evaluation_protocol_id": "protocol123",
+        "evaluation_protocol": {
+            "version": "joint_evaluation_protocol_v1",
+            "evaluation_time_t": {
+                "definition": "latest_information_timestamp_available_to_purchase_decision",
+                "source_field": "captured_at",
+                "earliest": "2026-07-01T10:00:00+09:00",
+                "latest": "2026-07-01T15:00:00+09:00",
+            },
+            "population": {
+                "venues": ["01"],
+                "wager_types": ["trifecta"],
+                "popularity_bands_at_t": ["favorite_share_ge_025"],
+            },
+        },
         "calibration_ledger": {
             "version": "joint_edge_calibration_ledger_v1",
             "candidate_portfolios": 713,
@@ -78,6 +93,9 @@ def test_joint_audit_survives_queue_summary() -> None:
         "daily": [],
     })
 
+    assert summary["evaluation_protocol_id"] == "protocol123"
+    assert summary["evaluation_time_t_source"] == "captured_at"
+    assert summary["evaluation_wager_types"] == ["trifecta"]
     assert summary["joint_audit_recorded"] is True
     assert summary["joint_covariance_mean"] == -0.12
     assert summary["joint_independence_overstatement_mean"] == 0.12
@@ -115,6 +133,9 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "settlement_special_payout_supported": True,
             "day_venue_roi_lower_95": 0.99,
             "venue_meeting_roi_lower_95": 0.97,
+            "evaluation_protocol_id": "protocol123",
+            "evaluation_time_t_earliest": "2026-07-01T10:00:00+09:00",
+            "evaluation_time_t_latest": "2026-07-30T16:00:00+09:00",
             "bootstrap_condition_id": "abc123",
         }],
     })
@@ -137,4 +158,7 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "モデル実測値・サーバ描画" in section
     assert "3連単LL" in section
     assert "ROI / LCB" in section
+    assert "評価プロトコルID / t" in section
+    assert "再標本化条件ID" in section
+    assert "protocol123" in section
 

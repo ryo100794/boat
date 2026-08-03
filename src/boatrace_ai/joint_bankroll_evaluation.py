@@ -15,6 +15,7 @@ import numpy as np
 
 from .genetic_search import GeneticSearchSettings
 from .joint_market_value import TRIFECTA_OUTCOMES, JointMarketScenario
+from .joint_scenario_model import MODEL_VERSION as JOINT_SCENARIO_MODEL_VERSION
 from .joint_parameter_uncertainty import (
     bootstrap_joint_parameter_models,
     generate_parameter_path_draws,
@@ -34,6 +35,139 @@ from .terminal_probability_oof import (
 EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v5"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evaluation_protocol(
+    *,
+    scored_cache: Path,
+    eligible_races: Sequence[Mapping[str, Any]],
+    observations: Sequence[Any],
+    evaluation_dates: Sequence[str],
+    terminal: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+    outcomes: Sequence[str],
+    settlement_audit: Mapping[str, Any],
+    bootstrap_condition_id: str,
+) -> dict[str, Any]:
+    """Freeze every input that changes the meaning of an evaluation."""
+    evaluation_date_set = set(evaluation_dates)
+    races_by_id = {str(row["race_id"]): row for row in eligible_races}
+    population = []
+    for observation in observations:
+        if observation.race_date not in evaluation_date_set:
+            continue
+        race = races_by_id[observation.race_id]
+        population.append({
+            "race_id": observation.race_id,
+            "race_date": observation.race_date,
+            "evaluation_time_t": str(race.get("captured_at") or ""),
+            "odds_deadline_at": str(race.get("odds_deadline_at") or ""),
+            "venue": observation.venue,
+            "wager_type": "trifecta",
+            "popularity_band_at_t": observation.popularity_band,
+            "decision_horizon_seconds": observation.decision_horizon_seconds,
+        })
+    population.sort(key=lambda row: (row["evaluation_time_t"], row["race_id"]))
+    evaluation_times = [row["evaluation_time_t"] for row in population]
+    outcome_schema = tuple(str(value) for value in outcomes)
+    protocol = {
+        "version": "joint_evaluation_protocol_v1",
+        "identity_scope": (
+            "model_data_time_venue_wager_popularity_purchase_settlement_"
+            "resampling"
+        ),
+        "model": {
+            "evaluation_model": EVALUATION_VERSION,
+            "terminal_probability_model": terminal.get("version"),
+            "terminal_artifact_contract_sha256": terminal.get(
+                "artifact_contract_sha256"
+            ),
+            "joint_scenario_model": JOINT_SCENARIO_MODEL_VERSION,
+        },
+        "input_data": {
+            "scored_cache_sha256": _file_sha256(scored_cache),
+            "eligible_races": len(eligible_races),
+        },
+        "evaluation_window": {
+            "from": min(evaluation_dates) if evaluation_dates else None,
+            "through": max(evaluation_dates) if evaluation_dates else None,
+            "complete_days": len(evaluation_dates),
+        },
+        "evaluation_time_t": {
+            "definition": "latest_information_timestamp_available_to_purchase_decision",
+            "source_field": "captured_at",
+            "earliest": min(evaluation_times) if evaluation_times else None,
+            "latest": max(evaluation_times) if evaluation_times else None,
+            "race_time_manifest_sha256": _canonical_sha256([
+                [row["race_id"], row["evaluation_time_t"]]
+                for row in population
+            ]),
+        },
+        "population": {
+            "races": len(population),
+            "venues": sorted({row["venue"] for row in population}),
+            "wager_types": ["trifecta"],
+            "popularity_bands_at_t": sorted({
+                row["popularity_band_at_t"] for row in population
+            }),
+            "context_manifest_sha256": _canonical_sha256(population),
+            "outcome_count": len(outcome_schema),
+            "outcome_schema_sha256": _canonical_sha256(outcome_schema),
+        },
+        "training_and_joint_distribution": {
+            key: configuration[key]
+            for key in (
+                "terminal_min_training_days", "joint_min_training_days",
+                "outer_draws", "scenarios_per_draw", "rank",
+                "pooling_strength", "learn_residual_scales",
+            )
+        },
+        "purchase_rule": {
+            "decision_rule": "V_buy_greater_than_buy_margin",
+            "formal_value": "Q_alpha_outer_of_ES_beta_lower_portfolio_edge",
+            "outer_alpha": 0.05,
+            **{
+                key: configuration[key]
+                for key in (
+                    "candidate_ticket_count", "initial_daily_bankroll_yen",
+                    "maximum_portfolio_stake_yen",
+                    "maximum_ticket_stake_yen",
+                    "maximum_selected_tickets", "buy_margin",
+                    "inner_tail_fraction", "settlement_delay_seconds",
+                )
+            },
+        },
+        "optimizer": {
+            "kind": "genetic_integer_stake_vector",
+            "population_size": configuration["population_size"],
+            "generations": configuration["generations"],
+            "seed": configuration["seed"],
+        },
+        "settlement": dict(settlement_audit),
+        "resampling_condition_id": bootstrap_condition_id,
+        "strict_temporal_rule": "training_dates_strictly_before_evaluation_date",
+    }
+    return {"id": _canonical_sha256(protocol), "protocol": protocol}
 
 
 def _load_scored_races(path: Path) -> list[dict[str, Any]]:
@@ -804,6 +938,10 @@ def run_joint_bankroll_evaluation(
             race_rows.append({
                 "race_id": observation.race_id,
                 "venue": observation.venue,
+                "wager_type": "trifecta",
+                "popularity_band_at_t": observation.popularity_band,
+                "evaluation_time_t": purchase_at.isoformat(),
+                "decision_horizon_seconds": observation.decision_horizon_seconds,
                 "actual_combination": str(race["actual_combination"]),
                 "actual_payout_yen": int(race["actual_payout_yen"]),
                 "stake_yen": stake,
@@ -1016,6 +1154,38 @@ def run_joint_bankroll_evaluation(
             and all(value > buy_margin for value in purchase_values)
         ),
     }
+    configuration = {
+        "terminal_min_training_days": terminal_min_training_days,
+        "joint_min_training_days": joint_min_training_days,
+        "outer_draws": outer_draws,
+        "scenarios_per_draw": scenarios_per_draw,
+        "rank": rank,
+        "pooling_strength": pooling_strength,
+        "learn_residual_scales": learn_residual_scales,
+        "candidate_ticket_count": candidate_ticket_count,
+        "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
+        "maximum_portfolio_stake_yen": maximum_portfolio_stake_yen,
+        "maximum_ticket_stake_yen": maximum_ticket_stake_yen,
+        "maximum_selected_tickets": maximum_selected_tickets,
+        "buy_margin": buy_margin,
+        "inner_tail_fraction": inner_tail_fraction,
+        "population_size": population_size,
+        "generations": generations,
+        "bootstrap_samples": bootstrap_samples,
+        "settlement_delay_seconds": settlement_delay_seconds,
+        "seed": seed,
+    }
+    evaluation_protocol = _evaluation_protocol(
+        scored_cache=scored_cache,
+        eligible_races=races,
+        observations=observations,
+        evaluation_dates=[day["race_date"] for day in daily],
+        terminal=terminal,
+        configuration=configuration,
+        outcomes=outcomes,
+        settlement_audit=settlement_audit,
+        bootstrap_condition_id=confidence["condition_id"],
+    )
     primary_bankroll = {
         "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
         "stake_yen": total_stake,
@@ -1087,27 +1257,7 @@ def run_joint_bankroll_evaluation(
         "deployment_eligible": False,
         "scored_cache": str(scored_cache),
         "coverage": coverage,
-        "configuration": {
-            "terminal_min_training_days": terminal_min_training_days,
-            "joint_min_training_days": joint_min_training_days,
-            "outer_draws": outer_draws,
-            "scenarios_per_draw": scenarios_per_draw,
-            "rank": rank,
-            "pooling_strength": pooling_strength,
-            "learn_residual_scales": learn_residual_scales,
-            "candidate_ticket_count": candidate_ticket_count,
-            "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
-            "maximum_portfolio_stake_yen": maximum_portfolio_stake_yen,
-            "maximum_ticket_stake_yen": maximum_ticket_stake_yen,
-            "maximum_selected_tickets": maximum_selected_tickets,
-            "buy_margin": buy_margin,
-            "inner_tail_fraction": inner_tail_fraction,
-            "population_size": population_size,
-            "generations": generations,
-            "bootstrap_samples": bootstrap_samples,
-            "settlement_delay_seconds": settlement_delay_seconds,
-            "seed": seed,
-        },
+        "configuration": configuration,
         "terminal_probability_oof": {
             "version": terminal["version"],
             "predicted_races": terminal["predicted_races"],
@@ -1124,6 +1274,8 @@ def run_joint_bankroll_evaluation(
         "joint_purchase_value": joint_purchase_value,
         "joint_value_audit": joint_value_audit,
         "settlement_audit": settlement_audit,
+        "evaluation_protocol_id": evaluation_protocol["id"],
+        "evaluation_protocol": evaluation_protocol["protocol"],
         "calibration_ledger": calibration_ledger,
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
