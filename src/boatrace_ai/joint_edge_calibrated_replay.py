@@ -19,8 +19,11 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v2"
-CALIBRATION_VERSION = "strict_prior_independent_validation_isotonic_lcb_v2"
+MODEL_VERSION = "joint_edge_calibrated_replay_v3"
+CALIBRATION_VERSION = (
+    "strict_prior_independent_validation_"
+    "stake_weighted_isotonic_lcb_v3"
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -112,6 +115,7 @@ def _candidate_record(
         "race_date": race_date,
         "raw_estimated_ev": raw_gross_return,
         "gross_return_per_yen": realized_return / stake,
+        "sample_weight": float(stake),
         "raw_value_source": raw_value_source,
         "structural_feasible": structural_feasible,
     }
@@ -451,7 +455,7 @@ def run_joint_edge_calibrated_replay(
     base_protocol = payload.get("evaluation_protocol")
     base_protocol = base_protocol if isinstance(base_protocol, dict) else {}
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v2",
+        "version": "joint_edge_calibrated_replay_protocol_v3",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -466,8 +470,12 @@ def run_joint_edge_calibrated_replay(
             "min_candidate_days": calibration_min_candidate_days,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
-            "teacher": "fixed_candidate_realized_gross_return_per_yen",
+            "teacher": (
+                "stake_weighted_fixed_candidate_"
+                "realized_gross_return_per_yen"
+            ),
             "information_boundary": "strictly_prior_complete_days_only",
+            "sample_weight": "candidate_portfolio_stake_yen",
             "primary_input": (
                 "independent_validation_portfolio_lower_quantile"
             ),

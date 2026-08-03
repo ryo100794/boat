@@ -9,12 +9,15 @@ from boatrace_ai.listwise.empirical_ev_calibration import (
 )
 
 
-def _record(day: int, raw_ev: float, returned: float) -> dict[str, object]:
+def _record(
+    day: int, raw_ev: float, returned: float, *, weight: float = 1.0
+) -> dict[str, object]:
     race_date = date(2026, 1, 1) + timedelta(days=day)
     return {
         "race_date": race_date.isoformat(),
         "raw_estimated_ev": raw_ev,
         "gross_return_per_yen": returned,
+        "sample_weight": weight,
     }
 
 
@@ -25,6 +28,7 @@ def test_empty_data_returns_auditable_not_ready_artifact() -> None:
     assert artifact.trained_through_date is None
     assert artifact.training_days == 0
     assert artifact.tickets == 0
+    assert artifact.total_exposure_weight == 0.0
     assert set(artifact.ready_reasons) == {
         "insufficient_training_days",
         "insufficient_tickets",
@@ -109,6 +113,26 @@ def test_predict_reports_fixed_bin_bounds_and_support() -> None:
     assert prediction["empirical_ev"] == pytest.approx(1.0)
 
 
+def test_sample_weight_estimates_total_return_over_total_exposure() -> None:
+    artifact = fit_empirical_ev_calibration(
+        [
+            _record(0, 1.03, 0.0, weight=900.0),
+            _record(0, 1.03, 10.0, weight=100.0),
+        ],
+        bootstrap_samples=100,
+        min_days=1,
+        min_tickets=1,
+        min_candidate_days=1,
+    )
+
+    prediction = artifact.predict(1.03)
+    assert prediction["empirical_ev"] == pytest.approx(1.0)
+    assert prediction["support"] == 2
+    assert prediction["exposure_weight"] == 1_000.0
+    assert artifact.total_exposure_weight == 1_000.0
+    assert artifact.as_dict()["weighting"] == "optional_sample_weight_default_1"
+
+
 def test_single_extreme_payout_does_not_raise_daily_cluster_lcb() -> None:
     records = []
     for day in range(30):
@@ -172,6 +196,11 @@ def test_rejects_invalid_records_and_configuration() -> None:
     with pytest.raises(ValueError, match="gross_return_per_yen"):
         fit_empirical_ev_calibration(
             [_record(0, 1.1, -1.0)],
+            bootstrap_samples=100,
+        )
+    with pytest.raises(ValueError, match="sample_weight"):
+        fit_empirical_ev_calibration(
+            [_record(0, 1.1, 1.0, weight=0.0)],
             bootstrap_samples=100,
         )
     with pytest.raises(ValueError, match="strictly increasing"):

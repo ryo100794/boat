@@ -157,8 +157,12 @@ def test_replay_no_bets_until_calibration_support_is_ready(
     assert result["primary_bankroll"]["selected_races"] == 2
     assert result["formal_purchase_value"]["minimum"] > 0.0
     assert result["calibration_folds"][2]["quantile_method"] == "inverted_cdf"
+    assert result["calibration_folds"][2]["total_exposure_weight"] == 200.0
     assert result["evaluation_protocol"]["calibration"]["quantile_method"] == (
         "inverted_cdf"
+    )
+    assert result["evaluation_protocol"]["calibration"]["sample_weight"] == (
+        "candidate_portfolio_stake_yen"
     )
 
 
@@ -217,7 +221,7 @@ def test_queue_builds_constrained_calibrated_replay_command(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v2",
+        "model": "joint_edge_calibrated_replay_v3",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_days": 5,
         "evaluated_races": 713,
