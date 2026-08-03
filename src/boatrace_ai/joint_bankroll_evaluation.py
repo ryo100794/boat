@@ -469,13 +469,20 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         and row.get("independence_probability_times_multiplier") is not None
         and row.get("probability_multiplier_covariance") is not None
     ]
-    overstatements = [
-        float(row["ordinary_hit_independence_approximation_edge"])
-        - float(row["joint_expected_edge"])
-        for row in moments
-        if row.get("ordinary_hit_independence_approximation_edge") is not None
-        and row.get("joint_expected_edge") is not None
-    ]
+    independence_biases = []
+    for row in moments:
+        if row.get("independence_approximation_bias") is not None:
+            independence_biases.append(
+                float(row["independence_approximation_bias"])
+            )
+        elif (
+            row.get("ordinary_hit_independence_approximation_edge") is not None
+            and row.get("joint_expected_edge") is not None
+        ):
+            independence_biases.append(
+                float(row["ordinary_hit_independence_approximation_edge"])
+                - float(row["joint_expected_edge"])
+            )
     outer_sample_count_r = int(value.get("parameter_draws") or 0)
     minimum_outer_draws = int(value.get("minimum_outer_draws") or 0)
     outer_alpha = float(value.get("outer_alpha") or 0.0)
@@ -584,12 +591,30 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
             sum(value < 0.0 for value in covariances) / len(covariances)
             if covariances else None
         ),
+        "independence_approximation_bias_definition": (
+            "E_pi_times_E_D_minus_E_pi_D_equals_negative_covariance"
+        ),
+        "independence_approximation_bias_mean": (
+            fsum(independence_biases) / len(independence_biases)
+            if independence_biases else None
+        ),
+        "independence_approximation_bias_min": (
+            min(independence_biases) if independence_biases else None
+        ),
+        "independence_approximation_bias_max": (
+            max(independence_biases) if independence_biases else None
+        ),
+        "positive_independence_bias_fraction": (
+            sum(value > 0.0 for value in independence_biases)
+            / len(independence_biases)
+            if independence_biases else None
+        ),
         "independence_approximation_overstatement_mean": (
-            fsum(overstatements) / len(overstatements)
-            if overstatements else None
+            fsum(independence_biases) / len(independence_biases)
+            if independence_biases else None
         ),
         "independence_approximation_overstatement_max": (
-            max(overstatements) if overstatements else None
+            max(independence_biases) if independence_biases else None
         ),
     }
 
@@ -676,6 +701,16 @@ def _aggregate_joint_value_audits(
         row.get("product_identity_consistent")
         for row in recorded
         if row.get("product_identity_consistent") is not None
+    ]
+    independence_bias_min_values = [
+        float(row["independence_approximation_bias_min"])
+        for row in recorded
+        if row.get("independence_approximation_bias_min") is not None
+    ]
+    independence_bias_max_values = [
+        float(row["independence_approximation_bias_max"])
+        for row in recorded
+        if row.get("independence_approximation_bias_max") is not None
     ]
     return {
         "recorded": True,
@@ -769,6 +804,23 @@ def _aggregate_joint_value_audits(
         ),
         "negative_covariance_fraction": weighted(
             "negative_covariance_fraction"
+        ),
+        "independence_approximation_bias_definition": (
+            "E_pi_times_E_D_minus_E_pi_D_equals_negative_covariance"
+        ),
+        "independence_approximation_bias_mean": weighted(
+            "independence_approximation_bias_mean"
+        ),
+        "independence_approximation_bias_min": (
+            min(independence_bias_min_values)
+            if independence_bias_min_values else None
+        ),
+        "independence_approximation_bias_max": (
+            max(independence_bias_max_values)
+            if independence_bias_max_values else None
+        ),
+        "positive_independence_bias_fraction": weighted(
+            "positive_independence_bias_fraction"
         ),
         "independence_approximation_overstatement_mean": weighted(
             "independence_approximation_overstatement_mean"

@@ -3636,6 +3636,18 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_negative_covariance_fraction": joint_audit.get(
                 "negative_covariance_fraction"
             ),
+            "joint_independence_bias_mean": joint_audit.get(
+                "independence_approximation_bias_mean"
+            ),
+            "joint_independence_bias_min": joint_audit.get(
+                "independence_approximation_bias_min"
+            ),
+            "joint_independence_bias_max": joint_audit.get(
+                "independence_approximation_bias_max"
+            ),
+            "joint_positive_independence_bias_fraction": joint_audit.get(
+                "positive_independence_bias_fraction"
+            ),
             "joint_independence_overstatement_mean": joint_audit.get(
                 "independence_approximation_overstatement_mean"
             ),
@@ -3853,6 +3865,18 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_negative_covariance_fraction": joint_audit.get(
                 "negative_covariance_fraction"
+            ),
+            "joint_independence_bias_mean": joint_audit.get(
+                "independence_approximation_bias_mean"
+            ),
+            "joint_independence_bias_min": joint_audit.get(
+                "independence_approximation_bias_min"
+            ),
+            "joint_independence_bias_max": joint_audit.get(
+                "independence_approximation_bias_max"
+            ),
+            "joint_positive_independence_bias_fraction": joint_audit.get(
+                "positive_independence_bias_fraction"
             ),
             "joint_independence_overstatement_mean": joint_audit.get(
                 "independence_approximation_overstatement_mean"

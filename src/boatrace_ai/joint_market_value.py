@@ -365,6 +365,9 @@ def evaluate_joint_market_value(
                 "probability_multiplier_covariance": (
                     mean_product - mean_probability * mean_multiplier
                 ),
+                "independence_approximation_bias": (
+                    mean_probability * mean_multiplier - mean_product
+                ),
                 "mean_other_terminal_receipts_per_yen": mean_other,
                 "joint_expected_edge": float(np.dot(weights, ticket_paths[ticket])),
                 "ordinary_hit_independence_approximation_edge": (
