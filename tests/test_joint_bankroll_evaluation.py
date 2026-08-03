@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import joblib
 import pytest
 
 from boatrace_ai.joint_bankroll_evaluation import (
     _day_block_roi_interval,
+    _evaluation_protocol,
     _probability_metrics,
     _rank_candidate_tickets,
     _realized_receipt,
@@ -155,6 +157,13 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["evaluated_races"] == 12
     assert result["evaluation_from"] == "2026-07-05"
     assert result["evaluation_through"] == "2026-07-08"
+    assert len(result["evaluation_protocol_id"]) == 64
+    assert result["evaluation_protocol"]["evaluation_time_t"]["source_field"] == (
+        "captured_at"
+    )
+    assert result["evaluation_protocol"]["population"]["wager_types"] == [
+        "trifecta"
+    ]
     assert result["primary_bankroll"]["stake_yen"] == 0
     assert result["primary_bankroll"]["roi"] is None
     assert result["promotion_eligible"] is False
@@ -189,6 +198,9 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     ] is False
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
+    assert diagnostic_race["evaluation_time_t"].endswith("+09:00")
+    assert diagnostic_race["wager_type"] == "trifecta"
+    assert diagnostic_race["popularity_band_at_t"]
     assert diagnostic_race["actual_payout_yen"] == 150
     assert diagnostic_race["selected_bets_yen"] == {}
     assert diagnostic_race["feasible_candidates_found"] == 0
@@ -206,3 +218,91 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     } == {
         "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08"
     }
+
+
+def test_evaluation_protocol_fixes_time_context_and_purchase_rule(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "scored.joblib"
+    cache.write_bytes(b"same-evaluation-input")
+    race = {
+        "race_id": "202607010101",
+        "captured_at": "2026-07-01T10:00:00+09:00",
+        "odds_deadline_at": "2026-07-01T10:05:00+09:00",
+    }
+    observation = SimpleNamespace(
+        race_id=race["race_id"],
+        race_date="2026-07-01",
+        venue="01",
+        popularity_band="favorite_share_ge_025",
+        decision_horizon_seconds=300,
+    )
+    configuration = {
+        "terminal_min_training_days": 2,
+        "joint_min_training_days": 2,
+        "outer_draws": 20,
+        "scenarios_per_draw": 64,
+        "rank": 8,
+        "pooling_strength": 20.0,
+        "learn_residual_scales": True,
+        "candidate_ticket_count": 12,
+        "initial_daily_bankroll_yen": 10_000,
+        "maximum_portfolio_stake_yen": 10_000,
+        "maximum_ticket_stake_yen": 5_000,
+        "maximum_selected_tickets": 12,
+        "buy_margin": 0.02,
+        "inner_tail_fraction": 0.10,
+        "population_size": 8,
+        "generations": 3,
+        "settlement_delay_seconds": 600,
+        "seed": 33041,
+    }
+    arguments = {
+        "scored_cache": cache,
+        "eligible_races": [race],
+        "observations": [observation],
+        "evaluation_dates": ["2026-07-01"],
+        "terminal": {
+            "version": "terminal_probability_strict_oof_v1",
+            "artifact_contract_sha256": "terminal-sha",
+        },
+        "configuration": configuration,
+        "outcomes": ("1-2-3", "1-3-2"),
+        "settlement_audit": {
+            "version": "parimutuel_integer_settlement_v1",
+            "integer_yen_accounting": True,
+        },
+        "bootstrap_condition_id": "same-resampling-condition",
+    }
+
+    baseline = _evaluation_protocol(**arguments)
+    repeated = _evaluation_protocol(**arguments)
+    assert baseline == repeated
+    assert len(baseline["id"]) == 64
+    assert baseline["protocol"]["evaluation_time_t"]["source_field"] == (
+        "captured_at"
+    )
+    assert baseline["protocol"]["population"]["venues"] == ["01"]
+    assert baseline["protocol"]["population"]["wager_types"] == ["trifecta"]
+    assert baseline["protocol"]["population"]["popularity_bands_at_t"] == [
+        "favorite_share_ge_025"
+    ]
+    assert baseline["protocol"]["resampling_condition_id"] == (
+        "same-resampling-condition"
+    )
+
+    changed_race = {**race, "captured_at": "2026-07-01T10:01:00+09:00"}
+    changed_time = _evaluation_protocol(
+        **{**arguments, "eligible_races": [changed_race]}
+    )
+    changed_rule = _evaluation_protocol(
+        **{
+            **arguments,
+            "configuration": {**configuration, "buy_margin": 0.03},
+        }
+    )
+    assert changed_time["id"] != baseline["id"]
+    assert changed_rule["id"] != baseline["id"]
+    assert changed_time["protocol"]["resampling_condition_id"] == (
+        baseline["protocol"]["resampling_condition_id"]
+    )

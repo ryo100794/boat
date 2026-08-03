@@ -1518,7 +1518,9 @@ def _model_performance_report_contract(
             "joint_purchase_value": "外側パラメータ標本ごとのポートフォリオ下側期待値についての経験5%分位",
             "joint_purchase_safety_margin": "購入価値が超える必要がある事前固定の安全余裕",
             "formal_roi_gate": "inverted_cdf経験分位でQ0.05(ROI)>1。P(ROI>1)は補助診断",
-            "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedを固定するSHA-256条件ID",
+            "evaluation_protocol_id": "モデル・入力データ・評価時点t・場・賭式・人気帯・購入規則・決済・再標本化を固定するSHA-256識別子",
+            "evaluation_time_t": "各レースの購入判断で利用可能な情報集合F_tの上限時刻。現在はodds snapshotのcaptured_at",
+            "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedだけを固定するSHA-256再標本化条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
         "groups": [
@@ -7994,7 +7996,11 @@ def model_performance_audit_snapshot(
                 "joint_calibration_authorized_portfolios",
                 "joint_calibration_roi", "joint_calibration_profit_yen",
                 "day_venue_roi_lower_95", "venue_meeting_roi_lower_95",
-                "bootstrap_condition_id",
+                "evaluation_protocol_id", "evaluation_protocol_version",
+                "evaluation_time_t_definition", "evaluation_time_t_source",
+                "evaluation_time_t_earliest", "evaluation_time_t_latest",
+                "evaluation_venues", "evaluation_wager_types",
+                "evaluation_popularity_bands_at_t", "bootstrap_condition_id",
             )
         }
         audit_rows.append(audit)
@@ -8017,7 +8023,12 @@ def model_performance_audit_snapshot(
                 "settlement_special_payout_supported",
             )) else "旧成果物: 決済監査未記録"
         )
-        condition = str(audit.get("bootstrap_condition_id") or "未記録")
+        protocol_id = str(audit.get("evaluation_protocol_id") or "旧成果物: 未記録")
+        resampling_id = str(audit.get("bootstrap_condition_id") or "未記録")
+        evaluation_t = (
+            f"{audit.get('evaluation_time_t_earliest') or '-'}.."
+            f"{audit.get('evaluation_time_t_latest') or '-'}"
+        )
         cells = [
             f"#{audit.get('job_id') or '-'} {audit.get('name') or '-'}",
             f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
@@ -8033,7 +8044,8 @@ def model_performance_audit_snapshot(
                 f"ROI {_audit_number(audit.get('joint_calibration_roi'))}"
             ),
             f"日x場 {_audit_number(audit.get('day_venue_roi_lower_95'))} / 節 {_audit_number(audit.get('venue_meeting_roi_lower_95'))}",
-            condition[:16],
+            f"{protocol_id[:16]} / t {evaluation_t}",
+            resampling_id[:16],
         ]
         rendered.append(
             "<tr>" + "".join(
@@ -8042,7 +8054,7 @@ def model_performance_audit_snapshot(
         )
     if not rendered:
         rendered.append(
-            '<tr><td colspan="11">結合資金評価の数値成果物なし</td></tr>'
+            '<tr><td colspan="12">結合資金評価の数値成果物なし</td></tr>'
         )
     model_rows = []
     general_rendered = []
@@ -8131,7 +8143,8 @@ def model_performance_audit_snapshot(
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
         '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
         '<th>外側 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
-        '<th>最良候補反実仮想</th><th>感度LCB</th><th>条件ID</th></tr></thead><tbody>'
+        '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t</th>' +
+        '<th>再標本化条件ID</th></tr></thead><tbody>'
         + "".join(rendered)
         + '</tbody></table></div></div></section>'
         f'<script id="joint-audit-data" type="application/json">{snapshot_json}</script>'

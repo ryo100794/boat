@@ -3427,7 +3427,30 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         calibration_ledger = (
             calibration_ledger if isinstance(calibration_ledger, dict) else {}
         )
+        evaluation_protocol = payload.get("evaluation_protocol")
+        evaluation_protocol = (
+            evaluation_protocol if isinstance(evaluation_protocol, dict) else {}
+        )
+        evaluation_time_t = evaluation_protocol.get("evaluation_time_t")
+        evaluation_time_t = (
+            evaluation_time_t if isinstance(evaluation_time_t, dict) else {}
+        )
+        evaluation_population = evaluation_protocol.get("population")
+        evaluation_population = (
+            evaluation_population if isinstance(evaluation_population, dict) else {}
+        )
         summary.update({
+            "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
+            "evaluation_protocol_version": evaluation_protocol.get("version"),
+            "evaluation_time_t_definition": evaluation_time_t.get("definition"),
+            "evaluation_time_t_source": evaluation_time_t.get("source_field"),
+            "evaluation_time_t_earliest": evaluation_time_t.get("earliest"),
+            "evaluation_time_t_latest": evaluation_time_t.get("latest"),
+            "evaluation_venues": evaluation_population.get("venues"),
+            "evaluation_wager_types": evaluation_population.get("wager_types"),
+            "evaluation_popularity_bands_at_t": evaluation_population.get(
+                "popularity_bands_at_t"
+            ),
             "joint_audit_recorded": bool(joint_audit.get("recorded")),
             "joint_audited_portfolios": joint_audit.get(
                 "audited_portfolios"
