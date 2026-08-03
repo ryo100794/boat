@@ -3533,6 +3533,32 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "complete_vector_repricing"
             ),
             "joint_parameter_draws_min": joint_audit.get("parameter_draws_min"),
+            "joint_outer_sample_count_r_definition": joint_audit.get(
+                "outer_sample_count_r_definition"
+            ),
+            "joint_outer_sample_count_r_min": joint_audit.get(
+                "outer_sample_count_r_min"
+            ),
+            "joint_outer_sample_count_r_max": joint_audit.get(
+                "outer_sample_count_r_max"
+            ),
+            "joint_outer_required_r_max": joint_audit.get(
+                "minimum_outer_draws_max"
+            ),
+            "joint_outer_alpha_min": joint_audit.get("outer_alpha_min"),
+            "joint_outer_alpha_max": joint_audit.get("outer_alpha_max"),
+            "joint_outer_tail_observations_min": joint_audit.get(
+                "outer_tail_observations_min"
+            ),
+            "joint_outer_tail_observations_max": joint_audit.get(
+                "outer_tail_observations_max"
+            ),
+            "joint_outer_tail_required": joint_audit.get(
+                "minimum_outer_tail_observations_for_promotion"
+            ),
+            "joint_outer_tail_support": joint_audit.get(
+                "outer_tail_support_for_promotion"
+            ),
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"
             ),
@@ -3680,6 +3706,32 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_parameter_draws_min": joint_audit.get(
                 "parameter_draws_min"
+            ),
+            "joint_outer_sample_count_r_definition": joint_audit.get(
+                "outer_sample_count_r_definition"
+            ),
+            "joint_outer_sample_count_r_min": joint_audit.get(
+                "outer_sample_count_r_min"
+            ),
+            "joint_outer_sample_count_r_max": joint_audit.get(
+                "outer_sample_count_r_max"
+            ),
+            "joint_outer_required_r_max": joint_audit.get(
+                "minimum_outer_draws_max"
+            ),
+            "joint_outer_alpha_min": joint_audit.get("outer_alpha_min"),
+            "joint_outer_alpha_max": joint_audit.get("outer_alpha_max"),
+            "joint_outer_tail_observations_min": joint_audit.get(
+                "outer_tail_observations_min"
+            ),
+            "joint_outer_tail_observations_max": joint_audit.get(
+                "outer_tail_observations_max"
+            ),
+            "joint_outer_tail_required": joint_audit.get(
+                "minimum_outer_tail_observations_for_promotion"
+            ),
+            "joint_outer_tail_support": joint_audit.get(
+                "outer_tail_support_for_promotion"
             ),
             "joint_inner_ess_min": joint_audit.get(
                 "inner_effective_samples_min"

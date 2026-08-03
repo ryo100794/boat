@@ -196,6 +196,12 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["promotion_gate"][
         "joint_purchase_value_above_safety_margin"
     ] is False
+    assert result["promotion_gate"]["minimum_outer_tail_support"] is False
+    assert result["joint_purchase_value"]["outer_sample_count_r_requested"] == 2
+    assert result["joint_purchase_value"]["outer_tail_observations_requested"] == 1
+    assert result["joint_purchase_value"][
+        "minimum_outer_tail_observations_for_promotion"
+    ] == 5
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["evaluation_time_t"].endswith("+09:00")

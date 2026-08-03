@@ -1521,6 +1521,7 @@ def _model_performance_report_contract(
             "evaluation_protocol_id": "モデル・入力データ・評価時点t・場・賭式・人気帯・購入規則・決済・再標本化を固定するSHA-256識別子",
             "evaluation_time_t": "各レースで購入判断を実行した時刻。decision_at、履歴評価では事前固定したodds_deadline_at",
             "evaluation_snapshot_age": "購入判断に使用したオッズの鮮度。evaluation_time_t - odds_snapshot_captured_at（秒）",
+            "outer_sample_count_r": "購入価値Q_alphaを計算する外側のモデル・パラメータ不確実性標本数R。5%分位の本番昇格には下側5標本以上を要求",
             "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedだけを固定するSHA-256再標本化条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
@@ -7991,6 +7992,14 @@ def model_performance_audit_snapshot(
                 "joint_audited_portfolios", "joint_moment_observations",
                 "joint_shared_scenarios", "joint_portfolio_path_aggregation",
                 "joint_complete_vector_repricing", "joint_parameter_draws_min",
+                "joint_outer_sample_count_r_definition",
+                "joint_outer_sample_count_r_min",
+                "joint_outer_sample_count_r_max",
+                "joint_outer_required_r_max",
+                "joint_outer_alpha_min", "joint_outer_alpha_max",
+                "joint_outer_tail_observations_min",
+                "joint_outer_tail_observations_max",
+                "joint_outer_tail_required", "joint_outer_tail_support",
                 "joint_inner_ess_min", "joint_covariance_mean",
                 "joint_negative_covariance_fraction",
                 "joint_independence_overstatement_mean",
@@ -8043,13 +8052,30 @@ def model_performance_audit_snapshot(
             f" [{_audit_number(audit.get('evaluation_snapshot_age_seconds_min'), 1)}.."
             f"{_audit_number(audit.get('evaluation_snapshot_age_seconds_max'), 1)}]"
         )
+        outer_r_min = audit.get("joint_outer_sample_count_r_min")
+        if outer_r_min is None:
+            outer_r_min = audit.get("joint_parameter_draws_min")
+        outer_r_max = audit.get("joint_outer_sample_count_r_max")
+        if outer_r_max is None:
+            outer_r_max = outer_r_min
+        outer_tail_min = audit.get("joint_outer_tail_observations_min")
+        outer_tail_required = audit.get("joint_outer_tail_required")
+        outer_support = (
+            "合格" if audit.get("joint_outer_tail_support") is True
+            else "不足" if audit.get("joint_outer_tail_support") is False
+            else "未記録"
+        )
         cells = [
             f"#{audit.get('job_id') or '-'} {audit.get('name') or '-'}",
             f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
             f"{_audit_number(audit.get('joint_purchase_value_minimum'))} > {_audit_number(audit.get('joint_purchase_safety_margin'))}",
             f"ROI {_audit_number(audit.get('roi'))} / LCB {_audit_number(audit.get('daily_cluster_bootstrap_roi_lower_95'))}",
             f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / 独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
-            f"外側 {audit.get('joint_parameter_draws_min') or '未記録'} / 内側ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
+            f"R {outer_r_min or '未記録'}..{outer_r_max or '未記録'} / "
+                f"下側 {outer_tail_min if outer_tail_min is not None else '未記録'}/"
+                f"{outer_tail_required if outer_tail_required is not None else '未記録'} "
+                f"{outer_support} / α {_audit_number(audit.get('joint_outer_alpha_min'), 2)} / "
+                f"内側ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
             structure,
             settlement,
             (
@@ -8156,7 +8182,7 @@ def model_performance_audit_snapshot(
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
         '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
-        '<th>外側 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
+        '<th>外側R / 下側支持 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
         '<th>再標本化条件ID</th></tr></thead><tbody>'
         + "".join(rendered)

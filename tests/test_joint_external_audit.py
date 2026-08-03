@@ -11,6 +11,7 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
     audit = _joint_value_audit({
         "version": "joint_market_value_evaluator_v0",
         "parameter_draws": 20,
+        "minimum_outer_draws": 20,
         "inner_aggregation": "portfolio_path_weighted_lower_tail_mean",
         "inner_tail_fraction": 0.1,
         "inner_effective_samples_min": 64.0,
@@ -34,11 +35,31 @@ def test_joint_value_audit_exposes_covariance_and_independence_bias() -> None:
 
     assert audit["recorded"] is True
     assert audit["shared_probability_price_scenarios"] is True
+    assert audit["outer_sample_count_r"] == 20
+    assert audit["minimum_outer_draws"] == 20
+    assert audit["outer_tail_observations"] == 1
+    assert audit["minimum_outer_tail_observations_for_promotion"] == 5
+    assert audit["outer_tail_support_for_promotion"] is False
     assert audit["portfolio_path_aggregation"] is True
     assert audit["complete_vector_repricing"] is True
     assert audit["probability_multiplier_covariance_mean"] == pytest.approx(-0.45)
     assert audit["negative_covariance_fraction"] == 1.0
     assert audit["independence_approximation_overstatement_mean"] == pytest.approx(0.45)
+
+
+def test_outer_r_requires_five_lower_tail_observations_for_promotion() -> None:
+    audit = _joint_value_audit({
+        "version": "joint_market_value_evaluator_v0",
+        "parameter_draws": 100,
+        "minimum_outer_draws": 20,
+        "outer_alpha": 0.05,
+        "inner_aggregation": "portfolio_path_weighted_lower_tail_mean",
+        "marginal_contributions_computed": True,
+    })
+
+    assert audit["outer_sample_count_r"] == 100
+    assert audit["outer_tail_observations"] == 5
+    assert audit["outer_tail_support_for_promotion"] is True
 
 
 def test_joint_audit_survives_queue_summary() -> None:
@@ -53,6 +74,16 @@ def test_joint_audit_survives_queue_summary() -> None:
             "portfolio_path_aggregation": True,
             "complete_vector_repricing": True,
             "parameter_draws_min": 20,
+            "outer_sample_count_r_definition": "number_of_outer_model_or_parameter_uncertainty_draws",
+            "outer_sample_count_r_min": 20,
+            "outer_sample_count_r_max": 20,
+            "minimum_outer_draws_max": 20,
+            "outer_alpha_min": 0.05,
+            "outer_alpha_max": 0.05,
+            "outer_tail_observations_min": 1,
+            "outer_tail_observations_max": 1,
+            "minimum_outer_tail_observations_for_promotion": 5,
+            "outer_tail_support_for_promotion": False,
             "inner_effective_samples_min": 64.0,
             "probability_multiplier_covariance_mean": -0.12,
             "negative_covariance_fraction": 0.75,
@@ -108,6 +139,11 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["joint_audit_recorded"] is True
     assert summary["joint_covariance_mean"] == -0.12
     assert summary["joint_independence_overstatement_mean"] == 0.12
+    assert summary["joint_outer_sample_count_r_min"] == 20
+    assert summary["joint_outer_sample_count_r_max"] == 20
+    assert summary["joint_outer_tail_observations_min"] == 1
+    assert summary["joint_outer_tail_required"] == 5
+    assert summary["joint_outer_tail_support"] is False
     assert summary["settlement_integer_yen"] is True
     assert summary["settlement_self_impact_repricing"] is True
     assert summary["settlement_refund_supported"] is True
@@ -133,6 +169,12 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "joint_portfolio_path_aggregation": True,
             "joint_complete_vector_repricing": True,
             "joint_parameter_draws_min": 20,
+            "joint_outer_sample_count_r_min": 20,
+            "joint_outer_sample_count_r_max": 20,
+            "joint_outer_alpha_min": 0.05,
+            "joint_outer_tail_observations_min": 1,
+            "joint_outer_tail_required": 5,
+            "joint_outer_tail_support": False,
             "joint_inner_ess_min": 64.0,
             "joint_covariance_mean": -0.03125,
             "joint_independence_overstatement_mean": 0.03125,
@@ -156,6 +198,7 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "joint_bankroll_strict_walk_forward_v4" in section
     assert "0.0612 &gt; 0.0200" in section
     assert "Cov -0.031250" in section
+    assert "R 20..20 / 下側 1/5 不足 / α 0.05" in section
     assert "共同経路 / portfolio ES / 完全vector再価格" in section
     assert "整数円 / 自己投票 / 返還 / 特別払戻" in section
     encoded = section.split(
