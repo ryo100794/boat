@@ -1414,6 +1414,8 @@ def _repository_deployment_status(db_path: Path) -> dict[str, Any]:
         "active_evaluations",
         "active_before",
         "restarted",
+        "control_plane_stopped",
+        "control_plane_resumed",
         "skipped_stopped",
     )
     return {

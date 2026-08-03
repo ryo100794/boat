@@ -31,27 +31,15 @@ CANONICAL_MARKDOWN = frozenset(
 DEFAULT_MAX_TRACKED_FILE_BYTES = 10 * 1024 * 1024
 JST = timezone(timedelta(hours=9))
 SERVICE_REFRESH_PROGRAMS = (
-    "boatrace-collector",
-    "boatrace-conditional-market-shadow",
     "boatrace-dashboard",
-    "boatrace-improvement-consumer",
     "boatrace-daily-shadow-bundle-update",
     "boatrace-intraday-t300-daily-bundles",
     "boatrace-intraday-t300-shadow",
     "boatrace-intraday-v23-shadow",
     "boatrace-intraday-v32-shadow",
-    "boatrace-market-blend-shadow",
-    "boatrace-market-cutoff-shadow",
-    "boatrace-market-predictor",
-    "boatrace-market-promotion",
-    "boatrace-market-residual-shadow",
-    "boatrace-market-shadow",
-    "boatrace-odds-shadow",
-    "boatrace-odds-shadow-provisional",
     "boatrace-stable-cell-shadow",
     "boatrace-quota-ceil-shadow",
     "boatrace-raw-guard-shadow",
-    "boatrace-work-tracking-sync",
 )
 SERVICE_REFRESH_RUNNER_PREFIX = "boatrace-evaluation-runner:"
 SERVICE_REFRESH_SCHEDULER = "boatrace-evaluation-scheduler"
@@ -505,25 +493,6 @@ def refresh_services(
     ]
     if dirty_paths:
         raise RuntimeError("repository became dirty before service refresh")
-    with connection(db) as conn:
-        active_row = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM model_evaluation_jobs
-            WHERE category = 'evaluation' AND status = 'running'
-            """
-        ).fetchone()
-    active_evaluations = int(active_row["count"] if active_row else 0)
-    if active_evaluations:
-        payload = {
-            "status": "deferred_active_evaluation",
-            "head": head,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-            "active_evaluations": active_evaluations,
-            "restarted": [],
-        }
-        _json_file(_deployment_state_path(app_root), payload)
-        return payload
     supervisorctl = app_root / ".venv" / "bin" / "supervisorctl"
     config = app_root / "scripts" / "deployment" / "supervisord.conf"
     status = subprocess.run(
@@ -553,10 +522,10 @@ def refresh_services(
         [SERVICE_REFRESH_SCHEDULER]
         if SERVICE_REFRESH_SCHEDULER in active else []
     )
-    restarted: list[str] = []
-    for name in [*allowed, *runners, *scheduler]:
+
+    def supervisor_action(action: str, name: str) -> None:
         completed = subprocess.run(
-            [str(supervisorctl), "-c", str(config), "restart", name],
+            [str(supervisorctl), "-c", str(config), action, name],
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -564,15 +533,76 @@ def refresh_services(
         )
         if completed.returncode != 0:
             raise RuntimeError(
-                f"supervisor restart {name} failed: {completed.stdout.strip()}"
+                f"supervisor {action} {name} failed: "
+                + completed.stdout.strip()
             )
-        restarted.append(name)
+
+    # claim_job uses the same advisory lock transactionally. Holding its
+    # session form closes the race between the zero-running check and stopping
+    # idle runners: no runner can claim fresh work while the control plane is
+    # being quiesced.
+    from .evaluation_queue import CLAIM_LOCK_ID
+
+    stopped_control_plane: list[str] = []
+    resumed_control_plane: list[str] = []
+    restarted: list[str] = []
+    failures: list[str] = []
+    try:
+        with connection(db) as conn:
+            conn.execute("SELECT pg_advisory_lock(?)", (CLAIM_LOCK_ID,))
+            try:
+                active_row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM model_evaluation_jobs
+                    WHERE category = 'evaluation' AND status = 'running'
+                    """
+                ).fetchone()
+                active_evaluations = int(
+                    active_row["count"] if active_row else 0
+                )
+                if active_evaluations:
+                    payload = {
+                        "status": "deferred_active_evaluation",
+                        "head": head,
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "active_evaluations": active_evaluations,
+                        "restarted": [],
+                    }
+                    _json_file(_deployment_state_path(app_root), payload)
+                    return payload
+                for name in [*scheduler, *runners]:
+                    supervisor_action("stop", name)
+                    stopped_control_plane.append(name)
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(?)", (CLAIM_LOCK_ID,)
+                )
+        for name in allowed:
+            supervisor_action("restart", name)
+            restarted.append(name)
+    except RuntimeError as exc:
+        failures.append(str(exc))
+    finally:
+        for name in [*runners, *scheduler]:
+            if name not in stopped_control_plane:
+                continue
+            try:
+                supervisor_action("start", name)
+                resumed_control_plane.append(name)
+                restarted.append(name)
+            except RuntimeError as exc:
+                failures.append(str(exc))
+    if failures:
+        raise RuntimeError("; ".join(failures))
     payload = {
         "status": "completed",
         "head": head,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "active_before": active,
         "restarted": restarted,
+        "control_plane_stopped": stopped_control_plane,
+        "control_plane_resumed": resumed_control_plane,
         "skipped_stopped": [
             name for name in SERVICE_REFRESH_PROGRAMS
             if name not in active

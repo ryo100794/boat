@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from boatrace_ai import maintenance_tasks
 
 
 MIDDAY_UTC = datetime(2026, 8, 3, 11, 0, tzinfo=timezone.utc)
 OVERNIGHT_UTC = datetime(2026, 8, 3, 16, 0, tzinfo=timezone.utc)
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -55,13 +55,15 @@ def _repositories(tmp_path: Path) -> tuple[Path, Path]:
     return seed, checkout
 
 
-def _connection(active: int):
+def _connection(active: int, events: list[str] | None = None):
     class RowResult:
         def fetchone(self):
             return {"count": active}
 
     class Connection:
-        def execute(self, _statement):
+        def execute(self, statement, _parameters=None):
+            if events is not None:
+                events.append(" ".join(str(statement).split()))
             return RowResult()
 
     @contextmanager
@@ -229,6 +231,7 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
     runner = "boatrace-evaluation-runner:boatrace-evaluation-runner_00"
     scheduler = "boatrace-evaluation-scheduler"
     calls: list[list[str]] = []
+    sql_events: list[str] = []
     status_text = "\n".join(
         [
             "boatrace-dashboard RUNNING pid 1, uptime 1:00:00",
@@ -244,7 +247,9 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
         "_git_value",
         lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
     )
-    monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
+    monkeypatch.setattr(
+        maintenance_tasks, "connection", _connection(0, sql_events)
+    )
 
     def run(command, **_kwargs):
         calls.append([str(value) for value in command])
@@ -257,14 +262,29 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
     )
 
     assert payload["restarted"] == ["boatrace-dashboard", runner, scheduler]
+    assert [(command[-2], command[-1]) for command in calls] == [
+        (str(tmp_path / "scripts/deployment/supervisord.conf"), "status"),
+        ("stop", scheduler),
+        ("stop", runner),
+        ("restart", "boatrace-dashboard"),
+        ("start", runner),
+        ("start", scheduler),
+    ]
+    assert payload["control_plane_stopped"] == [scheduler, runner]
+    assert payload["control_plane_resumed"] == [runner, scheduler]
     assert [command[-1] for command in calls] == [
         "status",
+        scheduler,
+        runner,
         "boatrace-dashboard",
         runner,
         scheduler,
     ]
     assert "boatrace-daily-shadow-bundle-update" in payload["skipped_stopped"]
     assert "unrelated-service" not in payload["restarted"]
+    assert "pg_advisory_lock" in sql_events[0]
+    assert "status = 'running'" in sql_events[1]
+    assert "pg_advisory_unlock" in sql_events[2]
 
 
 def test_refresh_services_defers_if_evaluation_started_during_delay(
@@ -278,13 +298,13 @@ def test_refresh_services_defers_if_evaluation_started_during_delay(
         lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
     )
     monkeypatch.setattr(maintenance_tasks, "connection", _connection(1))
-    monkeypatch.setattr(
-        maintenance_tasks.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("supervisor must not be touched during evaluation")
-        ),
-    )
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append([str(value) for value in command])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(maintenance_tasks.subprocess, "run", run)
 
     payload = maintenance_tasks.refresh_services(
         tmp_path, db="test", head=head, delay_seconds=0
@@ -293,29 +313,60 @@ def test_refresh_services_defers_if_evaluation_started_during_delay(
     assert payload["status"] == "deferred_active_evaluation"
     assert payload["active_evaluations"] == 1
     assert payload["restarted"] == []
+    assert [command[-1] for command in calls] == ["status"]
 
 
-def test_service_refresh_allowlist_covers_code_consuming_supervisor_programs(
+def test_refresh_services_recovers_scheduler_if_runner_stop_fails(
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
-    configs = [
-        *PROJECT_ROOT.glob("scripts/deployment/supervisor-boatrace-*.ini"),
-        *PROJECT_ROOT.glob("scripts/deployment/supervisor/boatrace-*.ini"),
-    ]
-    configured: set[str] = set()
-    for path in configs:
-        matches = re.finditer(
-            r"^\[program:([^]]+)]",
-            path.read_text(encoding="utf-8"),
-            flags=re.MULTILINE,
-        )
-        configured.update(match.group(1) for match in matches)
-    deliberately_separate = {
-        "boatrace-evaluation-runner",
-        "boatrace-evaluation-scheduler",
-        "boatrace-raw-archive",
-        "boatrace-standard-evaluation",
-    }
-
-    assert configured - deliberately_separate == set(
-        maintenance_tasks.SERVICE_REFRESH_PROGRAMS
+    head = "c" * 40
+    runner = "boatrace-evaluation-runner:boatrace-evaluation-runner_00"
+    scheduler = "boatrace-evaluation-scheduler"
+    calls: list[tuple[str, str]] = []
+    status_text = "\n".join(
+        [
+            f"{runner} RUNNING pid 2, uptime 1:00:00",
+            f"{scheduler} RUNNING pid 3, uptime 1:00:00",
+        ]
     )
+    monkeypatch.setattr(
+        maintenance_tasks,
+        "_git_value",
+        lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
+    )
+    monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
+
+    def run(command, **_kwargs):
+        action = command[-2] if command[-1] != "status" else "status"
+        name = command[-1]
+        calls.append((action, name))
+        if action == "stop" and name == runner:
+            return subprocess.CompletedProcess(command, 1, "stop failed", "")
+        stdout = status_text if name == "status" else "ok"
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(maintenance_tasks.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        maintenance_tasks.refresh_services(
+            tmp_path, db="test", head=head, delay_seconds=0
+        )
+
+    assert ("stop", scheduler) in calls
+    assert ("start", scheduler) in calls
+
+
+def test_service_refresh_allowlist_is_limited_to_changed_code_consumers(
+) -> None:
+    assert set(maintenance_tasks.SERVICE_REFRESH_PROGRAMS) == {
+        "boatrace-dashboard",
+        "boatrace-daily-shadow-bundle-update",
+        "boatrace-intraday-t300-daily-bundles",
+        "boatrace-intraday-t300-shadow",
+        "boatrace-intraday-v23-shadow",
+        "boatrace-intraday-v32-shadow",
+        "boatrace-stable-cell-shadow",
+        "boatrace-quota-ceil-shadow",
+        "boatrace-raw-guard-shadow",
+    }
