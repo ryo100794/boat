@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from boatrace_ai import maintenance_tasks
 
 MIDDAY_UTC = datetime(2026, 8, 3, 11, 0, tzinfo=timezone.utc)
 OVERNIGHT_UTC = datetime(2026, 8, 3, 16, 0, tzinfo=timezone.utc)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -291,3 +293,29 @@ def test_refresh_services_defers_if_evaluation_started_during_delay(
     assert payload["status"] == "deferred_active_evaluation"
     assert payload["active_evaluations"] == 1
     assert payload["restarted"] == []
+
+
+def test_service_refresh_allowlist_covers_code_consuming_supervisor_programs(
+) -> None:
+    configs = [
+        *PROJECT_ROOT.glob("scripts/deployment/supervisor-boatrace-*.ini"),
+        *PROJECT_ROOT.glob("scripts/deployment/supervisor/boatrace-*.ini"),
+    ]
+    configured: set[str] = set()
+    for path in configs:
+        matches = re.finditer(
+            r"^\[program:([^]]+)]",
+            path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        configured.update(match.group(1) for match in matches)
+    deliberately_separate = {
+        "boatrace-evaluation-runner",
+        "boatrace-evaluation-scheduler",
+        "boatrace-raw-archive",
+        "boatrace-standard-evaluation",
+    }
+
+    assert configured - deliberately_separate == set(
+        maintenance_tasks.SERVICE_REFRESH_PROGRAMS
+    )

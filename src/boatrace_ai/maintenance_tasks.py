@@ -31,15 +31,27 @@ CANONICAL_MARKDOWN = frozenset(
 DEFAULT_MAX_TRACKED_FILE_BYTES = 10 * 1024 * 1024
 JST = timezone(timedelta(hours=9))
 SERVICE_REFRESH_PROGRAMS = (
+    "boatrace-collector",
+    "boatrace-conditional-market-shadow",
     "boatrace-dashboard",
     "boatrace-improvement-consumer",
     "boatrace-daily-shadow-bundle-update",
     "boatrace-intraday-t300-daily-bundles",
+    "boatrace-intraday-t300-shadow",
     "boatrace-intraday-v23-shadow",
     "boatrace-intraday-v32-shadow",
+    "boatrace-market-blend-shadow",
+    "boatrace-market-cutoff-shadow",
+    "boatrace-market-predictor",
+    "boatrace-market-promotion",
+    "boatrace-market-residual-shadow",
+    "boatrace-market-shadow",
+    "boatrace-odds-shadow",
+    "boatrace-odds-shadow-provisional",
     "boatrace-stable-cell-shadow",
     "boatrace-quota-ceil-shadow",
     "boatrace-raw-guard-shadow",
+    "boatrace-work-tracking-sync",
 )
 SERVICE_REFRESH_RUNNER_PREFIX = "boatrace-evaluation-runner:"
 SERVICE_REFRESH_SCHEDULER = "boatrace-evaluation-scheduler"
