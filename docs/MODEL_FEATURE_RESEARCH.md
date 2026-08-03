@@ -506,6 +506,32 @@ authorization gates and zero-stake fallback. Matched-window job 11895 evaluates
 the change as joint bankroll evaluation v3. Both results remain provisional
 regardless of point ROI because only five complete operating days are available.
 
+### Strict-prior learned portfolio-edge calibration
+
+The v5 evaluator records the best GA portfolio for every race, including its
+joint-model lower edge, growth value, complete stake vector, and counterfactual
+realized return. These records are evaluation teachers only and never alter the
+same race or same day's purchase decision.
+
+`joint_edge_calibrated_replay_v1` is the first role-separated downstream model.
+Before each new date it fits an isotonic mapping from predicted portfolio gross
+return to realized gross return using only complete earlier dates. Whole-day
+bootstrap resampling supplies a 95% lower bound. A base joint-feasible portfolio
+is replayed only when that learned gross-return lower bound exceeds
+`1 + calibration_margin`; insufficient support is an explicit no-bet state.
+The replay preserves 100-yen units, daily cash, recorded settlement availability
+and reuse of matured profit. If available cash is lower than the recorded
+candidate stake, the complete vector is proportionally reduced in integer units.
+
+This stage is deliberately a fast counterfactual replay, not production
+promotion evidence. It inherits and identifies the base joint scenario and
+integer-settlement audit, stores a new evaluation protocol ID, and requires 30
+calibration-ready days, 1,000 ready races, 200 tickets, 20 hits, positive profit,
+ROI day-bootstrap lower bound above one, and profit after removing the largest
+hit before it can become a promotion candidate. A promising replay must then be
+confirmed by rerunning the full joint optimizer with the learned gate inside
+each strict walk-forward day.
+
 ### 2026-08-03 residual and dependence calibration comparison
 
 Jobs 11799, 11805, 11806 and 11808 reused the exact job-11785 population: 713

@@ -7951,8 +7951,12 @@ def model_performance_audit_snapshot(
 ) -> tuple[str, list[dict[str, Any]]]:
     rows = [
         row for row in status.get("jobs", [])
-        if "joint_bankroll_strict_walk_forward" in str(
-            row.get("name") or row.get("model_key") or ""
+        if any(
+            marker in str(row.get("name") or row.get("model_key") or "")
+            for marker in (
+                "joint_bankroll_strict_walk_forward",
+                "joint_edge_calibrated_replay",
+            )
         )
     ]
     rows.sort(key=lambda row: int(row.get("job_id") or 0), reverse=True)
