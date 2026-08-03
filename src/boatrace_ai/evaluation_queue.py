@@ -3417,6 +3417,59 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             and len(selected_purchase_values) == selected_portfolios
             and all(value > buy_margin for value in selected_purchase_values)
         )
+        joint_audit = payload.get("joint_value_audit")
+        joint_audit = joint_audit if isinstance(joint_audit, dict) else {}
+        settlement_audit = payload.get("settlement_audit")
+        settlement_audit = (
+            settlement_audit if isinstance(settlement_audit, dict) else {}
+        )
+        summary.update({
+            "joint_audit_recorded": bool(joint_audit.get("recorded")),
+            "joint_audited_portfolios": joint_audit.get(
+                "audited_portfolios"
+            ),
+            "joint_moment_observations": joint_audit.get(
+                "moment_observations"
+            ),
+            "joint_shared_scenarios": joint_audit.get(
+                "shared_probability_price_scenarios"
+            ),
+            "joint_portfolio_path_aggregation": joint_audit.get(
+                "portfolio_path_aggregation"
+            ),
+            "joint_complete_vector_repricing": joint_audit.get(
+                "complete_vector_repricing"
+            ),
+            "joint_parameter_draws_min": joint_audit.get(
+                "parameter_draws_min"
+            ),
+            "joint_inner_ess_min": joint_audit.get(
+                "inner_effective_samples_min"
+            ),
+            "joint_covariance_mean": joint_audit.get(
+                "probability_multiplier_covariance_mean"
+            ),
+            "joint_negative_covariance_fraction": joint_audit.get(
+                "negative_covariance_fraction"
+            ),
+            "joint_independence_overstatement_mean": joint_audit.get(
+                "independence_approximation_overstatement_mean"
+            ),
+            "settlement_integer_yen": settlement_audit.get(
+                "integer_yen_accounting"
+            ),
+            "settlement_self_impact_repricing": settlement_audit.get(
+                "self_impact_repricing"
+            ),
+            "settlement_refund_supported": bool(
+                settlement_audit.get("full_refund_terminal_states")
+                or settlement_audit.get("partial_refund_supported")
+            ) if settlement_audit else None,
+            "settlement_special_payout_supported": settlement_audit.get(
+                "special_payout_addition_supported"
+            ),
+            "settlement_rounding": settlement_audit.get("rounding"),
+        })
         summary.update({
             "joint_purchase_value_minimum": (
                 min(selected_purchase_values)

@@ -845,7 +845,7 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                 elif parsed.path == "/api/accuracy":
                     send_json(self, accuracy_cached(db_path, query))
                 elif parsed.path == "/reports/models":
-                    send_html(self, MODEL_REPORT_HTML)
+                    send_html(self, model_performance_html(db_path))
                 elif parsed.path == "/api/reports/model-performance":
                     send_json(
                         self,
@@ -1462,7 +1462,7 @@ def _model_performance_report_contract(
         None,
     )
     return {
-        "version": "model-performance-v6",
+        "version": "model-performance-v7",
         "principles": [
             "異なる評価母集団の数値は横比較しない",
             "損失は艇Entry LLと3連単LLを区別する",
@@ -3051,6 +3051,50 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "probability_roi_above_one": _float_or_none(
                     metrics.get("probability_roi_above_one")
                 ),
+                "joint_audit_recorded": metrics.get("joint_audit_recorded"),
+                "joint_audited_portfolios": metrics.get(
+                    "joint_audited_portfolios"
+                ),
+                "joint_moment_observations": metrics.get(
+                    "joint_moment_observations"
+                ),
+                "joint_shared_scenarios": metrics.get(
+                    "joint_shared_scenarios"
+                ),
+                "joint_portfolio_path_aggregation": metrics.get(
+                    "joint_portfolio_path_aggregation"
+                ),
+                "joint_complete_vector_repricing": metrics.get(
+                    "joint_complete_vector_repricing"
+                ),
+                "joint_parameter_draws_min": metrics.get(
+                    "joint_parameter_draws_min"
+                ),
+                "joint_inner_ess_min": _float_or_none(
+                    metrics.get("joint_inner_ess_min")
+                ),
+                "joint_covariance_mean": _float_or_none(
+                    metrics.get("joint_covariance_mean")
+                ),
+                "joint_negative_covariance_fraction": _float_or_none(
+                    metrics.get("joint_negative_covariance_fraction")
+                ),
+                "joint_independence_overstatement_mean": _float_or_none(
+                    metrics.get("joint_independence_overstatement_mean")
+                ),
+                "settlement_integer_yen": metrics.get(
+                    "settlement_integer_yen"
+                ),
+                "settlement_self_impact_repricing": metrics.get(
+                    "settlement_self_impact_repricing"
+                ),
+                "settlement_refund_supported": metrics.get(
+                    "settlement_refund_supported"
+                ),
+                "settlement_special_payout_supported": metrics.get(
+                    "settlement_special_payout_supported"
+                ),
+                "settlement_rounding": metrics.get("settlement_rounding"),
                 "joint_purchase_value_minimum": _float_or_none(
                     metrics.get("joint_purchase_value_minimum")
                 ),
@@ -3632,6 +3676,50 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "probability_roi_above_one": _float_or_none(
                     candidate_metrics.get("probability_roi_above_one")
                 ),
+                "joint_audit_recorded": candidate_metrics.get("joint_audit_recorded"),
+                "joint_audited_portfolios": candidate_metrics.get(
+                    "joint_audited_portfolios"
+                ),
+                "joint_moment_observations": candidate_metrics.get(
+                    "joint_moment_observations"
+                ),
+                "joint_shared_scenarios": candidate_metrics.get(
+                    "joint_shared_scenarios"
+                ),
+                "joint_portfolio_path_aggregation": candidate_metrics.get(
+                    "joint_portfolio_path_aggregation"
+                ),
+                "joint_complete_vector_repricing": candidate_metrics.get(
+                    "joint_complete_vector_repricing"
+                ),
+                "joint_parameter_draws_min": candidate_metrics.get(
+                    "joint_parameter_draws_min"
+                ),
+                "joint_inner_ess_min": _float_or_none(
+                    candidate_metrics.get("joint_inner_ess_min")
+                ),
+                "joint_covariance_mean": _float_or_none(
+                    candidate_metrics.get("joint_covariance_mean")
+                ),
+                "joint_negative_covariance_fraction": _float_or_none(
+                    candidate_metrics.get("joint_negative_covariance_fraction")
+                ),
+                "joint_independence_overstatement_mean": _float_or_none(
+                    candidate_metrics.get("joint_independence_overstatement_mean")
+                ),
+                "settlement_integer_yen": candidate_metrics.get(
+                    "settlement_integer_yen"
+                ),
+                "settlement_self_impact_repricing": candidate_metrics.get(
+                    "settlement_self_impact_repricing"
+                ),
+                "settlement_refund_supported": candidate_metrics.get(
+                    "settlement_refund_supported"
+                ),
+                "settlement_special_payout_supported": candidate_metrics.get(
+                    "settlement_special_payout_supported"
+                ),
+                "settlement_rounding": candidate_metrics.get("settlement_rounding"),
                 "joint_purchase_value_minimum": _float_or_none(
                     candidate_metrics.get("joint_purchase_value_minimum")
                 ),
@@ -7805,7 +7893,124 @@ def _looks_versioned(name: str) -> bool:
 
 ROADMAP_REPORT_HTML = _load_template("roadmap_report.html")
 
+def _audit_number(value: object, digits: int = 4) -> str:
+    if value is None:
+        return "未記録"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError, OverflowError):
+        return "未記録"
+
+
+def model_performance_audit_snapshot(
+    status: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    rows = [
+        row for row in status.get("jobs", [])
+        if "joint_bankroll_strict_walk_forward" in str(
+            row.get("name") or row.get("model_key") or ""
+        )
+    ]
+    rows.sort(key=lambda row: int(row.get("job_id") or 0), reverse=True)
+    audit_rows = []
+    rendered = []
+    for row in rows[:12]:
+        audit = {
+            key: row.get(key)
+            for key in (
+                "job_id", "name", "status", "evaluation_days",
+                "evaluated_races", "joint_purchase_value_minimum",
+                "joint_purchase_safety_margin",
+                "joint_purchase_value_gate_passed", "roi", "profit_yen",
+                "daily_cluster_bootstrap_roi_lower_95",
+                "formal_roi_gate_passed", "roi_without_largest_hit",
+                "max_drawdown_yen", "joint_audit_recorded",
+                "joint_audited_portfolios", "joint_moment_observations",
+                "joint_shared_scenarios", "joint_portfolio_path_aggregation",
+                "joint_complete_vector_repricing", "joint_parameter_draws_min",
+                "joint_inner_ess_min", "joint_covariance_mean",
+                "joint_negative_covariance_fraction",
+                "joint_independence_overstatement_mean",
+                "settlement_integer_yen", "settlement_self_impact_repricing",
+                "settlement_refund_supported",
+                "settlement_special_payout_supported",
+                "day_venue_roi_lower_95", "venue_meeting_roi_lower_95",
+                "bootstrap_condition_id",
+            )
+        }
+        audit_rows.append(audit)
+        recorded = audit["joint_audit_recorded"] is True
+        structure = (
+            "共同経路 / portfolio ES / 完全vector再価格"
+            if recorded and all(
+                audit.get(key) is True for key in (
+                    "joint_shared_scenarios",
+                    "joint_portfolio_path_aggregation",
+                    "joint_complete_vector_repricing",
+                )
+            ) else "旧成果物: 結合診断未記録"
+        )
+        settlement = (
+            "整数円 / 自己投票 / 返還 / 特別払戻"
+            if all(audit.get(key) is True for key in (
+                "settlement_integer_yen", "settlement_self_impact_repricing",
+                "settlement_refund_supported",
+                "settlement_special_payout_supported",
+            )) else "旧成果物: 決済監査未記録"
+        )
+        condition = str(audit.get("bootstrap_condition_id") or "未記録")
+        cells = [
+            f"#{audit.get('job_id') or '-'} {audit.get('name') or '-'}",
+            f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
+            f"{_audit_number(audit.get('joint_purchase_value_minimum'))} > {_audit_number(audit.get('joint_purchase_safety_margin'))}",
+            f"ROI {_audit_number(audit.get('roi'))} / LCB {_audit_number(audit.get('daily_cluster_bootstrap_roi_lower_95'))}",
+            f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / 独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
+            f"外側 {audit.get('joint_parameter_draws_min') or '未記録'} / 内側ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
+            structure,
+            settlement,
+            f"日x場 {_audit_number(audit.get('day_venue_roi_lower_95'))} / 節 {_audit_number(audit.get('venue_meeting_roi_lower_95'))}",
+            condition[:16],
+        ]
+        rendered.append(
+            "<tr>" + "".join(
+                f"<td>{html.escape(str(cell))}</td>" for cell in cells
+            ) + "</tr>"
+        )
+    if not rendered:
+        rendered.append(
+            '<tr><td colspan="10">結合資金評価の数値成果物なし</td></tr>'
+        )
+    snapshot_json = json.dumps(
+        {"generated_at": status.get("generated_at"), "rows": audit_rows},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).replace("<", "\\u003c")
+    section = (
+        '<section id="serverAuditSection" class="report-group purchase">'
+        '<div class="group-heading"><h2>結合価値監査・サーバ実測値</h2>'
+        '<span class="scope-note">JavaScript不要・公開HTMLに埋込</span></div>'
+        '<div class="panel"><div class="table-scroll"><table class="metric-table">'
+        '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
+        '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
+        '<th>外側 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
+        '<th>感度LCB</th><th>条件ID</th></tr></thead><tbody>'
+        + "".join(rendered)
+        + '</tbody></table></div></div></section>'
+        f'<script id="joint-audit-data" type="application/json">{snapshot_json}</script>'
+    )
+    return section, audit_rows
+
+
+def model_performance_html(db_path: Path) -> str:
+    section, _rows = model_performance_audit_snapshot(
+        _database_evaluation_status(db_path)
+    )
+    anchor = '  <section id="purposeSection"'
+    return MODEL_REPORT_HTML.replace(anchor, section + "\n" + anchor, 1)
+
+
 MODEL_REPORT_HTML = _load_template("model_report.html")
+
 
 TELEBOAT_REPORT_HTML = _load_template("teleboat_report.html")
 

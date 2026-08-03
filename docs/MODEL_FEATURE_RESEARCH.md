@@ -420,6 +420,13 @@ a condition ID covering the quantile method, sample count, block definition and
 seed, with independent day-by-venue and consecutive venue-meeting blocks shown
 as sensitivity analyses.
 
+Evaluation artifact v4 also persists the observed probability-multiplier
+covariance, the edge overstatement from the independent approximation, inner
+scenario ESS, outer draw count, portfolio-path aggregation, complete-vector
+repricing and integer settlement capabilities. The public model report embeds a
+compact server-rendered table and JSON payload, so these values and explicit
+legacy `not recorded` states are auditable without executing browser JavaScript.
+
 Current maturity is stage 3 of 6: late research. Stage 4 requires a fully frozen
 model, calibration, genome and purchase threshold over at least 30 previously
 unseen consecutive days, positive formal purchase value, sealed ROI lower bound

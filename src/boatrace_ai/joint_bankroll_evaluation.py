@@ -31,7 +31,7 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v3"
+EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v4"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 
@@ -232,6 +232,139 @@ def _average_metrics(rows: Sequence[Mapping[str, float]]) -> dict[str, float]:
     return {
         key: fsum(float(row[key]) for row in rows) / len(rows)
         for key in rows[0]
+    }
+
+
+def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {"recorded": False, "reason": "no_selected_portfolio"}
+    moments = []
+    for draw in value.get("moments_by_draw") or []:
+        if not isinstance(draw, Mapping):
+            continue
+        for ticket in (draw.get("tickets") or {}).values():
+            if isinstance(ticket, Mapping):
+                moments.append(ticket)
+    covariances = [
+        float(row["probability_multiplier_covariance"])
+        for row in moments
+        if row.get("probability_multiplier_covariance") is not None
+    ]
+    overstatements = [
+        float(row["ordinary_hit_independence_approximation_edge"])
+        - float(row["joint_expected_edge"])
+        for row in moments
+        if row.get("ordinary_hit_independence_approximation_edge") is not None
+        and row.get("joint_expected_edge") is not None
+    ]
+    return {
+        "recorded": True,
+        "evaluator_version": value.get("version"),
+        "shared_probability_price_scenarios": True,
+        "parameter_draws": value.get("parameter_draws"),
+        "inner_aggregation": value.get("inner_aggregation"),
+        "inner_tail_fraction": value.get("inner_tail_fraction"),
+        "inner_effective_samples_min": value.get(
+            "inner_effective_samples_min"
+        ),
+        "inner_tail_effective_samples_min": value.get(
+            "inner_tail_effective_samples_min"
+        ),
+        "outer_alpha": value.get("outer_alpha"),
+        "outer_quantile_method": value.get("outer_quantile_method"),
+        "portfolio_path_aggregation": (
+            value.get("inner_aggregation")
+            == "portfolio_path_weighted_lower_tail_mean"
+        ),
+        "complete_vector_repricing": bool(
+            value.get("marginal_contributions_computed")
+        ),
+        "moment_observations": len(moments),
+        "probability_multiplier_covariance_mean": (
+            fsum(covariances) / len(covariances) if covariances else None
+        ),
+        "probability_multiplier_covariance_min": (
+            min(covariances) if covariances else None
+        ),
+        "probability_multiplier_covariance_max": (
+            max(covariances) if covariances else None
+        ),
+        "negative_covariance_fraction": (
+            sum(value < 0.0 for value in covariances) / len(covariances)
+            if covariances else None
+        ),
+        "independence_approximation_overstatement_mean": (
+            fsum(overstatements) / len(overstatements)
+            if overstatements else None
+        ),
+        "independence_approximation_overstatement_max": (
+            max(overstatements) if overstatements else None
+        ),
+    }
+
+
+def _aggregate_joint_value_audits(
+    audits: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    recorded = [row for row in audits if row.get("recorded")]
+    if not recorded:
+        return {
+            "recorded": False,
+            "audited_portfolios": 0,
+            "reason": "no_authorized_portfolio_with_audit",
+        }
+    weights = [max(1, int(row.get("moment_observations") or 0)) for row in recorded]
+    total_weight = sum(weights)
+
+    def weighted(field: str) -> float | None:
+        pairs = [
+            (float(row[field]), weight)
+            for row, weight in zip(recorded, weights)
+            if row.get(field) is not None
+        ]
+        denominator = sum(weight for _value, weight in pairs)
+        return (
+            fsum(value * weight for value, weight in pairs) / denominator
+            if denominator else None
+        )
+
+    ess_values = [
+        float(row["inner_effective_samples_min"])
+        for row in recorded
+        if row.get("inner_effective_samples_min") is not None
+    ]
+    return {
+        "recorded": True,
+        "audited_portfolios": len(recorded),
+        "moment_observations": sum(
+            int(row.get("moment_observations") or 0) for row in recorded
+        ),
+        "shared_probability_price_scenarios": all(
+            row.get("shared_probability_price_scenarios") is True
+            for row in recorded
+        ),
+        "portfolio_path_aggregation": all(
+            row.get("portfolio_path_aggregation") is True for row in recorded
+        ),
+        "complete_vector_repricing": all(
+            row.get("complete_vector_repricing") is True for row in recorded
+        ),
+        "parameter_draws_min": min(
+            int(row.get("parameter_draws") or 0) for row in recorded
+        ),
+        "inner_effective_samples_min": min(ess_values) if ess_values else None,
+        "probability_multiplier_covariance_mean": weighted(
+            "probability_multiplier_covariance_mean"
+        ),
+        "negative_covariance_fraction": weighted(
+            "negative_covariance_fraction"
+        ),
+        "independence_approximation_overstatement_mean": weighted(
+            "independence_approximation_overstatement_mean"
+        ),
+        "outer_quantile_method": "inverted_cdf",
+        "weighting": "ticket_draw_moment_count",
+        "weight_total": total_weight,
     }
 
 
@@ -656,6 +789,9 @@ def run_joint_bankroll_evaluation(
                 selected["metrics"].get("bankroll_growth", {}).get("growth")
                 or {}
             )
+            joint_value_audit = _joint_value_audit(
+                selected.get("joint_value")
+            )
             best_search = search.get("best_search_candidate") or {}
             best_search_metrics = best_search.get("metrics") or {}
             race_rows.append({
@@ -701,6 +837,7 @@ def run_joint_bankroll_evaluation(
                 ),
                 "pool_scale_lower_bound_yen": pool_bound.total_sales_yen,
                 "pool_scale_method": pool_bound.method,
+                "joint_value_audit": joint_value_audit,
             })
         for _available_at, final_receipt in sorted(pending_receipts):
             balance += final_receipt
@@ -787,6 +924,26 @@ def run_joint_bankroll_evaluation(
         for race in purchased_races
         if race.get("portfolio_lower_quantile") is not None
     ]
+    joint_value_audit = _aggregate_joint_value_audits([
+        race.get("joint_value_audit") or {}
+        for day in daily
+        for race in day["races"]
+    ])
+    settlement_audit = {
+        "version": "parimutuel_integer_settlement_v1",
+        "integer_yen_accounting": True,
+        "self_impact_repricing": True,
+        "payout_rate_numerator": settlement_rules.payout_rate_numerator,
+        "payout_rate_denominator": settlement_rules.payout_rate_denominator,
+        "face_unit_yen": settlement_rules.face_unit_yen,
+        "purchase_unit_yen": settlement_rules.purchase_unit_yen,
+        "full_refund_terminal_states": list(
+            settlement_rules.refund_terminal_states
+        ),
+        "partial_refund_supported": True,
+        "special_payout_addition_supported": True,
+        "rounding": "integer_pool_floor_per_face_unit",
+    }
     joint_purchase_value = {
         "definition": (
             "Q_alpha over outer parameter draws of the lower-tail mean "
@@ -919,6 +1076,8 @@ def run_joint_bankroll_evaluation(
         "probability_metrics": probability_metrics,
         "primary_bankroll": primary_bankroll,
         "joint_purchase_value": joint_purchase_value,
+        "joint_value_audit": joint_value_audit,
+        "settlement_audit": settlement_audit,
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
         "promotion_gate_passed": sum(gate.values()),
