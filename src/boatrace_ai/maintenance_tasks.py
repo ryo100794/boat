@@ -5,9 +5,10 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
 from .db import connection
@@ -28,6 +29,21 @@ CANONICAL_MARKDOWN = frozenset(
     }
 )
 DEFAULT_MAX_TRACKED_FILE_BYTES = 10 * 1024 * 1024
+JST = timezone(timedelta(hours=9))
+SERVICE_REFRESH_PROGRAMS = (
+    "boatrace-dashboard",
+    "boatrace-improvement-consumer",
+    "boatrace-daily-shadow-bundle-update",
+    "boatrace-intraday-t300-daily-bundles",
+    "boatrace-intraday-v23-shadow",
+    "boatrace-intraday-v32-shadow",
+    "boatrace-stable-cell-shadow",
+    "boatrace-quota-ceil-shadow",
+    "boatrace-raw-guard-shadow",
+)
+SERVICE_REFRESH_RUNNER_PREFIX = "boatrace-evaluation-runner:"
+SERVICE_REFRESH_SCHEDULER = "boatrace-evaluation-scheduler"
+SERVICE_REFRESH_WINDOW_HOURS_JST = frozenset(range(0, 5))
 _MARKDOWN_LINK = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<(?P<angle>[^>]+)>|(?P<plain>[^\s)]+))"
 )
@@ -374,15 +390,200 @@ def _git_value(app_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _deployment_state_path(app_root: Path) -> Path:
+    return app_root / "data" / "runtime" / "repository-deployment-state.json"
+
+
+def _deployment_state(app_root: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            _deployment_state_path(app_root).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _refresh_pending(state: dict[str, Any], head: str, now: datetime) -> bool:
+    if state.get("status") != "scheduled" or state.get("head") != head:
+        return False
+    try:
+        scheduled_at = datetime.fromisoformat(str(state["scheduled_at"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc) - scheduled_at.astimezone(
+        timezone.utc
+    ) < timedelta(hours=2)
+
+
+def _schedule_service_refresh(
+    app_root: Path,
+    *,
+    db: str,
+    head: str,
+    now: datetime,
+) -> dict[str, Any]:
+    state_path = _deployment_state_path(app_root)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    scheduled = {
+        "status": "scheduled",
+        "head": head,
+        "scheduled_at": now.astimezone(timezone.utc).isoformat(),
+    }
+    _json_file(state_path, scheduled)
+    log_path = app_root / "logs" / "runtime" / "repository-service-refresh.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(app_root / ".venv" / "bin" / "python"),
+        "-m",
+        "boatrace_ai.maintenance_tasks",
+        "refresh-services",
+        "--app-root",
+        str(app_root),
+        "--head",
+        head,
+        "--db",
+        db,
+        "--delay-seconds",
+        "10",
+    ]
+    with log_path.open("ab") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=app_root,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    return {
+        "action": "scheduled",
+        "pid": process.pid,
+        "head": head,
+        "state_path": str(state_path),
+        "log_path": str(log_path),
+    }
+
+
+def refresh_services(
+    app_root: Path,
+    *,
+    db: str,
+    head: str,
+    delay_seconds: int = 10,
+) -> dict[str, Any]:
+    """Restart only active code consumers after an idle, overnight sync."""
+    if delay_seconds < 0 or delay_seconds > 60:
+        raise ValueError("delay_seconds must be between zero and 60")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", str(head).strip().lower()):
+        raise ValueError("head must be a git object hex digest")
+    if delay_seconds:
+        time.sleep(delay_seconds)
+    current_head = _git_value(app_root.resolve(), "rev-parse", "HEAD")
+    if current_head != head:
+        raise RuntimeError("repository HEAD changed before service refresh")
+    dirty_paths = [
+        line
+        for line in _git_value(
+            app_root.resolve(), "status", "--porcelain=v1"
+        ).splitlines()
+        if line
+    ]
+    if dirty_paths:
+        raise RuntimeError("repository became dirty before service refresh")
+    with connection(db) as conn:
+        active_row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM model_evaluation_jobs
+            WHERE category = 'evaluation' AND status = 'running'
+            """
+        ).fetchone()
+    active_evaluations = int(active_row["count"] if active_row else 0)
+    if active_evaluations:
+        payload = {
+            "status": "deferred_active_evaluation",
+            "head": head,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "active_evaluations": active_evaluations,
+            "restarted": [],
+        }
+        _json_file(_deployment_state_path(app_root), payload)
+        return payload
+    supervisorctl = app_root / ".venv" / "bin" / "supervisorctl"
+    config = app_root / "scripts" / "deployment" / "supervisord.conf"
+    status = subprocess.run(
+        [str(supervisorctl), "-c", str(config), "status"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(
+            "supervisor status failed: " + status.stdout.strip()
+        )
+    active: list[str] = []
+    for line in status.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "RUNNING":
+            active.append(fields[0])
+    allowed = [
+        name for name in SERVICE_REFRESH_PROGRAMS if name in active
+    ]
+    runners = sorted(
+        name for name in active
+        if name.startswith(SERVICE_REFRESH_RUNNER_PREFIX)
+    )
+    scheduler = (
+        [SERVICE_REFRESH_SCHEDULER]
+        if SERVICE_REFRESH_SCHEDULER in active else []
+    )
+    restarted: list[str] = []
+    for name in [*allowed, *runners, *scheduler]:
+        completed = subprocess.run(
+            [str(supervisorctl), "-c", str(config), "restart", name],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"supervisor restart {name} failed: {completed.stdout.strip()}"
+            )
+        restarted.append(name)
+    payload = {
+        "status": "completed",
+        "head": head,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "active_before": active,
+        "restarted": restarted,
+        "skipped_stopped": [
+            name for name in SERVICE_REFRESH_PROGRAMS
+            if name not in active
+        ],
+    }
+    _json_file(_deployment_state_path(app_root), payload)
+    return payload
+
+
 def repository_sync(
     app_root: Path,
     output: Path,
     *,
     db: str,
     remote: str = "origin",
+    now: datetime | None = None,
+    schedule_refresh: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fetch and safely fast-forward a clean, idle deployment checkout."""
     app_root = app_root.resolve()
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
     before_head = _git_value(app_root, "rev-parse", "HEAD")
     branch = _git_value(
         app_root, "symbolic-ref", "--quiet", "--short", "HEAD"
@@ -443,9 +644,44 @@ def repository_sync(
         action = "fast_forwarded"
 
     after_head = _git_value(app_root, "rev-parse", "HEAD")
+    deployment = _deployment_state(app_root)
+    if action not in {"up_to_date", "fast_forwarded"}:
+        service_refresh = {
+            "action": "deferred_repository_not_ready",
+            "reason": action,
+            "head": after_head,
+        }
+    elif (
+        deployment.get("status") == "completed"
+        and deployment.get("head") == after_head
+    ):
+        service_refresh = {
+            "action": "up_to_date",
+            "head": after_head,
+        }
+    elif _refresh_pending(deployment, after_head, observed_at):
+        service_refresh = {
+            "action": "already_scheduled",
+            "head": after_head,
+            "scheduled_at": deployment.get("scheduled_at"),
+        }
+    elif observed_at.astimezone(JST).hour not in SERVICE_REFRESH_WINDOW_HOURS_JST:
+        service_refresh = {
+            "action": "deferred_outside_maintenance_window",
+            "head": after_head,
+            "maintenance_hours_jst": sorted(SERVICE_REFRESH_WINDOW_HOURS_JST),
+        }
+    else:
+        scheduler = schedule_refresh or _schedule_service_refresh
+        service_refresh = scheduler(
+            app_root,
+            db=db,
+            head=after_head,
+            now=observed_at,
+        )
     payload = {
         "status": "completed",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": observed_at.astimezone(timezone.utc).isoformat(),
         "app_root": str(app_root),
         "remote": remote,
         "branch": branch,
@@ -457,6 +693,7 @@ def repository_sync(
         "behind": behind,
         "active_evaluations": active_evaluations,
         "dirty_paths": dirty_paths,
+        "service_refresh": service_refresh,
     }
     _json_file(output, payload)
     return payload
@@ -488,6 +725,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--app-root", type=Path, required=True)
     sync.add_argument("--output", type=Path, required=True)
     sync.add_argument("--remote", default="origin")
+    refresh = sub.add_parser("refresh-services")
+    refresh.add_argument("--app-root", type=Path, required=True)
+    refresh.add_argument("--head", required=True)
+    refresh.add_argument("--db", required=True)
+    refresh.add_argument("--delay-seconds", type=int, default=10)
     return parser
 
 
@@ -511,6 +753,13 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             db=args.db,
             remote=args.remote,
+        )
+    elif args.command == "refresh-services":
+        refresh_services(
+            args.app_root.resolve(),
+            db=args.db,
+            head=args.head,
+            delay_seconds=args.delay_seconds,
         )
     return 0
 
