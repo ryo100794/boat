@@ -4,7 +4,7 @@ import argparse
 from collections import Counter
 from datetime import date, datetime, timedelta
 import hashlib
-from math import fsum, log
+from math import ceil, fsum, log
 import json
 from pathlib import Path
 import random
@@ -35,6 +35,7 @@ from .terminal_probability_oof import (
 EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v6"
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
+MINIMUM_OUTER_TAIL_OBSERVATIONS = 5
 
 
 def _canonical_sha256(value: object) -> str:
@@ -436,11 +437,20 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         if row.get("ordinary_hit_independence_approximation_edge") is not None
         and row.get("joint_expected_edge") is not None
     ]
+    outer_sample_count_r = int(value.get("parameter_draws") or 0)
+    minimum_outer_draws = int(value.get("minimum_outer_draws") or 0)
+    outer_alpha = float(value.get("outer_alpha") or 0.0)
+    outer_tail_observations = (
+        max(1, ceil(outer_alpha * outer_sample_count_r))
+        if outer_sample_count_r > 0 and outer_alpha > 0.0 else 0
+    )
     return {
         "recorded": True,
         "evaluator_version": value.get("version"),
         "shared_probability_price_scenarios": True,
-        "parameter_draws": value.get("parameter_draws"),
+        "outer_sample_count_r": outer_sample_count_r,
+        "parameter_draws": outer_sample_count_r,
+        "minimum_outer_draws": minimum_outer_draws,
         "inner_aggregation": value.get("inner_aggregation"),
         "inner_tail_fraction": value.get("inner_tail_fraction"),
         "inner_effective_samples_min": value.get(
@@ -449,7 +459,14 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "inner_tail_effective_samples_min": value.get(
             "inner_tail_effective_samples_min"
         ),
-        "outer_alpha": value.get("outer_alpha"),
+        "outer_alpha": outer_alpha,
+        "outer_tail_observations": outer_tail_observations,
+        "minimum_outer_tail_observations_for_promotion": (
+            MINIMUM_OUTER_TAIL_OBSERVATIONS
+        ),
+        "outer_tail_support_for_promotion": (
+            outer_tail_observations >= MINIMUM_OUTER_TAIL_OBSERVATIONS
+        ),
         "outer_quantile_method": value.get("outer_quantile_method"),
         "portfolio_path_aggregation": (
             value.get("inner_aggregation")
@@ -512,6 +529,19 @@ def _aggregate_joint_value_audits(
         for row in recorded
         if row.get("inner_effective_samples_min") is not None
     ]
+    outer_sample_counts = [
+        int(row.get("outer_sample_count_r") or row.get("parameter_draws") or 0)
+        for row in recorded
+    ]
+    minimum_outer_draws = [
+        int(row.get("minimum_outer_draws") or 0) for row in recorded
+    ]
+    outer_tail_observations = [
+        int(row.get("outer_tail_observations") or 0) for row in recorded
+    ]
+    outer_alphas = [
+        float(row.get("outer_alpha") or 0.0) for row in recorded
+    ]
     return {
         "recorded": True,
         "audited_portfolios": len(recorded),
@@ -528,8 +558,22 @@ def _aggregate_joint_value_audits(
         "complete_vector_repricing": all(
             row.get("complete_vector_repricing") is True for row in recorded
         ),
-        "parameter_draws_min": min(
-            int(row.get("parameter_draws") or 0) for row in recorded
+        "outer_sample_count_r_definition": (
+            "number_of_outer_model_or_parameter_uncertainty_draws"
+        ),
+        "outer_sample_count_r_min": min(outer_sample_counts),
+        "outer_sample_count_r_max": max(outer_sample_counts),
+        "parameter_draws_min": min(outer_sample_counts),
+        "minimum_outer_draws_max": max(minimum_outer_draws),
+        "outer_alpha_min": min(outer_alphas),
+        "outer_alpha_max": max(outer_alphas),
+        "outer_tail_observations_min": min(outer_tail_observations),
+        "outer_tail_observations_max": max(outer_tail_observations),
+        "minimum_outer_tail_observations_for_promotion": (
+            MINIMUM_OUTER_TAIL_OBSERVATIONS
+        ),
+        "outer_tail_support_for_promotion": (
+            min(outer_tail_observations) >= MINIMUM_OUTER_TAIL_OBSERVATIONS
         ),
         "inner_effective_samples_min": min(ess_values) if ess_values else None,
         "probability_multiplier_covariance_mean": weighted(
@@ -1184,6 +1228,11 @@ def run_joint_bankroll_evaluation(
             "portfolio expected edge"
         ),
         "outer_alpha": 0.05,
+        "outer_sample_count_r_requested": outer_draws,
+        "outer_tail_observations_requested": max(1, ceil(0.05 * outer_draws)),
+        "minimum_outer_tail_observations_for_promotion": (
+            MINIMUM_OUTER_TAIL_OBSERVATIONS
+        ),
         "inner_tail_fraction": inner_tail_fraction,
         "outer_quantile_method": "inverted_cdf",
         "selected_portfolios": len(purchased_races),
@@ -1294,6 +1343,9 @@ def run_joint_bankroll_evaluation(
         ),
         "joint_purchase_value_above_safety_margin": bool(
             joint_purchase_value["all_above_safety_margin"]
+        ),
+        "minimum_outer_tail_support": bool(
+            joint_value_audit.get("outer_tail_support_for_promotion")
         ),
     }
     promotion_eligible = all(gate.values())
