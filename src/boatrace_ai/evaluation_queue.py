@@ -37,6 +37,7 @@ PRODUCTION_TREND_POINT_MODEL_KEY = "production_trend_point_job_12012"
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
+PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID = 12_051
 PRODUCTION_TREND_POINT_EVALUATION_FROM = "2026-07-20"
 PRODUCTION_TREND_POINT_STRATEGY = (
     "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
@@ -1467,6 +1468,14 @@ def _standardized_holdout_contract(app_root: Path) -> tuple[str, str, str]:
     return training_through, holdout_start, holdout_end
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def build_command(
     job: dict[str, Any],
     *,
@@ -2147,6 +2156,7 @@ def build_command(
             "closing_odds_min_training_days",
             "closing_odds_min_training_races",
             "trend_point_registered_after",
+            "expected_model_sha256",
             "prospective_candidate",
         }
         unsupported = set(params) - allowed
@@ -2190,6 +2200,18 @@ def build_command(
             raise JobDependencyUnavailable(
                 f"market source model is not available yet: {model_input}"
             )
+        if params.get("expected_model_sha256") is not None:
+            expected_model_sha256 = str(
+                params["expected_model_sha256"]
+            ).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_model_sha256):
+                raise ValueError("expected_model_sha256 must be a SHA-256 hex digest")
+            actual_model_sha256 = _file_sha256(model_input)
+            if actual_model_sha256 != expected_model_sha256:
+                raise ValueError(
+                    "market source model SHA-256 does not match its prospective "
+                    "registration"
+                )
         baseline_model_input = None
         candidate_weight = None
         if has_baseline:
@@ -3401,7 +3423,8 @@ def build_command(
 
 
 METRIC_KEYS = (
-    "cached", "evaluated_races", "evaluation_races", "evaluation_days", "entry_log_loss",
+    "cached", "source_model_sha256", "evaluated_races", "evaluation_races",
+    "evaluation_days", "entry_log_loss",
     "comparison_role", "coefficient_optimizer", "ev_calibration_mode",
     "ev_calibration_usage", "evaluation_from", "evaluation_through",
     "selection_races", "holdout_races",
@@ -5945,7 +5968,12 @@ def seed_periodic_jobs(
         PRODUCTION_TREND_POINT_REGISTERED_AFTER
     ).date()
     prospective_through = jst_now.date() - timedelta(days=1)
-    if prospective_through > registered_after and jst_now.hour >= 3:
+    expected_model_sha256 = _production_trend_point_model_sha256(app_root)
+    if (
+        prospective_through > registered_after
+        and jst_now.hour >= 3
+        and expected_model_sha256 is not None
+    ):
         parameters = {
             "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
             "from_date": PRODUCTION_TREND_POINT_EVALUATION_FROM,
@@ -5957,9 +5985,14 @@ def seed_periodic_jobs(
             "trend_point_registered_after": (
                 PRODUCTION_TREND_POINT_REGISTERED_AFTER
             ),
+            "expected_model_sha256": expected_model_sha256,
             "timeout_seconds": 7_200,
             "prospective_candidate": {
-                "source_job_id": 12_012,
+                "source_model_job_id": 12_012,
+                "source_evaluation_job_id": (
+                    PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
+                ),
+                "expected_model_sha256": expected_model_sha256,
                 "policy": "trend_point_market_offset_discrete_multinomial_kelly",
                 "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
                 "evidence_dates": "strictly_after_registered_after",
@@ -6006,6 +6039,31 @@ def seed_periodic_jobs(
                 if job_id is not None:
                     inserted.append(job_id)
     return inserted
+
+
+def _production_trend_point_model_sha256(
+    app_root: Path | None,
+) -> str | None:
+    if app_root is None:
+        return None
+    result_path = (
+        app_root / "data" / "models" / "evaluation_queue"
+        / f"job-{PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID:08d}.json"
+    )
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    source_model = Path(str(payload.get("source_model") or ""))
+    source_model_sha256 = str(
+        payload.get("source_model_sha256") or ""
+    ).strip().lower()
+    if (
+        source_model.name != Path(PRODUCTION_TREND_POINT_MODEL_INPUT).name
+        or not re.fullmatch(r"[0-9a-f]{64}", source_model_sha256)
+    ):
+        return None
+    return source_model_sha256
 
 
 DEFAULT_WORK_TICKETS = (

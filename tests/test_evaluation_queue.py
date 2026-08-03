@@ -1935,6 +1935,7 @@ def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
 
 def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None:
     summary = summarize_result({
+        "source_model_sha256": "a" * 64,
         "trend_point_market_offset_kelly_walk_forward": {
             "status": "evaluating",
             "registered_after": "2026-08-03",
@@ -1975,6 +1976,7 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
     })
 
     assert summary["trend_point_prospective_registered_after"] == "2026-08-03"
+    assert summary["source_model_sha256"] == "a" * 64
     assert summary["trend_point_prospective_evaluation_days"] == 4
     assert summary["trend_point_prospective_tickets"] == 104
     assert summary["trend_point_prospective_roi"] == 1.275

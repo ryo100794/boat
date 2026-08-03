@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+
+import pytest
 
 from boatrace_ai.evaluation_queue import (
     PRODUCTION_TREND_POINT_MODEL_INPUT,
     PRODUCTION_TREND_POINT_MODEL_KEY,
     PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+    PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -25,11 +30,14 @@ class _CountRow(dict):
 
 class _IdleQueue:
     def execute(self, statement, params=()):
-        assert "COUNT(*)" in statement
+        assert "COUNT(*)" in statement or "SELECT job_id" in statement
         return self
 
     def fetchone(self):
         return _CountRow(count=0)
+
+    def fetchall(self):
+        return []
 
 
 def test_resource_gate_requires_memory_disk_and_idle_cpu() -> None:
@@ -179,6 +187,7 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
 
 def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_day(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     calls = []
 
@@ -187,9 +196,25 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
         return len(calls)
 
     monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+    root = tmp_path / "boat"
+    result = (
+        root / "data" / "models" / "evaluation_queue"
+        / f"job-{PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID:08d}.json"
+    )
+    result.parent.mkdir(parents=True)
+    expected_sha256 = "a" * 64
+    result.write_text(
+        json.dumps({
+            "source_model": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_sha256": expected_sha256,
+        }),
+        encoding="utf-8",
+    )
 
     inserted = seed_periodic_jobs(
-        _IdleQueue(), now=datetime(2026, 8, 5, 3, 1, tzinfo=timezone.utc)
+        _IdleQueue(),
+        now=datetime(2026, 8, 5, 3, 1, tzinfo=timezone.utc),
+        app_root=root,
     )
 
     assert inserted == [1, 2, 3, 4, 5, 6]
@@ -201,9 +226,12 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
     assert candidate["parameters"]["trend_point_registered_after"] == (
         PRODUCTION_TREND_POINT_REGISTERED_AFTER
     )
+    assert candidate["parameters"]["expected_model_sha256"] == expected_sha256
     registration = candidate["parameters"]["prospective_candidate"]
     assert registration == {
-        "source_job_id": 12_012,
+        "source_model_job_id": 12_012,
+        "source_evaluation_job_id": 12_051,
+        "expected_model_sha256": expected_sha256,
         "policy": "trend_point_market_offset_discrete_multinomial_kelly",
         "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
         "evidence_dates": "strictly_after_registered_after",
@@ -231,6 +259,9 @@ def test_fixed_trend_candidate_command_preserves_registration_boundary(
                 "trend_point_registered_after": (
                     PRODUCTION_TREND_POINT_REGISTERED_AFTER
                 ),
+                "expected_model_sha256": hashlib.sha256(
+                    b"fixed-model"
+                ).hexdigest(),
                 "prospective_candidate": {
                     "source_job_id": 12_012,
                     "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
@@ -244,6 +275,22 @@ def test_fixed_trend_candidate_command_preserves_registration_boundary(
 
     boundary_index = command.index("--trend-point-registered-after")
     assert command[boundary_index + 1] == PRODUCTION_TREND_POINT_REGISTERED_AFTER
+
+    with pytest.raises(ValueError, match="prospective registration"):
+        build_command(
+            {
+                "job_id": 17,
+                "task_type": "market_residual_walk_forward",
+                "parameters": {
+                    "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+                    "from_date": "2026-07-20",
+                    "expected_model_sha256": "0" * 64,
+                },
+            },
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
