@@ -8130,6 +8130,20 @@ def model_performance_audit_snapshot(
                 "evaluation_popularity_bands_at_t", "bootstrap_condition_id",
             )
         }
+        if (
+            audit.get("joint_independence_bias_mean") is None
+            and audit.get("joint_covariance_mean") is not None
+        ):
+            audit["joint_independence_bias_mean"] = (
+                -float(audit["joint_covariance_mean"])
+            )
+        if (
+            audit.get("joint_positive_independence_bias_fraction") is None
+            and audit.get("joint_negative_covariance_fraction") is not None
+        ):
+            audit["joint_positive_independence_bias_fraction"] = audit[
+                "joint_negative_covariance_fraction"
+            ]
         audit_rows.append(audit)
         recorded = audit["joint_audit_recorded"] is True
         structure = (

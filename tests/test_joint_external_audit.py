@@ -337,3 +337,20 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "再標本化条件ID" in section
     assert "protocol123" in section
 
+
+
+def test_legacy_covariance_reconstructs_signed_independence_bias() -> None:
+    section, rows = model_performance_audit_snapshot({
+        "jobs": [{
+            "name": "joint_bankroll_strict_walk_forward_legacy",
+            "joint_covariance_mean": -0.25,
+            "joint_negative_covariance_fraction": 0.8,
+        }],
+    })
+
+    assert (
+        "独立近似バイアス 0.250000 (過大評価) "
+        "[未記録..未記録]"
+    ) in section
+    assert rows[0]["joint_independence_bias_mean"] == 0.25
+    assert rows[0]["joint_positive_independence_bias_fraction"] == 0.8
