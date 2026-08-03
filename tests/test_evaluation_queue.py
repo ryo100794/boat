@@ -1933,6 +1933,46 @@ def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
     assert summary["holdout_temporal_fold_rois"] == [1.10, 0.94, 1.03]
 
 
+def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None:
+    summary = summarize_result({
+        "trend_point_market_offset_kelly_walk_forward": {
+            "status": "evaluating",
+            "registered_after": "2026-08-03",
+            "evaluation_days": 4,
+            "evaluated_races": 612,
+            "tickets": 104,
+            "hit_tickets": 17,
+            "stake_yen": 12_000,
+            "return_yen": 15_300,
+            "profit_yen": 3_300,
+            "roi": 1.275,
+            "roi_without_largest_hit": 1.08,
+            "effective_hit_count": 12.4,
+            "promotion_eligible": False,
+            "bootstrap": {
+                "roi_ci95_lower": 0.91,
+                "probability_roi_above_one": 0.88,
+            },
+            "promotion_gate": {
+                "sample_size_pass": False,
+                "roi_pass": True,
+                "pass": False,
+            },
+        }
+    })
+
+    assert summary["trend_point_prospective_registered_after"] == "2026-08-03"
+    assert summary["trend_point_prospective_evaluation_days"] == 4
+    assert summary["trend_point_prospective_tickets"] == 104
+    assert summary["trend_point_prospective_roi"] == 1.275
+    assert summary["trend_point_prospective_roi_without_largest_hit"] == 1.08
+    assert summary[
+        "trend_point_prospective_daily_cluster_bootstrap_roi_lower_95"
+    ] == 0.91
+    assert summary["trend_point_prospective_probability_roi_above_one"] == 0.88
+    assert summary["trend_point_prospective_promotion_gate"]["pass"] is False
+
+
 def test_result_summary_preserves_bankroll_model_protocol() -> None:
     summary = summarize_result({
         "comparison_role": "bankroll_policy_model",

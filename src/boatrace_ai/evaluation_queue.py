@@ -32,6 +32,15 @@ from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 
 
 JST = ZoneInfo("Asia/Tokyo")
+PRODUCTION_TREND_POINT_REGISTERED_AFTER = "2026-08-03"
+PRODUCTION_TREND_POINT_MODEL_KEY = "production_trend_point_job_12012"
+PRODUCTION_TREND_POINT_MODEL_INPUT = (
+    "data/models/evaluation_queue/job-00012012.joblib"
+)
+PRODUCTION_TREND_POINT_EVALUATION_FROM = "2026-07-20"
+PRODUCTION_TREND_POINT_STRATEGY = (
+    "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
+)
 DEFAULT_DSN = "host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app"
 STANDARDIZED_SELECTED_CACHE_DIR = Path(
     "/workspace/boat/data/models/standardized_365d_v2/selected_cache"
@@ -2137,6 +2146,8 @@ def build_command(
             "v25_probability_artifact",
             "closing_odds_min_training_days",
             "closing_odds_min_training_races",
+            "trend_point_registered_after",
+            "prospective_candidate",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -2281,6 +2292,13 @@ def build_command(
                 _number(params, "minimum_day_coverage", 1.0, 0.5, 1.0)
             ),
         ]
+        if params.get("trend_point_registered_after") is not None:
+            registered_after = _date(
+                params, "trend_point_registered_after"
+            )
+            command.extend([
+                "--trend-point-registered-after", registered_after,
+            ])
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",
@@ -4399,6 +4417,33 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"top5_narrow_retrospective_{key}"] = (
                     retrospective_top5[key]
                 )
+    trend_point = payload.get(
+        "trend_point_market_offset_kelly_walk_forward"
+    )
+    if isinstance(trend_point, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days",
+            "evaluated_races", "tickets", "hit_tickets", "stake_yen",
+            "return_yen", "profit_yen", "roi", "winning_days",
+            "purchase_days", "roi_without_largest_hit",
+            "effective_hit_count", "largest_hit_return_share",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "probability_roi_above_one", "promotion_eligible",
+        ):
+            if key in trend_point:
+                summary[f"trend_point_prospective_{key}"] = trend_point[key]
+        if isinstance(trend_point.get("promotion_gate"), dict):
+            summary["trend_point_prospective_promotion_gate"] = dict(
+                trend_point["promotion_gate"]
+            )
+        trend_bootstrap = trend_point.get("bootstrap")
+        if isinstance(trend_bootstrap, dict):
+            summary["trend_point_prospective_daily_cluster_bootstrap_roi_lower_95"] = (
+                trend_bootstrap.get("roi_ci95_lower")
+            )
+            summary["trend_point_prospective_probability_roi_above_one"] = (
+                trend_bootstrap.get("probability_roi_above_one")
+            )
     v33_forecast_diagnostic = payload.get(
         "v33_v25_top1_narrow_forecast_only_diagnostic"
     )
@@ -5875,6 +5920,49 @@ def seed_periodic_jobs(
         )
         if job_id is not None:
             inserted.append(job_id)
+    jst_now = now.astimezone(JST)
+    registered_after = datetime.fromisoformat(
+        PRODUCTION_TREND_POINT_REGISTERED_AFTER
+    ).date()
+    prospective_through = jst_now.date() - timedelta(days=1)
+    if prospective_through > registered_after and jst_now.hour >= 3:
+        parameters = {
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "from_date": PRODUCTION_TREND_POINT_EVALUATION_FROM,
+            "through_date": prospective_through.isoformat(),
+            "daily_budget_yen": 10_000,
+            "calibrator_strategy": PRODUCTION_TREND_POINT_STRATEGY,
+            "min_calibration_days": 2,
+            "minimum_day_coverage": 1.0,
+            "trend_point_registered_after": (
+                PRODUCTION_TREND_POINT_REGISTERED_AFTER
+            ),
+            "timeout_seconds": 7_200,
+            "prospective_candidate": {
+                "source_job_id": 12_012,
+                "policy": "trend_point_market_offset_discrete_multinomial_kelly",
+                "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+                "evidence_dates": "strictly_after_registered_after",
+                "selection_data_is_diagnostic_only": True,
+                "real_betting_enabled": False,
+            },
+        }
+        key = dedupe_key(
+            "market_residual_walk_forward",
+            PRODUCTION_TREND_POINT_MODEL_KEY,
+            parameters,
+        )
+        if not already_scheduled("market_residual_walk_forward", key):
+            job_id = enqueue_job(
+                conn,
+                task_type="market_residual_walk_forward",
+                model_key=PRODUCTION_TREND_POINT_MODEL_KEY,
+                parameters=parameters,
+                priority=44,
+                max_attempts=3,
+            )
+            if job_id is not None:
+                inserted.append(job_id)
     if app_root is not None:
         paths = periodic_model_cache_archive_paths(
             conn, app_root=app_root, now=now

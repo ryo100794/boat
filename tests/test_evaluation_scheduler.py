@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 
 from boatrace_ai.evaluation_queue import (
+    PRODUCTION_TREND_POINT_MODEL_INPUT,
+    PRODUCTION_TREND_POINT_MODEL_KEY,
+    PRODUCTION_TREND_POINT_REGISTERED_AFTER,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -172,6 +175,75 @@ def test_periodic_scheduler_enqueues_backup_aggregation_and_hygiene(monkeypatch)
     sync = next(row for row in calls if row["task_type"] == "repository_sync")
     assert sync["parameters"]["timeout_seconds"] == 300
     assert sync["priority"] == 25
+
+
+def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_day(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+
+    inserted = seed_periodic_jobs(
+        _IdleQueue(), now=datetime(2026, 8, 5, 3, 1, tzinfo=timezone.utc)
+    )
+
+    assert inserted == [1, 2, 3, 4, 5, 6]
+    candidate = calls[-1]
+    assert candidate["task_type"] == "market_residual_walk_forward"
+    assert candidate["model_key"] == PRODUCTION_TREND_POINT_MODEL_KEY
+    assert candidate["parameters"]["model_input"] == PRODUCTION_TREND_POINT_MODEL_INPUT
+    assert candidate["parameters"]["through_date"] == "2026-08-04"
+    assert candidate["parameters"]["trend_point_registered_after"] == (
+        PRODUCTION_TREND_POINT_REGISTERED_AFTER
+    )
+    registration = candidate["parameters"]["prospective_candidate"]
+    assert registration == {
+        "source_job_id": 12_012,
+        "policy": "trend_point_market_offset_discrete_multinomial_kelly",
+        "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+        "evidence_dates": "strictly_after_registered_after",
+        "selection_data_is_diagnostic_only": True,
+        "real_betting_enabled": False,
+    }
+    assert candidate["priority"] == 44
+
+
+def test_fixed_trend_candidate_command_preserves_registration_boundary(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    model = root / PRODUCTION_TREND_POINT_MODEL_INPUT
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixed-model")
+    command, _output = build_command(
+        {
+            "job_id": 16,
+            "task_type": "market_residual_walk_forward",
+            "parameters": {
+                "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+                "from_date": "2026-07-20",
+                "through_date": "2026-08-04",
+                "trend_point_registered_after": (
+                    PRODUCTION_TREND_POINT_REGISTERED_AFTER
+                ),
+                "prospective_candidate": {
+                    "source_job_id": 12_012,
+                    "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+                },
+            },
+        },
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    boundary_index = command.index("--trend-point-registered-after")
+    assert command[boundary_index + 1] == PRODUCTION_TREND_POINT_REGISTERED_AFTER
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:

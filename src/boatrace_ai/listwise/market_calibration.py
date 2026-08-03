@@ -9,7 +9,7 @@ import os
 from statistics import NormalDist
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -3588,7 +3588,14 @@ def walk_forward_evaluate(
     v25_probability_artifact: dict[str, Any] | None = None,
     closing_odds_min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
     closing_odds_min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
+    trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
 ) -> dict[str, Any]:
+    try:
+        date.fromisoformat(trend_point_registered_after)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "trend_point_registered_after must be an ISO date"
+        ) from exc
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
 
@@ -4672,7 +4679,7 @@ def walk_forward_evaluate(
     trend_point_evaluation_dates = sorted(
         race_date
         for race_date in evaluation_date_set
-        if race_date > TREND_POINT_KELLY_REGISTERED_AFTER
+        if race_date > trend_point_registered_after
     )
     trend_point_prospective = evaluate_attached_market_kelly_challenger(
         trend_point_market_races,
@@ -4685,7 +4692,7 @@ def walk_forward_evaluate(
             "pure prospective Kelly using a registered trend-model conditional "
             "median closing-odds forecast"
         ),
-        "registered_after": TREND_POINT_KELLY_REGISTERED_AFTER,
+        "registered_after": trend_point_registered_after,
         "status": (
             "evaluating"
             if trend_point_evaluation_dates
@@ -7037,6 +7044,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=MIN_CLOSING_ODDS_TRAINING_RACES,
     )
+    parser.add_argument(
+        "--trend-point-registered-after",
+        default=TREND_POINT_KELLY_REGISTERED_AFTER,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -7179,6 +7190,7 @@ def main(argv: list[str] | None = None) -> int:
         v25_probability_artifact=v25_probability_artifact,
         closing_odds_min_training_days=args.closing_odds_min_training_days,
         closing_odds_min_training_races=args.closing_odds_min_training_races,
+        trend_point_registered_after=args.trend_point_registered_after,
     )
     benchmark_evaluated = sum(
         str(race["race_date"]) in set(benchmark["benchmark_dates"])
