@@ -108,6 +108,10 @@ def test_joint_value_keeps_probability_price_covariance() -> None:
     assert moments["expected_probability_times_multiplier"] == pytest.approx(1.08)
     assert moments["independence_probability_times_multiplier"] == pytest.approx(1.80)
     assert moments["probability_multiplier_covariance"] == pytest.approx(-0.72)
+    assert moments["expected_probability_times_multiplier"] == pytest.approx(
+        moments["independence_probability_times_multiplier"]
+        + moments["probability_multiplier_covariance"]
+    )
     assert moments["joint_expected_edge"] == pytest.approx(0.08)
     assert moments["ordinary_hit_independence_approximation_edge"] == pytest.approx(
         0.8
