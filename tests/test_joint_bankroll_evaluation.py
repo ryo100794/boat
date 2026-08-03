@@ -158,6 +158,14 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["primary_bankroll"]["stake_yen"] == 0
     assert result["primary_bankroll"]["roi"] is None
     assert result["promotion_eligible"] is False
+    ledger = result["calibration_ledger"]
+    assert ledger["version"] == "joint_edge_calibration_ledger_v1"
+    assert ledger["candidate_portfolios"] > 0
+    assert ledger["stake_yen"] > 0
+    assert ledger["role"] == (
+        "evaluation_only_never_used_by_same_period_purchase_gate"
+    )
+
     assert "generated_log_loss" in result["probability_metrics"]
     purchase_value = result["joint_purchase_value"]
     assert purchase_value["selected_portfolios"] == 0

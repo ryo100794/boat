@@ -3423,6 +3423,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         settlement_audit = (
             settlement_audit if isinstance(settlement_audit, dict) else {}
         )
+        calibration_ledger = payload.get("calibration_ledger")
+        calibration_ledger = (
+            calibration_ledger if isinstance(calibration_ledger, dict) else {}
+        )
         summary.update({
             "joint_audit_recorded": bool(joint_audit.get("recorded")),
             "joint_audited_portfolios": joint_audit.get(
@@ -3469,6 +3473,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "special_payout_addition_supported"
             ),
             "settlement_rounding": settlement_audit.get("rounding"),
+            "joint_calibration_ledger_version": calibration_ledger.get(
+                "version"
+            ),
+            "joint_calibration_candidate_portfolios": calibration_ledger.get(
+                "candidate_portfolios"
+            ),
+            "joint_calibration_authorized_portfolios": calibration_ledger.get(
+                "authorized_portfolios"
+            ),
+            "joint_calibration_stake_yen": calibration_ledger.get("stake_yen"),
+            "joint_calibration_return_yen": calibration_ledger.get("return_yen"),
+            "joint_calibration_profit_yen": calibration_ledger.get("profit_yen"),
+            "joint_calibration_roi": calibration_ledger.get("roi"),
         })
         summary.update({
             "joint_purchase_value_minimum": (
