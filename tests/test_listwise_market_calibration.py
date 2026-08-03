@@ -1132,6 +1132,33 @@ def test_trend_point_odds_safety_sweep_is_explicit_and_diagnostic_only() -> None
         "factors"
     ]
     assert all("daily" not in row["retrospective"] for row in sweep["rows"])
+
+
+def test_trend_point_required_ticket_count_is_explicit() -> None:
+    races = [
+        _race("2026-07-20", 1),
+        _race("2026-07-21", 1),
+        _race("2026-07-22", 1),
+    ]
+
+    result = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=["2026-07-22"],
+        trend_point_required_ticket_count=2,
+    )
+
+    assert result["trend_point_market_offset_kelly_diagnostic"]["policy"][
+        "required_ticket_count"
+    ] == 2
+    assert result["trend_point_market_offset_kelly_walk_forward"]["policy"][
+        "required_ticket_count"
+    ] == 2
+    with pytest.raises(ValueError, match="trend_point_required_ticket_count"):
+        walk_forward_evaluate(
+            races,
+            trend_point_required_ticket_count=0,
+        )
 def test_fixed_benchmark_population_is_provisional_until_seven_days() -> None:
 
 

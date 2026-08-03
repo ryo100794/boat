@@ -35,6 +35,7 @@ def evaluate_market_kelly_challenger(
     evaluation_dates: Iterable[str] | None = None,
     select_regularization: bool = False,
     odds_safety_factor: float = 1.0,
+    required_ticket_count: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -53,6 +54,7 @@ def evaluate_market_kelly_challenger(
         calibration=calibration,
         evaluation_dates=evaluation_dates,
         odds_safety_factor=odds_safety_factor,
+        required_ticket_count=required_ticket_count,
     )
 
 
@@ -62,9 +64,11 @@ def evaluate_attached_market_kelly_challenger(
     calibration: Mapping[str, Any],
     evaluation_dates: Iterable[str] | None = None,
     odds_safety_factor: float = 1.0,
+    required_ticket_count: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate already prequentially calibrated races without refitting."""
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
+    required_ticket_count = _required_ticket_count(required_ticket_count)
 
     calibrated_races = [dict(race) for race in calibrated_races]
     requested_dates = (
@@ -80,6 +84,7 @@ def evaluate_attached_market_kelly_challenger(
     daily = _simulate_daily(
         evaluation_races,
         odds_safety_factor=odds_safety_factor,
+        required_ticket_count=required_ticket_count,
     )
     evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
@@ -115,6 +120,7 @@ def evaluate_attached_market_kelly_challenger(
             "zero_bet_allowed": True,
             "profit_reinvested_within_day": True,
             "odds_safety_factor": odds_safety_factor,
+            "required_ticket_count": required_ticket_count,
         },
         "evaluation_days": len(daily),
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
@@ -497,8 +503,10 @@ def _simulate_daily(
     races: list[dict[str, Any]],
     *,
     odds_safety_factor: float = 1.0,
+    required_ticket_count: int | None = None,
 ) -> list[dict[str, Any]]:
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
+    required_ticket_count = _required_ticket_count(required_ticket_count)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         grouped[_iso_day(race.get("race_date"), "race_date")].append(race)
@@ -551,8 +559,13 @@ def _simulate_daily(
                 daily_cap_yen=DAILY_STAKE_CAP_YEN,
                 daily_staked_yen=staked,
             )
-            stake = allocation.total_stake_yen
             purchased = allocation.purchased
+            if (
+                required_ticket_count is not None
+                and len(purchased) != required_ticket_count
+            ):
+                purchased = ()
+            stake = sum(row.stake_yen for row in purchased)
             actual = str(race["actual_combination"])
             if actual not in probabilities:
                 raise ValueError(f"actual combination {actual!r} is missing")
@@ -795,6 +808,16 @@ def _odds_safety_factor(value: Any) -> float:
     if not math.isfinite(factor) or factor < 1.0:
         raise ValueError("odds_safety_factor must be finite and at least 1.0")
     return factor
+
+
+def _required_ticket_count(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("required_ticket_count must be an integer from 1 to 120")
+    if not 1 <= value <= EXPECTED_COMBINATIONS:
+        raise ValueError("required_ticket_count must be an integer from 1 to 120")
+    return value
 
 
 def _iso_day(value: Any, name: str) -> str:

@@ -2173,6 +2173,7 @@ def build_command(
             "closing_odds_min_training_races",
             "trend_point_registered_after",
             "trend_point_odds_safety_sweep",
+            "trend_point_required_ticket_count",
             "expected_model_sha256",
             "prospective_candidate",
         }
@@ -2345,6 +2346,18 @@ def build_command(
             )
         if safety_sweep:
             command.append("--trend-point-odds-safety-sweep")
+        if params.get("trend_point_required_ticket_count") is not None:
+            required_ticket_count = _integer(
+                params,
+                "trend_point_required_ticket_count",
+                2,
+                1,
+                120,
+            )
+            command.extend([
+                "--trend-point-required-ticket-count",
+                str(required_ticket_count),
+            ])
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",

@@ -3918,6 +3918,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "closing_odds_min_training_days": 4,
                 "closing_odds_min_training_races": 250,
                 "trend_point_odds_safety_sweep": True,
+                "trend_point_required_ticket_count": 2,
             },
         ),
         app_root=root,
@@ -3955,6 +3956,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     ] == "250"
     assert command[command.index("--through-date") + 1] == "2026-07-24"
     assert "--trend-point-odds-safety-sweep" in command
+    assert command[
+        command.index("--trend-point-required-ticket-count") + 1
+    ] == "2"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 

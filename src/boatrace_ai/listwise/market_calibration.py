@@ -3591,6 +3591,7 @@ def walk_forward_evaluate(
     closing_odds_min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
     trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
     trend_point_odds_safety_sweep: bool = False,
+    trend_point_required_ticket_count: int | None = None,
 ) -> dict[str, Any]:
     try:
         date.fromisoformat(trend_point_registered_after)
@@ -3598,6 +3599,17 @@ def walk_forward_evaluate(
         raise ValueError(
             "trend_point_registered_after must be an ISO date"
         ) from exc
+    if (
+        trend_point_required_ticket_count is not None
+        and (
+            isinstance(trend_point_required_ticket_count, bool)
+            or not isinstance(trend_point_required_ticket_count, int)
+            or not 1 <= trend_point_required_ticket_count <= 120
+        )
+    ):
+        raise ValueError(
+            "trend_point_required_ticket_count must be an integer from 1 to 120"
+        )
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
 
@@ -4669,6 +4681,7 @@ def walk_forward_evaluate(
         trend_point_market_races,
         calibration=trend_point_market_calibration,
         evaluation_dates=evaluation_date_set,
+        required_ticket_count=trend_point_required_ticket_count,
     )
     trend_point_diagnostic.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4687,6 +4700,7 @@ def walk_forward_evaluate(
         trend_point_market_races,
         calibration=trend_point_market_calibration,
         evaluation_dates=trend_point_evaluation_dates,
+        required_ticket_count=trend_point_required_ticket_count,
     )
     trend_point_prospective.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4729,6 +4743,7 @@ def walk_forward_evaluate(
                     calibration=trend_point_market_calibration,
                     evaluation_dates=evaluation_date_set,
                     odds_safety_factor=factor,
+                    required_ticket_count=trend_point_required_ticket_count,
                 )
             )
             prior_registered = (
@@ -4739,6 +4754,7 @@ def walk_forward_evaluate(
                     calibration=trend_point_market_calibration,
                     evaluation_dates=trend_point_evaluation_dates,
                     odds_safety_factor=factor,
+                    required_ticket_count=trend_point_required_ticket_count,
                 )
             )
             sweep_rows.append({
@@ -7193,6 +7209,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--trend-point-odds-safety-sweep",
         action="store_true",
     )
+    parser.add_argument(
+        "--trend-point-required-ticket-count",
+        type=int,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -7337,6 +7357,9 @@ def main(argv: list[str] | None = None) -> int:
         closing_odds_min_training_races=args.closing_odds_min_training_races,
         trend_point_registered_after=args.trend_point_registered_after,
         trend_point_odds_safety_sweep=args.trend_point_odds_safety_sweep,
+        trend_point_required_ticket_count=(
+            args.trend_point_required_ticket_count
+        ),
     )
     apply_trend_point_formal_coverage_gate(
         result,

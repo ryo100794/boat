@@ -210,6 +210,43 @@ def test_odds_safety_factor_requires_a_larger_forecast_edge() -> None:
         )
 
 
+def test_required_ticket_count_executes_only_matching_allocations() -> None:
+    first, second = COMBINATIONS[:2]
+    probabilities = {key: 0.1 / 118.0 for key in COMBINATIONS}
+    probabilities[first] = 0.45
+    probabilities[second] = 0.45
+    race = _race(
+        "2026-07-20",
+        "race-1",
+        actual=first,
+        payout=250,
+    )
+    race["model_probabilities"] = dict(probabilities)
+    race["market_probabilities"] = dict(probabilities)
+    race["odds"] = {
+        key: 2.5 if key in {first, second} else 1.0
+        for key in COMBINATIONS
+    }
+
+    matching = challenger.evaluate_market_kelly_challenger(
+        [race], required_ticket_count=2
+    )
+    rejected = challenger.evaluate_market_kelly_challenger(
+        [race], required_ticket_count=1
+    )
+
+    assert matching["policy"]["required_ticket_count"] == 2
+    assert matching["tickets"] == 2
+    assert matching["stake_yen"] == 500
+    assert rejected["tickets"] == 0
+    assert rejected["stake_yen"] == 0
+    assert rejected["daily"][0]["decisions"][0]["allocations"] == []
+    with pytest.raises(ValueError, match="required_ticket_count"):
+        challenger.evaluate_market_kelly_challenger(
+            [race], required_ticket_count=0
+        )
+
+
 def test_actual_return_uses_actual_stake_and_payout_per_100_yen() -> None:
     race = _race(
         "2026-07-20",
