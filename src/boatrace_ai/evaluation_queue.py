@@ -3621,6 +3621,15 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_expected_edge_mean": joint_audit.get(
                 "joint_expected_edge_mean"
             ),
+            "joint_product_identity_residual_mean": joint_audit.get(
+                "product_identity_residual_mean"
+            ),
+            "joint_product_identity_residual_max_abs": joint_audit.get(
+                "product_identity_residual_max_abs"
+            ),
+            "joint_product_identity_consistent": joint_audit.get(
+                "product_identity_consistent"
+            ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"
             ),
@@ -3829,6 +3838,15 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "joint_expected_edge_mean": joint_audit.get(
                 "joint_expected_edge_mean"
+            ),
+            "joint_product_identity_residual_mean": joint_audit.get(
+                "product_identity_residual_mean"
+            ),
+            "joint_product_identity_residual_max_abs": joint_audit.get(
+                "product_identity_residual_max_abs"
+            ),
+            "joint_product_identity_consistent": joint_audit.get(
+                "product_identity_consistent"
             ),
             "joint_covariance_mean": joint_audit.get(
                 "probability_multiplier_covariance_mean"

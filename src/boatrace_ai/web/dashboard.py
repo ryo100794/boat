@@ -1523,7 +1523,8 @@ def _model_performance_report_contract(
             "evaluation_snapshot_age": "購入判断に使用したオッズの鮮度。evaluation_time_t - odds_snapshot_captured_at（秒）",
             "outer_sample_count_r": "購入価値Q_alphaを計算する外側のモデル・パラメータ不確実性標本数R。5%分位の本番昇格には下側5標本以上を要求",
             "inner_scenario_count_s": "各外側標本から生成する購入判断時点から締切までの共同市場経路数S。シナリオESS=1/Σω_s²。下側ESSは下側β質量へ部分採用した重みをβで再正規化して算出",
-            "expected_probability_times_multiplier": "同一の共同市場経路上で重み付き集計したE[pi D]=Σ_s ω_s pi_s D_s。E[pi]E[D]との差は共分散",
+            "expected_probability_times_multiplier": "結合期待倍率E[pi D]=Σ_s ω_s pi_s D_s。同一の共同市場経路上で重み付き集計する",
+            "independence_probability_times_multiplier": "独立近似倍率E[pi]E[D]。結合期待倍率との差はCov(pi,D)であり購入価値には使用しない",
             "bootstrap_condition_id": "ブロック定義・分位方式・再標本化回数・seedだけを固定するSHA-256再標本化条件ID",
             "max_drawdown_yen": "評価期間中の資金ピークからの最大下落額",
         },
@@ -3100,6 +3101,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "joint_expected_edge_mean": _float_or_none(
                     metrics.get("joint_expected_edge_mean")
                 ),
+                "joint_product_identity_residual_mean": _float_or_none(
+                    metrics.get("joint_product_identity_residual_mean")
+                ),
+                "joint_product_identity_residual_max_abs": _float_or_none(
+                    metrics.get("joint_product_identity_residual_max_abs")
+                ),
+                "joint_product_identity_consistent": metrics.get(
+                    "joint_product_identity_consistent"
+                ),
                 "joint_covariance_mean": _float_or_none(
                     metrics.get("joint_covariance_mean")
                 ),
@@ -3766,6 +3776,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "joint_expected_edge_mean": _float_or_none(
                     candidate_metrics.get("joint_expected_edge_mean")
+                ),
+                "joint_product_identity_residual_mean": _float_or_none(
+                    candidate_metrics.get("joint_product_identity_residual_mean")
+                ),
+                "joint_product_identity_residual_max_abs": _float_or_none(
+                    candidate_metrics.get("joint_product_identity_residual_max_abs")
+                ),
+                "joint_product_identity_consistent": candidate_metrics.get(
+                    "joint_product_identity_consistent"
                 ),
                 "joint_covariance_mean": _float_or_none(
                     candidate_metrics.get("joint_covariance_mean")
@@ -8057,6 +8076,9 @@ def model_performance_audit_snapshot(
                 "joint_expected_pi_d_mean",
                 "joint_independent_pi_times_d_mean",
                 "joint_expected_edge_mean",
+                "joint_product_identity_residual_mean",
+                "joint_product_identity_residual_max_abs",
+                "joint_product_identity_consistent",
                 "joint_covariance_mean",
                 "joint_negative_covariance_fraction",
                 "joint_independence_overstatement_mean",
@@ -8147,14 +8169,23 @@ def model_performance_audit_snapshot(
             else "不足" if audit.get("joint_inner_tail_support") is False
             else "未記録"
         )
+        product_identity_support = (
+            "合格"
+            if audit.get("joint_product_identity_consistent") is True
+            else "不整合"
+            if audit.get("joint_product_identity_consistent") is False
+            else "未記録"
+        )
         cells = [
             f"#{audit.get('job_id') or '-'} {audit.get('name') or '-'}",
             f"{audit.get('evaluation_days') or 0}日 / {audit.get('evaluated_races') or 0}R",
             f"{_audit_number(audit.get('joint_purchase_value_minimum'))} > {_audit_number(audit.get('joint_purchase_safety_margin'))}",
             f"ROI {_audit_number(audit.get('roi'))} / LCB {_audit_number(audit.get('daily_cluster_bootstrap_roi_lower_95'))}",
-            f"E[piD] {_audit_number(audit.get('joint_expected_pi_d_mean'), 6)} / "
-                f"E[pi]E[D] {_audit_number(audit.get('joint_independent_pi_times_d_mean'), 6)} / "
+            f"結合期待倍率 E[piD] {_audit_number(audit.get('joint_expected_pi_d_mean'), 6)} / "
+                f"独立近似倍率 E[pi]E[D] {_audit_number(audit.get('joint_independent_pi_times_d_mean'), 6)} / "
                 f"Cov {_audit_number(audit.get('joint_covariance_mean'), 6)} / "
+                f"恒等式 {product_identity_support} "
+                f"(max残差 {_audit_number(audit.get('joint_product_identity_residual_max_abs'), 9)}) / "
                 f"独立過大 {_audit_number(audit.get('joint_independence_overstatement_mean'), 6)}",
             f"探索R {search_r if search_r is not None else '未記録'} / "
                 f"検証R {validation_r if validation_r is not None else '未記録'} / "
@@ -8277,7 +8308,7 @@ def model_performance_audit_snapshot(
         '<span class="scope-note">JavaScript不要・公開HTMLに埋込</span></div>'
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
-        '<th>ROI / 日LCB</th><th>E[πD] / 独立近似 / Cov(π,D)</th>'
+        '<th>ROI / 日LCB</th><th>結合期待倍率 E[πD] / 独立近似倍率 / Cov(π,D)</th>'
         '<th>探索R / 検証R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
         '<th>再標本化条件ID</th></tr></thead><tbody>'

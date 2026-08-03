@@ -460,6 +460,15 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         for row in moments
         if row.get("joint_expected_edge") is not None
     ]
+    product_identity_residuals = [
+        float(row["expected_probability_times_multiplier"])
+        - float(row["independence_probability_times_multiplier"])
+        - float(row["probability_multiplier_covariance"])
+        for row in moments
+        if row.get("expected_probability_times_multiplier") is not None
+        and row.get("independence_probability_times_multiplier") is not None
+        and row.get("probability_multiplier_covariance") is not None
+    ]
     overstatements = [
         float(row["ordinary_hit_independence_approximation_edge"])
         - float(row["joint_expected_edge"])
@@ -549,6 +558,18 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "joint_expected_edge_mean": (
             fsum(joint_expected_edges) / len(joint_expected_edges)
             if joint_expected_edges else None
+        ),
+        "product_identity_residual_mean": (
+            fsum(product_identity_residuals) / len(product_identity_residuals)
+            if product_identity_residuals else None
+        ),
+        "product_identity_residual_max_abs": (
+            max(abs(item) for item in product_identity_residuals)
+            if product_identity_residuals else None
+        ),
+        "product_identity_consistent": (
+            max(abs(item) for item in product_identity_residuals) <= 1e-12
+            if product_identity_residuals else None
         ),
         "probability_multiplier_covariance_mean": (
             fsum(covariances) / len(covariances) if covariances else None
@@ -646,6 +667,16 @@ def _aggregate_joint_value_audits(
     outer_alphas = [
         float(row.get("outer_alpha") or 0.0) for row in recorded
     ]
+    identity_residual_max_abs_values = [
+        float(row["product_identity_residual_max_abs"])
+        for row in recorded
+        if row.get("product_identity_residual_max_abs") is not None
+    ]
+    identity_consistency_values = [
+        row.get("product_identity_consistent")
+        for row in recorded
+        if row.get("product_identity_consistent") is not None
+    ]
     return {
         "recorded": True,
         "audited_portfolios": len(recorded),
@@ -725,6 +756,17 @@ def _aggregate_joint_value_audits(
             "independence_probability_times_multiplier_mean"
         ),
         "joint_expected_edge_mean": weighted("joint_expected_edge_mean"),
+        "product_identity_residual_mean": weighted(
+            "product_identity_residual_mean"
+        ),
+        "product_identity_residual_max_abs": (
+            max(identity_residual_max_abs_values)
+            if identity_residual_max_abs_values else None
+        ),
+        "product_identity_consistent": (
+            all(value is True for value in identity_consistency_values)
+            if len(identity_consistency_values) == len(recorded) else None
+        ),
         "negative_covariance_fraction": weighted(
             "negative_covariance_fraction"
         ),
