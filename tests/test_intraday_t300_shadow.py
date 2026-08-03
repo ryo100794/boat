@@ -296,9 +296,64 @@ def test_postgres_store_appends_full_refund_for_terminal_nonevaluable_race() -> 
         "refund",
         "__refund__",
         100,
+        "{}",
         200,
         200,
         0,
+    )
+
+
+def test_postgres_store_sums_every_winning_payout_for_dead_heat() -> None:
+    class Result:
+        def __init__(self, rows=(), rowcount=0):
+            self._rows = list(rows)
+            self.rowcount = rowcount
+
+        def fetchall(self):
+            return self._rows
+
+    class Connection:
+        dialect = "postgresql"
+
+        def __init__(self):
+            self.insert_params = None
+
+        def execute(self, sql, params):
+            if str(sql).lstrip().startswith("SELECT"):
+                base = {
+                    "decision_id": 18,
+                    "selected_candidates": [
+                        {"combination": "1-2-3", "stake_yen": 100},
+                        {"combination": "2-1-3", "stake_yen": 200},
+                    ],
+                    "total_stake_yen": 300,
+                    "result_status": "final",
+                    "trifecta_evaluable": 1,
+                }
+                return Result([
+                    {**base, "actual_combination": "1-2-3", "payout_yen": 300},
+                    {**base, "actual_combination": "2-1-3", "payout_yen": 500},
+                ])
+            self.insert_params = params
+            return Result(rowcount=1)
+
+    conn = Connection()
+    store = PostgresShadowStore(conn)
+    now = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
+
+    assert store.append_available_settlements(
+        race_date="2026-08-03", now=now
+    ) == 1
+    assert conn.insert_params == (
+        18,
+        now.isoformat(),
+        "final",
+        "__multiple__",
+        0,
+        '{"1-2-3": 300, "2-1-3": 500}',
+        300,
+        1_300,
+        1_000,
     )
 
 

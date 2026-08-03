@@ -161,6 +161,7 @@ def test_clean_day_aggregates_bankroll_market_metrics_and_passes_gate() -> None:
             "refund_races": 0,
             "refund_tickets": 0,
             "refund_stake_yen": 0,
+            "special_payout_races": 0,
             "coverage": {
                 "six_boat_races": 2,
                 "model_decisions": 2,
@@ -219,6 +220,44 @@ def test_refund_is_audited_but_does_not_inflate_performance_support() -> None:
     assert result["purchase_probability_calibration"]["selected_races"] == 1
     assert result["market"]["races"] == 1
     assert result["promotion_gate"]["checks"]["minimum_races"] is False
+
+
+def test_multiple_official_payouts_are_summed_but_excluded_from_probability_metrics() -> None:
+    rows = evidence_rows()
+    alternate = "6-5-4"
+    decision = rows["decisions"][1]
+    decision["selected_candidates"].append({
+        "combination": alternate,
+        "stake_yen": 200,
+    })
+    decision["total_stake_yen"] = 300
+    settlement = rows["settlements"][1]
+    actual = settlement["actual_combination"]
+    settlement.update({
+        "actual_combination": "__multiple__",
+        "payout_yen_per_100": 0,
+        "winning_payouts": {actual: 300, alternate: 500},
+        "stake_yen": 300,
+        "return_yen": 1_300,
+        "profit_yen": 1_000,
+    })
+    rows["payouts"].append({
+        "race_id": decision["race_id"],
+        "combination": alternate,
+        "payout_yen": 500,
+    })
+
+    result = aggregate(rows)
+
+    assert result["excluded_days"] == []
+    assert result["daily"][0]["races"] == 2
+    assert result["daily"][0]["tickets"] == 3
+    assert result["daily"][0]["hit_tickets"] == 3
+    assert result["daily"][0]["stake_yen"] == 400
+    assert result["daily"][0]["return_yen"] == 1_600
+    assert result["daily"][0]["special_payout_races"] == 1
+    assert result["purchase_probability_calibration"]["selected_races"] == 1
+    assert result["market"]["races"] == 1
 
 
 def test_predecision_cancelled_race_is_not_required_for_clean_coverage() -> None:

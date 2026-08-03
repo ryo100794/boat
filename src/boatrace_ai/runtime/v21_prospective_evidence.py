@@ -29,6 +29,7 @@ COMBINATIONS = tuple(
 COMBINATION_SET = frozenset(COMBINATIONS)
 EPSILON = 1e-15
 REFUND_COMBINATION = "__refund__"
+MULTIPLE_PAYOUT_COMBINATION = "__multiple__"
 
 
 @dataclass(frozen=True)
@@ -212,20 +213,21 @@ def _source_index(rows: Iterable[Mapping[str, Any]]) -> tuple[dict[int, Any], se
 
 
 def _payout_index(rows: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], set[str]]:
-    result: dict[str, tuple[str, int]] = {}
+    result: dict[str, dict[str, int]] = {}
     duplicates: set[str] = set()
     for row in _rows(rows):
         race_id = str(row.get("race_id") or "").strip()
         try:
-            value = (
-                _combination(row.get("combination"), "payout.combination"),
-                _integer(row.get("payout_yen"), "payout.payout_yen"),
+            combination = _combination(
+                row.get("combination"), "payout.combination"
             )
+            payout = _integer(row.get("payout_yen"), "payout.payout_yen")
         except ValueError:
             continue
-        if race_id in result:
+        payouts = result.setdefault(race_id, {})
+        if combination in payouts:
             duplicates.add(race_id)
-        result[race_id] = value
+        payouts[combination] = payout
     return result, duplicates
 
 
@@ -343,7 +345,7 @@ def _audit_decision(
 def _evaluate_settlement(
     decision: Mapping[str, Any],
     settlement: Mapping[str, Any],
-    official: tuple[str, int] | None,
+    official: Mapping[str, int] | None,
 ) -> dict[str, Any]:
     result_status = str(settlement.get("result_status") or "").strip().lower()
     payout = _integer(settlement.get("payout_yen_per_100"), "payout_yen_per_100")
@@ -361,14 +363,38 @@ def _evaluate_settlement(
             "stake_yen": stake,
             "return_yen": returned,
             "performance_eligible": False,
+            "probability_evaluable": False,
+            "winning_payouts": {},
         }
-    actual = _combination(settlement.get("actual_combination"), "actual_combination")
-    if official is None or official != (actual, payout):
+    raw_winning_payouts = settlement.get("winning_payouts") or {}
+    if isinstance(raw_winning_payouts, str):
+        raw_winning_payouts = json.loads(raw_winning_payouts)
+    if not isinstance(raw_winning_payouts, Mapping):
+        raise ValueError("winning_payouts must be a mapping")
+    winning_payouts = {
+        _combination(combination, "winning_payouts.combination"): _integer(
+            value, "winning_payouts.payout_yen"
+        )
+        for combination, value in raw_winning_payouts.items()
+    }
+    if not winning_payouts:
+        actual = _combination(
+            settlement.get("actual_combination"), "actual_combination"
+        )
+        winning_payouts = {actual: payout}
+    elif len(winning_payouts) == 1:
+        actual = next(iter(winning_payouts))
+        if settlement.get("actual_combination") != actual or payout != winning_payouts[actual]:
+            raise ValueError("scalar settlement differs from winning_payouts")
+    else:
+        actual = str(settlement.get("actual_combination") or "")
+        if actual != MULTIPLE_PAYOUT_COMBINATION or payout != 0:
+            raise ValueError("multiple payout settlement representation is invalid")
+    if official is None or dict(official) != winning_payouts:
         raise ValueError("settlement differs from official payout")
     expected = sum(
-        item["stake_yen"] * payout // 100
+        item["stake_yen"] * winning_payouts.get(item["combination"], 0) // 100
         for item in decision["selected"]
-        if item["combination"] == actual
     )
     if stake != decision["stake_yen"] or returned != expected or profit != returned - stake:
         raise ValueError("settlement ledger is inconsistent")
@@ -377,6 +403,8 @@ def _evaluate_settlement(
         "stake_yen": stake,
         "return_yen": returned,
         "performance_eligible": True,
+        "probability_evaluable": len(winning_payouts) == 1,
+        "winning_payouts": winning_payouts,
     }
 
 
@@ -575,9 +603,14 @@ def aggregate_v21_prospective_evidence(
             if result["return_yen"] > 0
         ]
         hit_returns.extend(day_hits)
+        probability_evaluated = [
+            (item, result)
+            for item, result in performance_evaluated
+            if result["probability_evaluable"]
+        ]
         day_selected_probabilities = [
             sum(item["probabilities"][ticket["combination"]] for ticket in item["selected"])
-            for item, _ in performance_evaluated
+            for item, _ in probability_evaluated
             if item["selected"]
         ]
         selected_event_probabilities.extend(day_selected_probabilities)
@@ -589,7 +622,10 @@ def aggregate_v21_prospective_evidence(
                     len(item["selected"]) for item, _ in performance_evaluated
                 ),
                 "hit_tickets": sum(
-                    sum(ticket["combination"] == result["actual"] for ticket in item["selected"])
+                    sum(
+                        ticket["combination"] in result["winning_payouts"]
+                        for ticket in item["selected"]
+                    )
                     for item, result in performance_evaluated
                 ),
                 "expected_hit_tickets": sum(day_selected_probabilities),
@@ -605,10 +641,14 @@ def aggregate_v21_prospective_evidence(
                 "refund_stake_yen": sum(
                     result["stake_yen"] for _, result in refunds
                 ),
+                "special_payout_races": sum(
+                    len(result["winning_payouts"]) > 1
+                    for _, result in performance_evaluated
+                ),
                 "coverage": coverage,
             }
         )
-        for item, result in performance_evaluated:
+        for item, result in probability_evaluated:
             actual = result["actual"]
             model_loss = -math.log(max(EPSILON, item["probabilities"][actual]))
             market_loss = -math.log(max(EPSILON, item["market"][actual]))
@@ -858,7 +898,8 @@ def collect_v21_prospective_evidence(
     settlement_rows = _fetch(
         conn.execute(
             """SELECT s.decision_id, s.result_status, s.actual_combination,
-                      s.payout_yen_per_100, s.stake_yen, s.return_yen, s.profit_yen
+                      s.payout_yen_per_100, s.winning_payouts,
+                      s.stake_yen, s.return_yen, s.profit_yen
                FROM intraday_t300_shadow_settlements s
                JOIN intraday_t300_shadow_decisions d ON d.decision_id = s.decision_id
                WHERE d.race_date >= ? AND d.race_date <= ? AND d.model_key = ?

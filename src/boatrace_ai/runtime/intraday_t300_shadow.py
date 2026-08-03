@@ -79,6 +79,7 @@ JST = timezone(timedelta(hours=9))
 STARTING_BANKROLL_YEN = 10_000
 T300_OFFSET_SECONDS = 300
 REFUND_COMBINATION = "__refund__"
+MULTIPLE_PAYOUT_COMBINATION = "__multiple__"
 SETTLEMENT_LOOKBACK_DAYS = 7
 DECISION_BEFORE_START_SECONDS = 600
 DEFAULT_MAX_CHECKPOINT_AGE_SECONDS = 90.0
@@ -139,11 +140,14 @@ CREATE TABLE IF NOT EXISTS intraday_t300_shadow_settlements (
   result_status TEXT NOT NULL,
   actual_combination TEXT NOT NULL,
   payout_yen_per_100 INTEGER NOT NULL,
+  winning_payouts JSONB NOT NULL DEFAULT '{}'::jsonb,
   stake_yen INTEGER NOT NULL,
   return_yen INTEGER NOT NULL,
   profit_yen INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE intraday_t300_shadow_settlements
+  ADD COLUMN IF NOT EXISTS winning_payouts JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE OR REPLACE FUNCTION reject_intraday_t300_shadow_mutation()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -517,8 +521,17 @@ class PostgresShadowStore:
             """,
             (race_date,),
         ).fetchall()
-        inserted = 0
+        grouped: dict[int, dict[str, Any]] = {}
         for row in rows:
+            decision_id = int(row["decision_id"])
+            item = grouped.setdefault(decision_id, dict(row))
+            item.setdefault("payout_rows", [])
+            if row["payout_yen"] is not None:
+                item["payout_rows"].append(
+                    (row["actual_combination"], row["payout_yen"])
+                )
+        inserted = 0
+        for row in grouped.values():
             candidates = row["selected_candidates"]
             if isinstance(candidates, str):
                 candidates = json.loads(candidates)
@@ -527,25 +540,49 @@ class PostgresShadowStore:
                 result_status = "refund"
                 actual = REFUND_COMBINATION
                 payout = 100
+                winning_payouts: dict[str, int] = {}
                 returned = stake
             else:
                 result_status = str(row["result_status"])
-                actual = _canonical_combination(row["actual_combination"])
-                payout = int(row["payout_yen"])
+                winning_payouts = {}
+                for raw_combination, raw_payout in row["payout_rows"]:
+                    combination = _canonical_combination(raw_combination)
+                    payout_value = int(raw_payout)
+                    if (
+                        combination in winning_payouts
+                        and winning_payouts[combination] != payout_value
+                    ):
+                        raise ValueError(
+                            f"conflicting payouts for {combination}"
+                        )
+                    winning_payouts[combination] = payout_value
+                if not winning_payouts:
+                    raise ValueError("evaluable settlement has no payout")
+                if len(winning_payouts) == 1:
+                    actual, payout = next(iter(winning_payouts.items()))
+                else:
+                    actual = MULTIPLE_PAYOUT_COMBINATION
+                    payout = 0
                 returned = sum(
-                    int(item["stake_yen"]) * payout // 100
+                    int(item["stake_yen"])
+                    * winning_payouts.get(
+                        _canonical_combination(item["combination"]), 0
+                    )
+                    // 100
                     for item in (candidates or [])
-                    if _canonical_combination(item["combination"]) == actual
                 )
             cursor = self.conn.execute(
                 """
                 INSERT INTO intraday_t300_shadow_settlements(
                   decision_id, settled_at, result_status, actual_combination,
-                  payout_yen_per_100, stake_yen, return_yen, profit_yen
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (decision_id) DO NOTHING
+                  payout_yen_per_100, winning_payouts,
+                  stake_yen, return_yen, profit_yen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (decision_id) DO NOTHING
                 """,
                 (int(row["decision_id"]), now.isoformat(), result_status,
-                 actual, payout, stake, returned, returned - stake),
+                 actual, payout, json.dumps(winning_payouts, sort_keys=True),
+                 stake, returned, returned - stake),
             )
             inserted += int(cursor.rowcount == 1)
         return inserted
