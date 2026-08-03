@@ -29,6 +29,7 @@ class EmpiricalEVBin:
     empirical_ev: float | None
     empirical_ev_lcb95: float | None
     support: int
+    exposure_weight: float
     support_days: int
     positive_return_days: int
     return_hhi: float | None
@@ -41,6 +42,7 @@ class EmpiricalEVBin:
             "empirical_ev": self.empirical_ev,
             "empirical_ev_lcb95": self.empirical_ev_lcb95,
             "support": self.support,
+            "exposure_weight": self.exposure_weight,
             "support_days": self.support_days,
             "positive_return_days": self.positive_return_days,
             "return_hhi": self.return_hhi,
@@ -55,6 +57,7 @@ class EmpiricalEVCalibrationArtifact:
     trained_through_date: str | None
     training_days: int
     tickets: int
+    total_exposure_weight: float
     candidate_days: int
     candidate_min_raw_ev: float
     min_days: int
@@ -84,6 +87,8 @@ class EmpiricalEVCalibrationArtifact:
             "trained_through_date": self.trained_through_date,
             "training_days": self.training_days,
             "tickets": self.tickets,
+            "total_exposure_weight": self.total_exposure_weight,
+            "weighting": "optional_sample_weight_default_1",
             "candidate_days": self.candidate_days,
             "candidate_min_raw_ev": self.candidate_min_raw_ev,
             "min_days": self.min_days,
@@ -102,6 +107,7 @@ class _Record:
     race_date: str
     raw_ev: float
     gross_return: float
+    sample_weight: float
 
 
 def _finite_float(value: object, name: str) -> float:
@@ -143,15 +149,22 @@ def _normalize_records(
             gross_return_value,
             "gross_return_per_yen",
         )
+        sample_weight = _finite_float(
+            record.get("sample_weight", 1.0),
+            "sample_weight",
+        )
         if raw_ev < 0.0:
             raise ValueError("raw_estimated_ev must not be negative")
         if gross_return < 0.0:
             raise ValueError("gross_return_per_yen must not be negative")
+        if sample_weight <= 0.0:
+            raise ValueError("sample_weight must be positive")
         normalized.append(
             _Record(
                 race_date=_normalize_date(record.get("race_date", "")),
                 raw_ev=raw_ev,
                 gross_return=gross_return,
+                sample_weight=sample_weight,
             )
         )
     return normalized
@@ -330,8 +343,12 @@ def fit_empirical_ev_calibration(
     date_index = {race_date: index for index, race_date in enumerate(dates)}
     bin_count = len(edges) - 1
     sums = np.zeros(bin_count, dtype=np.float64)
+    exposure_weights = np.zeros(bin_count, dtype=np.float64)
     counts = np.zeros(bin_count, dtype=np.int64)
     day_sums = np.zeros((len(dates), bin_count), dtype=np.float64)
+    day_exposure_weights = np.zeros(
+        (len(dates), bin_count), dtype=np.float64
+    )
     day_counts = np.zeros((len(dates), bin_count), dtype=np.int64)
     candidate_dates: set[str] = set()
 
@@ -339,9 +356,16 @@ def fit_empirical_ev_calibration(
     for row in rows:
         bin_index = _bin_index(row.raw_ev, upper_edges)
         day_index = date_index[row.race_date]
-        _add_finite(sums, bin_index, row.gross_return)
+        weighted_return = row.gross_return * row.sample_weight
+        _add_finite(sums, bin_index, weighted_return)
+        _add_finite(exposure_weights, bin_index, row.sample_weight)
         counts[bin_index] += 1
-        _add_finite(day_sums, (day_index, bin_index), row.gross_return)
+        _add_finite(day_sums, (day_index, bin_index), weighted_return)
+        _add_finite(
+            day_exposure_weights,
+            (day_index, bin_index),
+            row.sample_weight,
+        )
         day_counts[day_index, bin_index] += 1
         if row.raw_ev >= candidate_threshold:
             candidate_dates.add(row.race_date)
@@ -349,10 +373,15 @@ def fit_empirical_ev_calibration(
     if not np.all(np.isfinite(day_sums)):
         raise ValueError("gross return aggregates exceed float64 range")
 
-    point = _fit_bins(sums, counts, shape_constraint=shape_constraint)
+    point = _fit_bins(
+        sums, exposure_weights, shape_constraint=shape_constraint
+    )
     lcb = (
         _bootstrap_lcb(
-            day_sums, day_counts, samples=bootstrap_samples, seed=seed,
+            day_sums,
+            day_exposure_weights,
+            samples=bootstrap_samples,
+            seed=seed,
             shape_constraint=shape_constraint,
             quantile_method=quantile_method,
         )
@@ -379,6 +408,7 @@ def fit_empirical_ev_calibration(
                 empirical_ev=None if np.isnan(point[index]) else float(point[index]),
                 empirical_ev_lcb95=None if np.isnan(lcb[index]) else float(lcb[index]),
                 support=int(counts[index]),
+                exposure_weight=float(exposure_weights[index]),
                 support_days=int(np.count_nonzero(day_counts[:, index])),
                 positive_return_days=int(
                     np.count_nonzero(day_sums[:, index] > 0.0)
@@ -398,6 +428,7 @@ def fit_empirical_ev_calibration(
         trained_through_date=dates[-1] if dates else None,
         training_days=len(dates),
         tickets=len(rows),
+        total_exposure_weight=float(exposure_weights.sum()),
         candidate_days=len(candidate_dates),
         candidate_min_raw_ev=candidate_threshold,
         min_days=min_days,
