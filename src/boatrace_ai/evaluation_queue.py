@@ -66,6 +66,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
     "joint_scenario_walk_forward": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "joint_bankroll_walk_forward": {"category": "evaluation", "memory_mb": 6144, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
+    "joint_edge_calibrated_replay": {"category": "evaluation", "memory_mb": 512, "idle_cpu": 0.0, "max_parallel": 2, "disk_mb": 128},
     "four_head_learned_value": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 512},
     "learned_purchase_allocation_v33": {
         "category": "evaluation",
@@ -5667,6 +5668,16 @@ DEFAULT_WORK_TICKETS = (
     ("OPS-BACKUP-001", "GDriveバックアップのキュー移行", "バックアップ", "生データ転送を定期DBジョブとして管理する", "排他付き転送が完了し元データ削除と結果記録を確認する", 90, "in_progress", 65),
     ("OPS-REPO-SYNC-001", "Gitリポジトリの定期確認と安全な更新", "運用基盤", "DB定期ジョブでoriginを確認し安全条件を満たす時だけfast-forwardする", "dirty・履歴分岐・評価実行中は更新せず監査結果を残し、cleanかつidle時だけff-onlyで更新する", 92, "in_progress", 20),
     ("MODEL-OPT-001", "モデル再設計と収益ゲート収束", "モデル", "特徴量・教師・構造を同一評価軸で反復検証する", "未使用holdoutでROI・損益・確率指標の昇格基準を満たす", 100, "in_progress", 55),
+    (
+        "MODEL-JOINT-EDGE-CALIBRATION-20260803",
+        "結合GAポートフォリオのstrict-prior実現収益校正",
+        "モデル",
+        "v5全レース反実候補台帳を教師に、過去日だけで予測総受取倍率から実現総受取倍率へのisotonic日ブロックLCBを学習し高速資金再生する",
+        "同日結果逆流0、inverted_cdf経験分位、100円単位・払戻利用時刻を再現し、30校正準備日・1000R・200券・20的中、ROI片側95%下限>1、最大1的中除外ROI>1、正損益を満たした後に完全joint walk-forwardで再確認する",
+        99,
+        "in_progress",
+        55,
+    ),
     (
         "MODEL-GENETIC-001",
         "日次遺伝的アイランド探索と監査付き昇格",
