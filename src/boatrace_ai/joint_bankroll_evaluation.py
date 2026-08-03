@@ -445,6 +445,21 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         for row in moments
         if row.get("probability_multiplier_covariance") is not None
     ]
+    expected_pi_d = [
+        float(row["expected_probability_times_multiplier"])
+        for row in moments
+        if row.get("expected_probability_times_multiplier") is not None
+    ]
+    independent_pi_d = [
+        float(row["independence_probability_times_multiplier"])
+        for row in moments
+        if row.get("independence_probability_times_multiplier") is not None
+    ]
+    joint_expected_edges = [
+        float(row["joint_expected_edge"])
+        for row in moments
+        if row.get("joint_expected_edge") is not None
+    ]
     overstatements = [
         float(row["ordinary_hit_independence_approximation_edge"])
         - float(row["joint_expected_edge"])
@@ -476,8 +491,20 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "inner_effective_samples_min": value.get(
             "inner_effective_samples_min"
         ),
+        "inner_effective_samples_mean": value.get(
+            "inner_effective_samples_mean"
+        ),
+        "inner_effective_samples_max": value.get(
+            "inner_effective_samples_max"
+        ),
         "inner_tail_effective_samples_min": value.get(
             "inner_tail_effective_samples_min"
+        ),
+        "inner_tail_effective_samples_mean": value.get(
+            "inner_tail_effective_samples_mean"
+        ),
+        "inner_tail_effective_samples_max": value.get(
+            "inner_tail_effective_samples_max"
         ),
         "minimum_inner_tail_effective_samples": value.get(
             "minimum_inner_tail_effective_samples"
@@ -502,6 +529,27 @@ def _joint_value_audit(value: Mapping[str, Any] | None) -> dict[str, Any]:
             value.get("marginal_contributions_computed")
         ),
         "moment_observations": len(moments),
+        "expected_probability_times_multiplier_definition": (
+            "weighted_E_pi_D_on_shared_joint_market_paths"
+        ),
+        "expected_probability_times_multiplier_mean": (
+            fsum(expected_pi_d) / len(expected_pi_d)
+            if expected_pi_d else None
+        ),
+        "expected_probability_times_multiplier_min": (
+            min(expected_pi_d) if expected_pi_d else None
+        ),
+        "expected_probability_times_multiplier_max": (
+            max(expected_pi_d) if expected_pi_d else None
+        ),
+        "independence_probability_times_multiplier_mean": (
+            fsum(independent_pi_d) / len(independent_pi_d)
+            if independent_pi_d else None
+        ),
+        "joint_expected_edge_mean": (
+            fsum(joint_expected_edges) / len(joint_expected_edges)
+            if joint_expected_edges else None
+        ),
         "probability_multiplier_covariance_mean": (
             fsum(covariances) / len(covariances) if covariances else None
         ),
@@ -555,10 +603,20 @@ def _aggregate_joint_value_audits(
         for row in recorded
         if row.get("inner_effective_samples_min") is not None
     ]
+    ess_max_values = [
+        float(row["inner_effective_samples_max"])
+        for row in recorded
+        if row.get("inner_effective_samples_max") is not None
+    ]
     tail_ess_values = [
         float(row["inner_tail_effective_samples_min"])
         for row in recorded
         if row.get("inner_tail_effective_samples_min") is not None
+    ]
+    tail_ess_max_values = [
+        float(row["inner_tail_effective_samples_max"])
+        for row in recorded
+        if row.get("inner_tail_effective_samples_max") is not None
     ]
     minimum_tail_ess_values = [
         float(row["minimum_inner_tail_effective_samples"])
@@ -631,8 +689,20 @@ def _aggregate_joint_value_audits(
             max(inner_scenario_max_values) if inner_scenario_max_values else None
         ),
         "inner_effective_samples_min": min(ess_values) if ess_values else None,
+        "inner_effective_samples_mean": weighted(
+            "inner_effective_samples_mean"
+        ),
+        "inner_effective_samples_max": (
+            max(ess_max_values) if ess_max_values else None
+        ),
         "inner_tail_effective_samples_min": (
             min(tail_ess_values) if tail_ess_values else None
+        ),
+        "inner_tail_effective_samples_mean": weighted(
+            "inner_tail_effective_samples_mean"
+        ),
+        "inner_tail_effective_samples_max": (
+            max(tail_ess_max_values) if tail_ess_max_values else None
         ),
         "minimum_inner_tail_effective_samples_max": (
             max(minimum_tail_ess_values) if minimum_tail_ess_values else None
@@ -645,6 +715,16 @@ def _aggregate_joint_value_audits(
         "probability_multiplier_covariance_mean": weighted(
             "probability_multiplier_covariance_mean"
         ),
+        "expected_probability_times_multiplier_definition": (
+            "weighted_E_pi_D_on_shared_joint_market_paths"
+        ),
+        "expected_probability_times_multiplier_mean": weighted(
+            "expected_probability_times_multiplier_mean"
+        ),
+        "independence_probability_times_multiplier_mean": weighted(
+            "independence_probability_times_multiplier_mean"
+        ),
+        "joint_expected_edge_mean": weighted("joint_expected_edge_mean"),
         "negative_covariance_fraction": weighted(
             "negative_covariance_fraction"
         ),
