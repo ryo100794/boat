@@ -7912,6 +7912,20 @@ def model_performance_audit_snapshot(
         )
     ]
     rows.sort(key=lambda row: int(row.get("job_id") or 0), reverse=True)
+    latest_models = []
+    seen_models = set()
+    for row in sorted(
+        status.get("jobs", []),
+        key=lambda item: int(item.get("job_id") or 0),
+        reverse=True,
+    ):
+        model_name = str(row.get("name") or row.get("model_key") or "")
+        if not model_name or model_name in seen_models:
+            continue
+        seen_models.add(model_name)
+        latest_models.append(row)
+        if len(latest_models) >= 40:
+            break
     audit_rows = []
     rendered = []
     for row in rows[:12]:
@@ -7980,13 +7994,87 @@ def model_performance_audit_snapshot(
         rendered.append(
             '<tr><td colspan="10">結合資金評価の数値成果物なし</td></tr>'
         )
+    model_rows = []
+    general_rendered = []
+    for row in latest_models:
+        model = {
+            key: row.get(key)
+            for key in (
+                "job_id", "name", "status", "evaluation_from",
+                "evaluation_through", "evaluation_days", "evaluated_races",
+                "winner_log_loss", "model_trifecta_log_loss",
+                "trifecta_top5_hit_rate", "closing_odds_log_mae",
+                "closing_odds_rank_correlation",
+                "closing_odds_interval_coverage",
+                "closing_snapshot_age_seconds", "roi", "profit_yen",
+                "daily_cluster_bootstrap_roi_lower_95", "max_drawdown_yen",
+                "promotion_gate_passed", "promotion_gate_total",
+                "formal_roi_gate_passed", "decision",
+            )
+        }
+        model_rows.append(model)
+        period = (
+            f"{model.get('evaluation_from') or '-'}.."
+            f"{model.get('evaluation_through') or '-'}"
+        )
+        gates = (
+            f"{model.get('promotion_gate_passed') or 0}/"
+            f"{model.get('promotion_gate_total') or 0}"
+        )
+        cells = [
+            f"#{model.get('job_id') or '-'} {model.get('name') or '-'}",
+            str(model.get("status") or "-"),
+            f"{period} / {model.get('evaluation_days') or 0}日",
+            f"{model.get('evaluated_races') or 0}R",
+            _audit_number(model.get("winner_log_loss")),
+            _audit_number(model.get("model_trifecta_log_loss")),
+            _audit_number(model.get("trifecta_top5_hit_rate")),
+            (
+                f"MAE {_audit_number(model.get('closing_odds_log_mae'))} / "
+                f"ρ {_audit_number(model.get('closing_odds_rank_correlation'))} / "
+                f"被覆 {_audit_number(model.get('closing_odds_interval_coverage'))} / "
+                f"age {_audit_number(model.get('closing_snapshot_age_seconds'), 1)}s"
+            ),
+            (
+                f"ROI {_audit_number(model.get('roi'))} / "
+                f"LCB {_audit_number(model.get('daily_cluster_bootstrap_roi_lower_95'))}"
+            ),
+            (
+                f"損益 {model.get('profit_yen') if model.get('profit_yen') is not None else '未記録'} / "
+                f"DD {model.get('max_drawdown_yen') if model.get('max_drawdown_yen') is not None else '未記録'}"
+            ),
+            gates,
+            str(model.get("decision") or "-"),
+        ]
+        general_rendered.append(
+            "<tr>" + "".join(
+                f"<td>{html.escape(str(cell))}</td>" for cell in cells
+            ) + "</tr>"
+        )
+    if not general_rendered:
+        general_rendered.append(
+            '<tr><td colspan="12">モデル実測値なし</td></tr>'
+        )
     snapshot_json = json.dumps(
-        {"generated_at": status.get("generated_at"), "rows": audit_rows},
+        {
+            "generated_at": status.get("generated_at"),
+            "models": model_rows,
+            "joint_rows": audit_rows,
+            "rows": audit_rows,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     ).replace("<", "\\u003c")
     section = (
         '<section id="serverAuditSection" class="report-group purchase">'
+        '<div class="group-heading"><h2>モデル実測値・サーバ描画</h2>'
+        '<span class="scope-note">最新モデル行をJavaScriptなしで監査</span></div>'
+        '<div class="panel"><div class="table-scroll"><table class="metric-table">'
+        '<thead><tr><th>Job / モデル</th><th>状態</th><th>期間</th><th>母数</th>'
+        '<th>1着LL</th><th>3連単LL</th><th>3T5</th><th>確定オッズ4指標</th>'
+        '<th>ROI / LCB</th><th>損益 / DD</th><th>ゲート</th><th>判定</th>'
+        '</tr></thead><tbody>' + "".join(general_rendered)
+        + '</tbody></table></div></div>'
         '<div class="group-heading"><h2>結合価値監査・サーバ実測値</h2>'
         '<span class="scope-note">JavaScript不要・公開HTMLに埋込</span></div>'
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
