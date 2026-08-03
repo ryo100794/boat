@@ -794,6 +794,13 @@ def run_joint_bankroll_evaluation(
             )
             best_search = search.get("best_search_candidate") or {}
             best_search_metrics = best_search.get("metrics") or {}
+            best_search_bets = dict(best_search.get("bets_yen") or {})
+            best_search_stake = sum(best_search_bets.values())
+            best_search_return = _realized_receipt(
+                best_search_bets,
+                actual_combination=str(race["actual_combination"]),
+                actual_payout_yen=int(race["actual_payout_yen"]),
+            ) if best_search_stake else 0
             race_rows.append({
                 "race_id": observation.race_id,
                 "venue": observation.venue,
@@ -819,6 +826,16 @@ def run_joint_bankroll_evaluation(
                 ),
                 "best_search_growth_excess": best_search_metrics.get(
                     "growth_excess"
+                ),
+                "best_search_bets_yen": best_search_bets,
+                "best_search_stake_yen": best_search_stake,
+                "best_search_hypothetical_return_yen": best_search_return,
+                "best_search_hypothetical_profit_yen": (
+                    best_search_return - best_search_stake
+                ),
+                "best_search_hypothetical_roi": (
+                    best_search_return / best_search_stake
+                    if best_search_stake else None
                 ),
                 "purchase_value": portfolio.get("lower_quantile"),
                 "purchase_safety_margin": buy_margin,
@@ -924,6 +941,35 @@ def run_joint_bankroll_evaluation(
         for race in purchased_races
         if race.get("portfolio_lower_quantile") is not None
     ]
+    best_search_rows = [
+        race
+        for day in daily
+        for race in day["races"]
+        if int(race.get("best_search_stake_yen") or 0) > 0
+    ]
+    best_search_total_stake = sum(
+        int(race["best_search_stake_yen"]) for race in best_search_rows
+    )
+    best_search_total_return = sum(
+        int(race.get("best_search_hypothetical_return_yen") or 0)
+        for race in best_search_rows
+    )
+    calibration_ledger = {
+        "version": "joint_edge_calibration_ledger_v1",
+        "role": "evaluation_only_never_used_by_same_period_purchase_gate",
+        "candidate_portfolios": len(best_search_rows),
+        "stake_yen": best_search_total_stake,
+        "return_yen": best_search_total_return,
+        "profit_yen": best_search_total_return - best_search_total_stake,
+        "roi": (
+            best_search_total_return / best_search_total_stake
+            if best_search_total_stake else None
+        ),
+        "authorized_portfolios": sum(
+            bool(race.get("purchase_authorized")) for race in best_search_rows
+        ),
+        "teacher_available_for_strictly_later_days": True,
+    }
     joint_value_audit = _aggregate_joint_value_audits([
         race.get("joint_value_audit") or {}
         for day in daily
@@ -1078,6 +1124,7 @@ def run_joint_bankroll_evaluation(
         "joint_purchase_value": joint_purchase_value,
         "joint_value_audit": joint_value_audit,
         "settlement_audit": settlement_audit,
+        "calibration_ledger": calibration_ledger,
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
         "promotion_gate_passed": sum(gate.values()),

@@ -3095,6 +3095,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "settlement_special_payout_supported"
                 ),
                 "settlement_rounding": metrics.get("settlement_rounding"),
+                "joint_calibration_ledger_version": metrics.get(
+                    "joint_calibration_ledger_version"
+                ),
+                "joint_calibration_candidate_portfolios": metrics.get(
+                    "joint_calibration_candidate_portfolios"
+                ),
+                "joint_calibration_authorized_portfolios": metrics.get(
+                    "joint_calibration_authorized_portfolios"
+                ),
+                "joint_calibration_stake_yen": metrics.get(
+                    "joint_calibration_stake_yen"
+                ),
+                "joint_calibration_return_yen": metrics.get(
+                    "joint_calibration_return_yen"
+                ),
+                "joint_calibration_profit_yen": metrics.get(
+                    "joint_calibration_profit_yen"
+                ),
+                "joint_calibration_roi": _float_or_none(
+                    metrics.get("joint_calibration_roi")
+                ),
                 "joint_purchase_value_minimum": _float_or_none(
                     metrics.get("joint_purchase_value_minimum")
                 ),
@@ -3720,6 +3741,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "settlement_special_payout_supported"
                 ),
                 "settlement_rounding": candidate_metrics.get("settlement_rounding"),
+                "joint_calibration_ledger_version": candidate_metrics.get(
+                    "joint_calibration_ledger_version"
+                ),
+                "joint_calibration_candidate_portfolios": candidate_metrics.get(
+                    "joint_calibration_candidate_portfolios"
+                ),
+                "joint_calibration_authorized_portfolios": candidate_metrics.get(
+                    "joint_calibration_authorized_portfolios"
+                ),
+                "joint_calibration_stake_yen": candidate_metrics.get(
+                    "joint_calibration_stake_yen"
+                ),
+                "joint_calibration_return_yen": candidate_metrics.get(
+                    "joint_calibration_return_yen"
+                ),
+                "joint_calibration_profit_yen": candidate_metrics.get(
+                    "joint_calibration_profit_yen"
+                ),
+                "joint_calibration_roi": _float_or_none(
+                    candidate_metrics.get("joint_calibration_roi")
+                ),
                 "joint_purchase_value_minimum": _float_or_none(
                     candidate_metrics.get("joint_purchase_value_minimum")
                 ),
@@ -7948,6 +7990,9 @@ def model_performance_audit_snapshot(
                 "settlement_integer_yen", "settlement_self_impact_repricing",
                 "settlement_refund_supported",
                 "settlement_special_payout_supported",
+                "joint_calibration_candidate_portfolios",
+                "joint_calibration_authorized_portfolios",
+                "joint_calibration_roi", "joint_calibration_profit_yen",
                 "day_venue_roi_lower_95", "venue_meeting_roi_lower_95",
                 "bootstrap_condition_id",
             )
@@ -7982,6 +8027,11 @@ def model_performance_audit_snapshot(
             f"外側 {audit.get('joint_parameter_draws_min') or '未記録'} / 内側ESS {_audit_number(audit.get('joint_inner_ess_min'), 2)}",
             structure,
             settlement,
+            (
+                f"候補 {audit.get('joint_calibration_candidate_portfolios') or '未記録'} / "
+                f"承認 {audit.get('joint_calibration_authorized_portfolios') or 0} / "
+                f"ROI {_audit_number(audit.get('joint_calibration_roi'))}"
+            ),
             f"日x場 {_audit_number(audit.get('day_venue_roi_lower_95'))} / 節 {_audit_number(audit.get('venue_meeting_roi_lower_95'))}",
             condition[:16],
         ]
@@ -7992,7 +8042,7 @@ def model_performance_audit_snapshot(
         )
     if not rendered:
         rendered.append(
-            '<tr><td colspan="10">結合資金評価の数値成果物なし</td></tr>'
+            '<tr><td colspan="11">結合資金評価の数値成果物なし</td></tr>'
         )
     model_rows = []
     general_rendered = []
@@ -8081,7 +8131,7 @@ def model_performance_audit_snapshot(
         '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
         '<th>ROI / 日LCB</th><th>Cov(π,D) / 独立近似差</th>'
         '<th>外側 / 内側ESS</th><th>共同経路・portfolio</th><th>決済</th>'
-        '<th>感度LCB</th><th>条件ID</th></tr></thead><tbody>'
+        '<th>最良候補反実仮想</th><th>感度LCB</th><th>条件ID</th></tr></thead><tbody>'
         + "".join(rendered)
         + '</tbody></table></div></div></section>'
         f'<script id="joint-audit-data" type="application/json">{snapshot_json}</script>'

@@ -58,6 +58,15 @@ def test_joint_audit_survives_queue_summary() -> None:
             "negative_covariance_fraction": 0.75,
             "independence_approximation_overstatement_mean": 0.12,
         },
+        "calibration_ledger": {
+            "version": "joint_edge_calibration_ledger_v1",
+            "candidate_portfolios": 713,
+            "authorized_portfolios": 9,
+            "stake_yen": 71_300,
+            "return_yen": 64_000,
+            "profit_yen": -7_300,
+            "roi": 64_000 / 71_300,
+        },
         "settlement_audit": {
             "integer_yen_accounting": True,
             "self_impact_repricing": True,
@@ -75,6 +84,8 @@ def test_joint_audit_survives_queue_summary() -> None:
     assert summary["settlement_integer_yen"] is True
     assert summary["settlement_self_impact_repricing"] is True
     assert summary["settlement_refund_supported"] is True
+    assert summary["joint_calibration_candidate_portfolios"] == 713
+    assert summary["joint_calibration_roi"] == pytest.approx(64_000 / 71_300)
 
 
 def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> None:
