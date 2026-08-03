@@ -3480,6 +3480,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         evaluation_time_t = (
             evaluation_time_t if isinstance(evaluation_time_t, dict) else {}
         )
+        odds_snapshot_age = protocol.get("odds_snapshot_age")
+        odds_snapshot_age = (
+            odds_snapshot_age if isinstance(odds_snapshot_age, dict) else {}
+        )
         population = protocol.get("population")
         population = population if isinstance(population, dict) else {}
         summary.update({
@@ -3491,6 +3495,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "evaluation_time_t_source": evaluation_time_t.get("source_field"),
             "evaluation_time_t_earliest": evaluation_time_t.get("earliest"),
             "evaluation_time_t_latest": evaluation_time_t.get("latest"),
+            "evaluation_snapshot_age_definition": odds_snapshot_age.get("definition"),
+            "evaluation_snapshot_age_seconds_min": odds_snapshot_age.get("minimum"),
+            "evaluation_snapshot_age_seconds_mean": odds_snapshot_age.get("mean"),
+            "evaluation_snapshot_age_seconds_max": odds_snapshot_age.get("maximum"),
             "evaluation_venues": population.get("venues"),
             "evaluation_wager_types": population.get("wager_types"),
             "evaluation_popularity_bands_at_t": population.get(
@@ -3630,6 +3638,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         evaluation_time_t = (
             evaluation_time_t if isinstance(evaluation_time_t, dict) else {}
         )
+        odds_snapshot_age = evaluation_protocol.get("odds_snapshot_age")
+        odds_snapshot_age = (
+            odds_snapshot_age if isinstance(odds_snapshot_age, dict) else {}
+        )
         evaluation_population = evaluation_protocol.get("population")
         evaluation_population = (
             evaluation_population if isinstance(evaluation_population, dict) else {}
@@ -3641,6 +3653,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "evaluation_time_t_source": evaluation_time_t.get("source_field"),
             "evaluation_time_t_earliest": evaluation_time_t.get("earliest"),
             "evaluation_time_t_latest": evaluation_time_t.get("latest"),
+            "evaluation_snapshot_age_definition": odds_snapshot_age.get("definition"),
+            "evaluation_snapshot_age_seconds_min": odds_snapshot_age.get("minimum"),
+            "evaluation_snapshot_age_seconds_mean": odds_snapshot_age.get("mean"),
+            "evaluation_snapshot_age_seconds_max": odds_snapshot_age.get("maximum"),
             "evaluation_venues": evaluation_population.get("venues"),
             "evaluation_wager_types": evaluation_population.get("wager_types"),
             "evaluation_popularity_bands_at_t": evaluation_population.get(

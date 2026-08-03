@@ -159,7 +159,7 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert result["evaluation_through"] == "2026-07-08"
     assert len(result["evaluation_protocol_id"]) == 64
     assert result["evaluation_protocol"]["evaluation_time_t"]["source_field"] == (
-        "captured_at"
+        "decision_at_else_odds_deadline_at"
     )
     assert result["evaluation_protocol"]["population"]["wager_types"] == [
         "trifecta"
@@ -199,6 +199,10 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     diagnostic_race = result["daily"][0]["races"][0]
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["evaluation_time_t"].endswith("+09:00")
+    assert diagnostic_race["evaluation_time_t"] == "2026-07-05T10:05:00+09:00"
+    assert diagnostic_race["evaluation_time_t_source"] == "odds_deadline_at"
+    assert diagnostic_race["odds_snapshot_captured_at"] == "2026-07-05T10:00:00+09:00"
+    assert diagnostic_race["snapshot_age_seconds"] == 300.0
     assert diagnostic_race["wager_type"] == "trifecta"
     assert diagnostic_race["popularity_band_at_t"]
     assert diagnostic_race["actual_payout_yen"] == 150
@@ -280,7 +284,7 @@ def test_evaluation_protocol_fixes_time_context_and_purchase_rule(
     assert baseline == repeated
     assert len(baseline["id"]) == 64
     assert baseline["protocol"]["evaluation_time_t"]["source_field"] == (
-        "captured_at"
+        "decision_at_else_odds_deadline_at"
     )
     assert baseline["protocol"]["population"]["venues"] == ["01"]
     assert baseline["protocol"]["population"]["wager_types"] == ["trifecta"]
@@ -290,6 +294,9 @@ def test_evaluation_protocol_fixes_time_context_and_purchase_rule(
     assert baseline["protocol"]["resampling_condition_id"] == (
         "same-resampling-condition"
     )
+    assert baseline["protocol"]["odds_snapshot_age"]["minimum"] == 300.0
+    assert baseline["protocol"]["odds_snapshot_age"]["mean"] == 300.0
+    assert baseline["protocol"]["odds_snapshot_age"]["maximum"] == 300.0
 
     changed_race = {**race, "captured_at": "2026-07-01T10:01:00+09:00"}
     changed_time = _evaluation_protocol(
@@ -306,3 +313,31 @@ def test_evaluation_protocol_fixes_time_context_and_purchase_rule(
     assert changed_time["protocol"]["resampling_condition_id"] == (
         baseline["protocol"]["resampling_condition_id"]
     )
+
+    changed_decision = _evaluation_protocol(
+        **{
+            **arguments,
+            "eligible_races": [{
+                **race,
+                "decision_at": "2026-07-01T10:04:00+09:00",
+            }],
+        }
+    )
+    assert changed_decision["id"] != baseline["id"]
+    assert changed_decision["protocol"]["evaluation_time_t"]["earliest"] == (
+        "2026-07-01T10:04:00+09:00"
+    )
+    assert changed_decision["protocol"]["odds_snapshot_age"]["mean"] == 240.0
+
+    with pytest.raises(
+        ValueError, match="captured after purchase decision"
+    ):
+        _evaluation_protocol(
+            **{
+                **arguments,
+                "eligible_races": [{
+                    **race,
+                    "captured_at": "2026-07-01T10:05:01+09:00",
+                }],
+            }
+        )
