@@ -12,7 +12,7 @@ def test_model_performance_contract_exposes_role_specific_stages() -> None:
         ],
     )
 
-    assert report["version"] == "model-performance-v6"
+    assert report["version"] == "model-performance-v7"
     assert [stage["id"] for stage in report["stages"]] == [
         "outcome_prediction",
         "closing_odds",
