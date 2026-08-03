@@ -1953,6 +1953,19 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
                 "roi_ci95_lower": 0.91,
                 "probability_roi_above_one": 0.88,
             },
+            "log_loss": {
+                "races": 612,
+                "challenger_delta_vs_market": -0.018,
+                "challenger_improvement_confidence": 0.97,
+                "challenger_top5_improvement_confidence": 0.96,
+            },
+            "purchase_probability_calibration": {
+                "selected_races": 88,
+                "observed_hits": 14,
+                "expected_hits": 13.2,
+                "probability_at_most_observed_hits": 0.71,
+                "method": "exact_poisson_binomial_lower_tail_over_disjoint_race_selections",
+            },
             "promotion_gate": {
                 "sample_size_pass": False,
                 "roi_pass": True,
@@ -1970,6 +1983,15 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
         "trend_point_prospective_daily_cluster_bootstrap_roi_lower_95"
     ] == 0.91
     assert summary["trend_point_prospective_probability_roi_above_one"] == 0.88
+    assert summary[
+        "trend_point_prospective_market_challenger_improvement_confidence"
+    ] == 0.97
+    assert summary[
+        "trend_point_prospective_market_challenger_top5_improvement_confidence"
+    ] == 0.96
+    assert summary[
+        "trend_point_prospective_probability_calibration"
+    ]["probability_at_most_observed_hits"] == 0.71
     assert summary["trend_point_prospective_promotion_gate"]["pass"] is False
 
 

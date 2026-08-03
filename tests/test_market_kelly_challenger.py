@@ -174,6 +174,7 @@ def test_exact_kelly_can_choose_zero_bet() -> None:
     assert result["stake_yen"] == 0
     assert result["return_yen"] == 0
     assert result["roi"] == 0.0
+    assert result["profitable_day_fraction"] == 0.0
     assert result["daily"][0]["ending_bankroll_yen"] == 10_000
     assert result["reliability"]["selected_races"] == 0
 
@@ -249,10 +250,17 @@ def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> No
     assert result["evaluation_dates"] == ["2026-07-21"]
     assert result["evaluation_days"] == 1
     assert result["evaluated_races"] == 1
+    assert result["profitable_day_fraction"] == 1.0
     assert result["daily"][0]["race_date"] == "2026-07-21"
     assert result["calibration"]["days"][1]["training_races"] == 1
     assert "races" not in result
     assert result["promotion_gate"]["sample_size_pass"] is False
+    assert result["promotion_gate"]["evaluated_races_pass"] is False
+    assert result["promotion_gate"]["effective_hit_count_pass"] is False
+    assert result["promotion_gate"]["profitable_day_fraction_pass"] is True
+    assert result["promotion_gate"]["market_log_loss_confidence_pass"] is False
+    assert result["promotion_gate"]["market_top5_confidence_pass"] is False
+    assert result["promotion_gate"]["selected_probability_not_overconfident"] is True
     assert result["promotion_gate"]["pass"] is False
 
 
@@ -278,8 +286,42 @@ def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
     assert profitable["bootstrap"]["probability_roi_above_one"] == 1.0
     assert profitable["hit_tickets"] == 1
     assert profitable["promotion_gate"]["minimum_hits"] == 20
+    assert profitable["promotion_gate"]["minimum_clean_evaluation_days"] == 30
+    assert profitable["promotion_gate"]["minimum_evaluated_races"] == 1_000
+    assert profitable["promotion_gate"]["minimum_tickets"] == 200
+    assert profitable["promotion_gate"]["minimum_effective_hits"] == 20.0
+    assert profitable["promotion_gate"]["minimum_profitable_day_fraction"] == 0.60
+    assert profitable["promotion_gate"]["minimum_market_confidence"] == 0.95
+    assert profitable["promotion_gate"]["clean_evaluation_days_pass"] is False
+    assert profitable["promotion_gate"][
+        "minimum_selected_probability_calibration_pvalue"
+    ] == 0.05
     assert profitable["promotion_gate"]["bootstrap_lower_95_pass"] is True
     assert profitable["promotion_gate"]["sample_size_pass"] is False
+
+
+def test_selected_probability_calibration_rejects_clear_overconfidence() -> None:
+    race = _race(
+        "2026-07-20",
+        "overconfident-miss",
+        favourite="1-2-3",
+        actual="1-2-4",
+    )
+    probabilities = {
+        key: (0.99 if key == "1-2-3" else 0.01 / 119.0)
+        for key in COMBINATIONS
+    }
+    race["model_probabilities"] = dict(probabilities)
+    race["market_probabilities"] = dict(probabilities)
+
+    result = challenger.evaluate_market_kelly_challenger([race])
+
+    calibration = result["purchase_probability_calibration"]
+    assert calibration["selected_races"] == 1
+    assert calibration["observed_hits"] == 0
+    assert calibration["expected_hits"] == pytest.approx(0.99)
+    assert calibration["probability_at_most_observed_hits"] == pytest.approx(0.01)
+    assert result["promotion_gate"]["selected_probability_not_overconfident"] is False
 
 
 def test_walk_forward_can_select_regularization_from_prior_days(monkeypatch) -> None:

@@ -6,6 +6,7 @@ from datetime import date, datetime, time
 from typing import Any, Iterable, Mapping
 
 from boatrace_ai.bankroll_bootstrap import bootstrap_daily_roi
+from boatrace_ai.listwise.cluster_bootstrap import paired_cluster_mean_bootstrap
 from boatrace_ai.listwise.closing_odds import decision_odds
 from boatrace_ai.listwise.market_calibration import bankroll_reliability_metrics
 from boatrace_ai.listwise.market_offset_calibration import (
@@ -99,6 +100,9 @@ def evaluate_attached_market_kelly_challenger(
         }
     )
     log_loss = _log_loss_comparison(evaluation_races)
+    probability_calibration = _purchase_probability_calibration(daily)
+    winning_days = sum(int(row["profit_yen"] > 0) for row in daily)
+    purchase_days = sum(int(row["stake_yen"] > 0) for row in daily)
     return {
         "challenger": "market_offset_discrete_multinomial_kelly",
         "policy": {
@@ -120,8 +124,11 @@ def evaluate_attached_market_kelly_challenger(
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else 0.0,
-        "winning_days": sum(int(row["profit_yen"] > 0) for row in daily),
-        "purchase_days": sum(int(row["stake_yen"] > 0) for row in daily),
+        "winning_days": winning_days,
+        "purchase_days": purchase_days,
+        "profitable_day_fraction": (
+            winning_days / len(daily) if daily else None
+        ),
         "max_drawdown_yen": max(
             (row["max_drawdown_yen"] for row in daily), default=0
         ),
@@ -130,11 +137,19 @@ def evaluate_attached_market_kelly_challenger(
         ),
         "calibration": dict(calibration),
         "log_loss": log_loss,
+        "purchase_probability_calibration": probability_calibration,
         **reliability,
         "reliability": reliability,
         "edge_diagnostics": _edge_diagnostics(evaluation_races),
         "bootstrap": bootstrap,
-        "promotion_gate": _promotion_gate(daily, reliability, bootstrap),
+        "promotion_gate": _promotion_gate(
+            daily,
+            reliability,
+            bootstrap,
+            market=log_loss,
+            probability_calibration=probability_calibration,
+            evaluated_races=evaluated_races,
+        ),
         "daily": daily,
     }
 
@@ -143,18 +158,50 @@ def _promotion_gate(
     daily: list[dict[str, Any]],
     reliability: Mapping[str, Any],
     bootstrap: Mapping[str, Any],
+    *,
+    market: Mapping[str, Any],
+    probability_calibration: Mapping[str, Any],
+    evaluated_races: int,
 ) -> dict[str, Any]:
     tickets = sum(int(row["tickets"]) for row in daily)
-    purchase_days = sum(int(row["stake_yen"] > 0) for row in daily)
     stake_yen = sum(int(row["stake_yen"]) for row in daily)
     return_yen = sum(int(row["return_yen"]) for row in daily)
+    winning_days = sum(int(row["profit_yen"] > 0) for row in daily)
+    profitable_day_fraction = winning_days / len(daily) if daily else 0.0
+    effective_hit_count = float(
+        reliability.get("effective_hit_count") or 0.0
+    )
+    log_loss_confidence = float(
+        market.get("challenger_improvement_confidence") or 0.0
+    )
+    top5_confidence = float(
+        market.get("challenger_top5_improvement_confidence") or 0.0
+    )
+    probability_calibration_pvalue = float(
+        probability_calibration.get("probability_at_most_observed_hits") or 0.0
+    )
     gates = {
-        "minimum_purchase_days": 30,
-        "minimum_tickets": 300,
+        "minimum_clean_evaluation_days": 30,
+        "minimum_evaluated_races": 1_000,
+        "minimum_tickets": 200,
         "minimum_hits": 20,
+        "minimum_effective_hits": 20.0,
+        "minimum_profitable_day_fraction": 0.60,
+        "minimum_market_confidence": 0.95,
+        "minimum_selected_probability_calibration_pvalue": 0.05,
         "sample_size_pass": (
-            purchase_days >= 30 and tickets >= 300
+            len(daily) >= 30
+            and tickets >= 200
             and sum(int(row["hit_tickets"]) for row in daily) >= 20
+        ),
+        "clean_evaluation_days_pass": len(daily) >= 30,
+        "evaluated_races_pass": evaluated_races >= 1_000,
+        "effective_hit_count_pass": effective_hit_count >= 20.0,
+        "profitable_day_fraction_pass": profitable_day_fraction >= 0.60,
+        "market_log_loss_confidence_pass": log_loss_confidence >= 0.95,
+        "market_top5_confidence_pass": top5_confidence >= 0.95,
+        "selected_probability_not_overconfident": (
+            probability_calibration_pvalue >= 0.05
         ),
         "roi_pass": bool(stake_yen and return_yen > stake_yen),
         "largest_hit_excluded_roi_pass": bool(
@@ -172,6 +219,13 @@ def _promotion_gate(
         gates[key]
         for key in (
             "sample_size_pass",
+            "clean_evaluation_days_pass",
+            "evaluated_races_pass",
+            "effective_hit_count_pass",
+            "profitable_day_fraction_pass",
+            "market_log_loss_confidence_pass",
+            "market_top5_confidence_pass",
+            "selected_probability_not_overconfident",
             "roi_pass",
             "largest_hit_excluded_roi_pass",
             "bootstrap_lower_95_pass",
@@ -179,6 +233,55 @@ def _promotion_gate(
         )
     )
     return gates
+
+
+def _purchase_probability_calibration(
+    daily: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    probabilities: list[float] = []
+    observed_hits = 0
+    for day in daily:
+        for decision in day.get("decisions") or []:
+            allocations = decision.get("allocations") or []
+            if not allocations:
+                continue
+            selected_probability = sum(
+                float(row["probability"]) for row in allocations
+            )
+            if not math.isfinite(selected_probability) or not (
+                0.0 <= selected_probability <= 1.0 + 1e-12
+            ):
+                raise ValueError("selected race probability must be in [0, 1]")
+            probabilities.append(min(1.0, selected_probability))
+            observed_hits += int(int(decision.get("actual_stake_yen") or 0) > 0)
+    return {
+        "selected_races": len(probabilities),
+        "observed_hits": observed_hits,
+        "expected_hits": sum(probabilities),
+        "probability_at_most_observed_hits": _poisson_binomial_cdf(
+            probabilities, observed_hits
+        ),
+        "method": (
+            "exact_poisson_binomial_lower_tail_over_disjoint_race_selections"
+        ),
+    }
+
+
+def _poisson_binomial_cdf(
+    probabilities: Iterable[float], observed: int
+) -> float:
+    values = [float(value) for value in probabilities]
+    if observed < 0:
+        return 0.0
+    distribution = [1.0] + [0.0] * len(values)
+    for index, probability in enumerate(values, start=1):
+        for hits in range(index, 0, -1):
+            distribution[hits] = (
+                distribution[hits] * (1.0 - probability)
+                + distribution[hits - 1] * probability
+            )
+        distribution[0] *= 1.0 - probability
+    return min(1.0, max(0.0, sum(distribution[: observed + 1])))
 
 
 def attach_prequential_market_offsets(
@@ -487,6 +590,8 @@ def _simulate_daily(
 def _log_loss_comparison(races: list[dict[str, Any]]) -> dict[str, Any]:
     losses = {"model": [], "market": [], "challenger": []}
     ready_losses = {"market": [], "challenger": []}
+    race_dates: list[str] = []
+    top5_differences: list[float] = []
     for race in races:
         actual = str(race["actual_combination"])
         vectors = {
@@ -501,6 +606,18 @@ def _log_loss_comparison(races: list[dict[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"actual combination {actual!r} is missing")
         for name, values in vectors.items():
             losses[name].append(-math.log(max(EPSILON, values[actual])))
+        race_dates.append(str(race["race_date"]))
+        market_top5 = set(sorted(
+            vectors["market"],
+            key=lambda key: (-vectors["market"][key], key),
+        )[:5])
+        challenger_top5 = set(sorted(
+            vectors["challenger"],
+            key=lambda key: (-vectors["challenger"][key], key),
+        )[:5])
+        top5_differences.append(float(
+            int(actual in challenger_top5) - int(actual in market_top5)
+        ))
         if race["_market_kelly_calibration"]["ready"]:
             ready_losses["market"].append(losses["market"][-1])
             ready_losses["challenger"].append(losses["challenger"][-1])
@@ -510,6 +627,20 @@ def _log_loss_comparison(races: list[dict[str, Any]]) -> dict[str, Any]:
     challenger = _mean(losses["challenger"])
     ready_market = _mean(ready_losses["market"])
     ready_challenger = _mean(ready_losses["challenger"])
+    loss_differences = [
+        challenger_loss - market_loss
+        for challenger_loss, market_loss in zip(
+            losses["challenger"], losses["market"]
+        )
+    ]
+    loss_bootstrap = (
+        paired_cluster_mean_bootstrap(loss_differences, race_dates)
+        if loss_differences else None
+    )
+    top5_bootstrap = (
+        paired_cluster_mean_bootstrap(top5_differences, race_dates)
+        if top5_differences else None
+    )
     return {
         "races": len(races),
         "model": model,
@@ -527,6 +658,16 @@ def _log_loss_comparison(races: list[dict[str, Any]]) -> dict[str, Any]:
             ready_challenger - ready_market
             if ready_challenger is not None and ready_market is not None
             else None
+        ),
+        "challenger_vs_market_day_bootstrap": loss_bootstrap,
+        "challenger_top5_vs_market_day_bootstrap": top5_bootstrap,
+        "challenger_improvement_confidence": (
+            loss_bootstrap["probability_less_than_zero"]
+            if loss_bootstrap else None
+        ),
+        "challenger_top5_improvement_confidence": (
+            top5_bootstrap["probability_greater_than_zero"]
+            if top5_bootstrap else None
         ),
     }
 

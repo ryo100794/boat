@@ -4425,7 +4425,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "status", "registered_after", "evaluation_days",
             "evaluated_races", "tickets", "hit_tickets", "stake_yen",
             "return_yen", "profit_yen", "roi", "winning_days",
-            "purchase_days", "roi_without_largest_hit",
+            "purchase_days", "profitable_day_fraction",
+            "roi_without_largest_hit",
             "effective_hit_count", "largest_hit_return_share",
             "daily_cluster_bootstrap_roi_lower_95",
             "probability_roi_above_one", "promotion_eligible",
@@ -4443,6 +4444,25 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             )
             summary["trend_point_prospective_probability_roi_above_one"] = (
                 trend_bootstrap.get("probability_roi_above_one")
+            )
+        trend_market = trend_point.get("log_loss")
+        if isinstance(trend_market, dict):
+            for key in (
+                "races", "model", "market", "challenger",
+                "challenger_delta_vs_market",
+                "challenger_improvement_confidence",
+                "challenger_top5_improvement_confidence",
+            ):
+                if key in trend_market:
+                    summary[f"trend_point_prospective_market_{key}"] = (
+                        trend_market[key]
+                    )
+        trend_probability = trend_point.get(
+            "purchase_probability_calibration"
+        )
+        if isinstance(trend_probability, dict):
+            summary["trend_point_prospective_probability_calibration"] = dict(
+                trend_probability
             )
     v33_forecast_diagnostic = payload.get(
         "v33_v25_top1_narrow_forecast_only_diagnostic"
