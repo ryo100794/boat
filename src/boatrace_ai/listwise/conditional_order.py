@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import math
 import time
@@ -483,6 +484,9 @@ def bankroll_promotion_gate(
 
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
+    baseline_model_path = Path(args.baseline_model)
+    with baseline_model_path.open("rb") as stream:
+        baseline_model_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     baseline_artifact = load_model_bundle(args.baseline_model)
     baseline_model = baseline_artifact.get("model")
     if not isinstance(baseline_model, ListwiseLinearModel):
@@ -795,6 +799,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "model": MODEL_NAME,
         "comparison_role": "fixed-cutoff conditional order interaction candidate",
         "source_model": str(args.baseline_model),
+        "source_model_sha256": baseline_model_sha256,
         "model_artifact": str(args.model_output),
         "training_through": args.training_through,
         "evaluation_from": args.evaluation_from,

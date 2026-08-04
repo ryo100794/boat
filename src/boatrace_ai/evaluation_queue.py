@@ -5425,6 +5425,12 @@ def _validate_job_result_contract(
             raise ValueError(
                 f"fixed model conditional order result {key} mismatch"
             )
+    if str(payload.get("source_model_sha256") or "").lower() != str(
+        parameters.get("expected_model_sha256") or ""
+    ).lower():
+        raise ValueError(
+            "fixed model conditional order result source_model_sha256 mismatch"
+        )
     expected_races = parameters.get("expected_evaluation_races")
     actual_races = payload.get("evaluation_races")
     if (

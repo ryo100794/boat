@@ -1739,6 +1739,7 @@ def test_fixed_model_conditional_order_result_contract() -> None:
     job = _job(
         "fixed_model_conditional_order",
         {
+            "expected_model_sha256": "a" * 64,
             "training_through": "2025-07-25",
             "evaluation_from": "2025-07-26",
             "evaluation_through": "2026-08-02",
@@ -1746,6 +1747,7 @@ def test_fixed_model_conditional_order_result_contract() -> None:
         },
     )
     payload = {
+        "source_model_sha256": "a" * 64,
         "training_through": "2025-07-25",
         "evaluation_from": "2025-07-26",
         "evaluation_through": "2026-08-02",
@@ -1761,6 +1763,10 @@ def test_fixed_model_conditional_order_result_contract() -> None:
     with pytest.raises(ValueError, match="evaluation_through mismatch"):
         evaluation_queue._validate_job_result_contract(
             job, {**payload, "evaluation_through": "2026-08-01"}
+        )
+    with pytest.raises(ValueError, match="source_model_sha256 mismatch"):
+        evaluation_queue._validate_job_result_contract(
+            job, {**payload, "source_model_sha256": "b" * 64}
         )
 
 
