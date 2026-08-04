@@ -50,3 +50,26 @@ def test_kelly_floor_does_not_force_minimum_exposure() -> None:
     assert result["stake_yen"] == 0
     assert result["tickets"] == 0
 
+
+def test_allocation_filter_runs_after_stake_rounding() -> None:
+    candidates = _candidates(3)
+    result = allocate_adaptive_day(
+        "2026-07-20",
+        candidates,
+        {item["race_id"] for item in candidates},
+        daily_budget_yen=10_000,
+        fractional_kelly=1.0,
+        max_daily_exposure_fraction=0.30,
+        min_daily_exposure_fraction=0.03,
+        race_cap_fraction=0.10,
+        ticket_cap_fraction=0.03,
+        max_daily_tickets=30,
+        allocation_mode="normalized_kelly",
+        stake_granularity_yen=100,
+        min_stake_yen=100,
+        allocation_filter=lambda rows: rows[:1],
+    )
+
+    assert result["allocation_candidate_tickets"] == 3
+    assert result["tickets"] == 1
+    assert result["stake_yen"] == 100

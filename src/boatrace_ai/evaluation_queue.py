@@ -3162,6 +3162,7 @@ def build_command(
             "evaluation_from",
             "evaluation_through",
             "expected_evaluation_races",
+            "direct_pair_diagnostics",
             "timeout_seconds",
         }
         unsupported = set(params) - allowed
@@ -3170,7 +3171,7 @@ def build_command(
                 "unsupported fixed_model_conditional_order parameters: "
                 + ", ".join(sorted(unsupported))
             )
-        required = allowed - {"timeout_seconds"}
+        required = allowed - {"timeout_seconds", "direct_pair_diagnostics"}
         missing = required - set(params)
         if missing:
             raise ValueError(
@@ -3244,7 +3245,7 @@ def build_command(
                 "fixed conditional order cache is incomplete: "
                 + ", ".join(missing_cache)
             )
-        return [
+        command = [
             str(python), "-m", "boatrace_ai.listwise.conditional_order",
             "--db", db,
             "--cache-prefix", str(cache_prefix),
@@ -3261,7 +3262,15 @@ def build_command(
             "1.05", "1.10", "1.20", "1.30", "1.50", "2.00",
             "--promote-legacy-cache",
             "--research-only-reused-holdout",
-        ], output
+        ]
+        direct_pair_diagnostics = params.get(
+            "direct_pair_diagnostics", False
+        )
+        if not isinstance(direct_pair_diagnostics, bool):
+            raise ValueError("direct_pair_diagnostics must be a boolean")
+        if direct_pair_diagnostics:
+            command.append("--direct-pair-diagnostics")
+        return command, output
     if task_type == "conditional_payout_tail":
         allowed = {
             "training_through", "evaluation_from", "evaluation_through",
@@ -3736,6 +3745,38 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "clean_day_fraction"
         )
         summary["research_coverage_pass"] = research_coverage.get("pass")
+    pair_diagnostics = payload.get("direct_pair_diagnostics")
+    if isinstance(pair_diagnostics, dict):
+        for name, diagnostic in pair_diagnostics.items():
+            if not isinstance(diagnostic, dict):
+                continue
+            bankroll = diagnostic.get("bankroll")
+            confidence = diagnostic.get("bankroll_confidence")
+            if not isinstance(bankroll, dict):
+                continue
+            prefix = f"direct_pair_{name}"
+            for key in (
+                "evaluation_days",
+                "evaluated_races",
+                "races_bet",
+                "selected_tickets",
+                "hit_tickets",
+                "effective_hit_count",
+                "winning_days",
+                "profit_yen",
+                "roi",
+                "roi_without_largest_hit",
+                "largest_hit_return_share",
+                "max_drawdown_yen",
+            ):
+                summary[f"{prefix}_{key}"] = bankroll.get(key)
+            if isinstance(confidence, dict):
+                summary[f"{prefix}_roi_ci95_lower"] = confidence.get(
+                    "roi_ci95_lower"
+                )
+                summary[f"{prefix}_probability_roi_above_one"] = (
+                    confidence.get("probability_roi_above_one")
+                )
     if str(payload.get("model") or "").startswith(
         "joint_edge_calibrated_replay_v"
     ):
@@ -5918,6 +5959,66 @@ def _validate_job_result_contract(
             raise ValueError(
                 f"fixed model conditional order result {label} invalid"
             )
+    if parameters.get("direct_pair_diagnostics") is True:
+        diagnostics = payload.get("direct_pair_diagnostics")
+        expected_filters = {
+            "baseline_exact_two": "exact_two_allocated_tickets",
+            "baseline_reversed_place_pair": (
+                "exact_two_same_winner_reversed_second_third"
+            ),
+            "conditional_exact_two": "exact_two_allocated_tickets",
+            "conditional_reversed_place_pair": (
+                "exact_two_same_winner_reversed_second_third"
+            ),
+        }
+        expected_comparisons = {
+            "baseline_exact_two": "full_baseline",
+            "baseline_reversed_place_pair": "full_baseline",
+            "conditional_exact_two": "baseline_exact_two",
+            "conditional_reversed_place_pair": (
+                "baseline_reversed_place_pair"
+            ),
+        }
+        if not isinstance(diagnostics, dict):
+            raise ValueError(
+                "fixed model conditional order pair diagnostics missing"
+            )
+        for key, expected_filter in expected_filters.items():
+            diagnostic = diagnostics.get(key)
+            pair_bankroll = (
+                diagnostic.get("bankroll")
+                if isinstance(diagnostic, dict)
+                else None
+            )
+            policy = (
+                pair_bankroll.get("policy")
+                if isinstance(pair_bankroll, dict)
+                else None
+            )
+            diagnostic_gate = (
+                diagnostic.get("diagnostic_gate")
+                if isinstance(diagnostic, dict)
+                else None
+            )
+            if (
+                not isinstance(diagnostic, dict)
+                or diagnostic.get("promotion_eligible") is not False
+                or diagnostic.get("comparison") != expected_comparisons[key]
+                or not isinstance(diagnostic_gate, dict)
+                or diagnostic_gate.get("reused_holdout_research_only")
+                is not True
+                or diagnostic_gate.get("holdout_role_pass") is not False
+                or diagnostic_gate.get("pass") is not False
+                or not isinstance(pair_bankroll, dict)
+                or pair_bankroll.get("evaluated_races") != expected_races
+                or not isinstance(policy, dict)
+                or policy.get("allocation_filter") != expected_filter
+                or not _valid_tail_portfolio_contract(pair_bankroll)
+            ):
+                raise ValueError(
+                    "fixed model conditional order pair diagnostic invalid: "
+                    + key
+                )
     fixed_return = payload.get("expected_return_fixed_threshold")
     if isinstance(fixed_return, dict):
         fixed_bankroll = fixed_return.get("bankroll")

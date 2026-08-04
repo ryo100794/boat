@@ -25,6 +25,7 @@ from .cluster_bootstrap import paired_cluster_mean_bootstrap
 from .direct_bankroll import (
     POLICY_SELECTION_DAYS,
     bootstrap_daily_bankroll,
+    filter_exact_two_allocations,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
     validate_conditional_payout_inference_state,
@@ -722,6 +723,98 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         payouts=payouts,
         training_races=training_races,
     )
+    direct_pair_diagnostics = None
+    if bool(getattr(args, "direct_pair_diagnostics", False)):
+        if not bool(getattr(args, "research_only_reused_holdout", False)):
+            raise ValueError(
+                "direct_pair_diagnostics requires research-only reused holdout"
+            )
+        exact_two_filter = functools.partial(
+            filter_exact_two_allocations,
+            require_reversed_place_pair=False,
+        )
+        reversed_pair_filter = functools.partial(
+            filter_exact_two_allocations,
+            require_reversed_place_pair=True,
+        )
+        pair_bankrolls = {
+            "baseline_exact_two": simulate_direct_bankroll(
+                baseline_probabilities,
+                race_keys=evaluation_keys,
+                payouts=payouts,
+                training_races=training_races,
+                allocation_filter=exact_two_filter,
+                allocation_filter_name="exact_two_allocated_tickets",
+            ),
+            "baseline_reversed_place_pair": simulate_direct_bankroll(
+                baseline_probabilities,
+                race_keys=evaluation_keys,
+                payouts=payouts,
+                training_races=training_races,
+                allocation_filter=reversed_pair_filter,
+                allocation_filter_name=(
+                    "exact_two_same_winner_reversed_second_third"
+                ),
+            ),
+            "conditional_exact_two": simulate_direct_bankroll(
+                candidate_probabilities,
+                race_keys=evaluation_keys,
+                payouts=payouts,
+                training_races=training_races,
+                allocation_filter=exact_two_filter,
+                allocation_filter_name="exact_two_allocated_tickets",
+            ),
+            "conditional_reversed_place_pair": simulate_direct_bankroll(
+                candidate_probabilities,
+                race_keys=evaluation_keys,
+                payouts=payouts,
+                training_races=training_races,
+                allocation_filter=reversed_pair_filter,
+                allocation_filter_name=(
+                    "exact_two_same_winner_reversed_second_third"
+                ),
+            ),
+        }
+        comparison_keys = {
+            "baseline_exact_two": "full_baseline",
+            "baseline_reversed_place_pair": "full_baseline",
+            "conditional_exact_two": "baseline_exact_two",
+            "conditional_reversed_place_pair": (
+                "baseline_reversed_place_pair"
+            ),
+        }
+        direct_pair_diagnostics = {}
+        for key, pair_bankroll in pair_bankrolls.items():
+            comparison_key = comparison_keys[key]
+            comparison_bankroll = (
+                baseline_bankroll
+                if comparison_key == "full_baseline"
+                else pair_bankrolls[comparison_key]
+            )
+            pair_confidence = bootstrap_daily_bankroll(
+                pair_bankroll["daily"],
+                baseline_daily=comparison_bankroll["daily"],
+            )
+            pair_gate = bankroll_promotion_gate(
+                pair_bankroll,
+                comparison_bankroll,
+                pair_confidence,
+            )
+            pair_gate = _apply_holdout_role_gate(
+                pair_gate,
+                research_only_reused_holdout=True,
+            )
+            direct_pair_diagnostics[key] = {
+                "role": (
+                    "post-hoc long-holdout structural diagnostic; never "
+                    "promotion evidence"
+                ),
+                "promotion_eligible": False,
+                "comparison": comparison_key,
+                "bankroll": pair_bankroll,
+                "bankroll_confidence": pair_confidence,
+                "diagnostic_gate": pair_gate,
+            }
     conditional_payout_state: dict[str, Any] = {}
     conditional_payout_bankroll = simulate_conditional_payout_walk_forward(
         candidate_probabilities,
@@ -950,6 +1043,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         # their full selected-ticket ledger into tail diagnostics.  Dropping
         # them here makes the baseline tail contract impossible to satisfy.
         "baseline_bankroll": baseline_bankroll,
+        "direct_pair_diagnostics": direct_pair_diagnostics,
         "structure_gate": structure_gate,
         "bankroll_gate": bankroll_gate,
         "promotion_gate": promotion_gate,
@@ -1043,6 +1137,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "mark all bankroll gates as diagnostic-only because the holdout "
             "has already informed development"
+        ),
+    )
+    parser.add_argument(
+        "--direct-pair-diagnostics",
+        action="store_true",
+        help=(
+            "compare allocated exact-two and same-winner 2/3 swap subsets; "
+            "requires research-only reused holdout"
         ),
     )
     return parser

@@ -11,11 +11,35 @@ from boatrace_ai.listwise.direct_bankroll import (
     _select_conditional_payout_policy,
     bootstrap_daily_bankroll,
     direct_candidates,
+    filter_exact_two_allocations,
     predict_conditional_odds_from_state,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
     standard_direct_policy,
 )
+
+
+def test_exact_two_allocation_filter_can_require_reversed_place_pair() -> None:
+    allocations = [
+        {"race_id": "swap", "combination": "1-2-3"},
+        {"race_id": "swap", "combination": "1-3-2"},
+        {"race_id": "other", "combination": "2-1-3"},
+        {"race_id": "other", "combination": "2-3-4"},
+        {"race_id": "single", "combination": "3-1-2"},
+    ]
+
+    exact_two = filter_exact_two_allocations(allocations)
+    reversed_pair = filter_exact_two_allocations(
+        allocations,
+        require_reversed_place_pair=True,
+    )
+
+    assert [row["race_id"] for row in exact_two] == [
+        "swap", "swap", "other", "other",
+    ]
+    assert [row["combination"] for row in reversed_pair] == [
+        "1-2-3", "1-3-2",
+    ]
 
 
 def test_daily_bankroll_bootstrap_reports_absolute_and_paired_confidence() -> None:
@@ -161,6 +185,41 @@ def test_direct_bankroll_uses_fixed_daily_policy_and_settles_returns() -> None:
     assert dimensions["first_lane"]["buckets"][0]["bucket"] == "1"
     assert dimensions["first_lane"]["buckets"][0]["tickets"] == 1
     assert attribution["fold_stability"]["folds"] == 1
+
+
+def test_direct_bankroll_reversed_pair_filter_uses_post_allocation_count() -> None:
+    payouts = {
+        "train": {"combination": "1-2-3", "payout_yen": 2_000},
+        "test": {"combination": "1-3-2", "payout_yen": 2_000},
+    }
+    probabilities = np.full((1, 120), 1e-12, dtype=np.float64)
+    probabilities[0, COMBINATION_LABELS.index("1-2-3")] = 0.5
+    probabilities[0, COMBINATION_LABELS.index("1-3-2")] = 0.5
+    policy = standard_direct_policy()
+    policy["ev_threshold"] = 1.0
+    policy["max_daily_tickets"] = 2
+
+    result = simulate_direct_bankroll(
+        probabilities,
+        race_keys=[("test", "2026-07-20", "01", 1)],
+        payouts=payouts,
+        training_races={"train"},
+        policy=policy,
+        allocation_filter=lambda rows: filter_exact_two_allocations(
+            rows,
+            require_reversed_place_pair=True,
+        ),
+        allocation_filter_name=(
+            "exact_two_same_winner_reversed_second_third"
+        ),
+    )
+
+    assert result["selected_tickets"] == 2
+    assert result["races_bet"] == 1
+    assert result["hit_tickets"] == 1
+    assert result["policy"]["allocation_filter"] == (
+        "exact_two_same_winner_reversed_second_third"
+    )
 
 
 

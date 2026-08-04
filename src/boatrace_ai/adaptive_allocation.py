@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from .discrete_log_allocation import (
@@ -78,6 +78,9 @@ def allocate_adaptive_day(
     min_stake_yen: int,
     roi_attribution: dict[str, Any] | None = None,
     settlements: Mapping[SettlementKey, int] | None = None,
+    allocation_filter: (
+        Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None
+    ) = None,
 ) -> dict[str, Any]:
     decision_candidates, settlement_map = (
         split_decision_candidates_and_settlements(
@@ -148,10 +151,6 @@ def allocate_adaptive_day(
         allocation_mode=allocation_mode,
         stake_granularity_yen=stake_granularity_yen,
     )
-    selected = []
-    stake_yen = 0
-    return_yen = 0
-    hit_tickets = 0
     ranked_indices = sorted(
         range(len(prepared)),
         key=lambda index: (
@@ -160,11 +159,33 @@ def allocate_adaptive_day(
         ),
         reverse=True,
     )
+    allocated = []
     for index in ranked_indices:
-        item = prepared[index]
         ticket_stake = planned_stakes[index]
         if ticket_stake < min_stake_yen:
             continue
+        allocated.append({**prepared[index], "stake_yen": ticket_stake})
+    if allocation_filter is not None:
+        filtered = allocation_filter(allocated)
+        if not isinstance(filtered, list):
+            raise ValueError("allocation_filter must return a list")
+        allocated_ids = {id(item) for item in allocated}
+        filtered_ids = [id(item) for item in filtered]
+        if (
+            len(filtered_ids) != len(set(filtered_ids))
+            or any(item_id not in allocated_ids for item_id in filtered_ids)
+        ):
+            raise ValueError(
+                "allocation_filter must return unique allocated rows"
+            )
+        allocated = filtered
+
+    selected = []
+    stake_yen = 0
+    return_yen = 0
+    hit_tickets = 0
+    for item in allocated:
+        ticket_stake = int(item["stake_yen"])
         settled = settle_decision_ticket(
             item,
             stake_yen=ticket_stake,

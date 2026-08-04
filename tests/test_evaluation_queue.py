@@ -1662,6 +1662,7 @@ def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
                 "evaluation_from": "2025-07-26",
                 "evaluation_through": "2026-08-02",
                 "expected_evaluation_races": 49_581,
+                "direct_pair_diagnostics": True,
                 "timeout_seconds": 21600,
             },
         ),
@@ -1689,6 +1690,7 @@ def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
     assert command[command.index("--evaluation-through") + 1] == "2026-08-02"
     assert command[command.index("--validation-days") + 1] == "365"
     assert "--research-only-reused-holdout" in command
+    assert "--direct-pair-diagnostics" in command
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
@@ -1794,6 +1796,77 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
         result_decision("fixed_model_conditional_order", research_summary)
         == "reject_or_research_only"
     )
+
+    pair_job = {
+        **job,
+        "parameters": {
+            **job["parameters"],
+            "direct_pair_diagnostics": True,
+        },
+    }
+    pair_filters = {
+        "baseline_exact_two": "exact_two_allocated_tickets",
+        "baseline_reversed_place_pair": (
+            "exact_two_same_winner_reversed_second_third"
+        ),
+        "conditional_exact_two": "exact_two_allocated_tickets",
+        "conditional_reversed_place_pair": (
+            "exact_two_same_winner_reversed_second_third"
+        ),
+    }
+    pair_comparisons = {
+        "baseline_exact_two": "full_baseline",
+        "baseline_reversed_place_pair": "full_baseline",
+        "conditional_exact_two": "baseline_exact_two",
+        "conditional_reversed_place_pair": (
+            "baseline_reversed_place_pair"
+        ),
+    }
+    pair_payload = {
+        **payload,
+        "direct_pair_diagnostics": {
+            key: {
+                "promotion_eligible": False,
+                "comparison": pair_comparisons[key],
+                "diagnostic_gate": {
+                    "reused_holdout_research_only": True,
+                    "holdout_role_pass": False,
+                    "pass": False,
+                },
+                "bankroll_confidence": {
+                    "roi_ci95_lower": 0.8,
+                    "probability_roi_above_one": 0.2,
+                },
+                "bankroll": {
+                    **bankroll,
+                    "selected_tickets": 40,
+                    "hit_tickets": 8,
+                    "roi": 1.1,
+                    "roi_without_largest_hit": 0.9,
+                    "policy": {"allocation_filter": allocation_filter},
+                },
+            }
+            for key, allocation_filter in pair_filters.items()
+        },
+    }
+    evaluation_queue._validate_job_result_contract(pair_job, pair_payload)
+    pair_summary = summarize_result(pair_payload)
+    assert pair_summary["direct_pair_baseline_exact_two_selected_tickets"] == 40
+    assert pair_summary["direct_pair_baseline_exact_two_roi"] == 1.1
+    assert pair_summary[
+        "direct_pair_baseline_exact_two_roi_ci95_lower"
+    ] == 0.8
+    with pytest.raises(ValueError, match="pair diagnostic invalid"):
+        evaluation_queue._validate_job_result_contract(
+            pair_job,
+            {
+                **pair_payload,
+                "direct_pair_diagnostics": {
+                    **pair_payload["direct_pair_diagnostics"],
+                    "conditional_reversed_place_pair": None,
+                },
+            },
+        )
 
     with pytest.raises(ValueError, match="must be research-only"):
         evaluation_queue._validate_job_result_contract(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from typing import Any
 
 import numpy as np
@@ -324,6 +324,38 @@ def standard_direct_policy() -> dict[str, Any]:
         ),
         "selection": "fixed standard_365d_v2 policy; no holdout tuning",
     }
+
+
+def filter_exact_two_allocations(
+    allocations: list[dict[str, Any]],
+    *,
+    require_reversed_place_pair: bool = False,
+) -> list[dict[str, Any]]:
+    """Keep races allocated exactly two tickets, optionally a 2/3 swap."""
+    by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in allocations:
+        by_race[str(row["race_id"])].append(row)
+    eligible_races = set()
+    for race_id, rows in by_race.items():
+        if len(rows) != 2:
+            continue
+        if not require_reversed_place_pair:
+            eligible_races.add(race_id)
+            continue
+        first = str(rows[0]["combination"]).split("-")
+        second = str(rows[1]["combination"]).split("-")
+        if (
+            len(first) == 3
+            and len(second) == 3
+            and first[0] == second[0]
+            and first[1] == second[2]
+            and first[2] == second[1]
+        ):
+            eligible_races.add(race_id)
+    return [
+        row for row in allocations
+        if str(row["race_id"]) in eligible_races
+    ]
 
 
 def _winner_samples(
@@ -1397,11 +1429,21 @@ def simulate_direct_bankroll(
     payouts: dict[str, dict[str, Any]],
     training_races: set[str],
     policy: dict[str, Any] | None = None,
+    allocation_filter: (
+        Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None
+    ) = None,
+    allocation_filter_name: str | None = None,
 ) -> dict[str, Any]:
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
         raise ValueError("probability matrix and race keys must align")
     selected_policy = dict(policy or standard_direct_policy())
+    if allocation_filter is not None:
+        if not allocation_filter_name:
+            raise ValueError(
+                "allocation_filter_name is required with allocation_filter"
+            )
+        selected_policy["allocation_filter"] = str(allocation_filter_name)
     payout_model = _build_payout_model(
         payouts,
         train_races=training_races,
@@ -1457,6 +1499,7 @@ def simulate_direct_bankroll(
             ),
             min_stake_yen=int(selected_policy["min_stake_yen"]),
             roi_attribution=fold_attributions[fold_index],
+            allocation_filter=allocation_filter,
         )
         state = append_day_result(
             daily,
