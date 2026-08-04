@@ -7,7 +7,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .ticket_utility_ranking_v31 import _lightgbm, ticket_feature_matrix
+from .ticket_utility_ranking_v31 import (
+    ACTIVE_CONTEXT_FEATURES,
+    _lightgbm,
+    ticket_feature_matrix,
+)
 
 
 MODEL_NAME = "nonlinear_market_offset_residual_v38"
@@ -54,13 +58,19 @@ def _normalized_market(
     return values / total
 
 
-def _training_matrix(races: list[dict[str, Any]]) -> _TrainingMatrix:
+def _training_matrix(
+    races: list[dict[str, Any]],
+    *,
+    context_features: tuple[str, ...] = ACTIVE_CONTEXT_FEATURES,
+) -> _TrainingMatrix:
     matrices: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     market_logs: list[np.ndarray] = []
     groups: list[int] = []
     for race in races:
-        combinations, matrix = ticket_feature_matrix(race)
+        combinations, matrix = ticket_feature_matrix(
+            race, active_context_features=context_features
+        )
         actual = str(race["actual_combination"])
         if actual not in combinations:
             raise ValueError("V38 actual combination is absent from market tickets")
@@ -124,12 +134,16 @@ def fit_nonlinear_market_residual(
     races: list[dict[str, Any]],
     *,
     tree_preset: Mapping[str, Any],
+    context_features: tuple[str, ...] = ACTIVE_CONTEXT_FEATURES,
     num_threads: int = 4,
     num_boost_round: int = 100,
 ) -> dict[str, Any]:
     if not races:
         raise ValueError("at least one V38 race is required")
-    prepared = _training_matrix(races)
+    selected_features = tuple(str(value) for value in context_features)
+    if not selected_features or len(set(selected_features)) != len(selected_features):
+        raise ValueError("V38 context features must be non-empty and unique")
+    prepared = _training_matrix(races, context_features=selected_features)
     lightgbm = _lightgbm()
     dataset = lightgbm.Dataset(
         prepared.features,
@@ -175,6 +189,7 @@ def fit_nonlinear_market_residual(
         "max_depth": int(tree_preset["max_depth"]),
         "min_child_samples": int(tree_preset["min_child_samples"]),
         "num_boost_round": max(1, int(num_boost_round)),
+        "context_features": list(selected_features),
         "feature_dimension": int(prepared.features.shape[1]),
         "training_races": len(races),
         "training_tickets": int(prepared.features.shape[0]),
@@ -215,7 +230,16 @@ def nonlinear_residual_probabilities(
     *,
     shrinkage: float,
 ) -> dict[str, float]:
-    combinations, matrix = ticket_feature_matrix(race)
+    raw_features = artifact.get("context_features", ACTIVE_CONTEXT_FEATURES)
+    if not isinstance(raw_features, (list, tuple)):
+        raise ValueError("V38 artifact context features are invalid")
+    context_features = tuple(str(value) for value in raw_features)
+    combinations, matrix = ticket_feature_matrix(
+        race, active_context_features=context_features
+    )
+    expected_dimension = int(artifact.get("feature_dimension", matrix.shape[1]))
+    if matrix.shape[1] != expected_dimension:
+        raise ValueError("V38 artifact feature dimension mismatch")
     market = _normalized_market(race, combinations)
     correction = np.asarray(
         _booster(artifact).predict(matrix, raw_score=True), dtype=np.float64

@@ -76,6 +76,8 @@ def _entropy(values: np.ndarray) -> float:
 
 def ticket_feature_matrix(
     race: Mapping[str, Any],
+    *,
+    active_context_features: tuple[str, ...] = ACTIVE_CONTEXT_FEATURES,
 ) -> tuple[list[str], np.ndarray]:
     market_source = race.get("market_probabilities")
     model_source = race.get("model_probabilities")
@@ -130,7 +132,7 @@ def ticket_feature_matrix(
         for lane in range(1, 7):
             columns.append((lanes[:, stage] == lane).astype(np.float64))
 
-    lane_context = _lane_context_matrix(race, ACTIVE_CONTEXT_FEATURES)
+    lane_context = _lane_context_matrix(race, active_context_features)
     for stage in range(3):
         stage_rows = lane_context[lanes[:, stage] - 1]
         columns.extend(stage_rows[:, index] for index in range(stage_rows.shape[1]))

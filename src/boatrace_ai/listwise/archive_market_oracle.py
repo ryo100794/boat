@@ -64,10 +64,13 @@ from .nonlinear_market_residual_v38 import (
 from .nested_nonlinear_value_v40 import (
     evaluate_nested_nonlinear_value_v40,
 )
+from .nonlinear_context_search_v41 import (
+    fit_temporal_nonlinear_context_search,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 13
+EVALUATION_VERSION = 14
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -584,6 +587,76 @@ def temporal_residual_diagnostic(
         "untouched outer-split research only; full residual strength is a "
         "fixed sensitivity control and cannot be selected from outer ROI"
     )
+    if len({str(race["race_date"]) for race in calibration}) >= 5:
+        nonlinear_context_search = fit_temporal_nonlinear_context_search(
+            calibration,
+            evaluation,
+        )
+    else:
+        nonlinear_context_search = {
+            "model": "nonlinear_market_offset_context_search_v41",
+            "status": "insufficient_calibration_days",
+            "calibration_days": len(
+                {str(race["race_date"]) for race in calibration}
+            ),
+            "required_calibration_days": 5,
+        }
+    nonlinear_context_purchase_diagnostics = []
+    nonlinear_context_roles = (
+        (
+            (
+                float(nonlinear_context_search["selected_shrinkage"]),
+                "inner_log_loss_selected",
+            ),
+            (1.0, "fixed_full_residual_research_control"),
+        )
+        if "selected_shrinkage" in nonlinear_context_search
+        else ()
+    )
+    for shrinkage, role in nonlinear_context_roles:
+        nonlinear_context_evaluation = [
+            {
+                **race,
+                "model_probabilities": nonlinear_residual_probabilities(
+                    race,
+                    nonlinear_context_search["artifact"],
+                    shrinkage=shrinkage,
+                ),
+            }
+            for race in evaluation
+        ]
+        for policy in TEMPORAL_RESIDUAL_POLICIES:
+            simulation = simulate_chronological_flat_policy(
+                nonlinear_context_evaluation,
+                calibrator={"model_weight": 1.0, "temperature": 1.0},
+                policy=policy,
+                probability_blender=blend_probabilities,
+                initial_bankroll_yen=daily_budget_yen,
+            )
+            bootstrap = (
+                bootstrap_daily_roi(simulation["daily"])
+                if simulation["daily"]
+                else {
+                    "days": 0,
+                    "roi": None,
+                    "roi_ci95_lower": None,
+                    "probability_roi_above_one": None,
+                }
+            )
+            nonlinear_context_purchase_diagnostics.append({
+                "role": role,
+                "shrinkage": shrinkage,
+                "policy": dict(policy),
+                "simulation": simulation,
+                "bootstrap": bootstrap,
+            })
+    nonlinear_context_search["purchase_diagnostics"] = (
+        nonlinear_context_purchase_diagnostics
+    )
+    nonlinear_context_search["purchase_diagnostic_role"] = (
+        "untouched outer-split research only; context breadth is selected by "
+        "inner log loss and never by outer ROI"
+    )
     nested_nonlinear_value = evaluate_nested_nonlinear_value_v40(
         calibration,
         evaluation,
@@ -616,6 +689,7 @@ def temporal_residual_diagnostic(
         "ticket_utility_meta_ranking_v31": ticket_utility_roles,
         "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
         "nested_nonlinear_value_calibration_v40": nested_nonlinear_value,
+        "nonlinear_market_offset_context_search_v41": nonlinear_context_search,
     }
 
 

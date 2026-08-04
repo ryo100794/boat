@@ -11,6 +11,7 @@ from boatrace_ai.listwise.nonlinear_market_residual_v38 import (
     fit_temporal_nonlinear_market_residual,
     nonlinear_residual_probabilities,
 )
+from boatrace_ai.listwise.direct_context_market_residual_v25 import CONTEXT_FEATURES
 
 
 COMBINATIONS = [
@@ -95,10 +96,38 @@ def test_custom_market_offset_booster_round_trips() -> None:
     )
     assert sum(probabilities.values()) == pytest.approx(1.0)
     assert set(probabilities) == set(COMBINATIONS)
+    assert artifact["context_features"]
 
     broken = {**artifact, "booster_sha256": "0" * 64}
     with pytest.raises(ValueError, match="digest mismatch"):
         nonlinear_residual_probabilities(races[-1], broken, shrinkage=0.5)
+
+
+def test_artifact_records_and_reuses_selected_context_features() -> None:
+    start = date(2026, 1, 1)
+    races = [_race(start + timedelta(days=index // 4), index) for index in range(40)]
+    artifact = fit_nonlinear_market_residual(
+        races,
+        tree_preset={
+            "name": "tiny",
+            "num_leaves": 7,
+            "max_depth": 3,
+            "min_child_samples": 5,
+        },
+        context_features=CONTEXT_FEATURES,
+        num_threads=1,
+        num_boost_round=4,
+    )
+    assert artifact["context_features"] == list(CONTEXT_FEATURES)
+    assert artifact["feature_dimension"] > 0
+    probabilities = nonlinear_residual_probabilities(
+        races[-1], artifact, shrinkage=0.5
+    )
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+
+    mismatched = {**artifact, "context_features": list(CONTEXT_FEATURES[:-1])}
+    with pytest.raises(ValueError, match="feature dimension mismatch"):
+        nonlinear_residual_probabilities(races[-1], mismatched, shrinkage=0.5)
 
 
 def test_temporal_selection_includes_exact_market_null_and_stays_prior() -> None:

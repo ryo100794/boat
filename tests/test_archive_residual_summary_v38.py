@@ -111,3 +111,51 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert summary["nested_value_calibration_ready"] is True
     assert summary["nested_value_roi_display"] == "N/A"
     assert summary["nested_value_promotion_eligible"] is False
+
+
+def test_v41_summary_exposes_inner_selected_context_contract() -> None:
+    payload = {
+        "model": "archive_closing_market_oracle_v1",
+        "temporal_residual_diagnostic": {
+            "calibration_from": "2026-05-10",
+            "calibration_through": "2026-06-30",
+            "evaluation_from": "2026-07-01",
+            "evaluation_through": "2026-07-19",
+            "nonlinear_market_offset_context_search_v41": {
+                "market_is_exact_nested_null": True,
+                "outer_period_used_for_selection": False,
+                "selected_context_variant": "full_context_20",
+                "selected_context_features": ["class_rank", "national_win_rate"],
+                "selected_tree_preset": "compact",
+                "selected_shrinkage": 0.5,
+                "artifact": {
+                    "feature_dimension": 181,
+                    "context_features": ["class_rank", "national_win_rate"],
+                    "booster_sha256": "b" * 64,
+                },
+                "metrics": {
+                    "evaluated_races": 2744,
+                    "trifecta_log_loss": 3.68,
+                    "market_trifecta_log_loss": 3.70,
+                    "log_loss_delta_vs_market": -0.02,
+                    "trifecta_top5_hit_rate": 0.38,
+                    "market_trifecta_top5_hit_rate": 0.372,
+                },
+                "purchase_diagnostics": [],
+            },
+        },
+    }
+
+    summary = summarize_result(payload)
+
+    assert summary["model"] == "nonlinear_market_offset_context_search_v41"
+    assert summary["residual_outer_period_used_for_selection"] is False
+    assert summary["residual_selected_context_variant"] == "full_context_20"
+    assert summary["residual_selected_context_features"] == [
+        "class_rank",
+        "national_win_rate",
+    ]
+    assert summary["residual_context_features"] == [
+        "class_rank",
+        "national_win_rate",
+    ]

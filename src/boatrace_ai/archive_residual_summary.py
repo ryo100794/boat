@@ -5,6 +5,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "nonlinear_market_offset_context_search_v41",
+        "nonlinear_market_offset_context_search_v41",
+        "metrics",
+        "artifact",
+    ),
+    (
         "nonlinear_market_offset_residual_v38",
         "nonlinear_market_offset_residual_v38",
         "metrics",
@@ -115,8 +121,11 @@ def apply_archive_residual_summary(
             summary[f"residual_{key}"] = metrics.get(key)
     for key in (
         "market_is_exact_nested_null",
+        "outer_period_used_for_selection",
         "selected_tree_preset",
         "selected_shrinkage",
+        "selected_context_variant",
+        "selected_context_features",
         "inner_fit_through",
         "inner_validation_from",
     ):
@@ -126,6 +135,7 @@ def apply_archive_residual_summary(
     if isinstance(artifact, Mapping):
         for key in (
             "feature_dimension",
+            "context_features",
             "feature_variant",
             "architecture",
             "structure_variant",
