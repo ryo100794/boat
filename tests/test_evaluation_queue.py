@@ -1658,9 +1658,10 @@ def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
                 "expected_model_sha256": hashlib.sha256(
                     b"fixed-model"
                 ).hexdigest(),
-                "training_through": "2025-07-24",
-                "evaluation_from": "2025-07-25",
-                "evaluation_through": "2026-07-24",
+                "training_through": "2025-07-25",
+                "evaluation_from": "2025-07-26",
+                "evaluation_through": "2026-08-02",
+                "expected_evaluation_races": 49_581,
                 "timeout_seconds": 21600,
             },
         ),
@@ -1683,9 +1684,9 @@ def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
     ]
     assert command[command.index("--baseline-model") + 1] == str(model)
     assert command[command.index("--cache-prefix") + 1] == str(cache)
-    assert command[command.index("--training-through") + 1] == "2025-07-24"
-    assert command[command.index("--evaluation-from") + 1] == "2025-07-25"
-    assert command[command.index("--evaluation-through") + 1] == "2026-07-24"
+    assert command[command.index("--training-through") + 1] == "2025-07-25"
+    assert command[command.index("--evaluation-from") + 1] == "2025-07-26"
+    assert command[command.index("--evaluation-through") + 1] == "2026-08-02"
     assert command[command.index("--validation-days") + 1] == "365"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
@@ -1705,9 +1706,10 @@ def test_fixed_model_conditional_order_rejects_identity_or_period_drift(
         "model_input": "data/models/evaluation_queue/job-00012012.joblib",
         "cache_prefix": "data/models/evaluation_cache/cache",
         "expected_model_sha256": hashlib.sha256(b"other").hexdigest(),
-        "training_through": "2025-07-24",
-        "evaluation_from": "2025-07-25",
-        "evaluation_through": "2026-07-24",
+        "training_through": "2025-07-25",
+        "evaluation_from": "2025-07-26",
+        "evaluation_through": "2026-08-02",
+        "expected_evaluation_races": 49_581,
     }
 
     with pytest.raises(ValueError, match="SHA-256 does not match"):
@@ -1722,7 +1724,7 @@ def test_fixed_model_conditional_order_rejects_identity_or_period_drift(
         "expected_model_sha256": hashlib.sha256(
             b"fixed-model"
         ).hexdigest(),
-        "evaluation_from": "2025-07-26",
+        "evaluation_from": "2025-07-27",
     }
     with pytest.raises(ValueError, match="must be adjacent"):
         build_command(
@@ -1730,6 +1732,35 @@ def test_fixed_model_conditional_order_rejects_identity_or_period_drift(
             app_root=root,
             python=root / ".venv/bin/python",
             db="postgresql://test",
+        )
+
+
+def test_fixed_model_conditional_order_result_contract() -> None:
+    job = _job(
+        "fixed_model_conditional_order",
+        {
+            "training_through": "2025-07-25",
+            "evaluation_from": "2025-07-26",
+            "evaluation_through": "2026-08-02",
+            "expected_evaluation_races": 49_581,
+        },
+    )
+    payload = {
+        "training_through": "2025-07-25",
+        "evaluation_from": "2025-07-26",
+        "evaluation_through": "2026-08-02",
+        "evaluation_races": 49_581,
+    }
+
+    evaluation_queue._validate_job_result_contract(job, payload)
+
+    with pytest.raises(ValueError, match="evaluation_races mismatch"):
+        evaluation_queue._validate_job_result_contract(
+            job, {**payload, "evaluation_races": 49_580}
+        )
+    with pytest.raises(ValueError, match="evaluation_through mismatch"):
+        evaluation_queue._validate_job_result_contract(
+            job, {**payload, "evaluation_through": "2026-08-01"}
         )
 
 

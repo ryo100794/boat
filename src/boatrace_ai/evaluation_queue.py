@@ -1188,7 +1188,8 @@ def reconcile_completed_job_runs(
                 str(job["run_result_path"]),
                 app_root=app_root,
             )
-            _payload, summary = _load_result(result_path)
+            payload, summary = _load_result(result_path)
+            _validate_job_result_contract(job, payload)
             decision = result_decision(str(job["task_type"]), summary)
         except Exception as exc:
             fail_job(
@@ -3118,6 +3119,7 @@ def build_command(
             "training_through",
             "evaluation_from",
             "evaluation_through",
+            "expected_evaluation_races",
             "timeout_seconds",
         }
         unsupported = set(params) - allowed
@@ -3150,11 +3152,14 @@ def build_command(
                 "fixed model conditional order training and evaluation "
                 "ranges must be adjacent"
             )
-        if evaluation_end - evaluation_start != timedelta(days=364):
+        if evaluation_end < evaluation_start:
             raise ValueError(
-                "fixed model conditional order evaluation must span "
-                "exactly 365 days"
+                "fixed model conditional order evaluation dates must be "
+                "chronological"
             )
+        _integer(
+            params, "expected_evaluation_races", 49_581, 1, 1_000_000
+        )
         _integer(params, "timeout_seconds", 21600, 300, 86400)
         model_root = (app_root / "data" / "models").resolve()
         model_input = (app_root / str(params["model_input"])).resolve()
@@ -5399,6 +5404,41 @@ def _load_result(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return payload, summarize_result(payload)
 
 
+def _validate_job_result_contract(
+    job: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    if str(job.get("task_type") or "") != "fixed_model_conditional_order":
+        return
+    parameters = job.get("parameters")
+    if isinstance(parameters, str):
+        parameters = json.loads(parameters)
+    if not isinstance(parameters, dict):
+        raise ValueError(
+            "fixed model conditional order job parameters are invalid"
+        )
+    for key in (
+        "training_through",
+        "evaluation_from",
+        "evaluation_through",
+    ):
+        if str(payload.get(key) or "") != str(parameters.get(key) or ""):
+            raise ValueError(
+                f"fixed model conditional order result {key} mismatch"
+            )
+    expected_races = parameters.get("expected_evaluation_races")
+    actual_races = payload.get("evaluation_races")
+    if (
+        isinstance(expected_races, bool)
+        or not isinstance(expected_races, int)
+        or isinstance(actual_races, bool)
+        or not isinstance(actual_races, int)
+        or actual_races != expected_races
+    ):
+        raise ValueError(
+            "fixed model conditional order result evaluation_races mismatch"
+        )
+
+
 def complete_job(
     conn: Any,
     *,
@@ -5725,6 +5765,7 @@ def execute_job(
             f"exit={completed.returncode}; " + " | ".join(tail)
         )
     payload, summary = _load_result(result_path)
+    _validate_job_result_contract(job, payload)
     decision = result_decision(str(job["task_type"]), summary)
     return result_path, summary, decision
 
