@@ -5404,6 +5404,29 @@ def _load_result(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return payload, summarize_result(payload)
 
 
+def _valid_tail_portfolio_contract(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    diagnostics = value.get("tail_portfolio_diagnostics")
+    if (
+        not isinstance(diagnostics, dict)
+        or diagnostics.get("odds_field") != "estimated_odds_at_purchase"
+    ):
+        return False
+    counts = [diagnostics.get("purchased_tickets")]
+    for segment in ("normal", "tail"):
+        row = diagnostics.get(segment)
+        counts.append(row.get("tickets") if isinstance(row, dict) else None)
+    if any(
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        for count in counts
+    ):
+        return False
+    return counts[0] == counts[1] + counts[2]
+
+
 def _validate_job_result_contract(
     job: dict[str, Any], payload: dict[str, Any]
 ) -> None:
@@ -5465,6 +5488,21 @@ def _validate_job_result_contract(
             raise ValueError(
                 f"fixed model conditional order result {label} mismatch"
             )
+    bankroll_paths = (
+        ("bankroll",),
+        ("baseline_bankroll",),
+        ("conditional_payout_walk_forward", "bankroll"),
+        ("expected_return_calibration", "bankroll"),
+    )
+    for path in bankroll_paths:
+        value = payload
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if not _valid_tail_portfolio_contract(value):
+            label = ".".join((*path, "tail_portfolio_diagnostics"))
+            raise ValueError(
+                f"fixed model conditional order result {label} invalid"
+            )
     fixed_return = payload.get("expected_return_fixed_threshold")
     if isinstance(fixed_return, dict):
         fixed_bankroll = fixed_return.get("bankroll")
@@ -5482,6 +5520,12 @@ def _validate_job_result_contract(
                 "fixed model conditional order result "
                 "expected_return_fixed_threshold.bankroll.evaluated_races "
                 "mismatch"
+            )
+        if not _valid_tail_portfolio_contract(fixed_bankroll):
+            raise ValueError(
+                "fixed model conditional order result "
+                "expected_return_fixed_threshold.bankroll."
+                "tail_portfolio_diagnostics invalid"
             )
     state_contracts = (
         (

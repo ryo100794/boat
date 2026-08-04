@@ -1746,6 +1746,16 @@ def test_fixed_model_conditional_order_result_contract() -> None:
             "expected_evaluation_races": 49_581,
         },
     )
+    tail_diagnostics = {
+        "odds_field": "estimated_odds_at_purchase",
+        "purchased_tickets": 30,
+        "normal": {"tickets": 20},
+        "tail": {"tickets": 10},
+    }
+    bankroll = {
+        "evaluated_races": 49_581,
+        "tail_portfolio_diagnostics": tail_diagnostics,
+    }
     payload = {
         "source_model_sha256": "a" * 64,
         "training_through": "2025-07-25",
@@ -1754,21 +1764,21 @@ def test_fixed_model_conditional_order_result_contract() -> None:
         "evaluation_races": 49_581,
         "conditional_order": {"evaluated_races": 49_581},
         "listwise_baseline": {"evaluated_races": 49_581},
-        "bankroll": {"evaluated_races": 49_581},
-        "baseline_bankroll": {"evaluated_races": 49_581},
+        "bankroll": bankroll,
+        "baseline_bankroll": bankroll,
         "conditional_payout_walk_forward": {
             "artifact_state_saved": True,
             "state_schema": "conditional_payout_next_day_inference_v1",
             "state_trained_through": "2026-08-02",
             "state_role": "next_day_inference_after_evaluation",
-            "bankroll": {"evaluated_races": 49_581}
+            "bankroll": bankroll,
         },
         "expected_return_calibration": {
             "artifact_state_saved": True,
             "state_schema": "expected_return_next_day_inference_v1",
             "state_trained_through": "2026-08-02",
             "state_role": "next_day_inference_after_evaluation",
-            "bankroll": {"evaluated_races": 49_581}
+            "bankroll": bankroll,
         },
     }
 
@@ -1816,6 +1826,20 @@ def test_fixed_model_conditional_order_result_contract() -> None:
                 "expected_return_calibration": {
                     **payload["expected_return_calibration"],
                     "state_trained_through": "2026-08-01",
+                },
+            },
+        )
+    with pytest.raises(
+        ValueError,
+        match="expected_return_calibration.bankroll.tail_portfolio_diagnostics invalid",
+    ):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {
+                **payload,
+                "expected_return_calibration": {
+                    **payload["expected_return_calibration"],
+                    "bankroll": {"evaluated_races": 49_581},
                 },
             },
         )
