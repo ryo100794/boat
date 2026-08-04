@@ -94,6 +94,12 @@ def _conditional_payout_promotion_status(
     *,
     artifact_saved: bool,
 ) -> tuple[bool, str]:
+    if gate.get("reused_holdout_research_only") is True:
+        return (
+            False,
+            "research diagnostic on reused holdout; future untouched-day "
+            "confirmation required",
+        )
     eligible = bool(artifact_saved and gate["pass"])
     role = (
         "production candidate with persisted next-day inference state"
@@ -101,6 +107,24 @@ def _conditional_payout_promotion_status(
         else "next-day inference artifact; minimum 365-day promotion gate not passed"
     )
     return eligible, role
+
+
+def _apply_holdout_role_gate(
+    gate: dict[str, Any], *, research_only_reused_holdout: bool
+) -> dict[str, Any]:
+    result = dict(gate)
+    result["diagnostic_performance_pass"] = bool(gate["pass"])
+    result["reused_holdout_research_only"] = bool(
+        research_only_reused_holdout
+    )
+    result["prospective_confirmation_required"] = bool(
+        research_only_reused_holdout
+    )
+    result["holdout_role_pass"] = not research_only_reused_holdout
+    result["pass"] = bool(
+        gate["pass"] and result["holdout_role_pass"]
+    )
+    return result
 
 
 @dataclass(frozen=True)
@@ -767,6 +791,13 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         evaluation_from=args.evaluation_from,
         evaluation_through=args.evaluation_through,
     )
+    research_only_reused_holdout = bool(
+        getattr(args, "research_only_reused_holdout", False)
+    )
+    conditional_payout_gate = _apply_holdout_role_gate(
+        conditional_payout_gate,
+        research_only_reused_holdout=research_only_reused_holdout,
+    )
     expected_return_confidence = bootstrap_daily_bankroll(
         expected_return_bankroll["daily"],
         baseline_daily=baseline_bankroll["daily"],
@@ -775,6 +806,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         expected_return_bankroll,
         baseline_bankroll,
         expected_return_confidence,
+    )
+    expected_return_gate = _apply_holdout_role_gate(
+        expected_return_gate,
+        research_only_reused_holdout=research_only_reused_holdout,
     )
     expected_return_fixed_confidence = (
         bootstrap_daily_bankroll(
@@ -793,6 +828,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         if expected_return_fixed_bankroll is not None
         else None
     )
+    if expected_return_fixed_gate is not None:
+        expected_return_fixed_gate = _apply_holdout_role_gate(
+            expected_return_fixed_gate,
+            research_only_reused_holdout=research_only_reused_holdout,
+        )
     bankroll_confidence = bootstrap_daily_bankroll(
         candidate_bankroll["daily"],
         baseline_daily=baseline_bankroll["daily"],
@@ -801,6 +841,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         candidate_bankroll,
         baseline_bankroll,
         bankroll_confidence,
+    )
+    bankroll_gate = _apply_holdout_role_gate(
+        bankroll_gate,
+        research_only_reused_holdout=research_only_reused_holdout,
     )
     promotion_gate = {
         "structure_pass": structure_gate["pass"],
@@ -852,6 +896,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "training_races": train_end,
         "validation_races": train_end - validation_start,
         "evaluation_races": evaluation_end - evaluation_start,
+        "reused_holdout_research_only": research_only_reused_holdout,
         "cache_promoted": cache_promoted,
         "regularization_candidates": candidates,
         "selected_regularization": float(selected["regularization"]),
@@ -992,6 +1037,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--return-minimum-selection-winning-days", type=int, default=8
     )
     parser.add_argument("--promote-legacy-cache", action="store_true")
+    parser.add_argument(
+        "--research-only-reused-holdout",
+        action="store_true",
+        help=(
+            "mark all bankroll gates as diagnostic-only because the holdout "
+            "has already informed development"
+        ),
+    )
     return parser
 
 

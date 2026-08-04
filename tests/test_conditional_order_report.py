@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from boatrace_ai.listwise.conditional_order import (
+    _apply_holdout_role_gate,
     _attach_expected_return_state,
     _conditional_payout_holdout_gate,
     _conditional_payout_promotion_status,
@@ -364,3 +365,27 @@ def test_conditional_payout_promotion_requires_artifact_and_gate(
 
     assert eligible is expected
     assert "diagnostic" not in role
+
+
+def test_reused_holdout_cannot_become_a_promotion_gate() -> None:
+    diagnostic = _apply_holdout_role_gate(
+        {"pass": True, "roi_pass": True},
+        research_only_reused_holdout=True,
+    )
+    untouched = _apply_holdout_role_gate(
+        {"pass": True, "roi_pass": True},
+        research_only_reused_holdout=False,
+    )
+
+    assert diagnostic["diagnostic_performance_pass"] is True
+    assert diagnostic["prospective_confirmation_required"] is True
+    assert diagnostic["holdout_role_pass"] is False
+    assert diagnostic["pass"] is False
+    assert untouched["holdout_role_pass"] is True
+    assert untouched["pass"] is True
+    eligible, role = _conditional_payout_promotion_status(
+        diagnostic,
+        artifact_saved=True,
+    )
+    assert eligible is False
+    assert "future untouched-day confirmation required" in role

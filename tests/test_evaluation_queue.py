@@ -1688,6 +1688,7 @@ def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
     assert command[command.index("--evaluation-from") + 1] == "2025-07-26"
     assert command[command.index("--evaluation-through") + 1] == "2026-08-02"
     assert command[command.index("--validation-days") + 1] == "365"
+    assert "--research-only-reused-holdout" in command
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
@@ -1759,6 +1760,8 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     }
     payload = {
         "source_model_sha256": "a" * 64,
+        "reused_holdout_research_only": True,
+        "promotion_eligible": False,
         "training_through": "2025-07-25",
         "evaluation_from": "2025-07-26",
         "evaluation_through": "2026-08-02",

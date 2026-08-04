@@ -3218,6 +3218,7 @@ def build_command(
             "--payout-threshold-candidates",
             "1.05", "1.10", "1.20", "1.30", "1.50", "2.00",
             "--promote-legacy-cache",
+            "--research-only-reused-holdout",
         ], output
     if task_type == "conditional_payout_tail":
         allowed = {
@@ -5514,6 +5515,16 @@ def _validate_job_result_contract(
     ).lower():
         raise ValueError(
             "fixed model conditional order result source_model_sha256 mismatch"
+        )
+    if payload.get("reused_holdout_research_only") is not True:
+        raise ValueError(
+            "fixed model conditional order result must be research-only "
+            "for the reused holdout"
+        )
+    if payload.get("promotion_eligible") is not False:
+        raise ValueError(
+            "fixed model conditional order reused holdout must not be "
+            "promotion eligible"
         )
     expected_races = parameters.get("expected_evaluation_races")
     actual_races = payload.get("evaluation_races")
