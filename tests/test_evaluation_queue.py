@@ -1788,6 +1788,17 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
 
     evaluation_queue._validate_job_result_contract(job, payload)
 
+    with pytest.raises(ValueError, match="must be research-only"):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {**payload, "reused_holdout_research_only": False},
+        )
+    with pytest.raises(ValueError, match="must not be promotion eligible"):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {**payload, "promotion_eligible": True},
+        )
+
     raw_payload = json.loads(json.dumps(payload))
     raw_ticket = {
         "date": "2025-07-26",
