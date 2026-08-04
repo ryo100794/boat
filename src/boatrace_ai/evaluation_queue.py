@@ -5236,6 +5236,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                         "factor_median",
                         "factor_max",
                         "zero_factor_combinations",
+                        "below_legacy_floor_combinations",
                     ):
                         summary[f"expected_return_{key}"] = combination.get(key)
         confidence = expected_return.get("bankroll_confidence")

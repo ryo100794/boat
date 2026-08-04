@@ -126,6 +126,9 @@ def _combination_calibration_summary(calibrator: Any) -> dict[str, Any]:
         "zero_factor_combinations": int(
             np.count_nonzero(calibrator.factors == 0.0)
         ),
+        "below_legacy_floor_combinations": int(
+            np.count_nonzero(calibrator.factors < 0.25)
+        ),
         "factors": {
             combination: float(calibrator.factors[index])
             for index, combination in enumerate(COMBINATION_LABELS)

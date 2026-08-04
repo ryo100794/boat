@@ -2675,6 +2675,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                         "factor_median": 0.61,
                         "factor_max": 1.04,
                         "zero_factor_combinations": 7,
+                        "below_legacy_floor_combinations": 19,
                     },
                 },
             },
@@ -2717,6 +2718,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_factor_median"] == 0.61
     assert summary["expected_return_factor_max"] == 1.04
     assert summary["expected_return_zero_factor_combinations"] == 7
+    assert summary["expected_return_below_legacy_floor_combinations"] == 19
     assert summary["expected_return_tail_portfolio_diagnostics"] == tail
     assert summary["expected_return_fixed_roi"] == 0.96
     assert summary["expected_return_fixed_roi_without_largest_hit"] == 0.91

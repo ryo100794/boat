@@ -318,6 +318,9 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration(
     assert combination["zero_factor_combinations"] == sum(
         value == 0.0 for value in combination["factors"].values()
     )
+    assert combination["below_legacy_floor_combinations"] == sum(
+        value < 0.25 for value in combination["factors"].values()
+    )
     selection = result["policy_selection"]["combination_calibration"]
     assert selection["training_races"] == 100
     assert selection["training_days"] == 2
