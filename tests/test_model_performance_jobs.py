@@ -101,6 +101,10 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "V_buy" in MODEL_REPORT_HTML
     assert "purchaseValueCalibrationRows" in MODEL_REPORT_HTML
     assert "purchase_value_realization_deciles" in MODEL_REPORT_HTML
+    assert "id=\"nestedValueRows\"" in MODEL_REPORT_HTML
+    assert "renderNestedValueAudit(jobs)" in MODEL_REPORT_HTML
+    assert "nested_value_decile_audit" in MODEL_REPORT_HTML
+    assert "N/A / 購入なし" in MODEL_REPORT_HTML
     assert "daily_block_roi_lower_95" in MODEL_REPORT_HTML
     assert "安全余裕" in MODEL_REPORT_HTML
     assert "ROI LCB95" in MODEL_REPORT_HTML
@@ -163,6 +167,38 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
                 "roi": 1.25,
             }
         ],
+        "residual_selected_context_variant": "full_context_20",
+        "residual_outer_period_used_for_selection": False,
+        "nested_value_model": "nested_nonlinear_value_calibration_v40",
+        "nested_value_status": "completed",
+        "nested_value_model_training_from": "2026-05-10",
+        "nested_value_model_training_through": "2026-05-31",
+        "nested_value_model_training_days": 22,
+        "nested_value_calibration_from": "2026-06-01",
+        "nested_value_calibration_through": "2026-06-30",
+        "nested_value_calibration_days": 30,
+        "nested_value_evaluation_from": "2026-07-01",
+        "nested_value_evaluation_through": "2026-07-19",
+        "nested_value_evaluated_races": 2744,
+        "nested_value_calibration_ready": True,
+        "nested_value_calibration_bins": [{
+            "bin_index": 0,
+            "support": 100,
+            "empirical_ev": 0.8,
+            "empirical_ev_lcb95": 0.7,
+        }],
+        "nested_value_calibration_candidates": 8640,
+        "nested_value_evaluation_candidates": 13720,
+        "nested_value_decile_audit": {
+            "evaluation_used_for_edges": False,
+            "calibration": [{"decile": 1, "realized_roi": 0.7}],
+            "evaluation": [{"decile": 1, "realized_roi": 0.8}],
+        },
+        "nested_value_tickets": 0,
+        "nested_value_stake_yen": 0,
+        "nested_value_roi": None,
+        "nested_value_roi_display": "N/A",
+        "nested_value_promotion_eligible": False,
         "roi_without_largest_hit": 0.82,
         "trifecta_log_loss": 3.79,
         "winner_log_loss": 1.24,
@@ -266,6 +302,20 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
             "roi": 1.25,
         }
     ]
+    assert status["jobs"][0]["residual_selected_context_variant"] == (
+        "full_context_20"
+    )
+    assert status["jobs"][0][
+        "residual_outer_period_used_for_selection"
+    ] is False
+    assert status["jobs"][0]["nested_value_calibration_days"] == 30
+    assert status["jobs"][0]["nested_value_calibration_bins"][0][
+        "empirical_ev_lcb95"
+    ] == 0.7
+    assert status["jobs"][0]["nested_value_evaluation_candidates"] == 13720
+    assert status["jobs"][0]["nested_value_decile_audit"][
+        "evaluation_used_for_edges"
+    ] is False
     assert status["jobs"][0]["roi_without_largest_hit"] == 0.82
     assert status["jobs"][0]["promotion_gate_passed"] == 7
     assert status["jobs"][0]["promotion_gate_total"] == 10

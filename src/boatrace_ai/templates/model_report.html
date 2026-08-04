@@ -105,6 +105,7 @@
     <div class="panel"><h2><span>研究モデル 複合判定</span><span class="muted">確率精度と資金成績を同時評価 / 異なる期間は横比較禁止</span></h2><div class="table-scroll"><table class="model-table"><thead><tr><th>モデル</th><th>評価期間・方式</th><th>教師・特徴量 / 学習</th><th>状態</th><th>母数</th><th>損失</th><th>1着</th><th>3T5</th><th>購入診断</th><th>ROI</th><th>損益</th><th>最大DD</th></tr></thead><tbody id="compositeTrackRows"></tbody></table></div></div>
     <div class="panel"><h2><span>運用証拠・成熟度</span><span class="muted">封印検証・模擬運用・少額固定運用を別判定</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>段階</th><th>現在の証拠</th><th>必須条件</th><th>判定</th></tr></thead><tbody id="operationalEvidenceRows"></tbody></table></div></div>
     <div class="panel"><h2><span>V_buy分位別 実現校正</span><span id="purchaseValueCalibrationMeta" class="muted">同一ポートフォリオ / 完全日ブロック</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>分位</th><th>候補数</th><th>日数</th><th>V_buy範囲</th><th>予測ROI</th><th>実現ROI</th><th>ROI LCB95</th><th>損益</th></tr></thead><tbody id="purchaseValueCalibrationRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>入れ子価値校正・10分位監査</span><span id="nestedValueMeta" class="muted">モデル学習 / 価値校正 / 外側評価を分離</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>母集団</th><th>分位</th><th>候補数</th><th>候補日</th><th>raw予測EV</th><th>実現ROI</th><th>日LCB95</th></tr></thead><tbody id="nestedValueRows"></tbody></table></div></div>
     <div class="panel"><h2><span>完了候補・昇格ゲート</span><span class="muted">正式: V_buyとROI 5%点 / P(ROI&gt;1)は補助</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>V_buy</th><th>安全余裕</th><th>購入価値</th><th>ROI LCB95</th><th>正式ROI</th><th>ROI</th><th>損益</th><th>P(ROI&gt;1) 補助</th><th>評価プロトコル / 再標本化条件</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
     <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>母数/評価R</th><th>資金診断</th><th>EV帯 証拠/診断</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
   </section>
@@ -158,7 +159,7 @@ function render(data){
   const evaluationR=baseline&&baseline.prediction?baseline.prediction.evaluated_races:null;
   const kpis=[["統一評価モデル",comparisonRows.length,""],["統一評価R",fmt(evaluationR),""],["基準1着",baseline?pct(baseline.prediction&&baseline.prediction.winner_top1_accuracy):"-",""],["基準3T5",baseline?pct(baseline.prediction&&baseline.prediction.trifecta_top5_hit_rate):"-",""],["最高ROI",bestRoi?`${ratio(bestRoi.bankroll.roi)} ${shortName(bestRoi.name)}`:"-",bestRoi?(Number(bestRoi.bankroll.roi)>=1?"good":"bad"):""],["評価実行中",running,running?"":""]];
   $("kpis").innerHTML=kpis.map(([label,value,cls])=>`<div class="kpi ${cls}"><b title="${esc(value)}">${esc(value)}</b><span>${esc(label)}</span></div>`).join("");
-  currentReport=data; renderPurposeGroups(data.evaluation_purposes||[]); renderStandardProtocol(data.standardized_evaluation||{}); renderGeneticEvolution(jobs); renderModelTracks(tracks); renderClosingOdds(tracks,jobs); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderOperationalEvidence(jobs); renderPurchaseValueCalibration(jobs); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
+  currentReport=data; renderPurposeGroups(data.evaluation_purposes||[]); renderStandardProtocol(data.standardized_evaluation||{}); renderGeneticEvolution(jobs); renderModelTracks(tracks); renderClosingOdds(tracks,jobs); renderEvaluationJobs(jobs,data.evaluation_queue_generated_at||data.remote_generated_at); renderOperationalEvidence(jobs); renderPurchaseValueCalibration(jobs); renderNestedValueAudit(jobs); renderCandidates(data.evaluation_candidates||[]); $("reload").onclick=loadReport; $("meta").textContent=`生成 ${String(data.generated_at||"").replace("T"," ").slice(0,19)} / ${scopeText((baseline||{}).scope)}`;
   drawGroupedBars($("hitChart"),comparisonRows.filter(x=>x.prediction).map(x=>({label:shortName(x.name),a:x.prediction.winner_top1_accuracy,b:x.prediction.trifecta_top5_hit_rate})),{a:"1着",b:"3T5",percent:true});
   drawLines($("lossChart"),groupFoldSeries(comparisonFolds,"entry_log_loss"),{baseline:null});
   drawBars($("roiChart"),comparisonRows.filter(x=>x.bankroll).map(x=>({label:shortName(x.name),value:x.bankroll.roi})),{baseline:1});
@@ -626,6 +627,8 @@ function bankrollSourceDiagnostic(x,base){
     if(x.legacy_batch_max_drawdown_yen!=null) legacy.push("DD "+yen(x.legacy_batch_max_drawdown_yen));
     parts.push(legacy.join(" "));
   }
+  const nested=nestedValueEvidence(x);
+  if(nested) parts.push(nested);
   return parts.join(" / ")||"-";
 }
 function probabilityHeadline(x){
@@ -674,10 +677,47 @@ function formalJointEvidence(x){
   const protocol=x.evaluation_protocol_id?String(x.evaluation_protocol_id).slice(0,10):"評価条件未記録";
   return `評価#${esc(protocol)} / V_buy ${ratio(x.joint_purchase_value_minimum)} > m ${ratio(x.joint_purchase_safety_margin)} ${valueGate} / ROI LCB95 ${ratio(x.daily_cluster_bootstrap_roi_lower_95??x.roi_ci95_lower)} ${roiGate} / ${esc(x.bootstrap_primary_block||"-")} ${esc(x.bootstrap_quantile_method||"-")} n=${fmt(x.bootstrap_samples)} 再標本化#${esc(condition)} / 日x場 ${ratio(x.day_venue_roi_lower_95)} / 節 ${ratio(x.venue_meeting_roi_lower_95)}`;
 }
+function nestedValueEvidence(x){
+  if(!x.nested_value_model) return "";
+  const ready=x.nested_value_calibration_ready===true?"校正ready":"校正未達";
+  const reasons=(x.nested_value_calibration_ready_reasons||[]).join(",")||"-";
+  const roi=Number(x.nested_value_stake_yen||0)>0?ratio(x.nested_value_roi):"N/A / 購入なし";
+  return `入れ子 ${fmt(x.nested_value_model_training_days)}日 ${x.nested_value_model_training_from||"-"}..${x.nested_value_model_training_through||"-"} / 価値校正 ${fmt(x.nested_value_calibration_days)}日 ${fmt(x.nested_value_calibration_candidates)}候補 ${ready}(${reasons}) / 外側 ${x.nested_value_evaluation_from||"-"}..${x.nested_value_evaluation_through||"-"} ${fmt(x.nested_value_evaluated_races)}R ${fmt(x.nested_value_evaluation_candidates)}候補 / ${fmt(x.nested_value_tickets)}券 ROI ${roi} / LCB ${ratio(x.nested_value_roi_ci95_lower)} / ${x.nested_value_promotion_eligible===true?"昇格可":"昇格不可"}`;
+}
 function renderEvaluationJobs(jobs,generatedAt){
   jobs=jobs.map(x=>({...x,decision:`${x.decision||"-"}${pairedAuditText(x)}`}));
   $("remoteMeta").textContent=`更新 ${String(generatedAt||"").replace("T"," ").slice(0,19)} / 実行中 ${jobs.filter(x=>x.running).length}`;
   $("evaluationRows").innerHTML=jobs.map(x=>{ const status=String(x.status||"-"); const cls=status==="完了"?"done":status==="失敗"?"failed":x.running?"running":""; const fold=x.expected_folds?`${x.completed_folds||0}/${x.expected_folds}`:(x.completed_folds||"-"); const gate=x.promotion_gate_total==null?"":` / G ${fmt(x.promotion_gate_passed)}/${fmt(x.promotion_gate_total)}`; const gateTitle=(x.promotion_gate_failed||[]).join(", "); const predictionGate=x.prediction_deployment_eligible===true?" / 予測可":x.prediction_deployment_eligible===false?" / 予測未達":""; const metric=x.benchmark_population_races!=null?`${fmt(x.benchmark_population_races)}/${fmt(x.benchmark_evaluated_races??x.evaluated_races)}${x.benchmark_status==='provisional'?' 暫定':''}`:x.real_odds_races!=null?`${fmt(x.evaluated_races)}/${fmt(x.real_odds_races)}`:fmt(x.evaluated_races); const prediction=probabilityHeadline(x); const highEv=x.high_ev_tickets==null?"-":`EV2 ${fmt(x.high_ev_tickets)}券 ROI ${ratio(x.high_ev_realized_roi)}`; const top5=x.top5_flat_tickets==null?"-":`T5 ${fmt(x.top5_flat_tickets)}券 的中 ${pct(x.top5_flat_hit_rate)} ROI ${ratio(x.top5_flat_roi)}`; const standardBankroll=top5==="-"?highEv:highEv==="-"?top5:`${top5} / ${highEv}`; const nestedBankroll=x.fold_count==null?"":`5F min ${ratio(x.minimum_fold_roi)} / 最大除外 ${ratio(x.largest_hit_excluded_roi)} / LCB ${ratio(x.roi_ci95_lower)} / P補助 ${pct(x.probability_roi_above_one)}`; const bankrollBase=nestedBankroll?(standardBankroll==="-"?nestedBankroll:`${standardBankroll} / ${nestedBankroll}`):standardBankroll; const bankrollDiagnostic=[bankrollSourceDiagnostic(x,bankrollBase),formalJointEvidence(x)].filter(Boolean).join(" / "); const registered=policyEvidence(x,"registered_ev_band","R"); const prospective=policyEvidence(x,"prospective_normalized_ev","N"); const prospectiveTop5=policyEvidence(x,"prospective_top5_narrow_ev","T5"); const retrospective=x.top5_narrow_retrospective_status==null?"":"診断(昇格外) "+fmt(x.top5_narrow_retrospective_evaluation_days)+"日 "+fmt(x.top5_narrow_retrospective_tickets)+"/"+fmt(x.top5_narrow_retrospective_hit_tickets)+" ROI "+ratio(x.top5_narrow_retrospective_roi)+" 最大除外 "+ratio(x.top5_narrow_retrospective_roi_without_largest_hit); const registeredSummary=[registered,prospective,prospectiveTop5,retrospective].filter(Boolean).join(" / "); return `<tr><td class="name-cell" title="${esc(x.name)}">${esc(x.name||"-")}</td><td>${esc(x.milestone||"-")}</td><td><span class="tag ${cls}">${esc(status)}</span></td><td title="${esc(gateTitle)}">${esc(x.decision||"-")}${gate}${predictionGate}</td><td class="mono">${fold}</td><td class="mono">${esc(x.elapsed||"-")}</td><td class="mono">${prediction}</td><td>${ratio(x.roi)}</td><td class="${Number(x.profit_yen||0)>=0?"pos":"neg"}">${x.profit_yen==null?"-":yen(x.profit_yen)}</td><td>${metric}</td><td class="mono">${bankrollDiagnostic}</td><td class="mono">${registeredSummary}</td></tr>`; }).join("") || `<tr><td colspan="12" class="muted">評価ジョブ情報なし</td></tr>`;
+}
+function renderNestedValueAudit(jobs){
+  const candidates=(jobs||[]).filter(x=>x.nested_value_model&&x.status==="完了");
+  const latest=candidates.sort((a,b)=>Number(b.db_job_id||b.job_id||0)-Number(a.db_job_id||a.job_id||0))[0]||{};
+  if(!latest.nested_value_model){
+    $("nestedValueMeta").textContent="入れ子価値校正の完了成果物なし";
+    $("nestedValueRows").innerHTML="<tr><td colspan=\"7\" class=\"muted\">次回完了成果物から掲載</td></tr>";
+    return;
+  }
+  const audit=latest.nested_value_decile_audit||{};
+  const stake=Number(latest.nested_value_stake_yen||0);
+  const roi=stake>0?ratio(latest.nested_value_roi):"N/A / 購入なし";
+  const ready=latest.nested_value_calibration_ready===true?"ready":"not-ready";
+  $("nestedValueMeta").textContent=`#${fmt(latest.db_job_id||latest.job_id)} / 学習 ${latest.nested_value_model_training_from||"-"}..${latest.nested_value_model_training_through||"-"} (${fmt(latest.nested_value_model_training_days)}日) / 価値校正 ${latest.nested_value_calibration_from||"-"}..${latest.nested_value_calibration_through||"-"} (${fmt(latest.nested_value_calibration_days)}日, ${fmt(latest.nested_value_calibration_candidates)}候補, ${ready}) / 外側 ${latest.nested_value_evaluation_from||"-"}..${latest.nested_value_evaluation_through||"-"} (${fmt(latest.nested_value_evaluated_races)}R, ${fmt(latest.nested_value_evaluation_candidates)}候補) / ${fmt(latest.nested_value_tickets)}券 / ROI ${roi} / 昇格 ${latest.nested_value_promotion_eligible===true?"可":"不可"}`;
+  const rows=[];
+  for(const [scope,label] of [["calibration","校正"],["evaluation","外側"]]){
+    for(const row of audit[scope]||[]) rows.push({...row,scope_label:label});
+  }
+  if(!rows.length){
+    for(const row of latest.nested_value_calibration_bins||[]) rows.push({
+      scope_label:"校正帯",
+      decile_label:`B${fmt(Number(row.bin_index)+1)}`,
+      candidates:row.support,
+      candidate_days:row.support_days,
+      raw_label:`${ratio(row.lower)}..${ratio(row.upper)}`,
+      realized_roi:row.empirical_ev,
+      realized_roi_lcb95:row.empirical_ev_lcb95,
+    });
+  }
+  $("nestedValueRows").innerHTML=rows.map(row=>`<tr><td>${row.scope_label}</td><td>${row.decile_label||`D${fmt(row.decile)}`}</td><td>${fmt(row.candidates)}</td><td>${fmt(row.candidate_days)}</td><td>${row.raw_label||ratio(row.mean_predicted_raw_ev)}</td><td>${ratio(row.realized_roi)}</td><td>${ratio(row.realized_roi_lcb95)}</td></tr>`).join("")||"<tr><td colspan=\"7\" class=\"muted\">校正帯監査は次回完了成果物から掲載</td></tr>";
 }
 function renderOperationalEvidence(jobs){
   const joint=(jobs||[]).filter(x=>String(x.name||x.model_key||"").includes("joint_bankroll_strict")).sort((a,b)=>Number(b.evaluation_days||0)-Number(a.evaluation_days||0))[0]||{};

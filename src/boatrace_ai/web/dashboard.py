@@ -3698,6 +3698,117 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     "residual_evaluation_through"
                 ),
                 "residual_architecture": metrics.get("residual_architecture"),
+                "residual_market_is_exact_nested_null": metrics.get(
+                    "residual_market_is_exact_nested_null"
+                ),
+                "residual_outer_period_used_for_selection": metrics.get(
+                    "residual_outer_period_used_for_selection"
+                ),
+                "residual_selected_tree_preset": metrics.get(
+                    "residual_selected_tree_preset"
+                ),
+                "residual_selected_shrinkage": _float_or_none(
+                    metrics.get("residual_selected_shrinkage")
+                ),
+                "residual_selected_context_variant": metrics.get(
+                    "residual_selected_context_variant"
+                ),
+                "residual_selected_context_features": metrics.get(
+                    "residual_selected_context_features"
+                ),
+                "residual_feature_dimension": metrics.get(
+                    "residual_feature_dimension"
+                ),
+                "residual_context_features": metrics.get(
+                    "residual_context_features"
+                ),
+                "residual_log_loss_delta_vs_market": _float_or_none(
+                    metrics.get("residual_log_loss_delta_vs_market")
+                ),
+                "residual_days_better_than_market": metrics.get(
+                    "residual_days_better_than_market"
+                ),
+                "nested_value_model": metrics.get("nested_value_model"),
+                "nested_value_status": metrics.get("nested_value_status"),
+                "nested_value_model_training_from": metrics.get(
+                    "nested_value_model_training_from"
+                ),
+                "nested_value_model_training_through": metrics.get(
+                    "nested_value_model_training_through"
+                ),
+                "nested_value_model_training_days": metrics.get(
+                    "nested_value_model_training_days"
+                ),
+                "nested_value_calibration_from": metrics.get(
+                    "nested_value_calibration_from"
+                ),
+                "nested_value_calibration_through": metrics.get(
+                    "nested_value_calibration_through"
+                ),
+                "nested_value_calibration_days": metrics.get(
+                    "nested_value_calibration_days"
+                ),
+                "nested_value_evaluation_from": metrics.get(
+                    "nested_value_evaluation_from"
+                ),
+                "nested_value_evaluation_through": metrics.get(
+                    "nested_value_evaluation_through"
+                ),
+                "nested_value_evaluated_races": metrics.get(
+                    "nested_value_evaluated_races"
+                ),
+                "nested_value_trifecta_log_loss": _float_or_none(
+                    metrics.get("nested_value_trifecta_log_loss")
+                ),
+                "nested_value_market_trifecta_log_loss": _float_or_none(
+                    metrics.get("nested_value_market_trifecta_log_loss")
+                ),
+                "nested_value_log_loss_delta_vs_market": _float_or_none(
+                    metrics.get("nested_value_log_loss_delta_vs_market")
+                ),
+                "nested_value_calibration_ready": metrics.get(
+                    "nested_value_calibration_ready"
+                ),
+                "nested_value_calibration_ready_reasons": metrics.get(
+                    "nested_value_calibration_ready_reasons"
+                ),
+                "nested_value_calibration_bins": metrics.get(
+                    "nested_value_calibration_bins"
+                ),
+                "nested_value_calibration_candidates": metrics.get(
+                    "nested_value_calibration_candidates"
+                ),
+                "nested_value_evaluation_candidates": metrics.get(
+                    "nested_value_evaluation_candidates"
+                ),
+                "nested_value_decile_audit": metrics.get(
+                    "nested_value_decile_audit"
+                ),
+                "nested_value_tickets": metrics.get("nested_value_tickets"),
+                "nested_value_stake_yen": metrics.get(
+                    "nested_value_stake_yen"
+                ),
+                "nested_value_return_yen": metrics.get(
+                    "nested_value_return_yen"
+                ),
+                "nested_value_profit_yen": metrics.get(
+                    "nested_value_profit_yen"
+                ),
+                "nested_value_roi": _float_or_none(
+                    metrics.get("nested_value_roi")
+                ),
+                "nested_value_roi_display": metrics.get(
+                    "nested_value_roi_display"
+                ),
+                "nested_value_roi_ci95_lower": _float_or_none(
+                    metrics.get("nested_value_roi_ci95_lower")
+                ),
+                "nested_value_probability_roi_above_one": _float_or_none(
+                    metrics.get("nested_value_probability_roi_above_one")
+                ),
+                "nested_value_promotion_eligible": metrics.get(
+                    "nested_value_promotion_eligible"
+                ),
                 "roi_without_largest_hit": _float_or_none(
                     metrics.get("roi_without_largest_hit")
                 ),

@@ -259,6 +259,12 @@ def apply_archive_residual_summary(
             if bankroll.get(key) is not None:
                 summary[key] = bankroll[key]
         summary["promotion_eligible"] = bool(selected.get("promotion_eligible"))
+        if int(bankroll.get("stake_yen") or 0) == 0:
+            summary["roi"] = None
+            summary["roi_status"] = "not_applicable"
+            summary["roi_not_applicable_reason"] = (
+                "purchase_gate_no_authorization"
+            )
         compact_policies = [{
             "name": "empirical_ev_lcb95_adaptive_kelly",
             "tickets": bankroll.get("tickets"),
@@ -348,6 +354,7 @@ def apply_archive_residual_summary(
             "nested_value_calibration_ready_reasons": nested_calibration.get(
                 "ready_reasons"
             ),
+            "nested_value_calibration_bins": nested_calibration.get("bins"),
             "nested_value_calibration_candidates": nested.get(
                 "calibration_ledger_candidates"
             ),
@@ -371,3 +378,9 @@ def apply_archive_residual_summary(
                 nested.get("promotion_eligible")
             ),
         })
+        if int(nested_bankroll.get("stake_yen") or 0) == 0:
+            summary["roi"] = None
+            summary["roi_status"] = "not_applicable"
+            summary["roi_not_applicable_reason"] = (
+                "purchase_gate_no_authorization"
+            )
