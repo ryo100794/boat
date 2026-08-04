@@ -199,6 +199,12 @@ def _settle_candidate_days(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
     )
+    hit_return_square_sum = float(totals["hit_return_square_sum_yen2"])
+    effective_hit_count = (
+        return_yen * return_yen / hit_return_square_sum
+        if return_yen > 0 and hit_return_square_sum > 0
+        else 0.0
+    )
     return {
         "policy": policy,
         "evaluation_days": len(daily),
@@ -219,6 +225,7 @@ def _settle_candidate_days(
         "largest_hit_return_share": (
             largest_hit_return_yen / return_yen if return_yen else None
         ),
+        "effective_hit_count": effective_hit_count,
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),

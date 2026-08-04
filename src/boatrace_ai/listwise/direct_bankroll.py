@@ -1152,6 +1152,12 @@ def simulate_conditional_payout_walk_forward(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
     )
+    hit_return_square_sum = float(totals["hit_return_square_sum_yen2"])
+    effective_hit_count = (
+        return_yen * return_yen / hit_return_square_sum
+        if return_yen > 0 and hit_return_square_sum > 0
+        else 0.0
+    )
     trained_through = dates[-1] if dates else str(calibration_race_keys[-1][1])
     if state_output is not None:
         final_payout_regressor = fit_conditional_payout_statistics(
@@ -1198,6 +1204,7 @@ def simulate_conditional_payout_walk_forward(
         "largest_hit_return_share": (
             largest_hit_return_yen / return_yen if return_yen else None
         ),
+        "effective_hit_count": effective_hit_count,
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),
@@ -1392,6 +1399,12 @@ def simulate_direct_bankroll(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
     )
+    hit_return_square_sum = float(totals["hit_return_square_sum_yen2"])
+    effective_hit_count = (
+        return_yen * return_yen / hit_return_square_sum
+        if return_yen > 0 and hit_return_square_sum > 0
+        else 0.0
+    )
     attribution = new_roi_attribution()
     for fold_attribution in fold_attributions:
         merge_roi_attribution(attribution, fold_attribution)
@@ -1423,6 +1436,7 @@ def simulate_direct_bankroll(
         "largest_hit_return_share": (
             largest_hit_return_yen / return_yen if return_yen else None
         ),
+        "effective_hit_count": effective_hit_count,
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),

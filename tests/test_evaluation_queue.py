@@ -1754,6 +1754,7 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     }
     bankroll = {
         "evaluated_races": 49_581,
+        "effective_hit_count": 25.0,
         "tail_portfolio_diagnostics": tail_diagnostics,
     }
     payload = {
@@ -1882,6 +1883,23 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
                 "expected_return_calibration": {
                     **payload["expected_return_calibration"],
                     "bankroll": {"evaluated_races": 49_581},
+                },
+            },
+        )
+    with pytest.raises(
+        ValueError,
+        match="expected_return_calibration.bankroll.effective_hit_count invalid",
+    ):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {
+                **payload,
+                "expected_return_calibration": {
+                    **payload["expected_return_calibration"],
+                    "bankroll": {
+                        **bankroll,
+                        "effective_hit_count": None,
+                    },
                 },
             },
         )
@@ -2639,6 +2657,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                 "selected_tickets": 30,
                 "races_bet": 24,
                 "hit_tickets": 8,
+                "effective_hit_count": 6.4,
                 "winning_days": 18,
                 "losing_days": 12,
                 "tail_portfolio_diagnostics": tail,
@@ -2665,6 +2684,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                 "selected_tickets": 40,
                 "races_bet": 31,
                 "hit_tickets": 9,
+                "effective_hit_count": 7.1,
                 "tail_portfolio_diagnostics": tail,
             },
             "bankroll_confidence": {"roi_ci95_lower": 0.91},
@@ -2674,6 +2694,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_candidate_roi"] == 1.01
     assert summary["expected_return_candidate_selected_tickets"] == 30
     assert summary["expected_return_candidate_roi_without_largest_hit"] == 1.001
+    assert summary["expected_return_candidate_effective_hit_count"] == 6.4
     assert summary["expected_return_roi_ci95_lower"] == 0.97
     assert summary["expected_return_probability_roi_above_one"] == 0.61
     assert summary["expected_return_gate_pass"] is False
@@ -2682,6 +2703,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_tail_portfolio_diagnostics"] == tail
     assert summary["expected_return_fixed_roi"] == 0.96
     assert summary["expected_return_fixed_roi_without_largest_hit"] == 0.91
+    assert summary["expected_return_fixed_effective_hit_count"] == 7.1
     assert summary["expected_return_fixed_roi_ci95_lower"] == 0.91
     assert summary["expected_return_fixed_tail_portfolio_diagnostics"] == tail
 

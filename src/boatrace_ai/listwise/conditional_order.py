@@ -461,6 +461,9 @@ def bankroll_promotion_gate(
         "roi_without_largest_hit": float(
             candidate.get("roi_without_largest_hit") or 0.0
         ),
+        "effective_hit_count": float(
+            candidate.get("effective_hit_count") or 0.0
+        ),
         "profitable_day_fraction": profitable_day_fraction,
     }
     if not all(math.isfinite(value) for value in values.values()):
@@ -472,6 +475,7 @@ def bankroll_promotion_gate(
         "minimum_evaluated_races": 1_000,
         "minimum_selected_tickets": 200,
         "minimum_hit_tickets": 20,
+        "minimum_effective_hit_count": 20.0,
         "minimum_profitable_day_fraction": 0.60,
         "evaluation_days": evaluation_days,
         "evaluated_races": evaluated_races,
@@ -491,6 +495,7 @@ def bankroll_promotion_gate(
         "evaluated_races_pass": evaluated_races >= 1_000,
         "selected_tickets_pass": selected_tickets >= 200,
         "hit_tickets_pass": hit_tickets >= 20,
+        "effective_hit_count_pass": values["effective_hit_count"] >= 20.0,
         "profitable_day_fraction_pass": profitable_day_fraction >= 0.60,
     }
     gate["probability_roi_above_one_pass"] = (
@@ -508,6 +513,7 @@ def bankroll_promotion_gate(
         and gate["evaluated_races_pass"]
         and gate["selected_tickets_pass"]
         and gate["hit_tickets_pass"]
+        and gate["effective_hit_count_pass"]
         and gate["profitable_day_fraction_pass"]
         and gate["probability_roi_above_one_pass"]
     )

@@ -5175,6 +5175,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "roi", "profit_yen", "stake_yen", "return_yen",
                 "max_drawdown_yen", "roi_without_largest_hit",
                 "largest_hit_return_yen", "largest_hit_return_share",
+                "effective_hit_count",
             ):
                 summary[f"payout_feature_candidate_{key}"] = bankroll.get(key)
             policy = bankroll.get("policy")
@@ -5206,7 +5207,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "max_drawdown_yen", "selected_tickets", "races_bet",
                 "hit_tickets", "winning_days", "losing_days",
                 "roi_without_largest_hit", "largest_hit_return_yen",
-                "largest_hit_return_share",
+                "largest_hit_return_share", "effective_hit_count",
             ):
                 summary[f"expected_return_candidate_{key}"] = bankroll.get(key)
             tail = bankroll.get("tail_portfolio_diagnostics")
@@ -5241,7 +5242,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "roi", "profit_yen", "stake_yen", "return_yen",
                 "selected_tickets", "races_bet", "hit_tickets",
                 "roi_without_largest_hit", "largest_hit_return_yen",
-                "largest_hit_return_share",
+                "largest_hit_return_share", "effective_hit_count",
             ):
                 summary[f"expected_return_fixed_{key}"] = (
                     fixed_bankroll.get(key)
@@ -5563,6 +5564,17 @@ def _validate_job_result_contract(
             raise ValueError(
                 f"fixed model conditional order result {label} invalid"
             )
+        effective_hit_count = value.get("effective_hit_count")
+        if (
+            isinstance(effective_hit_count, bool)
+            or not isinstance(effective_hit_count, (int, float))
+            or not math.isfinite(float(effective_hit_count))
+            or float(effective_hit_count) < 0.0
+        ):
+            label = ".".join((*path, "effective_hit_count"))
+            raise ValueError(
+                f"fixed model conditional order result {label} invalid"
+            )
     fixed_return = payload.get("expected_return_fixed_threshold")
     if isinstance(fixed_return, dict):
         fixed_bankroll = fixed_return.get("bankroll")
@@ -5586,6 +5598,18 @@ def _validate_job_result_contract(
                 "fixed model conditional order result "
                 "expected_return_fixed_threshold.bankroll."
                 "tail_portfolio_diagnostics invalid"
+            )
+        effective_hit_count = fixed_bankroll.get("effective_hit_count")
+        if (
+            isinstance(effective_hit_count, bool)
+            or not isinstance(effective_hit_count, (int, float))
+            or not math.isfinite(float(effective_hit_count))
+            or float(effective_hit_count) < 0.0
+        ):
+            raise ValueError(
+                "fixed model conditional order result "
+                "expected_return_fixed_threshold.bankroll."
+                "effective_hit_count invalid"
             )
     state_contracts = (
         (
