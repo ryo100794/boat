@@ -4413,6 +4413,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert "--trend-point-require-reversed-place-pair" in command
     assert "--prequential-conditional-order" in command
     assert "--research-only-reused-holdout" in command
+    assert command[command.index("--minimum-research-clean-days") + 1] == "300"
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
@@ -4435,14 +4436,38 @@ def test_market_residual_reused_holdout_result_contract() -> None:
         "reused_holdout_research_only": True,
         "trend_point_market_offset_kelly_diagnostic": {
             "promotion_eligible": False,
+            "evaluation_dates": ["2025-07-26"],
+            "evaluated_races": 2,
         },
         "trend_point_reversed_place_pair_diagnostic": {
             "promotion_eligible": False,
             "policy": {"require_reversed_place_pair": True},
+            "evaluation_dates": ["2025-07-26"],
+            "evaluated_races": 2,
+        },
+        "coverage_gate": {
+            "clean_dates": ["2025-07-26"],
+            "days": [{
+                "race_date": "2025-07-26",
+                "eligible_t5_races": 2,
+            }],
+        },
+        "research_coverage_gate": {
+            "requested_from": "2025-07-26",
+            "requested_through": "2026-08-02",
+            "requested_calendar_days": 373,
+            "minimum_clean_days": 300,
+            "clean_days": 1,
+            "clean_day_fraction": 1 / 373,
+            "pass": False,
         },
     }
 
     evaluation_queue._validate_job_result_contract(job, payload)
+    summary = summarize_result(payload)
+    assert summary["research_minimum_clean_days"] == 300
+    assert summary["research_clean_days"] == 1
+    assert summary["research_coverage_pass"] is False
     with pytest.raises(ValueError, match="must be research-only"):
         evaluation_queue._validate_job_result_contract(
             job,

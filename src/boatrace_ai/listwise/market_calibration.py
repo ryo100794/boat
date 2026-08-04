@@ -6761,6 +6761,34 @@ def evaluation_dates_for_role(
     return registered_evaluation_dates(dates)
 
 
+def research_holdout_coverage_gate(
+    *,
+    from_date: str,
+    through_date: str,
+    clean_dates: Iterable[str],
+    minimum_clean_days: int = 300,
+) -> dict[str, Any]:
+    start = date.fromisoformat(from_date)
+    end = date.fromisoformat(through_date)
+    if end < start:
+        raise ValueError("research holdout dates must be chronological")
+    if not 30 <= minimum_clean_days <= 10_000:
+        raise ValueError(
+            "minimum_research_clean_days must be between 30 and 10000"
+        )
+    dates = sorted({str(value) for value in clean_dates})
+    requested_calendar_days = (end - start).days + 1
+    return {
+        "requested_from": start.isoformat(),
+        "requested_through": end.isoformat(),
+        "requested_calendar_days": requested_calendar_days,
+        "minimum_clean_days": minimum_clean_days,
+        "clean_days": len(dates),
+        "clean_day_fraction": len(dates) / requested_calendar_days,
+        "pass": len(dates) >= minimum_clean_days,
+    }
+
+
 def filter_clean_market_days(
     races: list[dict[str, Any]],
     *,
@@ -7318,12 +7346,21 @@ def build_parser() -> argparse.ArgumentParser:
             "keeping the result ineligible for promotion"
         ),
     )
+    parser.add_argument(
+        "--minimum-research-clean-days",
+        type=int,
+        default=300,
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not 30 <= args.minimum_research_clean_days <= 10_000:
+        raise ValueError(
+            "minimum_research_clean_days must be between 30 and 10000"
+        )
     candidate_weight = validate_fixed_model_blend(
         args.baseline_model,
         args.candidate_weight,
@@ -7425,6 +7462,18 @@ def main(argv: list[str] | None = None) -> int:
         coverage_gate["clean_dates"],
         research_only_reused_holdout=args.research_only_reused_holdout,
     )
+    research_coverage_gate = None
+    if args.research_only_reused_holdout:
+        if args.through_date is None:
+            raise ValueError(
+                "research_only_reused_holdout requires through_date"
+            )
+        research_coverage_gate = research_holdout_coverage_gate(
+            from_date=args.from_date,
+            through_date=args.through_date,
+            clean_dates=evaluation_dates,
+            minimum_clean_days=args.minimum_research_clean_days,
+        )
     formal_races = [
         race for race in clean_races if str(race["race_date"]) in formal_dates
     ]
@@ -7524,6 +7573,7 @@ def main(argv: list[str] | None = None) -> int:
             "reused_holdout_research_only": bool(
                 args.research_only_reused_holdout
             ),
+            "research_coverage_gate": research_coverage_gate,
             "closing_odds_training_gate": {
                 "minimum_days": args.closing_odds_min_training_days,
                 "minimum_races": args.closing_odds_min_training_races,

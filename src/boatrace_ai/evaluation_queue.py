@@ -2190,6 +2190,7 @@ def build_command(
             "trend_point_require_reversed_place_pair",
             "prequential_conditional_order",
             "research_only_reused_holdout",
+            "minimum_research_clean_days",
             "expected_model_sha256",
             "prospective_candidate",
         }
@@ -2407,7 +2408,21 @@ def build_command(
                 "research_only_reused_holdout must be a boolean"
             )
         if research_only_reused_holdout:
+            if through_date is None:
+                raise ValueError(
+                    "research_only_reused_holdout requires through_date"
+                )
             command.append("--research-only-reused-holdout")
+            command.extend([
+                "--minimum-research-clean-days",
+                str(_integer(
+                    params,
+                    "minimum_research_clean_days",
+                    300,
+                    30,
+                    10_000,
+                )),
+            ])
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",
@@ -3710,6 +3725,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    research_coverage = payload.get("research_coverage_gate")
+    if isinstance(research_coverage, dict):
+        summary["research_coverage_gate"] = dict(research_coverage)
+        summary["research_minimum_clean_days"] = research_coverage.get(
+            "minimum_clean_days"
+        )
+        summary["research_clean_days"] = research_coverage.get("clean_days")
+        summary["research_clean_day_fraction"] = research_coverage.get(
+            "clean_day_fraction"
+        )
+        summary["research_coverage_pass"] = research_coverage.get("pass")
     if str(payload.get("model") or "").startswith(
         "joint_edge_calibrated_replay_v"
     ):
@@ -5646,6 +5672,91 @@ def _validate_job_result_contract(
                     "market residual exact-two research must include a "
                     "non-promotable reversed-place-pair diagnostic"
                 )
+        coverage = payload.get("coverage_gate")
+        research_coverage = payload.get("research_coverage_gate")
+        if not isinstance(coverage, dict) or not isinstance(
+            research_coverage, dict
+        ):
+            raise ValueError(
+                "market residual reused holdout requires research coverage"
+            )
+        clean_dates = sorted({
+            str(value) for value in (coverage.get("clean_dates") or [])
+        })
+        diagnostic_dates = sorted({
+            str(value) for value in (diagnostic.get("evaluation_dates") or [])
+        })
+        if not clean_dates or diagnostic_dates != clean_dates:
+            raise ValueError(
+                "market residual reused holdout must evaluate every clean date"
+            )
+        expected_races = sum(
+            int(row.get("eligible_t5_races") or 0)
+            for row in (coverage.get("days") or [])
+            if isinstance(row, dict) and str(row.get("race_date")) in clean_dates
+        )
+        if int(diagnostic.get("evaluated_races") or 0) != expected_races:
+            raise ValueError(
+                "market residual reused holdout clean race count mismatch"
+            )
+        if parameters.get("trend_point_required_ticket_count") == 2:
+            if sorted({
+                str(value)
+                for value in (reversed_pair.get("evaluation_dates") or [])
+            }) != clean_dates or int(
+                reversed_pair.get("evaluated_races") or 0
+            ) != expected_races:
+                raise ValueError(
+                    "market residual reversed-place-pair coverage mismatch"
+                )
+        minimum_days = int(
+            parameters.get("minimum_research_clean_days") or 300
+        )
+        requested_from = datetime.strptime(
+            str(parameters.get("from_date")), "%Y-%m-%d"
+        ).date()
+        requested_through = datetime.strptime(
+            str(parameters.get("through_date")), "%Y-%m-%d"
+        ).date()
+        requested_calendar_days = (
+            requested_through - requested_from
+        ).days + 1
+        if requested_calendar_days <= 0:
+            raise ValueError(
+                "market residual reused holdout dates must be chronological"
+            )
+        parsed_clean_dates = [
+            datetime.strptime(value, "%Y-%m-%d").date()
+            for value in clean_dates
+        ]
+        expected_clean_fraction = len(clean_dates) / requested_calendar_days
+        if (
+            any(
+                value < requested_from or value > requested_through
+                for value in parsed_clean_dates
+            )
+            or research_coverage.get("requested_from")
+            != requested_from.isoformat()
+            or research_coverage.get("requested_through")
+            != requested_through.isoformat()
+            or int(research_coverage.get("requested_calendar_days") or 0)
+            != requested_calendar_days
+            or int(research_coverage.get("minimum_clean_days") or 0)
+            != minimum_days
+            or int(research_coverage.get("clean_days") or 0)
+            != len(clean_dates)
+            or not math.isclose(
+                float(research_coverage.get("clean_day_fraction") or 0.0),
+                expected_clean_fraction,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or bool(research_coverage.get("pass"))
+            != (len(clean_dates) >= minimum_days)
+        ):
+            raise ValueError(
+                "market residual reused holdout research coverage gate mismatch"
+            )
         if str(payload.get("source_model_sha256") or "").lower() != str(
             parameters.get("expected_model_sha256") or ""
         ).lower():

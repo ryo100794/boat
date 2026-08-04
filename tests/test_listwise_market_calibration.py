@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from itertools import permutations
 
 import numpy as np
@@ -27,6 +28,7 @@ from boatrace_ai.listwise.market_calibration import (
     policy_calibration_eligible,
     predefined_ticket_diagnostics,
     registered_evaluation_dates,
+    research_holdout_coverage_gate,
     summarize_registered_policy_daily,
     load_scored_cache,
     odds_path_model_name,
@@ -1274,6 +1276,29 @@ def test_reused_holdout_research_uses_all_clean_dates() -> None:
         clean_dates,
         research_only_reused_holdout=True,
     ) == clean_dates
+
+
+def test_research_holdout_coverage_requires_300_actual_clean_days() -> None:
+    clean_dates = [
+        (date(2025, 1, 1) + timedelta(days=offset)).isoformat()
+        for offset in range(300)
+    ]
+    failing = research_holdout_coverage_gate(
+        from_date="2025-01-01",
+        through_date="2025-12-31",
+        clean_dates=clean_dates[:-1],
+    )
+    passing = research_holdout_coverage_gate(
+        from_date="2025-01-01",
+        through_date="2025-12-31",
+        clean_dates=clean_dates,
+    )
+
+    assert failing["requested_calendar_days"] == 365
+    assert failing["clean_days"] == 299
+    assert failing["pass"] is False
+    assert passing["clean_days"] == 300
+    assert passing["pass"] is True
 
 
 def test_clean_day_gate_validates_coverage_threshold() -> None:
