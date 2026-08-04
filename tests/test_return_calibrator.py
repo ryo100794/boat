@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from boatrace_ai.listwise.direct_bankroll import (
     COMBINATION_LABELS as ALL_COMBINATIONS,
@@ -273,3 +274,41 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     assert selection["training_races"] == 100
     assert selection["training_days"] == 2
     assert set(selection["factors"]) == set(ALL_COMBINATIONS)
+
+
+def test_expected_return_bankroll_rejects_temporal_leakage() -> None:
+    probabilities = np.full((2, 120), 1.0 / 120.0)
+    calibration = np.full((2, 120), 1.0 / 120.0)
+    evaluation_keys = [
+        ("eval-1", "2026-07-02", "01", 1),
+        ("eval-2", "2026-07-03", "01", 2),
+    ]
+    overlap_keys = [
+        ("cal-1", "2026-07-01", "01", 1),
+        ("cal-2", "2026-07-02", "01", 2),
+    ]
+
+    with pytest.raises(ValueError, match="strictly precede"):
+        simulate_expected_return_calibrated_bankroll(
+            probabilities,
+            race_keys=evaluation_keys,
+            payouts={},
+            market_reference_probabilities=probabilities,
+            calibration_probabilities=calibration,
+            calibration_market_reference_probabilities=calibration,
+            calibration_race_keys=overlap_keys,
+        )
+
+    with pytest.raises(ValueError, match="non-decreasing"):
+        simulate_expected_return_calibrated_bankroll(
+            probabilities,
+            race_keys=list(reversed(evaluation_keys)),
+            payouts={},
+            market_reference_probabilities=probabilities,
+            calibration_probabilities=calibration,
+            calibration_market_reference_probabilities=calibration,
+            calibration_race_keys=[
+                ("cal-1", "2026-06-01", "01", 1),
+                ("cal-2", "2026-06-02", "01", 2),
+            ],
+        )

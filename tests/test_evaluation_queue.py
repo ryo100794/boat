@@ -1752,6 +1752,16 @@ def test_fixed_model_conditional_order_result_contract() -> None:
         "evaluation_from": "2025-07-26",
         "evaluation_through": "2026-08-02",
         "evaluation_races": 49_581,
+        "conditional_order": {"evaluated_races": 49_581},
+        "listwise_baseline": {"evaluated_races": 49_581},
+        "bankroll": {"evaluated_races": 49_581},
+        "baseline_bankroll": {"evaluated_races": 49_581},
+        "conditional_payout_walk_forward": {
+            "bankroll": {"evaluated_races": 49_581}
+        },
+        "expected_return_calibration": {
+            "bankroll": {"evaluated_races": 49_581}
+        },
     }
 
     evaluation_queue._validate_job_result_contract(job, payload)
@@ -1767,6 +1777,19 @@ def test_fixed_model_conditional_order_result_contract() -> None:
     with pytest.raises(ValueError, match="source_model_sha256 mismatch"):
         evaluation_queue._validate_job_result_contract(
             job, {**payload, "source_model_sha256": "b" * 64}
+        )
+    with pytest.raises(
+        ValueError,
+        match="conditional_payout_walk_forward.bankroll.evaluated_races mismatch",
+    ):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {
+                **payload,
+                "conditional_payout_walk_forward": {
+                    "bankroll": {"evaluated_races": 49_580}
+                },
+            },
         )
 
 

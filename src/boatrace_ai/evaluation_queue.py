@@ -5443,6 +5443,46 @@ def _validate_job_result_contract(
         raise ValueError(
             "fixed model conditional order result evaluation_races mismatch"
         )
+    coverage_paths = (
+        ("conditional_order",),
+        ("listwise_baseline",),
+        ("bankroll",),
+        ("baseline_bankroll",),
+        ("conditional_payout_walk_forward", "bankroll"),
+        ("expected_return_calibration", "bankroll"),
+    )
+    for path in coverage_paths:
+        value: Any = payload
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        actual = value.get("evaluated_races") if isinstance(value, dict) else None
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, int)
+            or actual != expected_races
+        ):
+            label = ".".join((*path, "evaluated_races"))
+            raise ValueError(
+                f"fixed model conditional order result {label} mismatch"
+            )
+    fixed_return = payload.get("expected_return_fixed_threshold")
+    if isinstance(fixed_return, dict):
+        fixed_bankroll = fixed_return.get("bankroll")
+        actual = (
+            fixed_bankroll.get("evaluated_races")
+            if isinstance(fixed_bankroll, dict)
+            else None
+        )
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, int)
+            or actual != expected_races
+        ):
+            raise ValueError(
+                "fixed model conditional order result "
+                "expected_return_fixed_threshold.bankroll.evaluated_races "
+                "mismatch"
+            )
 
 
 def complete_job(

@@ -16,6 +16,8 @@ from ..roi_attribution import (
 from .direct_bankroll import (
     COMBINATION_INDEX,
     SELECTION_BOOTSTRAP_SAMPLES,
+    _validate_nondecreasing_race_dates,
+    _validate_pre_evaluation_period,
     bootstrap_daily_bankroll,
     COMBINATION_LABELS,
     direct_candidates,
@@ -321,6 +323,11 @@ def simulate_expected_return_calibrated_bankroll(
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
 ) -> dict[str, Any]:
+    _validate_nondecreasing_race_dates(race_keys, name="race_keys")
+    _validate_nondecreasing_race_dates(
+        calibration_race_keys, name="calibration_race_keys"
+    )
+    _validate_pre_evaluation_period(calibration_race_keys, race_keys)
     values = np.asarray(probabilities, dtype=np.float64)
     market_values = np.asarray(market_reference_probabilities, dtype=np.float64)
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
