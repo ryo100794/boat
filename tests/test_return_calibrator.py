@@ -169,6 +169,41 @@ def test_newton_return_calibrator_learns_relative_value() -> None:
     assert 0.8 < predicted[:500, 0].mean() < 1.5
 
 
+def test_expected_return_calibration_rejects_missing_payouts() -> None:
+    race_keys = [
+        ("complete", "2026-07-01", "01", 1),
+        ("missing", "2026-07-01", "01", 2),
+    ]
+    probabilities = np.full((2, 2), 0.5)
+    payouts = {
+        "complete": {"combination": "1-2-3", "payout_yen": 200}
+    }
+
+    with pytest.raises(ValueError, match="missing=1"):
+        fit_expected_return_calibrator(
+            probabilities,
+            probabilities,
+            race_keys,
+            payouts,
+            COMBINATION_LANES,
+            COMBINATION_INDEX,
+        )
+    with pytest.raises(ValueError, match="missing=1"):
+        fit_combination_return_calibrator(
+            probabilities,
+            race_keys,
+            payouts,
+            COMBINATION_INDEX,
+        )
+    with pytest.raises(ValueError, match="missing=1"):
+        expected_return_poisson_loss(
+            probabilities,
+            race_keys,
+            payouts,
+            COMBINATION_INDEX,
+        )
+
+
 def test_return_regularization_uses_pre_policy_temporal_validation() -> None:
     target_index = ALL_COMBINATIONS.index("1-2-3")
     race_keys = [

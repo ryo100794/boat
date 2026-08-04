@@ -14,6 +14,40 @@ COMBINATION_FACTOR_FLOOR = 0.25
 COMBINATION_FACTOR_CAP = 2.0
 
 
+def _validate_complete_payouts(
+    race_keys: Sequence[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    combination_index: dict[str, int],
+) -> None:
+    missing = []
+    invalid = []
+    for race_key in race_keys:
+        race_id = str(race_key[0])
+        actual = payouts.get(race_id)
+        if not isinstance(actual, dict):
+            missing.append(race_id)
+            continue
+        combination = str(actual.get("combination") or "")
+        payout_yen = actual.get("payout_yen")
+        if combination not in combination_index or isinstance(
+            payout_yen, bool
+        ):
+            invalid.append(race_id)
+            continue
+        try:
+            payout_value = float(payout_yen)
+        except (TypeError, ValueError):
+            invalid.append(race_id)
+            continue
+        if not np.isfinite(payout_value) or payout_value <= 0.0:
+            invalid.append(race_id)
+    if missing or invalid:
+        raise ValueError(
+            "expected return calibration requires complete valid payouts "
+            f"for every race: missing={len(missing)}, invalid={len(invalid)}"
+        )
+
+
 @dataclass(frozen=True)
 class ExpectedReturnCalibrator:
     weights: np.ndarray
@@ -54,6 +88,7 @@ def fit_combination_return_calibrator(
         raise ValueError("combination bootstrap samples must be at least 100")
     if set(combination_index.values()) != set(range(predicted.shape[1])):
         raise ValueError("combination index must cover every predicted column")
+    _validate_complete_payouts(race_keys, payouts, combination_index)
 
     valid = []
     for row_index, race_key in enumerate(race_keys):
@@ -271,6 +306,7 @@ def expected_return_poisson_loss(
         raise ValueError("predicted returns and race keys must align")
     if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
         raise ValueError("predicted returns must be finite and positive")
+    _validate_complete_payouts(race_keys, payouts, combination_index)
     valid_indices = [
         index
         for index, race_key in enumerate(race_keys)
@@ -307,6 +343,7 @@ def fit_expected_return_calibrator(
         raise ValueError("regularization must be finite and positive")
     if max_iterations < 1 or batch_races < 1:
         raise ValueError("iteration and batch sizes must be positive")
+    _validate_complete_payouts(race_keys, payouts, combination_index)
     targets = expected_return_targets(
         race_keys,
         payouts,
