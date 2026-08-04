@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 
@@ -65,6 +66,22 @@ RESIDUAL_MODELS = (
         "artifact",
     ),
 )
+
+
+def _public_calibration_bins(value: Any) -> list[dict[str, Any]]:
+    rows = []
+    for source in value or ():
+        if not isinstance(source, Mapping):
+            continue
+        row = dict(source)
+        for key in ("lower", "upper"):
+            boundary = row.get(key)
+            if isinstance(boundary, (int, float)) and not math.isfinite(
+                float(boundary)
+            ):
+                row[key] = None
+        rows.append(row)
+    return rows
 
 
 def apply_archive_residual_summary(
@@ -354,7 +371,9 @@ def apply_archive_residual_summary(
             "nested_value_calibration_ready_reasons": nested_calibration.get(
                 "ready_reasons"
             ),
-            "nested_value_calibration_bins": nested_calibration.get("bins"),
+            "nested_value_calibration_bins": _public_calibration_bins(
+                nested_calibration.get("bins")
+            ),
             "nested_value_calibration_candidates": nested.get(
                 "calibration_ledger_candidates"
             ),

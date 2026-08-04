@@ -73,6 +73,8 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
                     "ready_reasons": [],
                     "bins": [{
                         "bin_index": 0,
+                        "lower": float("-inf"),
+                        "upper": 1.0,
                         "support": 100,
                         "empirical_ev": 0.8,
                         "empirical_ev_lcb95": 0.7,
@@ -125,6 +127,7 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert summary["nested_value_calibration_bins"][0][
         "empirical_ev_lcb95"
     ] == 0.7
+    assert summary["nested_value_calibration_bins"][0]["lower"] is None
     assert "roi" not in summary
     assert summary["roi_status"] == "not_applicable"
     assert summary["nested_value_evaluation_candidates"] == 13720
