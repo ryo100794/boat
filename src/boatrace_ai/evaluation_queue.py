@@ -4087,6 +4087,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         calibration_ledger = (
             calibration_ledger if isinstance(calibration_ledger, dict) else {}
         )
+        value_calibration = payload.get(
+            "purchase_value_realization_calibration"
+        )
+        value_calibration = (
+            value_calibration if isinstance(value_calibration, dict) else {}
+        )
         evaluation_protocol = payload.get("evaluation_protocol")
         evaluation_protocol = (
             evaluation_protocol if isinstance(evaluation_protocol, dict) else {}
@@ -4271,6 +4277,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "joint_calibration_return_yen": calibration_ledger.get("return_yen"),
             "joint_calibration_profit_yen": calibration_ledger.get("profit_yen"),
             "joint_calibration_roi": calibration_ledger.get("roi"),
+            "purchase_value_realization_calibration": value_calibration,
+            "purchase_value_realization_version": value_calibration.get(
+                "version"
+            ),
+            "purchase_value_realization_candidate_portfolios": (
+                value_calibration.get("candidate_portfolios")
+            ),
+            "purchase_value_realization_mismatched_portfolios": (
+                value_calibration.get("excluded_mismatched_portfolios")
+            ),
+            "purchase_value_realization_monotone": value_calibration.get(
+                "monotone_realized_roi"
+            ),
+            "purchase_value_realization_deciles": value_calibration.get(
+                "deciles"
+            ),
         })
         summary.update({
             "joint_purchase_value_minimum": (

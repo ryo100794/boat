@@ -7,10 +7,12 @@ from types import SimpleNamespace
 import joblib
 import pytest
 
+from boatrace_ai.evaluation_queue import summarize_result
 from boatrace_ai.joint_bankroll_evaluation import (
     _day_block_roi_interval,
     _evaluation_protocol,
     _probability_metrics,
+    _purchase_value_realization_calibration,
     _rank_candidate_tickets,
     _realized_receipt,
     _release_matured_receipts,
@@ -226,6 +228,7 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert distribution["validation_outer_draws"] == 2
     assert distribution["search_validation_draw_sets_disjoint"] is True
     diagnostic_race = result["daily"][0]["races"][0]
+    assert diagnostic_race["race_date"] == "2026-07-05"
     assert diagnostic_race["actual_combination"] in {"A", "B"}
     assert diagnostic_race["evaluation_time_t"].endswith("+09:00")
     assert diagnostic_race["evaluation_time_t"] == "2026-07-05T10:05:00+09:00"
@@ -233,6 +236,16 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert diagnostic_race["odds_snapshot_captured_at"] == "2026-07-05T10:00:00+09:00"
     assert diagnostic_race["snapshot_age_seconds"] == 300.0
     assert diagnostic_race["wager_type"] == "trifecta"
+    value_calibration = result["purchase_value_realization_calibration"]
+    assert value_calibration["version"] == (
+        "joint_purchase_value_realization_deciles_v1"
+    )
+    assert value_calibration["excluded_mismatched_portfolios"] == 0
+    assert value_calibration["candidate_portfolios"] == 0
+    assert value_calibration["deciles"] == []
+    summary = summarize_result(result)
+    assert summary["purchase_value_realization_candidate_portfolios"] == 0
+    assert summary["purchase_value_realization_deciles"] == []
     assert diagnostic_race["popularity_band_at_t"]
     assert diagnostic_race["actual_payout_yen"] == 150
     assert diagnostic_race["selected_bets_yen"] == {}
@@ -254,6 +267,41 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     } == {
         "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08"
     }
+
+
+def test_purchase_value_deciles_compare_the_identical_realized_portfolio() -> None:
+    days = []
+    for day in range(1, 31):
+        value = day / 100.0
+        stake = 100
+        returned = 80 + day * 2
+        days.append({
+            "race_date": f"2026-08-{day:02d}",
+            "races": [{
+                "purchase_value": value,
+                "purchase_value_bets_match_best_search": True,
+                "best_search_stake_yen": stake,
+                "best_search_hypothetical_return_yen": returned,
+            }],
+        })
+
+    result = _purchase_value_realization_calibration(
+        days,
+        samples=200,
+        seed=17,
+    )
+
+    assert result["candidate_portfolios"] == 30
+    assert result["excluded_mismatched_portfolios"] == 0
+    assert result["quantile_bins"] == 10
+    assert result["monotone_realized_roi"] is True
+    assert all(
+        row["candidate_portfolios"] > 0
+        and row["predicted_roi"] is not None
+        and row["realized_roi"] is not None
+        and row["bootstrap_samples"] == 200
+        for row in result["deciles"]
+    )
 
 
 def test_evaluation_protocol_fixes_time_context_and_purchase_rule(

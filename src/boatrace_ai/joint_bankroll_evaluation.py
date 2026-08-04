@@ -1032,6 +1032,113 @@ def build_block_bootstrap_evidence(
     }
 
 
+def _purchase_value_realization_calibration(
+    days: Sequence[Mapping[str, Any]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Compare validated portfolio value with the same portfolio's realization."""
+    rows = []
+    mismatched_portfolios = 0
+    for day in days:
+        race_date = str(day.get("race_date") or "")
+        for race in day.get("races") or []:
+            value = race.get("purchase_value")
+            stake = int(race.get("best_search_stake_yen") or 0)
+            if value is None or stake <= 0:
+                continue
+            if race.get("purchase_value_bets_match_best_search") is not True:
+                mismatched_portfolios += 1
+                continue
+            rows.append({
+                "race_date": race_date,
+                "purchase_value": float(value),
+                "predicted_roi": 1.0 + float(value),
+                "stake_yen": stake,
+                "return_yen": int(
+                    race.get("best_search_hypothetical_return_yen") or 0
+                ),
+            })
+    rows.sort(key=lambda row: (row["purchase_value"], row["race_date"]))
+    bins = []
+    for decile_index, indices in enumerate(
+        np.array_split(np.arange(len(rows)), min(10, len(rows)))
+        if rows else [],
+        start=1,
+    ):
+        selected = [rows[int(index)] for index in indices]
+        stake_yen = sum(row["stake_yen"] for row in selected)
+        return_yen = sum(row["return_yen"] for row in selected)
+        predicted_return_yen = fsum(
+            row["predicted_roi"] * row["stake_yen"] for row in selected
+        )
+        by_day: dict[str, dict[str, Any]] = {}
+        for row in selected:
+            daily = by_day.setdefault(
+                row["race_date"],
+                {
+                    "race_date": row["race_date"],
+                    "stake_yen": 0,
+                    "return_yen": 0,
+                },
+            )
+            daily["stake_yen"] += row["stake_yen"]
+            daily["return_yen"] += row["return_yen"]
+        confidence = _day_block_roi_interval(
+            list(by_day.values()),
+            samples=samples,
+            seed=seed + 9_100_000 + decile_index,
+        )
+        bins.append({
+            "decile": decile_index,
+            "candidate_portfolios": len(selected),
+            "evaluation_days": len(by_day),
+            "minimum_purchase_value": min(
+                row["purchase_value"] for row in selected
+            ),
+            "maximum_purchase_value": max(
+                row["purchase_value"] for row in selected
+            ),
+            "mean_purchase_value": fsum(
+                row["purchase_value"] for row in selected
+            ) / len(selected),
+            "predicted_roi": (
+                predicted_return_yen / stake_yen if stake_yen else None
+            ),
+            "stake_yen": stake_yen,
+            "return_yen": return_yen,
+            "profit_yen": return_yen - stake_yen,
+            "realized_roi": return_yen / stake_yen if stake_yen else None,
+            "daily_block_roi_lower_95": confidence["roi_lower"],
+            "daily_block_roi_upper_95": confidence["roi_upper"],
+            "bootstrap_samples": confidence["samples"],
+        })
+    realized = [
+        float(row["realized_roi"])
+        for row in bins
+        if row["realized_roi"] is not None
+    ]
+    return {
+        "version": "joint_purchase_value_realization_deciles_v1",
+        "population": (
+            "validated_best_search_portfolios_with_identical_realized_bets"
+        ),
+        "predicted_roi_definition": "1_plus_validated_V_buy",
+        "realized_roi_definition": (
+            "same_portfolio_integer_settlement_return_divided_by_stake"
+        ),
+        "candidate_portfolios": len(rows),
+        "excluded_mismatched_portfolios": mismatched_portfolios,
+        "quantile_bins": len(bins),
+        "monotone_realized_roi": bool(
+            realized
+            and all(left <= right for left, right in zip(realized, realized[1:]))
+        ),
+        "deciles": bins,
+    }
+
+
 def run_joint_bankroll_evaluation(
     scored_cache: Path,
     *,
@@ -1301,6 +1408,7 @@ def run_joint_bankroll_evaluation(
             best_search = search.get("best_search_candidate") or {}
             best_search_metrics = best_search.get("metrics") or {}
             best_search_bets = dict(best_search.get("bets_yen") or {})
+            validated_bets = dict(selected.get("bets_yen") or {})
             best_search_stake = sum(best_search_bets.values())
             best_search_return = _realized_receipt(
                 best_search_bets,
@@ -1309,6 +1417,7 @@ def run_joint_bankroll_evaluation(
             ) if best_search_stake else 0
             race_rows.append({
                 "race_id": observation.race_id,
+                "race_date": evaluation_date,
                 "venue": observation.venue,
                 "wager_type": "trifecta",
                 "popularity_band_at_t": observation.popularity_band,
@@ -1352,6 +1461,9 @@ def run_joint_bankroll_evaluation(
                     "growth_excess"
                 ),
                 "best_search_bets_yen": best_search_bets,
+                "purchase_value_bets_match_best_search": (
+                    validated_bets == best_search_bets
+                ),
                 "best_search_stake_yen": best_search_stake,
                 "best_search_hypothetical_return_yen": best_search_return,
                 "best_search_hypothetical_profit_yen": (
@@ -1362,6 +1474,11 @@ def run_joint_bankroll_evaluation(
                     if best_search_stake else None
                 ),
                 "purchase_value": portfolio.get("lower_quantile"),
+                "predicted_roi_lower_bound": (
+                    1.0 + float(portfolio["lower_quantile"])
+                    if portfolio.get("lower_quantile") is not None
+                    else None
+                ),
                 "purchase_safety_margin": buy_margin,
                 "purchase_value_excess": (
                     float(portfolio["lower_quantile"]) - buy_margin
@@ -1494,6 +1611,13 @@ def run_joint_bankroll_evaluation(
         ),
         "teacher_available_for_strictly_later_days": True,
     }
+    purchase_value_realization_calibration = (
+        _purchase_value_realization_calibration(
+            daily,
+            samples=bootstrap_samples,
+            seed=seed,
+        )
+    )
     joint_value_audit = _aggregate_joint_value_audits([
         race.get("joint_value_audit") or {}
         for day in daily
@@ -1690,6 +1814,9 @@ def run_joint_bankroll_evaluation(
         "evaluation_protocol_id": evaluation_protocol["id"],
         "evaluation_protocol": evaluation_protocol["protocol"],
         "calibration_ledger": calibration_ledger,
+        "purchase_value_realization_calibration": (
+            purchase_value_realization_calibration
+        ),
         "bankroll_confidence": confidence,
         "promotion_gate": gate,
         "promotion_gate_passed": sum(gate.values()),
