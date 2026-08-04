@@ -314,6 +314,12 @@ def _adaptive_threshold_diagnostics(
                 "return_yen": int(settled["return_yen"]),
                 "profit_yen": int(settled["profit_yen"]),
                 "roi": float(settled["roi"]),
+                "roi_without_largest_hit": float(
+                    settled["roi_without_largest_hit"]
+                ),
+                "effective_hit_count": float(
+                    settled["effective_hit_count"]
+                ),
                 "selection_roi_ci95_lower": float(
                     confidence["roi_ci95_lower"]
                 ),

@@ -50,6 +50,7 @@ def flat_threshold_diagnostics(
         tickets = int(selected.sum())
         hits = 0
         return_yen = 0
+        hit_returns: list[int] = []
         for race_index, race_key in enumerate(race_keys):
             actual = payouts.get(str(race_key[0]))
             if actual is None:
@@ -58,8 +59,12 @@ def flat_threshold_diagnostics(
             if index is None or not selected[race_index, index]:
                 continue
             hits += 1
-            return_yen += int(actual["payout_yen"])
+            hit_return = int(actual["payout_yen"])
+            return_yen += hit_return
+            hit_returns.append(hit_return)
         stake_yen = tickets * 100
+        largest_hit_return_yen = max(hit_returns, default=0)
+        hit_return_square_sum = sum(value * value for value in hit_returns)
         rows.append(
             {
                 "ev_threshold": float(threshold),
@@ -69,6 +74,15 @@ def flat_threshold_diagnostics(
                 "return_yen": return_yen,
                 "profit_yen": return_yen - stake_yen,
                 "roi": return_yen / stake_yen if stake_yen else 0.0,
+                "roi_without_largest_hit": (
+                    (return_yen - largest_hit_return_yen) / stake_yen
+                    if stake_yen else 0.0
+                ),
+                "effective_hit_count": (
+                    return_yen * return_yen / hit_return_square_sum
+                    if return_yen > 0 and hit_return_square_sum > 0
+                    else 0.0
+                ),
             }
         )
     return rows
@@ -90,6 +104,8 @@ def select_policy_threshold(
         and int(row.get("hits") or 0) >= minimum_hits
         and int(row.get("winning_days") or 0) >= minimum_winning_days
         and float(row["roi"]) >= minimum_roi
+        and float(row.get("roi_without_largest_hit") or 0.0) >= minimum_roi
+        and float(row.get("effective_hit_count") or 0.0) >= minimum_hits
         and float(row.get("selection_roi_ci95_lower", row["roi"]))
         >= minimum_roi
         and int(row["profit_yen"]) > 0

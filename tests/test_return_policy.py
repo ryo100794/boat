@@ -50,7 +50,7 @@ def test_threshold_selection_uses_only_profitable_supported_rows() -> None:
         minimum_tickets=2,
         minimum_roi=1.05,
     )
-    assert threshold == 1.05
+    assert threshold == 1.20
     assert source == "pre_evaluation_risk_adjusted_temporal_selection"
 
 
@@ -105,6 +105,8 @@ def test_adaptive_threshold_diagnostics_use_operational_allocator() -> None:
     assert diagnostics[1]["profit_yen"] > 0
     assert diagnostics[1]["selection_roi_ci95_lower"] > 1.0
     assert diagnostics[1]["selection_probability_roi_above_one"] == 1.0
+    assert diagnostics[1]["roi_without_largest_hit"] > 1.0
+    assert diagnostics[1]["effective_hit_count"] == 2.0
 
 
 def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
@@ -116,6 +118,8 @@ def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
                 "hits": 20,
                 "winning_days": 12,
                 "roi": 1.8,
+                "roi_without_largest_hit": 1.4,
+                "effective_hit_count": 16.0,
                 "selection_roi_ci95_lower": 0.7,
                 "profit_yen": 8_000,
             },
@@ -125,6 +129,8 @@ def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
                 "hits": 18,
                 "winning_days": 12,
                 "roi": 1.2,
+                "roi_without_largest_hit": 1.1,
+                "effective_hit_count": 12.0,
                 "selection_roi_ci95_lower": 1.06,
                 "profit_yen": 2_000,
             },
@@ -138,6 +144,30 @@ def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
 
     assert threshold == 1.10
     assert source == "pre_evaluation_risk_adjusted_temporal_selection"
+
+
+def test_threshold_selection_rejects_concentrated_returns() -> None:
+    threshold, source = select_policy_threshold(
+        [{
+            "ev_threshold": 1.10,
+            "tickets": 180,
+            "hits": 18,
+            "effective_hit_count": 9.9,
+            "winning_days": 12,
+            "roi": 1.4,
+            "roi_without_largest_hit": 1.01,
+            "selection_roi_ci95_lower": 1.10,
+            "profit_yen": 4_000,
+        }],
+        fallback=1.20,
+        minimum_tickets=100,
+        minimum_roi=1.05,
+        minimum_hits=10,
+        minimum_winning_days=8,
+    )
+
+    assert threshold == 1.20
+    assert source == "fallback_fixed_threshold"
 
 
 def test_threshold_selection_rejects_sparse_wins() -> None:
