@@ -73,6 +73,13 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
                     "ready_reasons": [],
                 },
                 "calibration_ledger_candidates": 20000,
+                "evaluation_ledger_candidates": 13720,
+                "value_decile_audit": {
+                    "edge_source": "value_calibration_only",
+                    "evaluation_used_for_edges": False,
+                    "calibration": [{"decile": 1, "realized_roi": 0.7}],
+                    "evaluation": [{"decile": 1, "realized_roi": 0.8}],
+                },
                 "bankroll": {
                     "tickets": 0,
                     "stake_yen": 0,
@@ -109,6 +116,10 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert summary["nested_value_model_training_days"] == 22
     assert summary["nested_value_calibration_days"] == 30
     assert summary["nested_value_calibration_ready"] is True
+    assert summary["nested_value_evaluation_candidates"] == 13720
+    assert summary["nested_value_decile_audit"][
+        "evaluation_used_for_edges"
+    ] is False
     assert summary["nested_value_roi_display"] == "N/A"
     assert summary["nested_value_promotion_eligible"] is False
 

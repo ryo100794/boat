@@ -351,6 +351,10 @@ def apply_archive_residual_summary(
             "nested_value_calibration_candidates": nested.get(
                 "calibration_ledger_candidates"
             ),
+            "nested_value_evaluation_candidates": nested.get(
+                "evaluation_ledger_candidates"
+            ),
+            "nested_value_decile_audit": nested.get("value_decile_audit"),
             "nested_value_tickets": nested_bankroll.get("tickets"),
             "nested_value_stake_yen": nested_bankroll.get("stake_yen"),
             "nested_value_return_yen": nested_bankroll.get("return_yen"),

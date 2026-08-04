@@ -80,6 +80,12 @@ def test_v40_uses_disjoint_model_value_and_outer_periods(monkeypatch) -> None:
     assert result["evaluation_from"] == "2026-02-22"
     assert len(observed["model_training"]) == 220
     assert result["calibration_ledger_candidates"] == 600
+    assert result["evaluation_ledger_candidates"] == 100
+    deciles = result["value_decile_audit"]
+    assert deciles["evaluation_used_for_edges"] is False
+    assert sum(row["candidates"] for row in deciles["calibration"]) == 600
+    assert sum(row["candidates"] for row in deciles["evaluation"]) == 100
+    assert len(deciles["inner_edges"]) == 9
     assert result["empirical_ev_calibration"]["ready"] is True
     assert result["bankroll"]["evaluation_days"] == 5
     assert result["real_betting_enabled"] is False
