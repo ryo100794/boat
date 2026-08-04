@@ -121,6 +121,30 @@ def test_lcb_never_exceeds_point_estimate_in_any_context() -> None:
                 assert bin_.empirical_ev_lcb95 <= bin_.empirical_ev
 
 
+def test_context_prediction_propagates_global_local_range_gate() -> None:
+    records = [
+        _record(day, 1, 12.0, 1.2, raw_ev=1.12)
+        for day in range(20)
+        for _ in range(4)
+    ]
+    artifact = _fit(
+        records,
+        min_rank_days=1,
+        min_rank_tickets=1,
+        min_cell_days=1,
+        min_cell_tickets=1,
+    )
+
+    supported = artifact.predict(1.12, 1, 12.0)
+    outside = artifact.predict(1.50, 1, 12.0)
+
+    assert supported["local_support_ready"] is True
+    assert supported["input_in_local_block_range"] is True
+    assert supported["purchase_lcb95_available"] is True
+    assert outside["input_in_local_block_range"] is False
+    assert outside["purchase_lcb95_available"] is False
+
+
 def test_hierarchical_shrinkage_preserves_raw_ev_monotonicity() -> None:
     records = []
     for day in range(20):

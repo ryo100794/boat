@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+import pytest
+
 from boatrace_ai.listwise import market_calibration
 
 
@@ -179,6 +181,10 @@ class _Artifact:
     @property
     def ready_reasons(self) -> tuple[str, ...]:
         return () if self.ready else ("insufficient_training_days",)
+
+    @property
+    def isotonic_block_count(self) -> int:
+        return len(self.training_dates)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -371,6 +377,79 @@ def test_empirical_track_stays_not_ready_and_places_no_bets_before_30_training_d
     assert track["profit_yen"] == 0
     assert all(fold["calibration_ready"] is False for fold in track["folds"])
     assert max(fold["training_days"] for fold in track["folds"]) < 30
+
+
+def test_trend_empirical_track_fits_before_day_then_batches_settlement(
+    monkeypatch,
+) -> None:
+    races = _races(4)
+    for race in races:
+        race["_policy_calibrated_probabilities"] = dict(
+            race["model_probabilities"]
+        )
+    fits = []
+
+    def fit(records, *, bootstrap_samples):
+        training_dates = tuple(sorted({str(row["race_date"]) for row in records}))
+        fits.append((training_dates, bootstrap_samples))
+        return _Artifact(training_dates)
+
+    monkeypatch.setattr(
+        market_calibration,
+        "fit_empirical_ev_calibration",
+        fit,
+    )
+    result = market_calibration.evaluate_trend_empirical_lcb_walk_forward(
+        races,
+        evaluation_dates=["2026-01-03", "2026-01-04"],
+        odds_safety_factor=1.10,
+        daily_budget_yen=10_000,
+        bootstrap_samples=100,
+    )
+
+    assert [row[0] for row in fits] == [
+        ("2026-01-01", "2026-01-02"),
+        ("2026-01-01", "2026-01-02", "2026-01-03"),
+    ]
+    assert all(samples == 100 for _dates, samples in fits)
+    assert result["calibration_ledger_candidates"] == 12
+    assert result["tickets"] == 0
+    assert result["roi"] is None
+    assert result["promotion_eligible"] is False
+    for fold in result["folds"]:
+        assert fold["trained_through_date"] < fold["evaluation_date"]
+    assert result["promotion_gate"]["strict_prior_check"] is True
+    assert result["promotion_gate"]["same_day_settlement_batch"] is True
+
+
+def test_trend_empirical_track_excludes_days_after_evaluation_boundary() -> None:
+    races = _races(4)
+    for race in races:
+        race["_policy_calibrated_probabilities"] = dict(
+            race["model_probabilities"]
+        )
+
+    result = market_calibration.evaluate_trend_empirical_lcb_walk_forward(
+        races,
+        evaluation_dates=["2026-01-03"],
+        odds_safety_factor=1.10,
+        daily_budget_yen=10_000,
+        bootstrap_samples=100,
+    )
+
+    assert result["calibration_ledger_candidates"] == 9
+    assert result["folds"][0]["trained_through_date"] == "2026-01-02"
+
+
+def test_trend_empirical_track_rejects_invalid_safety_factor() -> None:
+    with pytest.raises(ValueError, match="odds_safety_factor"):
+        market_calibration.evaluate_trend_empirical_lcb_walk_forward(
+            [],
+            evaluation_dates=[],
+            odds_safety_factor=0.99,
+            daily_budget_yen=10_000,
+            bootstrap_samples=100,
+        )
 
 
 def test_future_actual_result_cannot_change_earlier_empirical_fold_audit(

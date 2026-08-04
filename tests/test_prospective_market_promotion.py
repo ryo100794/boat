@@ -104,20 +104,28 @@ def test_uses_trend_point_formal_track_and_requires_its_complete_gate() -> None:
     source = _source()
     track = source.pop("prospective_normalized_ev_walk_forward")
     track["promotion_gate"] = {"pass": True, "no_lookahead_pass": True}
-    source["trend_point_market_offset_kelly_walk_forward"] = track
+    source["trend_point_empirical_lcb_walk_forward"] = track
 
     eligible = prospective_promotion_payload(source, bootstrap_samples=500)
 
     assert eligible is not None
     assert eligible["promotion_eligible"] is True
     assert eligible["prospective_source_track"] == (
-        "trend_point_market_offset_kelly_walk_forward"
+        "trend_point_empirical_lcb_walk_forward"
     )
     track["promotion_gate"]["pass"] = False
     rejected = prospective_promotion_payload(source, bootstrap_samples=500)
     assert rejected is not None
     assert rejected["promotion_eligible"] is False
     assert rejected["promotion_gate"]["source_formal_gate_pass"] is False
+
+
+def test_raw_trend_point_track_is_not_a_promotion_source() -> None:
+    source = _source()
+    track = source.pop("prospective_normalized_ev_walk_forward")
+    source["trend_point_market_offset_kelly_walk_forward"] = track
+
+    assert prospective_promotion_payload(source, bootstrap_samples=500) is None
 
 
 def test_missing_largest_hit_share_fails_closed() -> None:

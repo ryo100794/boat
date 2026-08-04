@@ -90,6 +90,10 @@ from .empirical_lcb_policy import (
     policy_edge_records,
     simulate_empirical_lcb_policy,
 )
+from .empirical_ev_calibration import (
+    DEFAULT_BOOTSTRAP_SAMPLES,
+    fit_empirical_ev_calibration,
+)
 from .conditional_order import ConditionalOrderModel, conditional_probabilities
 from .conditional_stagewise import (
     ConditionalStagewiseModel,
@@ -112,7 +116,7 @@ CLOSING_ODDS_SOURCE_PRIORITY = (OFFICIAL_SOURCE_KEY, SOURCE_KEY)
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 33
+MARKET_EVALUATION_VERSION = 34
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
@@ -1586,6 +1590,194 @@ def _summarize_empirical_lcb_walk_forward(
         "folds": folds,
         "daily": daily,
     }
+
+
+_TREND_EMPIRICAL_CALIBRATOR = {
+    "model_weight": 1.0,
+    "temperature": 1.0,
+}
+
+
+def _identity_probability_blender(
+    model: Mapping[str, float],
+    market: Mapping[str, float],
+    *,
+    model_weight: float,
+    temperature: float,
+) -> dict[str, float]:
+    del market
+    if model_weight != 1.0 or temperature != 1.0:
+        raise ValueError("trend empirical calibration requires identity blending")
+    return {str(key): float(value) for key, value in model.items()}
+
+
+def _trend_empirical_policy_races(
+    races: Iterable[Mapping[str, Any]],
+    *,
+    odds_safety_factor: float,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for race in races:
+        probabilities = race.get("_policy_calibrated_probabilities")
+        if not isinstance(probabilities, Mapping) or not probabilities:
+            raise ValueError(
+                "trend empirical calibration requires attached probabilities"
+            )
+        odds = decision_odds(dict(race))
+        if set(probabilities) != set(odds):
+            raise ValueError(
+                "trend empirical probability and odds keys must match"
+            )
+        item = dict(race)
+        normalized = {
+            str(key): float(value) for key, value in probabilities.items()
+        }
+        item["model_probabilities"] = normalized
+        item["market_probabilities"] = dict(normalized)
+        item["estimated_final_odds"] = {
+            str(key): float(value) / float(odds_safety_factor)
+            for key, value in odds.items()
+        }
+        item["historical_return_multipliers"] = {}
+        rows.append(item)
+    return rows
+
+
+def evaluate_trend_empirical_lcb_walk_forward(
+    races: Iterable[Mapping[str, Any]],
+    *,
+    evaluation_dates: Iterable[str],
+    odds_safety_factor: float,
+    daily_budget_yen: int,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+) -> dict[str, Any]:
+    """Gate trend-point Kelly candidates with strictly-prior realized ROI LCB."""
+    if daily_budget_yen <= 0:
+        raise ValueError("daily_budget_yen must be positive")
+    if (
+        isinstance(odds_safety_factor, bool)
+        or not math.isfinite(float(odds_safety_factor))
+        or not 1.0 <= float(odds_safety_factor) <= 10.0
+    ):
+        raise ValueError("odds_safety_factor must be finite and in [1, 10]")
+    if bootstrap_samples < 100:
+        raise ValueError("bootstrap_samples must be at least 100")
+    policy_races = _trend_empirical_policy_races(
+        races,
+        odds_safety_factor=odds_safety_factor,
+    )
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for race in policy_races:
+        grouped[str(race["race_date"])].append(race)
+    requested = {str(value) for value in evaluation_dates}
+    last_requested = max(requested, default=None)
+    history: list[dict[str, Any]] = []
+    daily: list[dict[str, Any]] = []
+    folds: list[dict[str, Any]] = []
+    evaluated_races = 0
+    for prediction_date in sorted(grouped):
+        if last_requested is not None and prediction_date > last_requested:
+            break
+        day_races = grouped[prediction_date]
+        if prediction_date in requested:
+            prior_days = len({str(row["race_date"]) for row in history})
+            artifact = fit_empirical_ev_calibration(
+                history,
+                bootstrap_samples=(
+                    bootstrap_samples if prior_days >= 30 else 100
+                ),
+            )
+            trained_through = artifact.trained_through_date
+            if trained_through is not None and trained_through >= prediction_date:
+                raise AssertionError(
+                    "trend empirical calibration crossed prediction boundary"
+                )
+            bankroll = simulate_empirical_lcb_policy(
+                day_races,
+                _TREND_EMPIRICAL_CALIBRATOR,
+                _identity_probability_blender,
+                artifact,
+                daily_budget_yen,
+            )
+            daily.extend(bankroll["daily"])
+            evaluated_races += len(day_races)
+            folds.append({
+                "evaluation_date": prediction_date,
+                "calibration_ready": artifact.ready,
+                "trained_through_date": artifact.trained_through_date,
+                "training_days": artifact.training_days,
+                "training_candidates": artifact.tickets,
+                "candidate_days": artifact.candidate_days,
+                "ready_reasons": list(artifact.ready_reasons),
+                "isotonic_block_count": artifact.isotonic_block_count,
+            })
+        settled = policy_edge_records(
+            day_races,
+            _TREND_EMPIRICAL_CALIBRATOR,
+            _identity_probability_blender,
+        )
+        if any(str(row["race_date"]) != prediction_date for row in settled):
+            raise AssertionError(
+                "trend empirical settlement batch has a mismatched date"
+            )
+        history.extend(settled)
+
+    result = _summarize_empirical_lcb_walk_forward(
+        daily,
+        evaluated_races=evaluated_races,
+        folds=folds,
+    )
+    lower95 = float(
+        result.get("daily_cluster_bootstrap_roi_lower_95") or 0.0
+    )
+    gate = {
+        "minimum_evaluation_days": MIN_EMPIRICAL_LCB_EVALUATION_DAYS,
+        "minimum_tickets": MIN_EMPIRICAL_LCB_TICKETS,
+        "strict_prior_check": all(
+            fold["trained_through_date"] is None
+            or fold["trained_through_date"] < fold["evaluation_date"]
+            for fold in folds
+        ),
+        "all_pregate_candidates_in_ledger": True,
+        "same_day_settlement_batch": True,
+        "local_support_and_range_gate_enforced": True,
+        "sample_size_pass": result["sample_size_pass"],
+        "positive_profit_pass": result["profit_yen"] > 0,
+        "roi_pass": float(result.get("roi") or 0.0) > 1.0,
+        "largest_hit_excluded_roi_pass": float(
+            result.get("roi_without_largest_hit") or 0.0
+        ) > 1.0,
+        "bootstrap_lower_95_pass": lower95 > 1.0,
+    }
+    gate["pass"] = all(
+        value for key, value in gate.items() if key.endswith("_pass")
+    ) and all(
+        gate[key]
+        for key in (
+            "strict_prior_check",
+            "all_pregate_candidates_in_ledger",
+            "same_day_settlement_batch",
+            "local_support_and_range_gate_enforced",
+        )
+    )
+    result.update({
+        "comparison_role": (
+            "prospective strict-prior realized-gross-ROI isotonic LCB95 gate "
+            "over every pre-gate trend-point candidate"
+        ),
+        "policy": {
+            "name": "trend_point_strict_prior_empirical_roi_lcb95",
+            "odds_safety_factor": float(odds_safety_factor),
+            "buy_threshold": 1.0,
+            "shape_constraint": "isotonic",
+            "zero_bet_until_ready": True,
+            "real_betting_enabled": False,
+        },
+        "calibration_ledger_candidates": len(history),
+        "promotion_gate": gate,
+        "promotion_eligible": bool(gate["pass"]),
+    })
+    return result
 
 
 def select_policy(
@@ -4816,6 +5008,23 @@ def walk_forward_evaluate(
             trend_point_prospective["promotion_gate"]["pass"]
         ),
     })
+    trend_point_empirical_lcb = evaluate_trend_empirical_lcb_walk_forward(
+        trend_point_market_races,
+        evaluation_dates=trend_point_evaluation_dates,
+        odds_safety_factor=trend_point_odds_safety_factor,
+        daily_budget_yen=daily_budget_yen,
+    )
+    trend_point_empirical_lcb.update({
+        "registered_after": trend_point_registered_after,
+        "registered_odds_safety_factor": float(
+            trend_point_odds_safety_factor
+        ),
+        "status": (
+            trend_point_empirical_lcb["status"]
+            if trend_point_evaluation_dates
+            else "waiting_for_first_unseen_day"
+        ),
+    })
     trend_point_safety_sweep = None
     if trend_point_odds_safety_sweep:
         def compact_safety_result(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -5407,6 +5616,7 @@ def walk_forward_evaluate(
             trend_point_reversed_place_pair_diagnostic
         ),
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
+        "trend_point_empirical_lcb_walk_forward": trend_point_empirical_lcb,
         "trend_point_odds_safety_sweep": trend_point_safety_sweep,
         "prequential_conditional_order": conditional_order_report,
         "deployment_configuration": deployment_configuration,

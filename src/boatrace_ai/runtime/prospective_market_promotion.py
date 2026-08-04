@@ -22,7 +22,7 @@ def prospective_promotion_payload(
     *,
     bootstrap_samples: int = 5_000,
 ) -> dict[str, Any] | None:
-    track_name = "trend_point_market_offset_kelly_walk_forward"
+    track_name = "trend_point_empirical_lcb_walk_forward"
     track = source.get(track_name)
     if not isinstance(track, dict):
         track_name = "prospective_normalized_ev_walk_forward"
@@ -57,7 +57,7 @@ def prospective_promotion_payload(
     source_gate = source.get("promotion_gate") or {}
     source_formal_gate_pass = (
         track_gate.get("pass") is True
-        if track_name == "trend_point_market_offset_kelly_walk_forward"
+        if track_name == "trend_point_empirical_lcb_walk_forward"
         else True
     )
 

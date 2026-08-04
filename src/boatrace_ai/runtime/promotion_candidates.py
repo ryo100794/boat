@@ -41,7 +41,7 @@ def discover_market_evaluation_candidates(
         source_hash = str(payload.get("source_model_sha256") or "")
         if not source or not source_hash:
             continue
-        track = payload.get("trend_point_market_offset_kelly_walk_forward")
+        track = payload.get("trend_point_empirical_lcb_walk_forward")
         if not isinstance(track, dict):
             track = payload.get("prospective_normalized_ev_walk_forward")
         policy = track.get("policy") if isinstance(track, dict) else None

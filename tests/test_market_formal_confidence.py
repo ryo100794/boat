@@ -106,7 +106,7 @@ def test_scored_cache_version_is_decoupled_from_evaluation_output(tmp_path) -> N
         odds_signature={"snapshot_count": 10},
     )
 
-    assert MARKET_EVALUATION_VERSION == 33
+    assert MARKET_EVALUATION_VERSION == 34
     assert MARKET_MAX_SNAPSHOT_AGE_SECONDS == 65.0
     assert contract["version"] == SCORED_CACHE_VERSION == 14
     assert contract["local_closing_offset_seconds"] == 0

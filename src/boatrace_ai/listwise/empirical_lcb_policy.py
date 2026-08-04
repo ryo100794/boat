@@ -236,6 +236,8 @@ def _race_candidates(
         return_multiplier = float(multipliers.get(combination, 1.0))
         raw_ev = float(probability) * price * return_multiplier
         prediction = artifact.predict(raw_ev, ranks[combination], price)
+        if prediction.get("purchase_lcb95_available") is False:
+            continue
         point_value = prediction.get("empirical_ev")
         lcb_value = prediction.get("empirical_ev_lcb95")
         if point_value is None or lcb_value is None:

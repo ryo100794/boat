@@ -5407,6 +5407,25 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             summary["trend_point_prospective_probability_calibration"] = dict(
                 trend_probability
             )
+    trend_empirical = payload.get(
+        "trend_point_empirical_lcb_walk_forward"
+    )
+    if isinstance(trend_empirical, dict):
+        for key in (
+            "status", "registered_after", "evaluation_days",
+            "evaluated_races", "calibration_ready_folds", "tickets",
+            "hit_tickets", "stake_yen", "return_yen", "profit_yen",
+            "roi", "profitable_days", "roi_without_largest_hit",
+            "effective_hit_count", "largest_hit_return_share",
+            "daily_cluster_bootstrap_roi_lower_95",
+            "calibration_ledger_candidates", "promotion_eligible",
+        ):
+            if key in trend_empirical:
+                summary[f"trend_empirical_lcb_{key}"] = trend_empirical[key]
+        if isinstance(trend_empirical.get("promotion_gate"), dict):
+            summary["trend_empirical_lcb_promotion_gate"] = dict(
+                trend_empirical["promotion_gate"]
+            )
     for diagnostic_key, prefix in (
         (
             "trend_point_market_offset_kelly_diagnostic",
@@ -7813,7 +7832,7 @@ def seed_periodic_jobs(
             ),
             "expected_model_sha256": expected_model_sha256,
             "policy": (
-                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "trend_point_strict_prior_empirical_roi_lcb95_"
                 "odds_safety_110"
             ),
             "required_ticket_count": None,

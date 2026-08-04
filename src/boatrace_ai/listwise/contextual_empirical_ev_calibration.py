@@ -123,6 +123,26 @@ class ContextualEmpiricalEVCalibrationArtifact:
             tuple(bin_.upper for bin_ in cell.bins),
         )
         result: dict[str, object] = cell.bins[bin_index].as_dict()
+        global_prediction = self.global_calibration.predict(value)
+        for key in (
+            "training_raw_ev_min",
+            "training_raw_ev_max",
+            "input_in_training_range",
+            "input_in_local_block_range",
+            "local_block_candidates",
+            "local_block_candidate_days",
+            "local_block_ess",
+            "local_block_exposure_weight",
+            "local_block_raw_ev_min",
+            "local_block_raw_ev_max",
+            "local_support_ready",
+            "local_support_reasons",
+        ):
+            result[key] = global_prediction.get(key)
+        result["purchase_lcb95_available"] = bool(
+            global_prediction.get("purchase_lcb95_available")
+            and result.get("empirical_ev_lcb95") is not None
+        )
         result.update(
             {
                 "rank_group": rank_group,

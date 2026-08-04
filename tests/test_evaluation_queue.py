@@ -2416,6 +2416,25 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
                 "pass": False,
             },
         },
+        "trend_point_empirical_lcb_walk_forward": {
+            "status": "calibration_not_ready",
+            "registered_after": "2026-08-04",
+            "evaluation_days": 1,
+            "evaluated_races": 132,
+            "calibration_ready_folds": 0,
+            "tickets": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "profit_yen": 0,
+            "roi": None,
+            "calibration_ledger_candidates": 237600,
+            "promotion_eligible": False,
+            "promotion_gate": {
+                "strict_prior_check": True,
+                "local_support_and_range_gate_enforced": True,
+                "pass": False,
+            },
+        },
         "trend_point_odds_safety_sweep": {
             "status": "diagnostic_only_not_promotion_evidence",
             "selection_data_through": "2026-08-03",
@@ -2458,6 +2477,11 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
         "trend_point_prospective_daily_cluster_bootstrap_roi_lower_95"
     ] == 0.91
     assert summary["trend_point_prospective_probability_roi_above_one"] == 0.88
+    assert summary["trend_empirical_lcb_calibration_ready_folds"] == 0
+    assert summary["trend_empirical_lcb_calibration_ledger_candidates"] == 237600
+    assert summary["trend_empirical_lcb_promotion_gate"][
+        "local_support_and_range_gate_enforced"
+    ] is True
     assert summary[
         "trend_point_prospective_market_challenger_improvement_confidence"
     ] == 0.97

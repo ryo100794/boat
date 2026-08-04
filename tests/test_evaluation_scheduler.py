@@ -434,6 +434,9 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
         PROSPECTIVE_SAFETY_110_REGISTERED_AFTER
     )
     assert safety_params["prospective_candidate"]["odds_safety_factor"] == 1.10
+    assert safety_params["prospective_candidate"]["policy"] == (
+        "trend_point_strict_prior_empirical_roi_lcb95_odds_safety_110"
+    )
     assert safety_params["prospective_candidate"]["real_betting_enabled"] is False
     assert safety_candidate["priority"] == 38
     assert normal_params["trend_point_required_ticket_count"] == 2

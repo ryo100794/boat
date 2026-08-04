@@ -53,8 +53,11 @@ def test_v26_separates_probability_ev_and_outer_periods() -> None:
         "evaluation_from"
     ]
     assert result["empirical_ev_calibration"]["ready"] is True
-    assert result["bankroll"]["tickets"] > 0
-    assert result["bankroll"]["roi"] > 1.0
+    # Refit probabilities move the outer raw EV beyond the zero-width local
+    # support learned from this deliberately constant synthetic calibration.
+    # The production policy must fail closed instead of extrapolating.
+    assert result["bankroll"]["tickets"] == 0
+    assert result["bankroll"]["roi"] is None
 
 
 def test_v26_refuses_too_short_calibration() -> None:

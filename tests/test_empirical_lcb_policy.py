@@ -165,6 +165,25 @@ def test_policy_passes_probability_rank_and_forecast_odds_to_artifact():
     assert all(odds == pytest.approx(4.0) for _raw_ev, _rank, odds in calls)
 
 
+def test_policy_rejects_candidate_when_local_lcb_is_unavailable():
+    class _OutOfRangeArtifact(_Artifact):
+        def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
+            return {
+                "empirical_ev": 1.20,
+                "empirical_ev_lcb95": 1.05,
+                "purchase_lcb95_available": False,
+                "input_in_local_block_range": False,
+            }
+
+    result = simulate_empirical_lcb_policy(
+        [_race("r1")], CALIBRATOR, _blend, _OutOfRangeArtifact(), 10_000
+    )
+
+    assert result["eligible_tickets"] == 0
+    assert result["tickets"] == 0
+    assert result["stake_yen"] == 0
+
+
 def test_candidate_audit_carries_calibration_stability_metadata():
     class _StableArtifact(_Artifact):
         def predict(self, raw_ev, probability_rank=None, forecast_odds=None):

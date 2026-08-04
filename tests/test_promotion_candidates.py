@@ -54,7 +54,7 @@ def test_same_model_distinct_fixed_policies_are_not_deduplicated(
 ) -> None:
     _write(
         tmp_path / "job-00000001.json",
-        trend_point_market_offset_kelly_walk_forward={
+        trend_point_empirical_lcb_walk_forward={
             "policy": {
                 "required_ticket_count": 2,
                 "require_reversed_place_pair": False,
@@ -63,7 +63,7 @@ def test_same_model_distinct_fixed_policies_are_not_deduplicated(
     )
     _write(
         tmp_path / "job-00000002.json",
-        trend_point_market_offset_kelly_walk_forward={
+        trend_point_empirical_lcb_walk_forward={
             "policy": {
                 "required_ticket_count": 2,
                 "require_reversed_place_pair": True,
