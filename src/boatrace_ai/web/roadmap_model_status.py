@@ -34,6 +34,7 @@ def queue_model_roadmap_status(
                   'listwise_newton_refine',
                   'bankroll_policy_search',
                   'market_residual_walk_forward',
+                  'archive_market_oracle',
                   'archive_closing_backfill'
                 )
                 ORDER BY job_id DESC
@@ -93,10 +94,105 @@ def queue_model_roadmap_status(
         ),
         None,
     )
+    archive_oracles = [
+        row for row in jobs if row["task_type"] == "archive_market_oracle"
+    ]
+    latest_archive_oracle = archive_oracles[0] if archive_oracles else None
+    running_archive_oracle = next(
+        (row for row in archive_oracles if row["status"] == "running"),
+        None,
+    )
+    queued_archive_oracle = next(
+        (row for row in archive_oracles if row["status"] == "queued"),
+        None,
+    )
+    active_archive_oracle = running_archive_oracle or queued_archive_oracle
+    latest_completed_archive_oracle = next(
+        (row for row in archive_oracles if row["status"] == "completed"),
+        None,
+    )
     return {
         "latest_newton": latest_newton,
         "latest_contextual_lcb95": latest_lcb,
         "best_market_v21": best_market,
         "latest_market_v21": latest_market,
         "official_closing_collection": official_collection,
+        "latest_archive_oracle": latest_archive_oracle,
+        "active_archive_oracle": active_archive_oracle,
+        "running_archive_oracle": running_archive_oracle,
+        "queued_archive_oracle": queued_archive_oracle,
+        "latest_completed_archive_oracle": latest_completed_archive_oracle,
+        "recent_archive_oracles": archive_oracles[:5],
+    }
+
+
+def archive_oracle_audit_status(
+    queue_status: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one small audit state shared by the operations pages."""
+    running = queue_status.get("running_archive_oracle")
+    queued = queue_status.get("queued_archive_oracle")
+    latest = queue_status.get("latest_archive_oracle")
+    completed = queue_status.get("latest_completed_archive_oracle")
+    if running:
+        status = "評価実行中"
+        reason = "実行中の評価成果物が確定していない"
+    elif queued:
+        status = "評価待機中"
+        reason = "後段の評価成果物が確定していない"
+    elif isinstance(latest, dict) and latest.get("status") in {
+        "failed",
+        "cancelled",
+    }:
+        status = "評価失敗"
+        reason = "最新評価が正常完了していない"
+    elif completed:
+        status = "外部監査可能"
+        reason = "最新評価が完了し、3画面のDB正本を確定できる"
+    else:
+        status = "評価未登録"
+        reason = "監査対象となる評価成果物がない"
+
+    def compact(job: Any) -> dict[str, Any] | None:
+        if not isinstance(job, dict):
+            return None
+        metrics = job.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        return {
+            "job_id": job.get("job_id"),
+            "model_key": job.get("model_key"),
+            "status": job.get("status"),
+            "decision": job.get("decision"),
+            "updated_at": job.get("updated_at"),
+            "model": metrics.get("model"),
+            "nested_value_model": metrics.get("nested_value_model"),
+            "roi": metrics.get("roi"),
+            "roi_status": metrics.get("roi_status"),
+            "profit_yen": metrics.get("profit_yen"),
+            "promotion_eligible": metrics.get(
+                "nested_value_promotion_eligible",
+                metrics.get("promotion_eligible"),
+            ),
+        }
+
+    completed_public = compact(completed)
+    return {
+        "scope": ["dashboard", "model-performance", "roadmap"],
+        "status": status,
+        "audit_ready": bool(
+            completed
+            and not running
+            and not queued
+            and isinstance(latest, dict)
+            and latest.get("job_id") == completed.get("job_id")
+        ),
+        "reason": reason,
+        "promotion_status": (
+            "昇格ゲート合格"
+            if (completed_public or {}).get("promotion_eligible") is True
+            else "未承認"
+        ),
+        "running": compact(running),
+        "queued": compact(queued),
+        "latest_completed": completed_public,
     }

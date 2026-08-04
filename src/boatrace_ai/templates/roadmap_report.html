@@ -15,6 +15,7 @@
     .panel h2 { margin:0 0 2px; font-size:11px; display:flex; justify-content:space-between; gap:5px; } table { width:100%; border-collapse:collapse; table-layout:fixed; }
     th,td { border-bottom:1px solid var(--line); padding:1px 3px; line-height:1.12; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } th { color:var(--muted); background:#fafbfb; }
     .record { white-space:pre-wrap; border:1px solid var(--line); background:#fbfcfc; padding:5px; max-height:520px; overflow:auto; line-height:1.25; } .progress { display:grid; grid-template-columns:minmax(28px,1fr) 28px; align-items:center; gap:3px; } .bar { height:6px; background:#edf1f2; border-radius:3px; overflow:hidden; } .bar i { display:block; height:100%; background:var(--accent); } .progress output { text-align:right; font-size:9px; color:var(--muted); }
+    .audit-summary { display:grid; gap:3px; padding:4px; border:1px solid var(--line); background:#fbfcfc; } .audit-line { display:flex; gap:5px; align-items:center; min-width:0; } .audit-line b { min-width:76px; } .audit-line span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tag { display:inline-block; border-radius:999px; color:#fff; background:var(--muted); padding:0 4px; font-size:9px; } .ok { background:var(--ok); } .warn { background:var(--warn); } .bad { background:var(--bad); } .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; } .muted { color:var(--muted); }
     @media (max-width:920px){ .kpis{grid-template-columns:repeat(2,minmax(110px,1fr));}.grid{grid-template-columns:1fr;} }
   </style>
@@ -24,6 +25,7 @@
 <main>
   <div id="kpis" class="kpis"></div>
   <div class="grid">
+    <div class="panel"><h2><span>3回目外部監査</span><span class="muted">3画面共通・評価キュー正本</span></h2><div id="modelAudit" class="audit-summary"><span class="muted">読込中</span></div></div>
     <div class="panel"><h2><span>DB作業チケット</span><span class="muted">進捗の正本</span></h2><table><thead><tr><th>ID</th><th>優先</th><th>領域</th><th>状態</th><th>進捗</th><th>担当</th><th>作業 / 受入条件</th></tr></thead><tbody id="ticketRows"><tr><td colspan="7" class="muted">読込中</td></tr></tbody></table></div>
     <div class="panel"><h2><span>進行中の懸案</span><span id="meta" class="muted"></span></h2><div id="record" class="record"></div></div>
     <div class="panel"><h2><span>常駐プロセス</span><span class="muted">boatrace_ai</span></h2><table><thead><tr><th>種別</th><th>PID</th><th>cmd</th></tr></thead><tbody id="processRows"></tbody></table></div>
@@ -46,12 +48,15 @@ function tag(status){ const s=String(status||""); const c=s.includes("完了")?"
 function ticketStatus(status){ return ({queued:"待機",in_progress:"進行中",blocked:"保留",completed:"完了",cancelled:"中止"})[status]||status||"-"; }
 const progressCell = value => { const n=Math.max(0,Math.min(100,Number(value||0))); return `<div class="progress"><div class="bar"><i style="width:${n}%"></i></div><output>${n}%</output></div>`; };
 function renderMilestones(rows){ $('milestoneRows').innerHTML=(rows||[]).map(r=>`<tr><td class="mono" title="${esc(r.title)}">${esc(r.id)} ${esc(r.title)}</td><td>${tag(r.status)}</td><td>${progressCell(r.progress)}</td><td title="${esc(r.next)}">${esc(r.next)}</td></tr>`).join('') || '<tr><td colspan="4" class="bad">マイルストーンデータなし</td></tr>'; }
+function auditJob(label,job){ if(!job) return ''; return `<div class="audit-line"><b>${esc(label)}</b><span class="mono">job ${esc(job.job_id)} / ${esc(job.model_key)} / ${esc(ticketStatus(job.status))}</span></div>`; }
+function renderModelAudit(audit){ audit=audit||{}; $('modelAudit').innerHTML=`<div class="audit-line"><b>判定</b>${tag(audit.status||'不明')}<span>${esc(audit.reason||'')}</span></div>${auditJob('実行中',audit.running)}${auditJob('次評価',audit.queued)}${auditJob('最新確定',audit.latest_completed)}<div class="audit-line"><b>本番昇格</b><span>${esc(audit.promotion_status||'不明')}</span></div><div class="audit-line"><b>監査範囲</b><span>${esc((audit.scope||[]).join(' / '))}</span></div>`; }
 function showLoadError(error){ const message=`取得失敗: ${error instanceof Error?error.message:String(error)}`; $('meta').textContent=message; $('ticketRows').innerHTML=`<tr><td colspan="7" class="bad">${esc(message)}</td></tr>`; }
 async function loadMilestones(){ try { const res=await fetch('/api/reports/roadmap-milestones',{cache:'no-store'}); if(!res.ok) throw new Error(`HTTP ${res.status}`); const data=await res.json(); renderMilestones(data.milestones); $('meta').textContent=`更新 ${String(data.generated_at||'').replace('T',' ').slice(0,19)}`; } catch(error) { $('milestoneRows').innerHTML=`<tr><td colspan="4" class="bad">${esc(`取得失敗: ${error instanceof Error?error.message:String(error)}`)}</td></tr>`; } }
 async function load(){ try { const res=await fetch('/api/reports/roadmap-status',{cache:'no-store'}); if(!res.ok) throw new Error(`HTTP ${res.status}`); const data=await res.json(); render(data); } catch(error) { showLoadError(error); } }
 function render(data){
   const p=(data.progress||{}), t=(p.today||{}), h=(p.historical||{}), rt=(p.realtime||{}), s=(data.summary||{}), v=(data.v_file_inventory||{});
   $('meta').textContent=`更新 ${String(data.generated_at||'').replace('T',' ').slice(0,19)}`;
+  renderModelAudit(data.model_audit);
   $('kpis').innerHTML=[['当日R',`${fmt(t.races)}/${fmt(t.target_races)}`],['当日結果残',fmt(t.final_remaining)],['過去結果日残',fmt(h.result_remaining_days)],['実odds学習R',`${fmt(rt.eligible_races)}/${fmt(rt.target_eligible_races)}`],['予測R',fmt(s.predictions)],['odds snap',fmt(s.odds_snapshots)],['v系py',fmt(v.count)]].map(([l,x])=>`<div class="kpi"><b title="${esc(x)}">${esc(x)}</b><span>${esc(l)}</span></div>`).join('');
   $('ticketRows').innerHTML=(data.tickets||[]).map(r=>`<tr><td class="mono">${esc(r.ticket_key)}</td><td class="mono">${esc(r.priority)}</td><td>${esc(r.area)}</td><td>${tag(ticketStatus(r.status))}</td><td>${progressCell(r.progress)}</td><td>${esc(r.owner)}</td><td title="${esc((r.description||'')+' / '+(r.acceptance_criteria||''))}">${esc(r.title)} / ${esc(r.acceptance_criteria)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">DBチケット初期化待ち</td></tr>';
   $('record').textContent=data.record_markdown||'';

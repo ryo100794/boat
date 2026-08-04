@@ -35,4 +35,11 @@ def test_roadmap_milestone_status_is_bounded(monkeypatch, tmp_path) -> None:
     payload = dashboard.roadmap_milestones_status(tmp_path / "races.sqlite", {})
 
     assert payload["milestones"] == [{"id": "M0", "progress": 100}]
-    assert set(payload) == {"generated_at", "date", "milestones"}
+    assert set(payload) == {
+        "generated_at",
+        "date",
+        "milestones",
+        "model_audit",
+    }
+    assert payload["model_audit"]["status"] == "評価未登録"
+    assert payload["model_audit"]["audit_ready"] is False

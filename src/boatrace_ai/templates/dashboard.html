@@ -94,6 +94,7 @@
     .pred-odds { display:block; font-size:10px; font-weight:900; letter-spacing:0; }
     .pred-prob { display:block; margin-top:1px; font-size:6.8px; font-weight:600; opacity:.72; letter-spacing:0; }
     .ops-status { position:fixed; left:0; right:0; bottom:0; z-index:8; padding:2px 8px; border-top:1px solid var(--line); background:#fff; color:var(--muted); font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .subtable-title { margin-top:10px; color:var(--muted); font-size:12px; } .hit { color:var(--ok); font-weight:700; } .miss { color:var(--bad); font-weight:700; }
+    .model-audit-strip { display:flex; align-items:center; gap:6px; min-height:23px; padding:2px 6px; border-bottom:1px solid var(--line); background:#fbfcfc; font-size:9px; white-space:nowrap; overflow:hidden; } .model-audit-strip b { color:var(--accent); } .model-audit-strip span { overflow:hidden; text-overflow:ellipsis; } .model-audit-strip a { margin-left:auto; color:var(--accent); }
     @media (max-width:1320px) { main,.grid2 { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); max-height:42vh; } }
     @media (max-width:720px) { .stats { grid-template-columns:repeat(2,minmax(120px,1fr)); } .bankroll-stats { grid-template-columns:repeat(5,minmax(62px,1fr)); } .bankroll-charts { grid-template-columns:1fr; } .venue-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .entries { grid-template-columns:repeat(3,minmax(72px,1fr)); } header { grid-template-columns:auto 1fr; align-items:center; } }
 
@@ -195,6 +196,7 @@
 </head>
 <body>
   <header><h1>BOAT RACE AI Ops</h1><div class="toolbar"><input id="raceDate" type="hidden"><button id="reload">更新</button><button id="navPast" class="navbtn" type="button">過去</button><button id="navToday" class="navbtn" type="button">当日</button><button id="navStats" class="navbtn" type="button">統計</button><a href="/reports/models" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">モデル</a><a href="/reports/roadmap" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">懸案</a><a href="/reports/teleboat" style="height:18px;padding:1px 6px;border:1px solid var(--accent);border-radius:3px;background:#fff;color:var(--accent);text-decoration:none;font-size:10px;line-height:15px;">Teleboat</a><span id="clock" class="muted mono"></span></div></header>
+  <div class="model-audit-strip"><b>3回目外部監査</b><span id="modelAuditState">評価キュー読込中</span><a href="/reports/models">モデル性能の証拠を見る</a></div>
   <div class="bankroll-band">
     <div class="bankroll-head"><strong>当日資金運用 10,000円</strong><select id="bankrollModel" title="評価モデル"></select><span id="bankrollMeta" class="muted">集計中</span></div>
     <div id="bankrollStats" class="bankroll-stats"></div>
@@ -287,6 +289,7 @@ function updateDeadlineCountdowns(){ document.querySelectorAll("[data-deadline-c
 function cls(v){ return String(v || "").replaceAll(" ",""); }
 function statusClass(v){ return v==="監視中" ? "live" : v==="終了" ? "done" : (v==="未取得"||v==="開催なし") ? "" : "wait"; }
 function footerStatus(s, prog, nowIso){ const h=prog.historical||{}, t=prog.today||{}; return `過去分: 番組LZH 残${h.program_remaining_days ?? "-"}日 / 結果LZH 残${h.result_remaining_days ?? "-"}日 / parsed ${h.races ?? "-"}R / 結果 ${h.result_races ?? "-"}R | 本日分: レース 残${t.race_remaining ?? "-"} / 出走 残${t.racelist_remaining ?? "-"} / odds 残${t.odds_remaining ?? "-"} / 結果 残${t.final_remaining ?? "-"} / 予測 ${s.predictions} | 更新 ${nowIso.replace("T"," ").slice(0,19)}`; }
+function renderModelAuditState(payload){ const a=(payload||{}).model_audit||{}, running=a.running, queued=a.queued, completed=a.latest_completed, parts=[a.status||"不明"]; if(running) parts.push(`実行 job ${running.job_id}`); if(queued) parts.push(`次 job ${queued.job_id}`); if(completed) parts.push(`最新確定 job ${completed.job_id} ${completed.decision||""}`); parts.push(`本番昇格: ${a.promotion_status||"不明"}`); $("modelAuditState").textContent=parts.join(" / "); }
 function statusTitle(v){ return v==="監視中" ? "出走表とオッズを取得済みで、ライブ更新対象です。" : v==="出走待" ? "締切後、出走時刻前です。" : v==="出走" ? "出走時刻から7分以内です。" : v==="結果待" ? "出走後、結果を取得中です。" : v==="出走表" ? "出走表は取得済み、オッズは未取得です。" : v==="開催なし" ? "本日はこの場の開催が確認されていません。" : v==="取得中" ? "当日レース情報を取得中です。" : v==="終了" ? "全レースの結果が入っています。" : "当日データはまだ未取得です。"; }
 function venueTone(v){ if(v.next_time_status==="出走") return "s-racing"; if(["出走待","結果待"].includes(v.next_time_status || "")) return "s-wait"; const m = v.minutes_to_next_deadline; if(m != null && m <= 5) return "due"; if(m != null && m <= 15) return "urgent"; if(v.status==="監視中") return "s-live"; if(v.status==="終了") return "s-done"; if(v.status==="未取得" || v.status==="開催なし") return "s-none"; return "s-wait"; }
 function venueRaceLabel(v){ const s=v.next_time_status || ""; return ["出走待","出走","結果待"].includes(s) ? `<span class="badge ${cls(s)}">${s}</span>` : `<span>${minLabel(v.minutes_to_next_deadline)}</span>`; }
@@ -349,20 +352,23 @@ async function loadSecondary(d, loadId){
   if(live) renderLiveWipe(live);
   scheduleSelectedDetail(true);
 
-  const [summaryRes, progressRes, accuracyRes, backtestRes] = await Promise.allSettled([
+  const [summaryRes, progressRes, accuracyRes, backtestRes, modelAuditRes] = await Promise.allSettled([
     getJson("/api/summary"),
     getJson(`/api/progress?date=${encodeURIComponent(d)}`),
     getJson(`/api/accuracy?date=${encodeURIComponent(d)}`),
-    getJson("/api/backtest")
+    getJson("/api/backtest"),
+    getJson("/api/reports/roadmap-milestones")
   ]);
   if(loadId !== state.loadId) return;
   const s = settledValue(summaryRes, null, "summary");
   const prog = settledValue(progressRes, null, "progress");
   const acc = settledValue(accuracyRes, null, "accuracy");
   const bt = settledValue(backtestRes, null, "backtest");
+  const modelAudit = settledValue(modelAuditRes, null, "model-audit");
   if(s && prog) $("dataStatus").textContent = footerStatus(s, prog, state.nowIso || new Date().toISOString());
   if(acc) $("accuracy").textContent = `本日 ${acc.evaluated || 0}R / 1着 ${pct(acc.winner_top1_accuracy)} / 3T5 ${pct(acc.trifecta_top5_hit_rate)}`;
   if(bt) $("backtest").textContent = bt.available ? (bt.model_label || "過去ログ主系") + ` BT ${bt.evaluated_races}R / 1着 ${pct(bt.winner_top1_accuracy)} / 3T5 ${pct(bt.trifecta_top5_hit_rate)}` : "バックテスト結果はまだありません。";
+  if(modelAudit) renderModelAuditState(modelAudit);
 }
 async function loadDayBankroll(d, loadId=null){
   const model = state.bankModel ? `&model=${encodeURIComponent(state.bankModel)}` : "";

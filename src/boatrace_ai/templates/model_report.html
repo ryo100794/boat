@@ -11,6 +11,7 @@
     h1 { margin:0; font-size:12px; } a,button,select { height:19px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--ink); padding:0 5px; text-decoration:none; font:inherit; } button,.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
     main { padding:5px 6px 14px; } .kpis { display:grid; grid-template-columns:repeat(6,minmax(92px,1fr)); gap:1px; border:1px solid var(--line); background:var(--line); }
     .kpi { background:#fff; padding:3px 4px; min-width:0; } .kpi b { display:block; font-size:12px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .kpi span { color:var(--muted); font-size:9px; } .kpi.good b { color:var(--ok); } .kpi.bad b { color:var(--bad); }
+    .audit-banner { display:flex; gap:6px; align-items:center; min-height:24px; margin:0 0 5px; padding:3px 5px; border:1px solid var(--line); background:#fbfcfc; white-space:nowrap; overflow:hidden; } .audit-banner b { color:var(--accent); } .audit-banner span { overflow:hidden; text-overflow:ellipsis; }
     .grid { display:grid; grid-template-columns:repeat(2,minmax(300px,1fr)); gap:6px; margin-top:6px; } .grid.three { grid-template-columns:repeat(3,minmax(260px,1fr)); } .panel { min-width:0; border-top:1px solid var(--accent); padding-top:3px; }
     .section-nav { position:sticky; top:28px; z-index:3; display:grid; grid-template-columns:repeat(5,1fr); gap:1px; margin:5px 0; border:1px solid var(--line); background:var(--line); }
     .section-nav a { height:23px; display:flex; align-items:center; justify-content:center; border:0; border-radius:0; font-weight:700; background:#fff; } .section-nav a:hover,.section-nav a:focus { background:#e8f3f3; color:var(--accent); }
@@ -34,6 +35,7 @@
 <body>
 <header><h1>モデル性能レポート</h1><div><button id="reload" type="button">更新</button><a href="/reports/roadmap">懸案</a><a href="/reports/teleboat">Teleboat</a><a class="primary" href="/">ダッシュボード</a></div></header>
 <main>
+  <div class="audit-banner"><b>3回目外部監査</b><span id="modelAuditBanner">評価キュー読込中</span></div>
   <div id="kpis" class="kpis"></div>
   <nav class="section-nav" aria-label="性能評価区分">
     <a href="#serverAuditSection">結合価値監査</a><a href="#purposeSection">目的別評価</a><a href="#predictionSection">1 予測性能</a><a href="#oddsSection">2 確定オッズ予測</a><a href="#purchaseSection">3 購入性能</a><a href="#promotionSection">4 本番昇格判定</a>
@@ -120,9 +122,11 @@ const yen = v => v == null ? "-" : `${Number(v).toLocaleString("ja-JP")}円`;
 const ratio = v => v == null ? "-" : Number(v).toFixed(3);
 const corr = v => v == null ? "-" : Number(v).toFixed(4);
 function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").replace(/^bankroll_backtest_/,"").replace(/_10000$/,"").replace(/pastlog_/,"pl_").replace(/\.json$/,""); }
+function renderModelAuditBanner(audit){ audit=audit||{}; const parts=[audit.status||"不明"]; if(audit.running) parts.push(`実行 job ${audit.running.job_id}`); if(audit.queued) parts.push(`次 job ${audit.queued.job_id}`); if(audit.latest_completed) parts.push(`最新確定 job ${audit.latest_completed.job_id} ${audit.latest_completed.decision||""}`); parts.push(`本番昇格: ${audit.promotion_status||"不明"}`); $("modelAuditBanner").textContent=parts.join(" / "); }
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
 async function refreshGeneticEvolution(){ if(gaRefreshing||document.hidden) return; gaRefreshing=true; try{ const res=await fetch("/api/reports/genetic-evolution",{cache:"no-store"}); if(res.ok){ const data=await res.json(); renderGeneticEvolution(data.jobs||[]); } } finally { gaRefreshing=false; } }
 function render(data){
+  renderModelAuditBanner(data.model_audit);
   const bank=data.bankroll||[], empirical=data.empirical_lcb_walk_forward||[], tests=data.backtests||[], folds=data.fold_metrics||[], features=data.feature_diagnostics||[], jobs=data.evaluation_jobs||[], tracks=data.model_tracks||[];
   const v2Ready=Boolean(data.standardized_evaluation&&data.standardized_evaluation.ready);
   renderV21Prospective(data.v21_activation_recovery,data.v21_prospective_evidence);

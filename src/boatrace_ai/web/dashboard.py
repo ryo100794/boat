@@ -41,7 +41,10 @@ from .intraday_bankroll import day_bankroll_simulation, top_model_day_simulation
 from .model_evaluation_identity import evaluation_identity
 from .model_report_purposes import evaluation_purpose_groups
 from .prediction_summary import attach_latest_prediction_summaries
-from .roadmap_model_status import queue_model_roadmap_status
+from .roadmap_model_status import (
+    archive_oracle_audit_status,
+    queue_model_roadmap_status,
+)
 
 
 JST = timezone(timedelta(hours=9))
@@ -1321,6 +1324,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         }
     )
     queued_evaluations = _database_evaluation_status(db_path)
+    queue_model_status = queue_model_roadmap_status(db_path, connector=connect)
     empirical_lcb_walk_forward.extend(
         _database_empirical_lcb_walk_forward(queued_evaluations["jobs"])
     )
@@ -1379,6 +1383,7 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
         "evaluation_purposes": evaluation_purpose_groups(evaluation_jobs),
         "evaluation_candidates": queued_evaluations["candidates"],
         "evaluation_queue_generated_at": queued_evaluations["generated_at"],
+        "model_audit": archive_oracle_audit_status(queue_model_status),
         "repository_deployment": _repository_deployment_status(db_path),
         "production_trend_point_prospective_evidence": (
             _production_trend_point_prospective_evidence(
@@ -7483,7 +7488,8 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
-    progress["queue_model_status"] = queue_model_roadmap_status(db_path, connector=connect)
+    queue_status = queue_model_roadmap_status(db_path, connector=connect)
+    progress["queue_model_status"] = queue_status
 
     summary: dict[str, Any]
     try:
@@ -7507,6 +7513,7 @@ def roadmap_status(db_path: Path, query: dict[str, list[str]]) -> dict[str, Any]
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
         "date": race_date,
+        "model_audit": archive_oracle_audit_status(queue_status),
         "record_markdown": _read_project_status_markdown(),
         "tickets": tickets,
         "milestones": milestones,
@@ -7543,7 +7550,8 @@ def roadmap_milestones_status(
     progress["realtime_shadow_evaluation"] = _shadow_roadmap_status(
         db_path.parent / "models"
     )
-    progress["queue_model_status"] = queue_model_roadmap_status(db_path, connector=connect)
+    queue_status = queue_model_roadmap_status(db_path, connector=connect)
+    progress["queue_model_status"] = queue_status
     remote_evaluations = _read_remote_eval_status(
         db_path.parent / REMOTE_EVAL_STATUS_NAME
     )
@@ -7554,6 +7562,7 @@ def roadmap_milestones_status(
     payload = {
         "generated_at": now_jst().isoformat(timespec="seconds"),
         "date": race_date,
+        "model_audit": archive_oracle_audit_status(queue_status),
         "milestones": _roadmap_milestones(
             progress,
             _process_snapshots(),
