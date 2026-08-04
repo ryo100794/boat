@@ -596,7 +596,10 @@ def refresh_services(
     if dirty_paths:
         raise RuntimeError("repository became dirty before service refresh")
     changed_paths: list[str] | None = None
-    selected_programs = list(SERVICE_REFRESH_PROGRAMS)
+    # Never restart application consumers when the originating revision is
+    # unknown.  The evaluation control plane is resumed independently below;
+    # broad consumer refreshes require a proven diff from base_head.
+    selected_programs: list[str] = []
     if base_head:
         ancestor = _git_command(
             app_root, "merge-base", "--is-ancestor", base_head, head
@@ -610,11 +613,11 @@ def refresh_services(
                 for line in changed.stdout.splitlines()
                 if line.strip()
             ]
-            if all(
+            if not all(
                 path.startswith(CONTROL_PLANE_ONLY_PATH_PREFIXES)
                 for path in changed_paths
             ):
-                selected_programs = []
+                selected_programs = list(SERVICE_REFRESH_PROGRAMS)
     supervisorctl = _supervisorctl_path(app_root)
     config = app_root / "scripts" / "deployment" / "supervisord.conf"
     status = subprocess.run(

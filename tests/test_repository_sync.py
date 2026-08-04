@@ -299,7 +299,7 @@ def test_repository_sync_recognizes_deployed_head(
     assert payload["service_refresh"] == {"action": "up_to_date", "head": head}
 
 
-def test_refresh_services_restarts_only_active_allowlisted_programs(
+def test_refresh_services_without_base_restarts_only_control_plane(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -337,12 +337,11 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
         tmp_path, db="test", head=head, delay_seconds=0
     )
 
-    assert payload["restarted"] == ["boatrace-dashboard", runner, scheduler]
+    assert payload["restarted"] == [runner, scheduler]
     assert [(command[-2], command[-1]) for command in calls] == [
         (str(tmp_path / "scripts/deployment/supervisord.conf"), "status"),
         ("stop", scheduler),
         ("stop", runner),
-        ("restart", "boatrace-dashboard"),
         ("start", runner),
         ("start", scheduler),
     ]
@@ -352,11 +351,11 @@ def test_refresh_services_restarts_only_active_allowlisted_programs(
         "status",
         scheduler,
         runner,
-        "boatrace-dashboard",
         runner,
         scheduler,
     ]
     assert "boatrace-daily-shadow-bundle-update" in payload["skipped_stopped"]
+    assert "boatrace-dashboard" in payload["skipped_unchanged"]
     assert "unrelated-service" not in payload["restarted"]
     assert "pg_advisory_lock" in sql_events[0]
     assert "status = 'running'" in sql_events[1]
@@ -396,8 +395,9 @@ def test_refresh_services_accepts_supervisor_partial_status(
     )
 
     assert payload["status"] == "completed"
-    assert payload["restarted"] == ["boatrace-dashboard"]
+    assert payload["restarted"] == []
     assert "boatrace-daily-shadow-bundle-update" in payload["skipped_stopped"]
+    assert "boatrace-dashboard" in payload["skipped_unchanged"]
 
 
 def test_refresh_services_skips_unchanged_consumers_for_control_plane_diff(
