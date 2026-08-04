@@ -1113,6 +1113,12 @@ def test_conditional_payout_next_day_state_joblib_roundtrip(tmp_path) -> None:
     assert state["payout_statistics"].samples == 80
     assert state["payout_regressor"].training_samples == 80
     assert state["combination_labels"] == COMBINATION_LABELS
+    assert state["policy"]["selection_contract"]["source"] == (
+        "insufficient_calibration_no_bet"
+    )
+    assert state["policy"]["selection_contract"][
+        "minimum_effective_hit_count"
+    ] == 10.0
     assert "conditional_payout_state" not in result
 
     gate = {"pass": True, "holdout_days": 365}
@@ -1125,6 +1131,9 @@ def test_conditional_payout_next_day_state_joblib_roundtrip(tmp_path) -> None:
     joblib.dump(artifact, artifact_path)
     restored = joblib.load(artifact_path)
     restored_state = restored["conditional_payout_state"]
+    assert restored_state["policy"]["selection_contract"] == (
+        state["policy"]["selection_contract"]
+    )
 
     next_key = ("next-day", "2026-07-03", "03", 3)
     next_market = np.full(120, 0.85 / 119.0)

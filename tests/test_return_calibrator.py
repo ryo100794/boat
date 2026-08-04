@@ -334,10 +334,19 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration(
     assert state["contains_evaluation_outcomes"] is True
     assert state["holdout_replay_state"] is False
     assert state["return_calibrator"].training_samples == 202 * 120
+    assert state["policy"]["selection_contract"]["source"] == (
+        "fallback_fixed_threshold"
+    )
+    assert state["policy"]["selection_contract"][
+        "minimum_effective_hit_count"
+    ] == 10.0
 
     state_path = tmp_path / "expected-return-state.joblib"
     joblib.dump(state, state_path)
     restored = joblib.load(state_path)
+    assert restored["policy"]["selection_contract"] == (
+        state["policy"]["selection_contract"]
+    )
     next_candidate = candidate[:1]
     next_market = market[:1]
     next_keys = [("next-1", "2026-07-03", "01", 1)]

@@ -607,6 +607,26 @@ def simulate_expected_return_calibrated_bankroll(
             "selection": (
                 "pre-evaluation temporal threshold selection; no evaluation-period tuning"
             ),
+            "selection_contract": {
+                "source": selection_source,
+                "selected_ev_threshold": float(selected_threshold),
+                "minimum_tickets": int(minimum_selection_tickets),
+                "minimum_hits": int(minimum_selection_hits),
+                "minimum_effective_hit_count": float(
+                    minimum_selection_hits
+                ),
+                "minimum_winning_days": int(
+                    minimum_selection_winning_days
+                ),
+                "minimum_roi": float(minimum_selection_roi),
+                "minimum_roi_without_largest_hit": float(
+                    minimum_selection_roi
+                ),
+                "minimum_probability_roi_above_one": float(
+                    minimum_selection_probability_roi_above_one
+                ),
+                "period": selection_period,
+            },
         }
     )
     candidate_floor = min(float(selected_threshold), fixed_threshold)

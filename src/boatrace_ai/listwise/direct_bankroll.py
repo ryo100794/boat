@@ -986,6 +986,37 @@ def simulate_conditional_payout_walk_forward(
                 "ridge, EV threshold, and minimum daily exposure are fixed "
                 "before evaluation using risk-adjusted bootstrap ranking"
             ),
+            "selection_contract": {
+                "source": selection_source,
+                "selected_ridge": float(selected_ridge),
+                "selected_mean_correction_factor": float(
+                    selected_mean_correction
+                ),
+                "selected_ev_threshold": float(selected_threshold),
+                "selected_min_daily_exposure_fraction": float(
+                    selected_min_daily_exposure
+                ),
+                "minimum_tickets": int(minimum_selection_tickets),
+                "minimum_hits": int(minimum_selection_hits),
+                "minimum_effective_hit_count": float(
+                    minimum_selection_hits
+                ),
+                "minimum_winning_days": int(
+                    minimum_selection_winning_days
+                ),
+                "minimum_roi": float(minimum_selection_roi),
+                "minimum_roi_without_largest_hit": float(
+                    minimum_selection_roi
+                ),
+                "required_roi_ci95_lower": max(
+                    float(minimum_selection_roi),
+                    float(minimum_selection_roi_ci95_lower),
+                ),
+                "minimum_probability_roi_above_one": float(
+                    minimum_selection_probability_roi_above_one
+                ),
+                "period": selection_period,
+            },
         }
     )
     initial_samples = statistics.samples
