@@ -722,6 +722,9 @@ def _select_conditional_payout_policy_state(
             }
         )
     )
+    required_roi_ci95_lower = max(
+        float(minimum_roi), float(minimum_roi_ci95_lower)
+    )
     if split is None:
         statistics = ConditionalPayoutStatistics.empty()
         statistics.update(
@@ -772,7 +775,7 @@ def _select_conditional_payout_policy_state(
         and float(row.get("roi_without_largest_hit") or 0.0) >= minimum_roi
         and float(row.get("effective_hit_count") or 0.0) >= minimum_hits
         and float(row.get("selection_roi_ci95_lower", float("-inf")))
-        > minimum_roi_ci95_lower
+        > required_roi_ci95_lower
         and float(
             row.get("selection_probability_roi_above_one", float("-inf"))
         ) >= minimum_probability_roi_above_one
@@ -826,6 +829,7 @@ def _select_conditional_payout_policy_state(
         ),
         "selection_bootstrap_samples": SELECTION_BOOTSTRAP_SAMPLES,
         "minimum_selection_roi_ci95_lower": float(minimum_roi_ci95_lower),
+        "required_selection_roi_ci95_lower": required_roi_ci95_lower,
         "minimum_selection_probability_roi_above_one": float(
             minimum_probability_roi_above_one
         ),
