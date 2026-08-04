@@ -448,6 +448,9 @@ def bankroll_promotion_gate(
         "roi_ci95_lower": float(confidence["roi_ci95_lower"]),
         "roi_delta_ci95_lower": float(confidence["roi_delta_ci95_lower"]),
         "probability_roi_above_one": float(confidence["probability_roi_above_one"]),
+        "roi_without_largest_hit": float(
+            candidate.get("roi_without_largest_hit") or 0.0
+        ),
     }
     if not all(math.isfinite(value) for value in values.values()):
         raise ValueError("bankroll promotion metrics must be finite")
@@ -460,6 +463,9 @@ def bankroll_promotion_gate(
         "baseline_improved": values["roi"] > values["baseline_roi"],
         "roi_ci_lower_above_one": values["roi_ci95_lower"] > 1.0,
         "roi_delta_ci_lower_above_zero": values["roi_delta_ci95_lower"] > 0.0,
+        "largest_hit_excluded_roi_pass": (
+            values["roi_without_largest_hit"] > 1.0
+        ),
     }
     gate["probability_roi_above_one_pass"] = (
         values["probability_roi_above_one"]
@@ -471,6 +477,7 @@ def bankroll_promotion_gate(
         and gate["baseline_improved"]
         and gate["roi_ci_lower_above_one"]
         and gate["roi_delta_ci_lower_above_zero"]
+        and gate["largest_hit_excluded_roi_pass"]
         and gate["probability_roi_above_one_pass"]
     )
     return gate

@@ -37,7 +37,11 @@ def test_policy_selection_cli_defaults_to_sixty_days() -> None:
 
 
 def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> None:
-    candidate = {"roi": 1.05, "profit_yen": 5_000}
+    candidate = {
+        "roi": 1.05,
+        "profit_yen": 5_000,
+        "roi_without_largest_hit": 1.01,
+    }
     baseline = {"roi": 0.90, "profit_yen": -10_000}
 
     weak = bankroll_promotion_gate(
@@ -67,12 +71,24 @@ def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> Non
             "probability_roi_above_one": 0.95,
         },
     )
+    fragile = bankroll_promotion_gate(
+        {**candidate, "roi_without_largest_hit": 0.99},
+        baseline,
+        {
+            "roi_ci95_lower": 1.01,
+            "roi_delta_ci95_lower": 0.01,
+            "probability_roi_above_one": 0.95,
+        },
+    )
 
     assert weak["roi_pass"] is True
     assert weak["roi_ci_lower_above_one"] is False
     assert weak["pass"] is False
     assert weak_probability["probability_roi_above_one_pass"] is False
     assert weak_probability["pass"] is False
+    assert fragile["largest_hit_excluded_roi_pass"] is False
+    assert fragile["pass"] is False
+    assert strong["largest_hit_excluded_roi_pass"] is True
     assert strong["probability_roi_above_one_pass"] is True
     assert strong["pass"] is True
 

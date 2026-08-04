@@ -5173,7 +5173,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(bankroll, dict):
             for key in (
                 "roi", "profit_yen", "stake_yen", "return_yen",
-                "max_drawdown_yen",
+                "max_drawdown_yen", "roi_without_largest_hit",
+                "largest_hit_return_yen", "largest_hit_return_share",
             ):
                 summary[f"payout_feature_candidate_{key}"] = bankroll.get(key)
             policy = bankroll.get("policy")
@@ -5204,6 +5205,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "roi", "profit_yen", "stake_yen", "return_yen",
                 "max_drawdown_yen", "selected_tickets", "races_bet",
                 "hit_tickets", "winning_days", "losing_days",
+                "roi_without_largest_hit", "largest_hit_return_yen",
+                "largest_hit_return_share",
             ):
                 summary[f"expected_return_candidate_{key}"] = bankroll.get(key)
             tail = bankroll.get("tail_portfolio_diagnostics")
@@ -5237,6 +5240,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             for key in (
                 "roi", "profit_yen", "stake_yen", "return_yen",
                 "selected_tickets", "races_bet", "hit_tickets",
+                "roi_without_largest_hit", "largest_hit_return_yen",
+                "largest_hit_return_share",
             ):
                 summary[f"expected_return_fixed_{key}"] = (
                     fixed_bankroll.get(key)

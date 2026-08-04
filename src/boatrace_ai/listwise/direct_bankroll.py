@@ -1148,6 +1148,10 @@ def simulate_conditional_payout_walk_forward(
     )
     stake_yen = int(totals["stake_yen"])
     return_yen = int(totals["return_yen"])
+    largest_hit_return_yen = max(
+        (int(row.get("largest_hit_return_yen") or 0) for row in daily),
+        default=0,
+    )
     trained_through = dates[-1] if dates else str(calibration_race_keys[-1][1])
     if state_output is not None:
         final_payout_regressor = fit_conditional_payout_statistics(
@@ -1186,6 +1190,14 @@ def simulate_conditional_payout_walk_forward(
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "largest_hit_return_yen": largest_hit_return_yen,
+        "roi_without_largest_hit": (
+            (return_yen - largest_hit_return_yen) / stake_yen
+            if stake_yen else 0.0
+        ),
+        "largest_hit_return_share": (
+            largest_hit_return_yen / return_yen if return_yen else None
+        ),
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),
@@ -1376,6 +1388,10 @@ def simulate_direct_bankroll(
         )
     stake_yen = int(totals["stake_yen"])
     return_yen = int(totals["return_yen"])
+    largest_hit_return_yen = max(
+        (int(row.get("largest_hit_return_yen") or 0) for row in daily),
+        default=0,
+    )
     attribution = new_roi_attribution()
     for fold_attribution in fold_attributions:
         merge_roi_attribution(attribution, fold_attribution)
@@ -1399,6 +1415,14 @@ def simulate_direct_bankroll(
         "return_yen": return_yen,
         "profit_yen": return_yen - stake_yen,
         "roi": return_yen / stake_yen if stake_yen else 0.0,
+        "largest_hit_return_yen": largest_hit_return_yen,
+        "roi_without_largest_hit": (
+            (return_yen - largest_hit_return_yen) / stake_yen
+            if stake_yen else 0.0
+        ),
+        "largest_hit_return_share": (
+            largest_hit_return_yen / return_yen if return_yen else None
+        ),
         "winning_days": int(totals["winning_days"]),
         "losing_days": int(totals["losing_days"]),
         "max_drawdown_yen": int(state[2]),

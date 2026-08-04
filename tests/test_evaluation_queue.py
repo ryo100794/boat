@@ -2537,6 +2537,9 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
                 "stake_yen": 100_000,
                 "return_yen": 108_000,
                 "max_drawdown_yen": 12_000,
+                "roi_without_largest_hit": 1.001,
+                "largest_hit_return_yen": 900,
+                "largest_hit_return_share": 900 / 101_000,
                 "policy": {
                     "payout_tail_schema": "conditional_payout_tail_v1",
                     "payout_feature_schema": "conditional_payout_interactions_v2",
@@ -2588,6 +2591,9 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                 "stake_yen": 100_000,
                 "return_yen": 101_000,
                 "max_drawdown_yen": 12_000,
+                "roi_without_largest_hit": 1.001,
+                "largest_hit_return_yen": 900,
+                "largest_hit_return_share": 900 / 101_000,
                 "selected_tickets": 30,
                 "races_bet": 24,
                 "hit_tickets": 8,
@@ -2611,6 +2617,9 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                 "profit_yen": -4_000,
                 "stake_yen": 100_000,
                 "return_yen": 96_000,
+                "roi_without_largest_hit": 0.91,
+                "largest_hit_return_yen": 5_000,
+                "largest_hit_return_share": 5_000 / 96_000,
                 "selected_tickets": 40,
                 "races_bet": 31,
                 "hit_tickets": 9,
@@ -2622,6 +2631,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
 
     assert summary["expected_return_candidate_roi"] == 1.01
     assert summary["expected_return_candidate_selected_tickets"] == 30
+    assert summary["expected_return_candidate_roi_without_largest_hit"] == 1.001
     assert summary["expected_return_roi_ci95_lower"] == 0.97
     assert summary["expected_return_probability_roi_above_one"] == 0.61
     assert summary["expected_return_gate_pass"] is False
@@ -2629,6 +2639,7 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_selected_ev_threshold"] == 1.3
     assert summary["expected_return_tail_portfolio_diagnostics"] == tail
     assert summary["expected_return_fixed_roi"] == 0.96
+    assert summary["expected_return_fixed_roi_without_largest_hit"] == 0.91
     assert summary["expected_return_fixed_roi_ci95_lower"] == 0.91
     assert summary["expected_return_fixed_tail_portfolio_diagnostics"] == tail
 
