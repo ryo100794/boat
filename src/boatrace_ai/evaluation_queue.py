@@ -5477,6 +5477,8 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     if task_type == "genetic_island_search":
         return "speculative_generation_complete"
     if task_type == "market_residual_walk_forward":
+        if summary.get("reused_holdout_research_only") is True:
+            return "reject_or_research_only"
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
         return "accumulate_formal_evidence"

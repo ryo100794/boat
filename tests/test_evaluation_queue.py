@@ -2603,6 +2603,10 @@ def test_market_walk_forward_requires_explicit_promotion_eligibility() -> None:
         result_decision("market_residual_walk_forward", summary)
         == "promotion_candidate"
     )
+    summary["reused_holdout_research_only"] = True
+    assert result_decision(
+        "market_residual_walk_forward", summary
+    ) == "reject_or_research_only"
 
 
 def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> None:
