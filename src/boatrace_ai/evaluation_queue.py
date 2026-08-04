@@ -98,6 +98,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "bankroll_policy_search": {"category": "evaluation", "memory_mb": 9216, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "bankroll_policy_nested_annual": {"category": "evaluation", "memory_mb": 21504, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "conditional_payout_tail": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
+    "fixed_model_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "venue_conditional_order": {"category": "evaluation", "memory_mb": 12288, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 2048},
     "evaluation_aggregate": {"category": "aggregation", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "gdrive_raw_archive": {"category": "backup", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
@@ -3101,6 +3102,110 @@ def build_command(
         ]
         _integer(params, "timeout_seconds", 86400, 300, 86400)
         return command, output
+    if task_type == "fixed_model_conditional_order":
+        allowed = {
+            "model_input",
+            "cache_prefix",
+            "expected_model_sha256",
+            "training_through",
+            "evaluation_from",
+            "evaluation_through",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported fixed_model_conditional_order parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        required = allowed - {"timeout_seconds"}
+        missing = required - set(params)
+        if missing:
+            raise ValueError(
+                "missing fixed_model_conditional_order parameters: "
+                + ", ".join(sorted(missing))
+            )
+        training_through = _date(params, "training_through")
+        evaluation_from = _date(params, "evaluation_from")
+        evaluation_through = _date(params, "evaluation_through")
+        training_date = datetime.strptime(
+            training_through, "%Y-%m-%d"
+        ).date()
+        evaluation_start = datetime.strptime(
+            evaluation_from, "%Y-%m-%d"
+        ).date()
+        evaluation_end = datetime.strptime(
+            evaluation_through, "%Y-%m-%d"
+        ).date()
+        if training_date + timedelta(days=1) != evaluation_start:
+            raise ValueError(
+                "fixed model conditional order training and evaluation "
+                "ranges must be adjacent"
+            )
+        if evaluation_end - evaluation_start != timedelta(days=364):
+            raise ValueError(
+                "fixed model conditional order evaluation must span "
+                "exactly 365 days"
+            )
+        _integer(params, "timeout_seconds", 21600, 300, 86400)
+        model_root = (app_root / "data" / "models").resolve()
+        model_input = (app_root / str(params["model_input"])).resolve()
+        if (
+            model_root not in model_input.parents
+            or model_input.suffix != ".joblib"
+            or not model_input.is_file()
+        ):
+            raise JobDependencyUnavailable(
+                "fixed conditional order model must be an available joblib "
+                "artifact inside data/models"
+            )
+        expected_sha256 = str(
+            params["expected_model_sha256"]
+        ).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError(
+                "expected_model_sha256 must be a SHA-256 hex digest"
+            )
+        if _file_sha256(model_input) != expected_sha256:
+            raise ValueError(
+                "fixed conditional order model SHA-256 does not match"
+            )
+        cache_root = (
+            app_root / "data" / "models" / "evaluation_cache"
+        ).resolve()
+        cache_prefix = (app_root / str(params["cache_prefix"])).resolve()
+        if cache_root not in cache_prefix.parents:
+            raise ValueError(
+                "fixed conditional order cache_prefix must be inside "
+                "data/models/evaluation_cache"
+            )
+        missing_cache = [
+            str(Path(f"{cache_prefix}{suffix}"))
+            for suffix in (".matrix.npz", ".ranks.npy", ".manifest.json")
+            if not Path(f"{cache_prefix}{suffix}").is_file()
+        ]
+        if missing_cache:
+            raise JobDependencyUnavailable(
+                "fixed conditional order cache is incomplete: "
+                + ", ".join(missing_cache)
+            )
+        return [
+            str(python), "-m", "boatrace_ai.listwise.conditional_order",
+            "--db", db,
+            "--cache-prefix", str(cache_prefix),
+            "--baseline-model", str(model_input),
+            "--training-through", training_through,
+            "--evaluation-from", evaluation_from,
+            "--evaluation-through", evaluation_through,
+            "--model-output", str(output.with_suffix(".joblib")),
+            "--output", str(output),
+            "--validation-days", "365",
+            "--batch-races", "4000",
+            "--payout-mean-corrections", "0.0", "0.5", "1.0",
+            "--payout-threshold-candidates",
+            "1.05", "1.10", "1.20", "1.30", "1.50", "2.00",
+            "--promote-legacy-cache",
+        ], output
     if task_type == "conditional_payout_tail":
         allowed = {
             "training_through", "evaluation_from", "evaluation_through",

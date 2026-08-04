@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -1514,6 +1515,7 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
     ]
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
+
     base_command, _ = build_command(
         _job(
             "calibrated_mlp_recency_search",
@@ -1623,6 +1625,112 @@ def test_calibrated_mlp_recency_search_command_is_fixed(tmp_path) -> None:
     )
     selected_index = selected_command.index("--half-lives") + 1
     assert selected_command[selected_index] == "none"
+
+
+def test_fixed_model_conditional_order_uses_exact_artifact_and_cache(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    model = root / "data/models/evaluation_queue/job-00012012.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixed-model")
+    cache = (
+        root
+        / "data/models/evaluation_cache/job-00011732-combined"
+        / "listwise_search_8192_keep_card_numeric"
+    )
+    cache.parent.mkdir(parents=True)
+    for suffix in (".matrix.npz", ".ranks.npy", ".manifest.json"):
+        Path(f"{cache}{suffix}").write_bytes(b"cache")
+    python = root / ".venv/bin/python"
+
+    command, output = build_command(
+        _job(
+            "fixed_model_conditional_order",
+            {
+                "model_input": (
+                    "data/models/evaluation_queue/job-00012012.joblib"
+                ),
+                "cache_prefix": (
+                    "data/models/evaluation_cache/job-00011732-combined/"
+                    "listwise_search_8192_keep_card_numeric"
+                ),
+                "expected_model_sha256": hashlib.sha256(
+                    b"fixed-model"
+                ).hexdigest(),
+                "training_through": "2025-07-24",
+                "evaluation_from": "2025-07-25",
+                "evaluation_through": "2026-07-24",
+                "timeout_seconds": 21600,
+            },
+        ),
+        app_root=root,
+        python=python,
+        db="postgresql://test",
+    )
+
+    assert TASK_PROFILES["fixed_model_conditional_order"] == {
+        "category": "evaluation",
+        "memory_mb": 12288,
+        "disk_mb": 2048,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+    }
+    assert command[:3] == [
+        str(python),
+        "-m",
+        "boatrace_ai.listwise.conditional_order",
+    ]
+    assert command[command.index("--baseline-model") + 1] == str(model)
+    assert command[command.index("--cache-prefix") + 1] == str(cache)
+    assert command[command.index("--training-through") + 1] == "2025-07-24"
+    assert command[command.index("--evaluation-from") + 1] == "2025-07-25"
+    assert command[command.index("--evaluation-through") + 1] == "2026-07-24"
+    assert command[command.index("--validation-days") + 1] == "365"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_fixed_model_conditional_order_rejects_identity_or_period_drift(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "boat"
+    model = root / "data/models/evaluation_queue/job-00012012.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixed-model")
+    cache = root / "data/models/evaluation_cache/cache"
+    cache.parent.mkdir(parents=True)
+    for suffix in (".matrix.npz", ".ranks.npy", ".manifest.json"):
+        Path(f"{cache}{suffix}").write_bytes(b"cache")
+    base = {
+        "model_input": "data/models/evaluation_queue/job-00012012.joblib",
+        "cache_prefix": "data/models/evaluation_cache/cache",
+        "expected_model_sha256": hashlib.sha256(b"other").hexdigest(),
+        "training_through": "2025-07-24",
+        "evaluation_from": "2025-07-25",
+        "evaluation_through": "2026-07-24",
+    }
+
+    with pytest.raises(ValueError, match="SHA-256 does not match"):
+        build_command(
+            _job("fixed_model_conditional_order", base),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
+    drifted = {
+        **base,
+        "expected_model_sha256": hashlib.sha256(
+            b"fixed-model"
+        ).hexdigest(),
+        "evaluation_from": "2025-07-26",
+    }
+    with pytest.raises(ValueError, match="must be adjacent"):
+        build_command(
+            _job("fixed_model_conditional_order", drifted),
+            app_root=root,
+            python=root / ".venv/bin/python",
+            db="postgresql://test",
+        )
 
 
 @pytest.mark.parametrize(
