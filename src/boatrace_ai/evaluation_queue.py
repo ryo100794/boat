@@ -2877,7 +2877,7 @@ def build_command(
             "--cache-write-mode", "never",
             "--selected-cache-dir", str(selected_cache),
             "--variant-workers", "1",
-            "--candidate-workers", "2",
+            "--candidate-workers", "1",
             "--as-of-date", evaluation_date,
             "--n-features", str(n_features),
             "--batch-races", str(batch_races),

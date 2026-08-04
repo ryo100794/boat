@@ -20,7 +20,7 @@ def test_feature_search_does_not_persist_each_large_variant_cache(tmp_path: Path
     assert command[command.index("--cache-write-mode") + 1] == "never"
     assert command[command.index("--as-of-date") + 1] == "2026-07-22"
     assert command[command.index("--variant-workers") + 1] == "1"
-    assert command[command.index("--candidate-workers") + 1] == "2"
+    assert command[command.index("--candidate-workers") + 1] == "1"
     assert "--selected-cache-dir" in command
     selected_cache = Path(command[command.index("--selected-cache-dir") + 1])
     assert selected_cache == (
@@ -30,11 +30,11 @@ def test_feature_search_does_not_persist_each_large_variant_cache(tmp_path: Path
     assert TASK_PROFILES["listwise_feature_search"]["max_parallel"] == 1
 
 
-def test_standard_evaluation_uses_one_variant_and_two_candidate_workers() -> None:
+def test_standard_evaluation_serializes_memory_heavy_candidates() -> None:
     script = Path("scripts/run_standardized_365d_evaluations.sh").read_text(
         encoding="utf-8"
     )
-    assert "--variant-workers 1 --candidate-workers 2" in script
+    assert "--variant-workers 1 --candidate-workers 1" in script
     assert script.count("--n-features 8192") == 2
     assert "-m boatrace_ai.listwise.combined_feature_search" in script
     assert '--search-result "$raw_dir/listwise_combined_feature_teacher.json"' in script

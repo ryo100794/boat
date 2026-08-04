@@ -216,6 +216,11 @@ for kind in mlp; do
 done
 
 if source_needs_run listwise_feature_teacher; then
+# The annual CSR matrix is shared, but each concurrent candidate allocates
+# its own score, gradient, and optimizer buffers.  Two candidates exceeded
+# the production 30 GiB cgroup on the 49,581-race holdout (exit 137) before
+# the first checkpoint could be written.  Keep the annual path serial; the
+# feature-search checkpoint still provides restartability between candidates.
 run_job standardized_365d_v2_listwise_feature_teacher \
   .venv/bin/python -m boatrace_ai.listwise.feature_search \
   --db "$db" \
@@ -223,7 +228,7 @@ run_job standardized_365d_v2_listwise_feature_teacher \
   --cache-dir "$eval_dir/listwise_search_cache" \
   --cache-write-mode never --selected-cache-dir "$transient_cache_dir" \
   --n-features 8192 \
-  --variant-workers 1 --candidate-workers 2 \
+  --variant-workers 1 --candidate-workers 1 \
   --feature-variants full,drop_base_pastlog,drop_research_correlates,drop_rolling_history,drop_legacy_composites \
   --train-fraction "$train_fraction" --selection-fraction "$selection_fraction" \
   --daily-budget-yen 10000 --ev-threshold 1.20

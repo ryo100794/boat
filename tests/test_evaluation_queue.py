@@ -4125,7 +4125,7 @@ def test_combined_feature_search_command_is_fixed_and_isolated(tmp_path) -> None
         root / "data/models/evaluation_cache/job-00000077-combined"
     )
     assert command[command.index("--variant-workers") + 1] == "1"
-    assert command[command.index("--candidate-workers") + 1] == "2"
+    assert command[command.index("--candidate-workers") + 1] == "1"
     assert command[command.index("--as-of-date") + 1] == "2026-07-23"
     assert output == root / "data/models/evaluation_queue/job-00000077.json"
     assert result_decision("combined_feature_search", {"roi": 0.8}) == (
