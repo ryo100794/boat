@@ -148,8 +148,11 @@ def test_repository_sync_drain_survives_until_idle_then_forces_refresh(
     state["active"] = 0
     scheduled = []
 
-    def schedule(app_root: Path, *, db: str, head: str, now: datetime):
-        scheduled.append(head)
+    def schedule(
+        app_root: Path, *, db: str, head: str,
+        base_head: str | None, now: datetime
+    ):
+        scheduled.append((head, base_head))
         return {"action": "scheduled", "head": head}
 
     second = maintenance_tasks.repository_sync(
@@ -161,7 +164,7 @@ def test_repository_sync_drain_survives_until_idle_then_forces_refresh(
     )
     assert second["action"] == "fast_forwarded"
     assert second["service_refresh"]["action"] == "scheduled"
-    assert scheduled == [second["after_head"]]
+    assert scheduled == [(second["after_head"], second["before_head"])]
 
 
 def test_repository_sync_fast_forwards_clean_idle_checkout(
@@ -214,10 +217,13 @@ def test_repository_sync_schedules_overnight_refresh_once(
 ) -> None:
     _seed, checkout = _repositories(tmp_path)
     monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
-    scheduled: list[tuple[Path, str, str, datetime]] = []
+    scheduled: list[tuple[Path, str, str, str | None, datetime]] = []
 
-    def schedule(app_root: Path, *, db: str, head: str, now: datetime):
-        scheduled.append((app_root, db, head, now))
+    def schedule(
+        app_root: Path, *, db: str, head: str,
+        base_head: str | None, now: datetime
+    ):
+        scheduled.append((app_root, db, head, base_head, now))
         return {"action": "scheduled", "head": head, "pid": 123}
 
     payload = maintenance_tasks.repository_sync(
@@ -235,7 +241,9 @@ def test_repository_sync_schedules_overnight_refresh_once(
         "head": head,
         "pid": 123,
     }
-    assert scheduled == [(checkout.resolve(), "test", head, OVERNIGHT_UTC)]
+    assert scheduled == [
+        (checkout.resolve(), "test", head, None, OVERNIGHT_UTC)
+    ]
 
 
 def test_repository_sync_does_not_duplicate_recent_refresh(
@@ -390,6 +398,71 @@ def test_refresh_services_accepts_supervisor_partial_status(
     assert payload["status"] == "completed"
     assert payload["restarted"] == ["boatrace-dashboard"]
     assert "boatrace-daily-shadow-bundle-update" in payload["skipped_stopped"]
+
+
+def test_refresh_services_skips_unchanged_consumers_for_control_plane_diff(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_head = "d" * 40
+    head = "e" * 40
+    runner = "boatrace-evaluation-runner:boatrace-evaluation-runner_00"
+    scheduler = "boatrace-evaluation-scheduler"
+    status_text = "\n".join(
+        [
+            "boatrace-dashboard RUNNING pid 1, uptime 1:00:00",
+            f"{runner} RUNNING pid 2, uptime 1:00:00",
+            f"{scheduler} RUNNING pid 3, uptime 1:00:00",
+        ]
+    )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        maintenance_tasks,
+        "_git_value",
+        lambda _root, *args: head if args == ("rev-parse", "HEAD") else "",
+    )
+
+    def git_command(_root: Path, *args: str):
+        stdout = (
+            "src/boatrace_ai/evaluation_queue.py\n"
+            "docs/PROJECT_STATUS.md\n"
+            if args[:2] == ("diff", "--name-only")
+            else ""
+        )
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(maintenance_tasks, "_git_command", git_command)
+    monkeypatch.setattr(maintenance_tasks, "connection", _connection(0))
+
+    def run(command, **_kwargs):
+        action = command[-2] if command[-1] != "status" else "status"
+        name = command[-1]
+        calls.append((action, name))
+        stdout = status_text if name == "status" else "ok"
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(maintenance_tasks.subprocess, "run", run)
+
+    payload = maintenance_tasks.refresh_services(
+        tmp_path,
+        db="test",
+        head=head,
+        base_head=base_head,
+        delay_seconds=0,
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["restarted"] == [runner, scheduler]
+    assert payload["changed_paths"] == [
+        "src/boatrace_ai/evaluation_queue.py",
+        "docs/PROJECT_STATUS.md",
+    ]
+    assert "boatrace-dashboard" in payload["skipped_unchanged"]
+    assert ("restart", "boatrace-dashboard") not in calls
+    assert ("stop", runner) in calls
+    assert ("stop", scheduler) in calls
+    assert ("start", runner) in calls
+    assert ("start", scheduler) in calls
 
 
 def test_refresh_services_uses_sibling_service_manager_supervisorctl(

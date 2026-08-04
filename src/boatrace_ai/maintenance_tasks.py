@@ -44,6 +44,19 @@ SERVICE_REFRESH_PROGRAMS = (
 SERVICE_REFRESH_RUNNER_PREFIX = "boatrace-evaluation-runner:"
 SERVICE_REFRESH_SCHEDULER = "boatrace-evaluation-scheduler"
 SERVICE_REFRESH_WINDOW_HOURS_JST = frozenset(range(0, 5))
+CONTROL_PLANE_ONLY_PATH_PREFIXES = (
+    ".github/",
+    "docs/",
+    "tests/",
+    "src/boatrace_ai/evaluation_queue.py",
+    "src/boatrace_ai/maintenance_tasks.py",
+    "src/boatrace_ai/listwise/conditional_order.py",
+    "src/boatrace_ai/listwise/direct_bankroll.py",
+    "src/boatrace_ai/listwise/prequential_conditional_order.py",
+    "src/boatrace_ai/listwise/return_bankroll.py",
+    "src/boatrace_ai/listwise/return_calibrator.py",
+    "src/boatrace_ai/listwise/return_policy.py",
+)
 _MARKDOWN_LINK = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<(?P<angle>[^>]+)>|(?P<plain>[^\s)]+))"
 )
@@ -495,6 +508,7 @@ def _schedule_service_refresh(
     *,
     db: str,
     head: str,
+    base_head: str | None,
     now: datetime,
 ) -> dict[str, Any]:
     state_path = _deployment_state_path(app_root)
@@ -502,6 +516,7 @@ def _schedule_service_refresh(
     scheduled = {
         "status": "scheduled",
         "head": head,
+        "base_head": base_head,
         "scheduled_at": now.astimezone(timezone.utc).isoformat(),
     }
     _json_file(state_path, scheduled)
@@ -521,6 +536,8 @@ def _schedule_service_refresh(
         "--delay-seconds",
         "10",
     ]
+    if base_head:
+        command.extend(("--base-head", base_head))
     with log_path.open("ab") as log:
         process = subprocess.Popen(
             command,
@@ -534,6 +551,7 @@ def _schedule_service_refresh(
         "action": "scheduled",
         "pid": process.pid,
         "head": head,
+        "base_head": base_head,
         "state_path": str(state_path),
         "log_path": str(log_path),
     }
@@ -557,6 +575,7 @@ def refresh_services(
     *,
     db: str,
     head: str,
+    base_head: str | None = None,
     delay_seconds: int = 10,
 ) -> dict[str, Any]:
     """Restart only active code consumers after an idle, overnight sync."""
@@ -564,6 +583,10 @@ def refresh_services(
         raise ValueError("delay_seconds must be between zero and 60")
     if not re.fullmatch(r"[0-9a-f]{40,64}", str(head).strip().lower()):
         raise ValueError("head must be a git object hex digest")
+    if base_head is not None and not re.fullmatch(
+        r"[0-9a-f]{40,64}", str(base_head).strip().lower()
+    ):
+        raise ValueError("base_head must be a git object hex digest")
     if delay_seconds:
         time.sleep(delay_seconds)
     current_head = _git_value(app_root.resolve(), "rev-parse", "HEAD")
@@ -572,6 +595,26 @@ def refresh_services(
     dirty_paths = _git_dirty_paths(app_root)
     if dirty_paths:
         raise RuntimeError("repository became dirty before service refresh")
+    changed_paths: list[str] | None = None
+    selected_programs = list(SERVICE_REFRESH_PROGRAMS)
+    if base_head:
+        ancestor = _git_command(
+            app_root, "merge-base", "--is-ancestor", base_head, head
+        )
+        changed = _git_command(
+            app_root, "diff", "--name-only", f"{base_head}..{head}"
+        )
+        if ancestor.returncode == 0 and changed.returncode == 0:
+            changed_paths = [
+                line.strip()
+                for line in changed.stdout.splitlines()
+                if line.strip()
+            ]
+            if all(
+                path.startswith(CONTROL_PLANE_ONLY_PATH_PREFIXES)
+                for path in changed_paths
+            ):
+                selected_programs = []
     supervisorctl = _supervisorctl_path(app_root)
     config = app_root / "scripts" / "deployment" / "supervisord.conf"
     status = subprocess.run(
@@ -595,7 +638,7 @@ def refresh_services(
         if len(fields) >= 2 and fields[1] == "RUNNING":
             active.append(fields[0])
     allowed = [
-        name for name in SERVICE_REFRESH_PROGRAMS if name in active
+        name for name in selected_programs if name in active
     ]
     runners = sorted(
         name for name in active
@@ -692,6 +735,11 @@ def refresh_services(
             name for name in SERVICE_REFRESH_PROGRAMS
             if name not in active
         ],
+        "skipped_unchanged": [
+            name for name in SERVICE_REFRESH_PROGRAMS
+            if name not in selected_programs
+        ],
+        "changed_paths": changed_paths,
     }
     _json_file(_deployment_state_path(app_root), payload)
     return payload
@@ -834,6 +882,7 @@ def repository_sync(
             app_root,
             db=db,
             head=after_head,
+            base_head=(before_head if action == "fast_forwarded" else None),
             now=observed_at,
         )
     payload = {
@@ -886,6 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh = sub.add_parser("refresh-services")
     refresh.add_argument("--app-root", type=Path, required=True)
     refresh.add_argument("--head", required=True)
+    refresh.add_argument("--base-head")
     refresh.add_argument("--db", required=True)
     refresh.add_argument("--delay-seconds", type=int, default=10)
     return parser
@@ -917,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
             args.app_root.resolve(),
             db=args.db,
             head=args.head,
+            base_head=args.base_head,
             delay_seconds=args.delay_seconds,
         )
     return 0
