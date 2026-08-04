@@ -140,6 +140,29 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert independence[
         "same_race_excluded_for_every_ready_fold"
     ] is True
+    batch_audit = profitable[
+        "same_race_calibrator_settlement_batch_audit"
+    ]
+    assert batch_audit["ticket_calibrator_instance_violations"] == 0
+    assert batch_audit[
+        "all_tickets_in_race_share_one_prior_calibrator"
+    ] is True
+    assert batch_audit[
+        "teacher_admission_before_settlement_violations"
+    ] == 0
+    assert batch_audit[
+        "results_admitted_only_after_strict_settlement"
+    ] is True
+    population = profitable["calibration_learning_population_audit"]
+    assert population["candidate_portfolios"] == 4
+    assert population["unique_races"] == 4
+    assert population["outcome_filter"] == "none"
+    assert population["purchase_filter"] == (
+        "none_includes_purchased_and_rejected"
+    )
+    assert population["positive_return_portfolios"] + population[
+        "zero_return_portfolios"
+    ] == population["candidate_portfolios"]
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -219,12 +242,20 @@ def test_calibration_excludes_candidates_not_strictly_settled_before_decision(
     )
     assert day3["settlement_eligible_training_records"] == 1
     assert day3["settlement_excluded_training_records"] == 1
+    assert day3["newly_admitted_settled_race_batches"] == 0
+    assert day3["pending_unsettled_race_batches"] == 2
     assert day3["calibration_ready"] is False
     assert day3["stake_yen"] == 0
     assert result["daily"][3]["calibration_ready"] is True
+    assert result["daily"][3][
+        "newly_admitted_settled_race_batches"
+    ] == 2
     assert result["daily"][3]["stake_yen"] == 100
     assert result["calibration_independence_audit"][
         "strict_settlement_fold_violations"
+    ] == 0
+    assert result["same_race_calibrator_settlement_batch_audit"][
+        "teacher_admission_before_settlement_violations"
     ] == 0
 
 
@@ -250,6 +281,9 @@ def test_calibration_excludes_prior_record_from_same_race(
     assert result["calibration_independence_audit"][
         "same_race_teacher_fold_violations"
     ] == 0
+    assert result["calibration_learning_population_audit"][
+        "duplicate_race_result_batches_excluded"
+    ] == 1
 
 
 def test_duplicate_race_id_within_evaluation_fold_fails_closed(
@@ -265,6 +299,31 @@ def test_duplicate_race_id_within_evaluation_fold_fails_closed(
         ValueError, match="evaluation fold contains duplicate race_id"
     ):
         _run(artifact)
+
+
+def test_all_tickets_in_race_share_one_frozen_prior_calibrator(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "multi-ticket.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    race = payload["daily"][2]["races"][0]
+    race["best_search_bets_yen"] = {
+        "1-2-3": 100,
+        "1-3-2": 100,
+    }
+    race["best_search_stake_yen"] = 200
+    race["best_search_hypothetical_return_yen"] = 200
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    replayed = result["daily"][2]["races"][0]
+    assert replayed["counterfactual_ticket_count"] == 2
+    assert replayed["ticket_calibration_instance_count"] == 1
+    assert len(replayed["calibration_instance_id"]) == 64
+    assert result["same_race_calibrator_settlement_batch_audit"][
+        "ticket_calibrator_instance_violations"
+    ] == 0
 
 
 def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
@@ -423,7 +482,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v5",
+        "model": "joint_edge_calibrated_replay_v6",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -495,6 +554,27 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "below_calibrated_lcb_threshold_purchases": 0,
             "non_independent_value_purchases": 0,
         },
+        "same_race_calibrator_settlement_batch_audit": {
+            "ticket_calibrator_instance_violations": 0,
+            "all_tickets_in_race_share_one_prior_calibrator": True,
+            "teacher_admitted_race_batches": 390,
+            "pending_unsettled_race_batches": 10,
+            "teacher_admission_before_settlement_violations": 0,
+            "results_admitted_only_after_strict_settlement": True,
+        },
+        "calibration_learning_population_audit": {
+            "independent_sample_unit": (
+                "one_fixed_counterfactual_portfolio_per_race"
+            ),
+            "inclusion_rule": "all_ex_ante_candidates",
+            "outcome_filter": "none",
+            "purchase_filter": "none_includes_purchased_and_rejected",
+            "candidate_portfolios": 400,
+            "unique_races": 400,
+            "positive_return_portfolios": 40,
+            "zero_return_portfolios": 360,
+            "population_manifest_sha256": "population",
+        },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
             "candidate_portfolios": 400,
@@ -543,6 +623,27 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary["calibration_independent_sample_unit"] == (
         "one_stake_weighted_candidate_portfolio_per_race"
     )
+    assert summary[
+        "calibration_same_race_ticket_calibrator_violations"
+    ] == 0
+    assert summary[
+        "calibration_same_prior_for_all_tickets_in_race"
+    ] is True
+    assert summary[
+        "calibration_teacher_admission_before_settlement_violations"
+    ] == 0
+    assert summary[
+        "calibration_results_admitted_only_after_settlement"
+    ] is True
+    assert summary[
+        "calibration_learning_population_candidate_portfolios"
+    ] == 400
+    assert summary[
+        "calibration_learning_population_unique_races"
+    ] == 400
+    assert summary[
+        "calibration_learning_population_outcome_filter"
+    ] == "none"
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )

@@ -3881,6 +3881,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             purchase_gate_audit
             if isinstance(purchase_gate_audit, dict) else {}
         )
+        race_batch_audit = payload.get(
+            "same_race_calibrator_settlement_batch_audit"
+        )
+        race_batch_audit = (
+            race_batch_audit if isinstance(race_batch_audit, dict) else {}
+        )
+        learning_population = payload.get(
+            "calibration_learning_population_audit"
+        )
+        learning_population = (
+            learning_population
+            if isinstance(learning_population, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -3966,6 +3979,59 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_independent_sample_unit": (
                 calibration_protocol.get("independent_sample_unit")
+            ),
+            "calibration_same_race_ticket_calibrator_violations": (
+                race_batch_audit.get(
+                    "ticket_calibrator_instance_violations"
+                )
+            ),
+            "calibration_same_prior_for_all_tickets_in_race": (
+                race_batch_audit.get(
+                    "all_tickets_in_race_share_one_prior_calibrator"
+                )
+            ),
+            "calibration_teacher_admitted_race_batches": (
+                race_batch_audit.get("teacher_admitted_race_batches")
+            ),
+            "calibration_pending_unsettled_race_batches": (
+                race_batch_audit.get("pending_unsettled_race_batches")
+            ),
+            "calibration_teacher_admission_before_settlement_violations": (
+                race_batch_audit.get(
+                    "teacher_admission_before_settlement_violations"
+                )
+            ),
+            "calibration_results_admitted_only_after_settlement": (
+                race_batch_audit.get(
+                    "results_admitted_only_after_strict_settlement"
+                )
+            ),
+            "calibration_learning_population_unit": (
+                learning_population.get("independent_sample_unit")
+            ),
+            "calibration_learning_population_inclusion_rule": (
+                learning_population.get("inclusion_rule")
+            ),
+            "calibration_learning_population_outcome_filter": (
+                learning_population.get("outcome_filter")
+            ),
+            "calibration_learning_population_purchase_filter": (
+                learning_population.get("purchase_filter")
+            ),
+            "calibration_learning_population_candidate_portfolios": (
+                learning_population.get("candidate_portfolios")
+            ),
+            "calibration_learning_population_unique_races": (
+                learning_population.get("unique_races")
+            ),
+            "calibration_learning_population_positive_returns": (
+                learning_population.get("positive_return_portfolios")
+            ),
+            "calibration_learning_population_zero_returns": (
+                learning_population.get("zero_return_portfolios")
+            ),
+            "calibration_learning_population_manifest_sha256": (
+                learning_population.get("population_manifest_sha256")
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"

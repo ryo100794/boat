@@ -20,10 +20,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v5"
+MODEL_VERSION = "joint_edge_calibrated_replay_v6"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v5_race_independent"
+    "stake_weighted_isotonic_lcb_v6_settled_race_batches"
 )
 
 
@@ -126,6 +126,11 @@ def _candidate_record(
         "raw_estimated_ev": raw_gross_return,
         "gross_return_per_yen": realized_return / stake,
         "sample_weight": float(stake),
+        "candidate_portfolio_stake_yen": stake,
+        "candidate_portfolio_ticket_count": len(
+            race.get("best_search_bets_yen") or {}
+        ),
+        "result_batch_unit": "one_race_candidate_portfolio",
         "raw_value_source": raw_value_source,
         "structural_feasible": structural_feasible,
     }
@@ -368,6 +373,10 @@ def run_joint_edge_calibrated_replay(
     decision_times = _load_decision_times(cache_path)
 
     training_records: list[dict[str, object]] = []
+    pending_training_records: list[dict[str, object]] = []
+    teacher_admissions: list[dict[str, object]] = []
+    observed_candidate_race_ids: set[str] = set()
+    duplicate_result_batches_excluded = 0
     replay_days = []
     ready_days = 0
     ready_races = 0
@@ -396,13 +405,34 @@ def run_joint_edge_calibrated_replay(
                 "calibration_asof",
             ),
         )
-        settled_training_records = [
-            record for record in training_records
+        matured_training_records = [
+            record for record in pending_training_records
             if _instant(
                 record.get("settlement_available_at"),
-                "training_settlement_available_at",
+                "pending_settlement_available_at",
             ) < calibration_asof
         ]
+        pending_training_records = [
+            record for record in pending_training_records
+            if _instant(
+                record.get("settlement_available_at"),
+                "pending_settlement_available_at",
+            ) >= calibration_asof
+        ]
+        for record in matured_training_records:
+            admitted = {
+                **record,
+                "teacher_admitted_at": calibration_asof.isoformat(),
+            }
+            training_records.append(admitted)
+            teacher_admissions.append({
+                "race_id": admitted["race_id"],
+                "settlement_available_at": admitted[
+                    "settlement_available_at"
+                ],
+                "teacher_admitted_at": admitted["teacher_admitted_at"],
+            })
+        settled_training_records = list(training_records)
         same_race_excluded_records = [
             record for record in settled_training_records
             if str(record.get("race_id") or "") in evaluation_race_id_set
@@ -411,9 +441,7 @@ def run_joint_edge_calibrated_replay(
             record for record in settled_training_records
             if str(record.get("race_id") or "") not in evaluation_race_id_set
         ]
-        excluded_unsettled_records = (
-            len(training_records) - len(settled_training_records)
-        )
+        excluded_unsettled_records = len(pending_training_records)
         eligible_training_race_ids = [
             str(record.get("race_id") or "")
             for record in eligible_training_records
@@ -430,6 +458,16 @@ def run_joint_edge_calibrated_replay(
         training_race_manifest_sha256 = _canonical_sha256(
             sorted(eligible_training_race_ids)
         )
+        calibration_instance_id = _canonical_sha256({
+            "calibration_version": CALIBRATION_VERSION,
+            "information_cutoff": calibration_asof.isoformat(),
+            "training_race_manifest_sha256": (
+                training_race_manifest_sha256
+            ),
+            "bootstrap_samples": calibration_bootstrap_samples,
+            "seed": seed + day_index,
+            "margin": calibration_margin,
+        })
         latest_training_settlement_instant = max(
             (
                 _instant(
@@ -458,6 +496,13 @@ def run_joint_edge_calibrated_replay(
         calibration_folds.append({
             "evaluation_date": race_date,
             "calibration_information_cutoff": calibration_asof.isoformat(),
+            "calibration_instance_id": calibration_instance_id,
+            "newly_admitted_settled_race_batches": len(
+                matured_training_records
+            ),
+            "pending_unsettled_race_batches": len(
+                pending_training_records
+            ),
             "settlement_eligible_training_records": len(
                 eligible_training_records
             ),
@@ -516,7 +561,12 @@ def run_joint_edge_calibrated_replay(
                 race_date, race, buy_margin=buy_margin
             )
             if record is not None:
-                current_training_records.append(record)
+                record_race_id = str(record["race_id"])
+                if record_race_id in observed_candidate_race_ids:
+                    duplicate_result_batches_excluded += 1
+                else:
+                    current_training_records.append(record)
+                    observed_candidate_race_ids.add(record_race_id)
 
             raw_gross = (
                 float(record["raw_estimated_ev"])
@@ -618,6 +668,10 @@ def run_joint_edge_calibrated_replay(
                     calibrator.trained_through_date
                 ),
                 "calibration_ready": calibrator.ready,
+                "calibration_instance_id": calibration_instance_id,
+                "ticket_calibration_instance_count": (
+                    1 if proposed_bets else 0
+                ),
                 "calibration_information_cutoff": (
                     calibration_asof.isoformat()
                 ),
@@ -640,6 +694,7 @@ def run_joint_edge_calibrated_replay(
                 ),
                 "base_joint_gate_feasible": structural_feasible,
                 "counterfactual_stake_yen": counterfactual_stake,
+                "counterfactual_ticket_count": len(proposed_bets),
                 "counterfactual_return_yen": counterfactual_return,
                 "counterfactual_profit_yen": (
                     counterfactual_return - counterfactual_stake
@@ -657,10 +712,17 @@ def run_joint_edge_calibrated_replay(
         for _available_at, receipt in pending:
             balance += receipt
             peak = max(peak, balance)
-        training_records.extend(current_training_records)
+        pending_training_records.extend(current_training_records)
         replay_days.append({
             "race_date": race_date,
             "calibration_information_cutoff": calibration_asof.isoformat(),
+            "calibration_instance_id": calibration_instance_id,
+            "newly_admitted_settled_race_batches": len(
+                matured_training_records
+            ),
+            "pending_unsettled_race_batches": len(
+                pending_training_records
+            ),
             "settlement_eligible_training_records": len(
                 eligible_training_records
             ),
@@ -714,6 +776,106 @@ def run_joint_edge_calibrated_replay(
         for race in purchased
         if race.get("calibrated_gross_return_lcb95") is not None
     ]
+    all_candidate_records = [
+        *training_records,
+        *pending_training_records,
+    ]
+    teacher_admission_violations = [
+        row for row in teacher_admissions
+        if _instant(
+            row.get("settlement_available_at"),
+            "teacher_settlement_available_at",
+        ) >= _instant(
+            row.get("teacher_admitted_at"),
+            "teacher_admitted_at",
+        )
+    ]
+    ticket_calibrator_rows = [
+        race
+        for day in replay_days
+        for race in day.get("races") or []
+        if int(race.get("counterfactual_stake_yen") or 0) > 0
+    ]
+    ticket_calibrator_violations = [
+        race for race in ticket_calibrator_rows
+        if int(race.get("ticket_calibration_instance_count") or 0) != 1
+        or not race.get("calibration_instance_id")
+    ]
+    learning_population_audit = {
+        "version": "candidate_portfolio_learning_population_v1",
+        "independent_sample_unit": (
+            "one_fixed_counterfactual_portfolio_per_race"
+        ),
+        "inclusion_rule": (
+            "all_ex_ante_nonzero_best_search_portfolios_with_recorded_"
+            "raw_value_and_realized_settlement"
+        ),
+        "outcome_filter": "none",
+        "purchase_filter": "none_includes_purchased_and_rejected",
+        "candidate_portfolios": len(all_candidate_records),
+        "unique_races": len({
+            str(record.get("race_id") or "")
+            for record in all_candidate_records
+        }),
+        "positive_return_portfolios": sum(
+            float(record.get("gross_return_per_yen") or 0.0) > 0.0
+            for record in all_candidate_records
+        ),
+        "zero_return_portfolios": sum(
+            float(record.get("gross_return_per_yen") or 0.0) == 0.0
+            for record in all_candidate_records
+        ),
+        "structurally_feasible_portfolios": sum(
+            bool(record.get("structural_feasible"))
+            for record in all_candidate_records
+        ),
+        "structurally_rejected_portfolios": sum(
+            not bool(record.get("structural_feasible"))
+            for record in all_candidate_records
+        ),
+        "duplicate_race_result_batches_excluded": (
+            duplicate_result_batches_excluded
+        ),
+        "population_manifest_sha256": _canonical_sha256([
+            [
+                record.get("race_id"),
+                record.get("race_date"),
+                record.get("raw_estimated_ev"),
+                record.get("gross_return_per_yen"),
+                record.get("sample_weight"),
+                record.get("raw_value_source"),
+                record.get("structural_feasible"),
+            ]
+            for record in sorted(
+                all_candidate_records,
+                key=lambda row: str(row.get("race_id") or ""),
+            )
+        ]),
+    }
+    race_batch_audit = {
+        "version": "same_race_calibrator_settlement_batch_audit_v1",
+        "candidate_races_with_nonzero_portfolio": len(
+            ticket_calibrator_rows
+        ),
+        "ticket_calibrator_instance_violations": len(
+            ticket_calibrator_violations
+        ),
+        "all_tickets_in_race_share_one_prior_calibrator": bool(
+            ticket_calibrator_rows and not ticket_calibrator_violations
+        ),
+        "teacher_admitted_race_batches": len(teacher_admissions),
+        "pending_unsettled_race_batches": len(pending_training_records),
+        "teacher_admission_before_settlement_violations": len(
+            teacher_admission_violations
+        ),
+        "results_admitted_only_after_strict_settlement": bool(
+            teacher_admissions and not teacher_admission_violations
+        ),
+        "result_batch_unit": "one_race_candidate_portfolio",
+        "teacher_admission_manifest_sha256": _canonical_sha256(
+            teacher_admissions
+        ),
+    }
     bankroll = {
         "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
         "stake_yen": total_stake,
@@ -743,11 +905,11 @@ def run_joint_edge_calibrated_replay(
     calibration_input_sources = {
         source: sum(
             record.get("raw_value_source") == source
-            for record in training_records
+            for record in all_candidate_records
         )
         for source in sorted({
             str(record.get("raw_value_source") or "unknown")
-            for record in training_records
+            for record in all_candidate_records
         })
     }
     base_protocol = payload.get("evaluation_protocol")
@@ -924,6 +1086,12 @@ def run_joint_edge_calibrated_replay(
         "same_race_calibration_independence": independence_audit[
             "same_race_excluded_for_every_ready_fold"
         ],
+        "same_race_single_prior_calibrator": race_batch_audit[
+            "all_tickets_in_race_share_one_prior_calibrator"
+        ],
+        "results_admitted_only_after_settlement": race_batch_audit[
+            "results_admitted_only_after_strict_settlement"
+        ],
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
         ),
@@ -981,6 +1149,8 @@ def run_joint_edge_calibrated_replay(
         strict_settlement_violations,
         candidate_settlement_violations,
         same_race_teacher_violations,
+        teacher_admission_violations,
+        ticket_calibrator_violations,
     ))
     mature_observation_window = ready_days >= 30 and ready_races >= 1_000
     purchase_gate_outcome = _purchase_gate_outcome(
@@ -1008,7 +1178,7 @@ def run_joint_edge_calibrated_replay(
         ),
     }
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v5",
+        "version": "joint_edge_calibrated_replay_protocol_v6",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -1050,6 +1220,16 @@ def run_joint_edge_calibrated_replay(
             "independent_sample_unit": (
                 "one_stake_weighted_candidate_portfolio_per_race"
             ),
+            "calibrator_scope": (
+                "one_frozen_prior_calibrator_instance_per_race_fold_"
+                "shared_by_every_ticket_in_the_portfolio"
+            ),
+            "result_admission": (
+                "one_portfolio_result_batch_per_race_admitted_only_when_"
+                "settlement_available_at_is_strictly_before_next_"
+                "calibration_information_cutoff"
+            ),
+            "learning_population": learning_population_audit,
             "sample_weight": "candidate_portfolio_stake_yen",
             "primary_input": (
                 "independent_validation_portfolio_lower_quantile"
@@ -1089,10 +1269,18 @@ def run_joint_edge_calibrated_replay(
         "calibration_ready_days": ready_days,
         "calibration_ready_races": ready_races,
         "calibrated_candidates": calibrated_candidates,
-        "calibration_training_records": len(training_records),
+        "calibration_training_records": len(all_candidate_records),
+        "calibration_teacher_admitted_records": len(training_records),
+        "calibration_pending_unsettled_records": len(
+            pending_training_records
+        ),
         "calibration_input_sources": calibration_input_sources,
         "calibration_folds": calibration_folds,
         "calibration_independence_audit": independence_audit,
+        "same_race_calibrator_settlement_batch_audit": race_batch_audit,
+        "calibration_learning_population_audit": (
+            learning_population_audit
+        ),
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,

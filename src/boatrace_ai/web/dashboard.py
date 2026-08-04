@@ -3417,6 +3417,30 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_independent_sample_unit": metrics.get(
                     "calibration_independent_sample_unit"
                 ),
+                "calibration_same_race_ticket_calibrator_violations": metrics.get(
+                    "calibration_same_race_ticket_calibrator_violations"
+                ),
+                "calibration_same_prior_for_all_tickets_in_race": metrics.get(
+                    "calibration_same_prior_for_all_tickets_in_race"
+                ),
+                "calibration_teacher_admission_before_settlement_violations": metrics.get(
+                    "calibration_teacher_admission_before_settlement_violations"
+                ),
+                "calibration_results_admitted_only_after_settlement": metrics.get(
+                    "calibration_results_admitted_only_after_settlement"
+                ),
+                "calibration_learning_population_candidate_portfolios": metrics.get(
+                    "calibration_learning_population_candidate_portfolios"
+                ),
+                "calibration_learning_population_unique_races": metrics.get(
+                    "calibration_learning_population_unique_races"
+                ),
+                "calibration_learning_population_outcome_filter": metrics.get(
+                    "calibration_learning_population_outcome_filter"
+                ),
+                "calibration_learning_population_purchase_filter": metrics.get(
+                    "calibration_learning_population_purchase_filter"
+                ),
                 "calibration_target_unit": metrics.get(
                     "calibration_target_unit"
                 ),
@@ -4232,6 +4256,46 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "calibration_independent_sample_unit": candidate_metrics.get(
                     "calibration_independent_sample_unit"
+                ),
+                "calibration_same_race_ticket_calibrator_violations": (
+                    candidate_metrics.get(
+                        "calibration_same_race_ticket_calibrator_violations"
+                    )
+                ),
+                "calibration_same_prior_for_all_tickets_in_race": (
+                    candidate_metrics.get(
+                        "calibration_same_prior_for_all_tickets_in_race"
+                    )
+                ),
+                "calibration_teacher_admission_before_settlement_violations": (
+                    candidate_metrics.get(
+                        "calibration_teacher_admission_before_settlement_violations"
+                    )
+                ),
+                "calibration_results_admitted_only_after_settlement": (
+                    candidate_metrics.get(
+                        "calibration_results_admitted_only_after_settlement"
+                    )
+                ),
+                "calibration_learning_population_candidate_portfolios": (
+                    candidate_metrics.get(
+                        "calibration_learning_population_candidate_portfolios"
+                    )
+                ),
+                "calibration_learning_population_unique_races": (
+                    candidate_metrics.get(
+                        "calibration_learning_population_unique_races"
+                    )
+                ),
+                "calibration_learning_population_outcome_filter": (
+                    candidate_metrics.get(
+                        "calibration_learning_population_outcome_filter"
+                    )
+                ),
+                "calibration_learning_population_purchase_filter": (
+                    candidate_metrics.get(
+                        "calibration_learning_population_purchase_filter"
+                    )
                 ),
                 "calibration_target_unit": candidate_metrics.get(
                     "calibration_target_unit"
@@ -8579,6 +8643,14 @@ def model_performance_audit_snapshot(
                 "calibration_same_race_excluded_all_ready_folds",
                 "calibration_same_race_rule",
                 "calibration_independent_sample_unit",
+                "calibration_same_race_ticket_calibrator_violations",
+                "calibration_same_prior_for_all_tickets_in_race",
+                "calibration_teacher_admission_before_settlement_violations",
+                "calibration_results_admitted_only_after_settlement",
+                "calibration_learning_population_candidate_portfolios",
+                "calibration_learning_population_unique_races",
+                "calibration_learning_population_outcome_filter",
+                "calibration_learning_population_purchase_filter",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",
