@@ -2702,16 +2702,16 @@ def build_command(
         )
         margin = _number(params, "calibration_margin", 0.0, 0.0, 10.0)
         calibration_bootstrap = _integer(
-            params, "calibration_bootstrap_samples", 2_000, 100, 100_000
+            params, "calibration_bootstrap_samples", 5_000, 100, 100_000
         )
         calibration_days = _integer(
-            params, "calibration_min_training_days", 3, 2, 365
+            params, "calibration_min_training_days", 30, 2, 365
         )
         calibration_portfolios = _integer(
-            params, "calibration_min_portfolios", 200, 2, 1_000_000
+            params, "calibration_min_portfolios", 300, 2, 1_000_000
         )
         calibration_candidate_days = _integer(
-            params, "calibration_min_candidate_days", 3, 2, 365
+            params, "calibration_min_candidate_days", 20, 2, 365
         )
         bootstrap = _integer(
             params, "bootstrap_samples", 2_000, 100, 100_000
@@ -5628,6 +5628,15 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
         return "accumulate_sealed_bankroll_evidence"
+    if task_type == "joint_edge_calibrated_replay":
+        if summary.get("promotion_eligible") is True:
+            return "promotion_candidate"
+        if (
+            int(summary.get("calibration_ready_days") or 0) >= 30
+            and int(summary.get("calibration_ready_races") or 0) >= 1_000
+        ):
+            return "reject_or_research_only"
+        return "accumulate_strict_prior_value_calibration"
     if task_type == "bankroll_policy_nested_annual":
         if summary.get("promotion_eligible") is True:
             return "promotion_candidate"
@@ -6618,6 +6627,93 @@ def enqueue_refined_market_evaluation(
         max_attempts=2,
         parent_job_id=source_job_id,
     )
+
+
+def enqueue_joint_edge_calibrated_replay(
+    conn: Any,
+    job: dict[str, Any],
+    *,
+    app_root: Path,
+) -> int | None:
+    """Attach the strict-prior realized-value gate to every joint base run."""
+    if job.get("task_type") != "joint_bankroll_walk_forward":
+        return None
+    parameters = job.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        try:
+            parameters = json.loads(str(parameters))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    source_job_id = int(job["job_id"])
+    relative = (
+        f"data/models/evaluation_queue/job-{source_job_id:08d}.json"
+    )
+    artifact = (app_root / relative).resolve()
+    result_root = (
+        app_root / "data/models/evaluation_queue"
+    ).resolve()
+    if result_root not in artifact.parents or not artifact.is_file():
+        return None
+    seed = int(parameters.get("seed") or 33_041)
+    return enqueue_job(
+        conn,
+        task_type="joint_edge_calibrated_replay",
+        model_key=(
+            f"{job['model_key']}:strict_prior_value_calibrated_v3"
+        ),
+        parameters={
+            "base_artifact": relative,
+            "initial_daily_bankroll_yen": int(
+                parameters.get("initial_daily_bankroll_yen") or 10_000
+            ),
+            "calibration_margin": float(
+                parameters.get("buy_margin") or 0.0
+            ),
+            "calibration_bootstrap_samples": 5_000,
+            "calibration_min_training_days": 30,
+            "calibration_min_portfolios": 300,
+            "calibration_min_candidate_days": 20,
+            "bootstrap_samples": 20_000,
+            "seed": (seed + 10_000) % 2_147_483_648,
+            "timeout_seconds": 7_200,
+        },
+        priority=int(job.get("priority") or 50) + 1,
+        max_attempts=2,
+        parent_job_id=source_job_id,
+    )
+
+
+def reconcile_joint_edge_calibrated_replays(
+    conn: Any,
+    *,
+    app_root: Path,
+) -> list[int]:
+    """Recover calibrated replays missed across worker code reloads."""
+    rows = conn.execute(
+        """
+        SELECT base.*
+        FROM model_evaluation_jobs AS base
+        WHERE base.task_type = 'joint_bankroll_walk_forward'
+          AND base.status = 'completed'
+          AND base.completed_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM model_evaluation_jobs AS child
+            WHERE child.parent_job_id = base.job_id
+              AND child.task_type = 'joint_edge_calibrated_replay'
+              AND child.status IN ('queued', 'running', 'completed')
+          )
+        ORDER BY base.completed_at, base.job_id
+        """
+    ).fetchall()
+    inserted: list[int] = []
+    for row in rows:
+        job_id = enqueue_joint_edge_calibrated_replay(
+            conn, dict(row), app_root=app_root
+        )
+        if job_id is not None:
+            inserted.append(job_id)
+    return inserted
 
 
 def reconcile_refined_market_evaluations(
@@ -8187,6 +8283,10 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         app_root=app_root,
                     )
+                    reconcile_joint_edge_calibrated_replays(
+                        conn,
+                        app_root=app_root,
+                    )
                     if (
                         args.seed_defaults
                         and now - last_seed >= args.seed_interval
@@ -8267,6 +8367,11 @@ def run_worker(args: argparse.Namespace) -> int:
                         app_root=app_root,
                     )
                     enqueue_refined_market_evaluation(
+                        conn,
+                        job,
+                        app_root=app_root,
+                    )
+                    enqueue_joint_edge_calibrated_replay(
                         conn,
                         job,
                         app_root=app_root,

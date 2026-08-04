@@ -186,10 +186,10 @@ def run_joint_edge_calibrated_replay(
     scored_cache: Path | None = None,
     initial_daily_bankroll_yen: int = 10_000,
     calibration_margin: float = 0.0,
-    calibration_bootstrap_samples: int = 2_000,
-    calibration_min_training_days: int = 3,
-    calibration_min_portfolios: int = 200,
-    calibration_min_candidate_days: int = 3,
+    calibration_bootstrap_samples: int = 5_000,
+    calibration_min_training_days: int = 30,
+    calibration_min_portfolios: int = 300,
+    calibration_min_candidate_days: int = 20,
     bootstrap_samples: int = 2_000,
     seed: int = 43_041,
 ) -> dict[str, Any]:
@@ -548,10 +548,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--initial-daily-bankroll-yen", type=int, default=10_000)
     parser.add_argument("--calibration-margin", type=float, default=0.0)
-    parser.add_argument("--calibration-bootstrap-samples", type=int, default=2_000)
-    parser.add_argument("--calibration-min-training-days", type=int, default=3)
-    parser.add_argument("--calibration-min-portfolios", type=int, default=200)
-    parser.add_argument("--calibration-min-candidate-days", type=int, default=3)
+    parser.add_argument("--calibration-bootstrap-samples", type=int, default=5_000)
+    parser.add_argument("--calibration-min-training-days", type=int, default=30)
+    parser.add_argument("--calibration-min-portfolios", type=int, default=300)
+    parser.add_argument("--calibration-min-candidate-days", type=int, default=20)
     parser.add_argument("--bootstrap-samples", type=int, default=2_000)
     parser.add_argument("--seed", type=int, default=43_041)
     return parser

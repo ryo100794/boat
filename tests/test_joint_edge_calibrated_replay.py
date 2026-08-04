@@ -219,6 +219,39 @@ def test_queue_builds_constrained_calibrated_replay_command(
     ] == "200"
 
 
+def test_queue_defaults_require_mature_strict_prior_calibration(
+    tmp_path: Path,
+) -> None:
+    result_dir = tmp_path / "data/models/evaluation_queue"
+    result_dir.mkdir(parents=True)
+    base = result_dir / "job-00000100.json"
+    base.write_text("{}", encoding="utf-8")
+
+    command, _output = build_command(
+        {
+            "job_id": 102,
+            "task_type": "joint_edge_calibrated_replay",
+            "parameters": {"base_artifact": str(base.relative_to(tmp_path))},
+        },
+        app_root=tmp_path,
+        python=Path("/venv/bin/python"),
+        db="postgresql://unused",
+    )
+
+    assert command[
+        command.index("--calibration-bootstrap-samples") + 1
+    ] == "5000"
+    assert command[
+        command.index("--calibration-min-training-days") + 1
+    ] == "30"
+    assert command[
+        command.index("--calibration-min-portfolios") + 1
+    ] == "300"
+    assert command[
+        command.index("--calibration-min-candidate-days") + 1
+    ] == "20"
+
+
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
         "model": "joint_edge_calibrated_replay_v3",

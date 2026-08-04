@@ -22,9 +22,11 @@ from boatrace_ai.evaluation_queue import (
     dedupe_key,
     defer_job,
     enqueue_job,
+    enqueue_joint_edge_calibrated_replay,
     enqueue_refined_market_evaluation,
     ensure_schema,
     fail_job,
+    reconcile_joint_edge_calibrated_replays,
     reconcile_refined_market_evaluations,
     prepare_standardized_workspace,
     result_decision,
@@ -3376,6 +3378,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_joint_edge_calibrated_replays",
+        lambda *_a, **_k: events.append("reconcile-joint-value"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "seed_default_jobs",
         lambda *_a, **_k: events.append("seed-defaults"),
     )
@@ -3439,6 +3446,9 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert events.index("commit:maintenance") < events.index("enter:claim")
     assert events.index("seed-market") < events.index("commit:maintenance")
     assert events.index("reconcile") < events.index("commit:maintenance")
+    assert events.index("reconcile-joint-value") < events.index(
+        "commit:maintenance"
+    )
     assert events.index("cancel-superseded") < events.index("seed-market")
     assert events.index("seed-genetic") < events.index("commit:maintenance")
     assert events.index("seed-periodic") < events.index("commit:maintenance")
@@ -4153,6 +4163,111 @@ def test_newton_refinement_enqueues_market_evaluation_from_its_artifact(
         "max_attempts": 2,
         "parent_job_id": 10027,
     }]
+
+
+def test_joint_bankroll_enqueues_strict_prior_value_calibration(
+    monkeypatch, tmp_path: Path
+) -> None:
+    artifact = (
+        tmp_path / "data/models/evaluation_queue/job-00000100.json"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return 101
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+    job_id = enqueue_joint_edge_calibrated_replay(
+        object(),
+        {
+            "job_id": 100,
+            "task_type": "joint_bankroll_walk_forward",
+            "model_key": "joint-base",
+            "priority": 60,
+            "parameters": {
+                "initial_daily_bankroll_yen": 20_000,
+                "buy_margin": 0.03,
+                "seed": 123,
+            },
+        },
+        app_root=tmp_path,
+    )
+
+    assert job_id == 101
+    assert calls == [{
+        "task_type": "joint_edge_calibrated_replay",
+        "model_key": "joint-base:strict_prior_value_calibrated_v3",
+        "parameters": {
+            "base_artifact": (
+                "data/models/evaluation_queue/job-00000100.json"
+            ),
+            "initial_daily_bankroll_yen": 20_000,
+            "calibration_margin": 0.03,
+            "calibration_bootstrap_samples": 5_000,
+            "calibration_min_training_days": 30,
+            "calibration_min_portfolios": 300,
+            "calibration_min_candidate_days": 20,
+            "bootstrap_samples": 20_000,
+            "seed": 10_123,
+            "timeout_seconds": 7_200,
+        },
+        "priority": 61,
+        "max_attempts": 2,
+        "parent_job_id": 100,
+    }]
+    assert result_decision(
+        "joint_edge_calibrated_replay",
+        {"promotion_eligible": False},
+    ) == "accumulate_strict_prior_value_calibration"
+    assert result_decision(
+        "joint_edge_calibrated_replay",
+        {
+            "promotion_eligible": False,
+            "calibration_ready_days": 30,
+            "calibration_ready_races": 1_000,
+        },
+    ) == "reject_or_research_only"
+
+
+def test_reconcile_recovers_joint_calibration_after_worker_reload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    completed = {
+        "job_id": 100,
+        "task_type": "joint_bankroll_walk_forward",
+        "model_key": "joint-base",
+    }
+
+    class Result:
+        def fetchall(self):
+            return [completed]
+
+    class Connection:
+        def execute(self, sql):
+            assert "INTERVAL '30 days'" in sql
+            assert "joint_edge_calibrated_replay" in sql
+            return Result()
+
+    calls = []
+
+    def fake_enqueue(conn, job, *, app_root):
+        calls.append((conn, job, app_root))
+        return 101
+
+    monkeypatch.setattr(
+        evaluation_queue,
+        "enqueue_joint_edge_calibrated_replay",
+        fake_enqueue,
+    )
+    conn = Connection()
+
+    assert reconcile_joint_edge_calibrated_replays(
+        conn, app_root=tmp_path
+    ) == [101]
+    assert calls == [(conn, completed, tmp_path)]
 
 
 def test_reconcile_recovers_refinement_completed_before_worker_reload(
