@@ -281,6 +281,137 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
     assert two_ticket["priority"] == 43
 
 
+def test_periodic_scheduler_registers_v38_only_after_30_prior_days_and_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+    root = tmp_path / "boat"
+    cache = (
+        root
+        / "data/models/evaluation_cache/market_scored"
+        / "job-00012315_2026-07-20_2026-08-19.races.joblib"
+    )
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"complete")
+
+    seed_periodic_jobs(
+        _IdleQueue(),
+        now=datetime(2026, 8, 20, 3, 1, tzinfo=timezone.utc),
+        app_root=root,
+    )
+
+    v38 = next(
+        row for row in calls
+        if row["task_type"] == "decision_market_residual_v38"
+    )
+    assert v38["model_key"].endswith("cutoff_20260818")
+    assert v38["parameters"] == {
+        "scored_cache": (
+            "data/models/evaluation_cache/market_scored/"
+            "job-00012315_2026-07-20_2026-08-19.races.joblib"
+        ),
+        "calibration_through": "2026-08-18",
+        "minimum_training_days": 30,
+        "minimum_training_races": 3000,
+        "num_threads": 4,
+        "timeout_seconds": 14400,
+    }
+    assert v38["priority"] == 49
+
+
+def test_periodic_scheduler_freezes_first_eligible_v38_and_starts_v39(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    class FrozenQueue(_IdleQueue):
+        frozen_query = False
+
+        def execute(self, statement, params=()):
+            self.frozen_query = (
+                "task_type = ? AND status = ?" in statement
+                and params == ("decision_market_residual_v38", "completed")
+            )
+            if self.frozen_query:
+                return self
+            return super().execute(statement, params)
+
+        def fetchall(self):
+            if self.frozen_query:
+                return [{
+                    "job_id": 13000,
+                    "result_path": (
+                        "data/models/evaluation_queue/job-00013000.json"
+                    ),
+                    "completed_at": datetime(
+                        2026, 8, 26, 0, 0, tzinfo=timezone.utc
+                    ),
+                }]
+            return []
+
+    monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+    root = tmp_path / "boat"
+    artifact = root / "data/models/evaluation_queue/job-00013000.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps({
+        "training_status": "ready",
+        "training_through": "2026-08-18",
+        "evaluation_through": "2026-08-25",
+        "official_closing_fields_used": False,
+        "market_is_exact_nested_null": True,
+        "selected_shrinkage": 0.25,
+        "artifact": {"booster_sha256": "a" * 64},
+        "holdout_metrics": {
+            "evaluated_days": 7,
+            "days_better_than_market": 5,
+            "log_loss_delta_vs_market": -0.003,
+            "trifecta_top5_hit_rate": 0.371,
+            "market_trifecta_top5_hit_rate": 0.372,
+        },
+    }), encoding="utf-8")
+    cache = (
+        root
+        / "data/models/evaluation_cache/market_scored"
+        / "job-00012315_2026-07-20_2026-08-27.races.joblib"
+    )
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"complete")
+
+    seed_periodic_jobs(
+        FrozenQueue(),
+        now=datetime(2026, 8, 28, 3, 1, tzinfo=timezone.utc),
+        app_root=root,
+    )
+
+    assert not any(
+        row["task_type"] == "decision_market_residual_v38" for row in calls
+    )
+    v39 = next(
+        row for row in calls
+        if row["task_type"] == "decision_v38_empirical_lcb"
+    )
+    assert v39["model_key"] == "prospective_decision_v38_v39_job_00013000"
+    assert v39["parameters"]["registered_after"] == "2026-08-26"
+    registration = v39["parameters"]["prospective_candidate"]
+    assert registration["selection_evaluation_through"] == "2026-08-25"
+    assert registration["selection_data_excluded_from_calibration"] is True
+    assert registration["evidence_dates"] == "strictly_after_registered_after"
+    assert registration["real_betting_enabled"] is False
+    assert v39["priority"] == 50
+
+
 def test_periodic_scheduler_deduplicates_active_jobs_per_model_key(
     monkeypatch,
 ) -> None:

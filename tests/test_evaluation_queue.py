@@ -764,6 +764,92 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
+def test_decision_market_residual_v38_command_is_cache_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    cache = (
+        root
+        / "data/models/evaluation_cache/market_scored/source_period.races.joblib"
+    )
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"cache")
+    command, output = build_command(
+        _job(
+            "decision_market_residual_v38",
+            {
+                "scored_cache": (
+                    "data/models/evaluation_cache/market_scored/"
+                    "source_period.races.joblib"
+                ),
+                "calibration_through": "2026-08-20",
+                "minimum_training_days": 30,
+                "minimum_training_races": 3000,
+                "num_threads": 4,
+                "timeout_seconds": 14400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == [
+        "-m",
+        "boatrace_ai.listwise.decision_market_residual_v38",
+    ]
+    assert command[command.index("--scored-cache") + 1] == str(cache)
+    assert command[command.index("--calibration-through") + 1] == "2026-08-20"
+    assert command[command.index("--minimum-training-days") + 1] == "30"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+    assert TASK_PROFILES["decision_market_residual_v38"]["max_parallel"] == 1
+
+
+def test_decision_v38_lcb_command_requires_frozen_artifact_and_cache(
+    tmp_path,
+) -> None:
+    root = tmp_path / "boat"
+    artifact = root / "data/models/evaluation_queue/job-00013000.json"
+    cache = (
+        root
+        / "data/models/evaluation_cache/market_scored/source.races.joblib"
+    )
+    artifact.parent.mkdir(parents=True)
+    cache.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    cache.write_bytes(b"cache")
+    command, output = build_command(
+        _job(
+            "decision_v38_empirical_lcb",
+            {
+                "frozen_artifact": (
+                    "data/models/evaluation_queue/job-00013000.json"
+                ),
+                "scored_cache": (
+                    "data/models/evaluation_cache/market_scored/"
+                    "source.races.joblib"
+                ),
+                "registered_after": "2026-08-26",
+                "daily_budget_yen": 10000,
+                "timeout_seconds": 14400,
+                "prospective_candidate": {
+                    "real_betting_enabled": False,
+                },
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == [
+        "-m",
+        "boatrace_ai.listwise.decision_v38_empirical_lcb",
+    ]
+    assert command[command.index("--frozen-artifact") + 1] == str(artifact)
+    assert command[command.index("--registered-after") + 1] == "2026-08-26"
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+    assert TASK_PROFILES["decision_v38_empirical_lcb"]["max_parallel"] == 1
+
+
 def test_listwise_cutoff_refit_command_is_period_bounded(tmp_path) -> None:
     root = tmp_path / "boat"
     command, output = build_command(

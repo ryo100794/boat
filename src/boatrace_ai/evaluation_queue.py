@@ -29,6 +29,9 @@ from .feature_schema import (
     SUPPORTED_LISTWISE_FEATURE_SCHEMA_VERSIONS,
 )
 from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
+from .listwise.decision_market_residual_v38 import (
+    decision_v38_challenger_eligible,
+)
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -77,6 +80,9 @@ PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_SAFETY_110_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER = "2026-08-05"
+DECISION_V38_TRAINING_FROM = "2026-07-20"
+DECISION_V38_MINIMUM_TRAINING_DAYS = 30
+DECISION_V38_MINIMUM_TRAINING_RACES = 3_000
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
     "prospective_lightgbm_two_ticket_job_2707"
 )
@@ -154,6 +160,20 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "racer_stats_backfill": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "archive_closing_backfill": {"category": "collection", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "archive_market_oracle": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
+    "decision_market_residual_v38": {
+        "category": "training",
+        "memory_mb": 8192,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+        "disk_mb": 1024,
+    },
+    "decision_v38_empirical_lcb": {
+        "category": "evaluation",
+        "memory_mb": 4096,
+        "idle_cpu": 5.0,
+        "max_parallel": 1,
+        "disk_mb": 512,
+    },
     "persist_standard_selected_cache": {"category": "maintenance", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 1024},
 }
 
@@ -3669,6 +3689,144 @@ def build_command(
                 "--temporal-calibration-through", temporal_calibration_through,
             ])
         return command, output
+    if task_type == "decision_market_residual_v38":
+        allowed = {
+            "scored_cache",
+            "calibration_through",
+            "minimum_training_days",
+            "minimum_training_races",
+            "num_threads",
+            "timeout_seconds",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported decision_market_residual_v38 parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        missing = {"scored_cache", "calibration_through"} - set(params)
+        if missing:
+            raise ValueError(
+                "missing decision_market_residual_v38 parameters: "
+                + ", ".join(sorted(missing))
+            )
+        cache_root = (
+            app_root / "data" / "models" / "evaluation_cache"
+        ).resolve()
+        scored_cache = (app_root / str(params["scored_cache"])).resolve()
+        if (
+            cache_root not in scored_cache.parents
+            or scored_cache.suffix != ".joblib"
+        ):
+            raise ValueError(
+                "V38 scored_cache must be a joblib artifact inside "
+                "data/models/evaluation_cache"
+            )
+        if not scored_cache.is_file():
+            raise JobDependencyUnavailable(
+                f"V38 scored cache is not available yet: {scored_cache}"
+            )
+        cutoff = _date(params, "calibration_through")
+        minimum_days = _integer(
+            params, "minimum_training_days", 30, 5, 3650
+        )
+        minimum_races = _integer(
+            params, "minimum_training_races", 3000, 1, 10_000_000
+        )
+        num_threads = _integer(params, "num_threads", 4, 1, 32)
+        _integer(params, "timeout_seconds", 14400, 300, 86400)
+        return [
+            str(python),
+            "-m",
+            "boatrace_ai.listwise.decision_market_residual_v38",
+            "--scored-cache",
+            str(scored_cache),
+            "--calibration-through",
+            cutoff,
+            "--minimum-training-days",
+            str(minimum_days),
+            "--minimum-training-races",
+            str(minimum_races),
+            "--num-threads",
+            str(num_threads),
+            "--output",
+            str(output),
+        ], output
+    if task_type == "decision_v38_empirical_lcb":
+        allowed = {
+            "frozen_artifact",
+            "scored_cache",
+            "registered_after",
+            "daily_budget_yen",
+            "timeout_seconds",
+            "prospective_candidate",
+        }
+        unsupported = set(params) - allowed
+        if unsupported:
+            raise ValueError(
+                "unsupported decision_v38_empirical_lcb parameters: "
+                + ", ".join(sorted(unsupported))
+            )
+        missing = {
+            "frozen_artifact", "scored_cache", "registered_after"
+        } - set(params)
+        if missing:
+            raise ValueError(
+                "missing decision_v38_empirical_lcb parameters: "
+                + ", ".join(sorted(missing))
+            )
+        artifact_root = (
+            app_root / "data" / "models" / "evaluation_queue"
+        ).resolve()
+        frozen_artifact = (
+            app_root / str(params["frozen_artifact"])
+        ).resolve()
+        if (
+            artifact_root not in frozen_artifact.parents
+            or frozen_artifact.suffix != ".json"
+        ):
+            raise ValueError(
+                "V39 frozen_artifact must be JSON inside evaluation_queue"
+            )
+        if not frozen_artifact.is_file():
+            raise JobDependencyUnavailable(
+                f"V39 frozen artifact is not available yet: {frozen_artifact}"
+            )
+        cache_root = (
+            app_root / "data" / "models" / "evaluation_cache"
+        ).resolve()
+        scored_cache = (app_root / str(params["scored_cache"])).resolve()
+        if (
+            cache_root not in scored_cache.parents
+            or scored_cache.suffix != ".joblib"
+        ):
+            raise ValueError(
+                "V39 scored_cache must be joblib inside evaluation_cache"
+            )
+        if not scored_cache.is_file():
+            raise JobDependencyUnavailable(
+                f"V39 scored cache is not available yet: {scored_cache}"
+            )
+        registration = _date(params, "registered_after")
+        daily_budget = _integer(
+            params, "daily_budget_yen", 10_000, 100, 10_000_000
+        )
+        _integer(params, "timeout_seconds", 14_400, 300, 86_400)
+        return [
+            str(python),
+            "-m",
+            "boatrace_ai.listwise.decision_v38_empirical_lcb",
+            "--frozen-artifact",
+            str(frozen_artifact),
+            "--scored-cache",
+            str(scored_cache),
+            "--registered-after",
+            registration,
+            "--daily-budget-yen",
+            str(daily_budget),
+            "--output",
+            str(output),
+        ], output
     if task_type == "listwise_cutoff_refit":
         allowed = {
             "source_model", "training_cutoff", "evaluation_from",
@@ -7717,6 +7875,51 @@ def periodic_model_cache_archive_paths(
     return selected
 
 
+def eligible_decision_v38_frozen_artifact(
+    conn: Any,
+    *,
+    app_root: Path,
+) -> dict[str, Any] | None:
+    artifact_root = (
+        app_root / "data" / "models" / "evaluation_queue"
+    ).resolve()
+    rows = conn.execute(
+        """
+        SELECT job_id, result_path, completed_at
+        FROM model_evaluation_jobs
+        WHERE task_type = ? AND status = ? AND result_path IS NOT NULL
+        ORDER BY completed_at ASC, job_id ASC
+        """,
+        ("decision_market_residual_v38", "completed"),
+    ).fetchall()
+    for row in rows:
+        result_path = Path(str(row["result_path"]))
+        if not result_path.is_absolute():
+            result_path = app_root / result_path
+        result_path = result_path.resolve()
+        if (
+            artifact_root not in result_path.parents
+            or result_path.suffix != ".json"
+        ):
+            continue
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not decision_v38_challenger_eligible(
+            payload
+        ):
+            continue
+        return {
+            "job_id": int(row["job_id"]),
+            "result_path": result_path,
+            "result_sha256": _file_sha256(result_path),
+            "payload": payload,
+            "completed_at": row["completed_at"],
+        }
+    return None
+
+
 def seed_periodic_jobs(
     conn: Any,
     *,
@@ -8110,6 +8313,116 @@ def seed_periodic_jobs(
                     model_key=str(spec["model_key"]),
                     parameters=parameters,
                     priority=int(spec["priority"]),
+                    max_attempts=3,
+                )
+                if job_id is not None:
+                    inserted.append(job_id)
+    v38_frozen = (
+        eligible_decision_v38_frozen_artifact(conn, app_root=app_root)
+        if app_root is not None
+        else None
+    )
+    if app_root is not None:
+        v38_from = datetime.fromisoformat(DECISION_V38_TRAINING_FROM).date()
+        v38_cutoff = v38_from + timedelta(
+            days=DECISION_V38_MINIMUM_TRAINING_DAYS - 1
+        )
+        v38_cache = (
+            app_root
+            / "data/models/evaluation_cache/market_scored"
+            / (
+                "job-00012315_"
+                f"{DECISION_V38_TRAINING_FROM}_{prospective_through.isoformat()}"
+                ".races.joblib"
+            )
+        )
+        if (
+            v38_frozen is None
+            and
+            prospective_through > v38_cutoff
+            and v38_cache.is_file()
+        ):
+            parameters = {
+                "scored_cache": v38_cache.relative_to(app_root).as_posix(),
+                "calibration_through": v38_cutoff.isoformat(),
+                "minimum_training_days": DECISION_V38_MINIMUM_TRAINING_DAYS,
+                "minimum_training_races": DECISION_V38_MINIMUM_TRAINING_RACES,
+                "num_threads": 4,
+                "timeout_seconds": 14_400,
+            }
+            model_key = (
+                "decision_market_residual_v38_job_12315_cutoff_"
+                + v38_cutoff.strftime("%Y%m%d")
+            )
+            key = dedupe_key(
+                "decision_market_residual_v38", model_key, parameters
+            )
+            if not already_scheduled(
+                "decision_market_residual_v38", key, model_key
+            ):
+                job_id = enqueue_job(
+                    conn,
+                    task_type="decision_market_residual_v38",
+                    model_key=model_key,
+                    parameters=parameters,
+                    priority=49,
+                    max_attempts=2,
+                )
+                if job_id is not None:
+                    inserted.append(job_id)
+    if app_root is not None and v38_frozen is not None:
+        completed_at = v38_frozen["completed_at"]
+        if isinstance(completed_at, datetime):
+            registration_date = completed_at.astimezone(JST).date()
+        else:
+            registration_date = datetime.fromisoformat(
+                str(completed_at)
+            ).astimezone(JST).date()
+        selection_through = datetime.fromisoformat(
+            str(v38_frozen["payload"]["evaluation_through"])
+        ).date()
+        registration_date = max(registration_date, selection_through)
+        if prospective_through > registration_date and v38_cache.is_file():
+            frozen_path = Path(v38_frozen["result_path"])
+            source_job_id = int(v38_frozen["job_id"])
+            parameters = {
+                "frozen_artifact": frozen_path.relative_to(app_root).as_posix(),
+                "scored_cache": v38_cache.relative_to(app_root).as_posix(),
+                "registered_after": registration_date.isoformat(),
+                "daily_budget_yen": 10_000,
+                "timeout_seconds": 14_400,
+                "prospective_candidate": {
+                    "source_model_job_id": source_job_id,
+                    "source_artifact_sha256": v38_frozen["result_sha256"],
+                    "policy": (
+                        "decision_v38_full_residual_top5_strict_prior_"
+                        "empirical_roi_lcb95"
+                    ),
+                    "registered_after": registration_date.isoformat(),
+                    "selection_evaluation_through": (
+                        selection_through.isoformat()
+                    ),
+                    "evidence_dates": "strictly_after_registered_after",
+                    "selection_data_excluded_from_calibration": True,
+                    "real_betting_enabled": False,
+                },
+            }
+            model_key = (
+                "prospective_decision_v38_v39_job_"
+                f"{source_job_id:08d}"
+            )
+            key = dedupe_key(
+                "decision_v38_empirical_lcb", model_key, parameters
+            )
+            if not already_scheduled(
+                "decision_v38_empirical_lcb", key, model_key
+            ):
+                job_id = enqueue_job(
+                    conn,
+                    task_type="decision_v38_empirical_lcb",
+                    model_key=model_key,
+                    parameters=parameters,
+                    priority=50,
                     max_attempts=3,
                 )
                 if job_id is not None:
