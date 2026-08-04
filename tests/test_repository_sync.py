@@ -191,6 +191,74 @@ def test_repository_sync_fast_forwards_clean_idle_checkout(
     )
 
 
+def test_repository_sync_fast_forwards_explicit_cross_branch_drain_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    seed, checkout = _repositories(tmp_path)
+    initial = _git("rev-parse", "HEAD", cwd=checkout)
+    _git("checkout", "-b", "deployment-candidate", cwd=seed)
+    _commit(seed, "candidate\n", "deployment candidate")
+    target = _git("rev-parse", "HEAD", cwd=seed)
+    _git("push", "-u", "origin", "deployment-candidate", cwd=seed)
+
+    state = {
+        "enabled": True,
+        "target_head": target,
+    }
+
+    class Result:
+        def __init__(self, row=None):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def execute(self, statement, _parameters=()):
+            sql = " ".join(str(statement).split())
+            if "COUNT(*) AS count" in sql:
+                return Result({"count": 0})
+            if "SELECT enabled" in sql:
+                return Result({
+                    "enabled": state["enabled"],
+                    "reason": "repository_update",
+                    "target_head": state["target_head"],
+                    "requested_at": None,
+                    "updated_at": None,
+                })
+            raise AssertionError(sql)
+
+    @contextmanager
+    def connect(_db):
+        yield Connection()
+
+    monkeypatch.setattr(maintenance_tasks, "connection", connect)
+    scheduled = []
+
+    def schedule(
+        app_root: Path, *, db: str, head: str,
+        base_head: str | None, now: datetime
+    ):
+        scheduled.append((head, base_head))
+        return {"action": "scheduled", "head": head}
+
+    payload = maintenance_tasks.repository_sync(
+        checkout,
+        tmp_path / "cross-branch.json",
+        db="test",
+        now=MIDDAY_UTC,
+        schedule_refresh=schedule,
+    )
+
+    assert payload["action"] == "fast_forwarded_drain_target"
+    assert payload["before_head"] == initial
+    assert payload["after_head"] == target
+    assert payload["resolved_drain_target"] == target
+    assert scheduled == [(target, initial)]
+    assert (checkout / "tracked.txt").read_text(encoding="utf-8") == "candidate\n"
+
+
 def test_repository_sync_defers_dirty_checkout(
     tmp_path: Path,
     monkeypatch,

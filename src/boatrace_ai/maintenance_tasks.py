@@ -799,6 +799,43 @@ def repository_sync(
     if len(counts) != 2:
         raise RuntimeError("git rev-list returned an invalid ahead/behind count")
     ahead, behind = (int(value) for value in counts)
+    upstream_head = _git_value(app_root, "rev-parse", "@{upstream}")
+    requested_drain_target = str(
+        drain.get("target_head") or ""
+    ).strip().lower()
+    drain_target = ""
+    drain_target_problem = ""
+    drain_target_controls_sync = False
+    drain_target_pending = False
+    if drain.get("enabled") and requested_drain_target:
+        if not re.fullmatch(r"[0-9a-f]{40,64}", requested_drain_target):
+            drain_target_problem = "deferred_invalid_drain_target"
+        else:
+            resolved = _git_command(
+                app_root,
+                "rev-parse",
+                "--verify",
+                f"{requested_drain_target}^{{commit}}",
+            )
+            if resolved.returncode != 0 or not resolved.stdout.strip():
+                drain_target_problem = "deferred_unavailable_drain_target"
+            else:
+                drain_target = resolved.stdout.strip()
+                drain_target_controls_sync = drain_target != upstream_head
+                if drain_target_controls_sync and drain_target != before_head:
+                    ancestor = _git_command(
+                        app_root,
+                        "merge-base",
+                        "--is-ancestor",
+                        before_head,
+                        drain_target,
+                    )
+                    if ancestor.returncode == 0:
+                        drain_target_pending = True
+                    else:
+                        drain_target_problem = (
+                            "deferred_diverged_drain_target"
+                        )
 
     if behind and not dirty_paths and not (ahead and behind):
         from .evaluation_queue import CLAIM_LOCK_ID
@@ -828,6 +865,22 @@ def repository_sync(
         action = "deferred_dirty_worktree"
     elif active_evaluations:
         action = "deferred_active_evaluation"
+    elif drain_target_problem:
+        action = drain_target_problem
+    elif drain_target_pending:
+        merged = _git_command(
+            app_root, "merge", "--ff-only", drain_target
+        )
+        if merged.returncode != 0:
+            detail = merged.stderr.strip() or merged.stdout.strip()
+            raise RuntimeError(
+                f"drain target fast-forward failed: {detail}"
+            )
+        action = "fast_forwarded_drain_target"
+    elif drain_target_controls_sync:
+        # A drain target is an immutable deployment request.  Do not advance
+        # past it merely because the checkout's configured upstream moved.
+        action = "up_to_date"
     elif ahead and behind:
         action = "deferred_diverged"
     elif behind:
@@ -849,7 +902,11 @@ def repository_sync(
             "restarted": [],
         })
     deployment = _deployment_state(app_root)
-    if action not in {"up_to_date", "fast_forwarded"}:
+    if action not in {
+        "up_to_date",
+        "fast_forwarded",
+        "fast_forwarded_drain_target",
+    }:
         service_refresh = {
             "action": "deferred_repository_not_ready",
             "reason": action,
@@ -885,7 +942,14 @@ def repository_sync(
             app_root,
             db=db,
             head=after_head,
-            base_head=(before_head if action == "fast_forwarded" else None),
+            base_head=(
+                before_head
+                if action in {
+                    "fast_forwarded",
+                    "fast_forwarded_drain_target",
+                }
+                else None
+            ),
             now=observed_at,
         )
     payload = {
@@ -902,6 +966,7 @@ def repository_sync(
         "behind": behind,
         "active_evaluations": active_evaluations,
         "evaluation_drain": drain,
+        "resolved_drain_target": drain_target or None,
         "dirty_paths": dirty_paths,
         "service_refresh": service_refresh,
     }
