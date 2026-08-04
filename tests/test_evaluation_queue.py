@@ -1735,7 +1735,7 @@ def test_fixed_model_conditional_order_rejects_identity_or_period_drift(
         )
 
 
-def test_fixed_model_conditional_order_result_contract() -> None:
+def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     job = _job(
         "fixed_model_conditional_order",
         {
@@ -1783,6 +1783,48 @@ def test_fixed_model_conditional_order_result_contract() -> None:
     }
 
     evaluation_queue._validate_job_result_contract(job, payload)
+
+    raw_payload = json.loads(json.dumps(payload))
+    raw_ticket = {
+        "date": "2025-07-26",
+        "race_id": "holdout-race",
+        "odds": 20.0,
+        "stake": 100,
+        "return": 2_000,
+    }
+    for path in (
+        ("bankroll",),
+        ("baseline_bankroll",),
+        ("conditional_payout_walk_forward", "bankroll"),
+        ("expected_return_calibration", "bankroll"),
+    ):
+        bankroll = raw_payload
+        for key in path:
+            bankroll = bankroll[key]
+        bankroll.pop("tail_portfolio_diagnostics")
+        bankroll["daily"] = [
+            {
+                "race_date": "2025-07-26",
+                "_tail_portfolio_rows": [raw_ticket],
+            }
+        ]
+    raw_result = tmp_path / "fixed-conditional-order.json"
+    raw_result.write_text(json.dumps(raw_payload), encoding="utf-8")
+    loaded, _summary = evaluation_queue._load_result(raw_result)
+    evaluation_queue._validate_job_result_contract(job, loaded)
+    for path in (
+        ("bankroll",),
+        ("baseline_bankroll",),
+        ("conditional_payout_walk_forward", "bankroll"),
+        ("expected_return_calibration", "bankroll"),
+    ):
+        bankroll = loaded
+        for key in path:
+            bankroll = bankroll[key]
+        assert bankroll["tail_portfolio_diagnostics"][
+            "purchased_tickets"
+        ] == 1
+        assert "_tail_portfolio_rows" not in bankroll["daily"][0]
 
     with pytest.raises(ValueError, match="evaluation_races mismatch"):
         evaluation_queue._validate_job_result_contract(
