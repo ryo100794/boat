@@ -364,6 +364,68 @@ def evaluate_probabilities(
     }
 
 
+def evaluate_reversed_place_pair_structure(
+    probabilities: np.ndarray,
+    ranks: np.ndarray,
+) -> dict[str, Any]:
+    """Evaluate the best same-winner pair with second and third swapped."""
+    values = np.asarray(probabilities, dtype=np.float64)
+    rank_values = np.asarray(ranks)
+    if values.ndim != 2 or values.shape[1] != len(COMBINATION_LANES):
+        raise ValueError("probabilities must have shape (races, 120)")
+    if rank_values.shape != (len(values), 6):
+        raise ValueError("ranks must have shape (races, 6)")
+    combination_index = {
+        tuple(int(lane) for lane in combination): index
+        for index, combination in enumerate(COMBINATION_LANES)
+    }
+    left_indices = []
+    right_indices = []
+    for index, (first, second, third) in enumerate(COMBINATION_LANES):
+        if int(second) >= int(third):
+            continue
+        left_indices.append(index)
+        right_indices.append(
+            combination_index[(int(first), int(third), int(second))]
+        )
+    left = np.asarray(left_indices, dtype=np.int64)
+    right = np.asarray(right_indices, dtype=np.int64)
+    pair_probabilities = values[:, left] + values[:, right]
+    selected = np.argmax(pair_probabilities, axis=1)
+    rows = np.arange(len(values))
+    selected_left = left[selected]
+    selected_right = right[selected]
+    predicted = np.clip(
+        pair_probabilities[rows, selected], EPSILON, 1.0 - EPSILON
+    )
+    actual = actual_combination_indices(rank_values)
+    pair_hits = (actual == selected_left) | (actual == selected_right)
+    selected_winners = COMBINATION_LANES[selected_left, 0]
+    actual_winners = COMBINATION_LANES[actual, 0]
+    winner_hits = selected_winners == actual_winners
+    binary_losses = -(
+        pair_hits * np.log(predicted)
+        + (~pair_hits) * np.log1p(-predicted)
+    )
+    return {
+        "evaluated_races": len(values),
+        "selected_pair_hit_rate": float(np.mean(pair_hits)),
+        "selected_winner_hit_rate": float(np.mean(winner_hits)),
+        "pair_hit_rate_given_winner": float(
+            np.sum(pair_hits) / max(1, np.sum(winner_hits))
+        ),
+        "mean_selected_pair_probability": float(np.mean(predicted)),
+        "pair_calibration_gap": float(np.mean(pair_hits) - np.mean(predicted)),
+        "pair_binary_log_loss": float(np.mean(binary_losses)),
+        "pair_brier_score": float(
+            np.mean((pair_hits.astype(np.float64) - predicted) ** 2)
+        ),
+        "race_pair_binary_losses": binary_losses,
+        "race_pair_hits": pair_hits.astype(np.float64),
+        "race_winner_hits": winner_hits.astype(np.float64),
+    }
+
+
 def evaluate_model(
     scores: np.ndarray,
     ranks: np.ndarray,
@@ -428,7 +490,13 @@ def _public_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in metrics.items()
-        if key not in {"race_losses", "race_top5_hits"}
+        if key not in {
+            "race_losses",
+            "race_top5_hits",
+            "race_pair_binary_losses",
+            "race_pair_hits",
+            "race_winner_hits",
+        }
     }
 
 
@@ -700,6 +768,40 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     baseline_probabilities = conditional_probabilities(
         scores[evaluation_start:evaluation_end], identity_model()
     )
+    reversed_place_pair_structure = None
+    if bool(getattr(args, "direct_pair_diagnostics", False)):
+        evaluation_ranks = dataset.ranks[evaluation_start:evaluation_end]
+        candidate_pair_structure = evaluate_reversed_place_pair_structure(
+            candidate_probabilities,
+            evaluation_ranks,
+        )
+        baseline_pair_structure = evaluate_reversed_place_pair_structure(
+            baseline_probabilities,
+            evaluation_ranks,
+        )
+        reversed_place_pair_structure = {
+            "role": "post-hoc structural diagnostic; never promotion evidence",
+            "promotion_eligible": False,
+            "conditional_order": _public_metrics(candidate_pair_structure),
+            "listwise_baseline": _public_metrics(baseline_pair_structure),
+            "paired_confidence": {
+                "day_pair_binary_log_loss": paired_cluster_mean_bootstrap(
+                    candidate_pair_structure["race_pair_binary_losses"]
+                    - baseline_pair_structure["race_pair_binary_losses"],
+                    dates,
+                ),
+                "day_pair_hit_rate": paired_cluster_mean_bootstrap(
+                    candidate_pair_structure["race_pair_hits"]
+                    - baseline_pair_structure["race_pair_hits"],
+                    dates,
+                ),
+                "day_winner_hit_rate": paired_cluster_mean_bootstrap(
+                    candidate_pair_structure["race_winner_hits"]
+                    - baseline_pair_structure["race_winner_hits"],
+                    dates,
+                ),
+            },
+        }
     calibration_model = calibration_models[float(selected["regularization"])]
     calibration_probabilities = conditional_probabilities(
         scores[validation_start:train_end],
@@ -1044,6 +1146,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         # them here makes the baseline tail contract impossible to satisfy.
         "baseline_bankroll": baseline_bankroll,
         "direct_pair_diagnostics": direct_pair_diagnostics,
+        "reversed_place_pair_structure": reversed_place_pair_structure,
         "structure_gate": structure_gate,
         "bankroll_gate": bankroll_gate,
         "promotion_gate": promotion_gate,

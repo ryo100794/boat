@@ -9,10 +9,36 @@ from boatrace_ai.listwise.conditional_order import (
     build_parser,
     conditional_probabilities,
     evaluate_probabilities,
+    evaluate_reversed_place_pair_structure,
     fit_conditional_order,
     identity_model,
     objective_gradient,
 )
+
+
+def test_reversed_place_pair_structure_selects_same_winner_swap() -> None:
+    probabilities = np.full((2, 120), 0.5 / 118.0, dtype=np.float64)
+    left = int(np.flatnonzero(np.all(
+        COMBINATION_LANES == np.asarray([0, 1, 2]), axis=1
+    ))[0])
+    right = int(np.flatnonzero(np.all(
+        COMBINATION_LANES == np.asarray([0, 2, 1]), axis=1
+    ))[0])
+    probabilities[:, left] = 0.30
+    probabilities[:, right] = 0.20
+    ranks = np.asarray([
+        [1, 2, 3, 4, 5, 6],
+        [2, 1, 3, 4, 5, 6],
+    ])
+
+    metrics = evaluate_reversed_place_pair_structure(probabilities, ranks)
+
+    assert metrics["evaluated_races"] == 2
+    assert metrics["selected_pair_hit_rate"] == 0.5
+    assert metrics["selected_winner_hit_rate"] == 0.5
+    assert metrics["pair_hit_rate_given_winner"] == 1.0
+    assert np.isclose(metrics["mean_selected_pair_probability"], 0.5)
+    assert metrics["pair_calibration_gap"] == 0.0
 from boatrace_ai.listwise.stagewise_mlp import (
     COMBINATION_LANES,
     stagewise_trifecta_probabilities,

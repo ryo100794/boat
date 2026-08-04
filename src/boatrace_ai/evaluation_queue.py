@@ -3777,6 +3777,23 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"{prefix}_probability_roi_above_one"] = (
                     confidence.get("probability_roi_above_one")
                 )
+    pair_structure = payload.get("reversed_place_pair_structure")
+    if isinstance(pair_structure, dict):
+        for model_key in ("conditional_order", "listwise_baseline"):
+            metrics = pair_structure.get(model_key)
+            if not isinstance(metrics, dict):
+                continue
+            for key in (
+                "evaluated_races",
+                "selected_pair_hit_rate",
+                "selected_winner_hit_rate",
+                "pair_hit_rate_given_winner",
+                "mean_selected_pair_probability",
+                "pair_calibration_gap",
+                "pair_binary_log_loss",
+                "pair_brier_score",
+            ):
+                summary[f"reversed_pair_{model_key}_{key}"] = metrics.get(key)
     if str(payload.get("model") or "").startswith(
         "joint_edge_calibrated_replay_v"
     ):
@@ -5960,6 +5977,29 @@ def _validate_job_result_contract(
                 f"fixed model conditional order result {label} invalid"
             )
     if parameters.get("direct_pair_diagnostics") is True:
+        pair_structure = payload.get("reversed_place_pair_structure")
+        conditional_structure = (
+            pair_structure.get("conditional_order")
+            if isinstance(pair_structure, dict)
+            else None
+        )
+        baseline_structure = (
+            pair_structure.get("listwise_baseline")
+            if isinstance(pair_structure, dict)
+            else None
+        )
+        if (
+            not isinstance(pair_structure, dict)
+            or pair_structure.get("promotion_eligible") is not False
+            or not isinstance(conditional_structure, dict)
+            or conditional_structure.get("evaluated_races") != expected_races
+            or not isinstance(baseline_structure, dict)
+            or baseline_structure.get("evaluated_races") != expected_races
+            or not isinstance(pair_structure.get("paired_confidence"), dict)
+        ):
+            raise ValueError(
+                "fixed model conditional order reversed pair structure invalid"
+            )
         diagnostics = payload.get("direct_pair_diagnostics")
         expected_filters = {
             "baseline_exact_two": "exact_two_allocated_tickets",

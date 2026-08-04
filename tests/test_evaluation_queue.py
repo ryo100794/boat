@@ -1824,6 +1824,20 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     }
     pair_payload = {
         **payload,
+        "reversed_place_pair_structure": {
+            "promotion_eligible": False,
+            "conditional_order": {
+                "evaluated_races": 49_581,
+                "selected_pair_hit_rate": 0.25,
+            },
+            "listwise_baseline": {
+                "evaluated_races": 49_581,
+                "selected_pair_hit_rate": 0.23,
+            },
+            "paired_confidence": {
+                "day_pair_hit_rate": {"ci95_lower": 0.01},
+            },
+        },
         "direct_pair_diagnostics": {
             key: {
                 "promotion_eligible": False,
@@ -1856,6 +1870,9 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     assert pair_summary[
         "direct_pair_baseline_exact_two_roi_ci95_lower"
     ] == 0.8
+    assert pair_summary[
+        "reversed_pair_conditional_order_selected_pair_hit_rate"
+    ] == 0.25
     with pytest.raises(ValueError, match="pair diagnostic invalid"):
         evaluation_queue._validate_job_result_contract(
             pair_job,
