@@ -895,11 +895,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             if expected_return_fixed_bankroll is not None
             else None
         ),
-        "baseline_bankroll": {
-            key: value
-            for key, value in baseline_bankroll.items()
-            if key != "daily"
-        },
+        # Keep the daily rows until evaluation_queue._load_result converts
+        # their full selected-ticket ledger into tail diagnostics.  Dropping
+        # them here makes the baseline tail contract impossible to satisfy.
+        "baseline_bankroll": baseline_bankroll,
         "structure_gate": structure_gate,
         "bankroll_gate": bankroll_gate,
         "promotion_gate": promotion_gate,

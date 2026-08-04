@@ -117,3 +117,45 @@ def test_load_result_persists_tail_diagnostics_in_json_and_db_summary(
         "_tail_portfolio_rows" not in day
         for day in persisted["bankroll"]["daily"]
     )
+
+
+def test_load_result_attaches_tail_diagnostics_to_baseline_bankroll(
+    tmp_path,
+) -> None:
+    result_path = tmp_path / "conditional-order.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "baseline_bankroll": {
+                    "evaluated_races": 1,
+                    "daily": [
+                        {
+                            "race_date": "2026-07-20",
+                            "_tail_portfolio_rows": [
+                                {
+                                    "date": "2026-07-20",
+                                    "race_id": "baseline-race",
+                                    "odds": 20.0,
+                                    "stake": 100,
+                                    "return": 2_000,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload, _summary = _load_result(result_path)
+
+    diagnostics = payload["baseline_bankroll"][
+        "tail_portfolio_diagnostics"
+    ]
+    assert diagnostics["purchased_tickets"] == 1
+    assert diagnostics["normal"]["roi"] == 20.0
+    assert diagnostics["tail"]["tickets"] == 0
+    assert "_tail_portfolio_rows" not in payload["baseline_bankroll"][
+        "daily"
+    ][0]
