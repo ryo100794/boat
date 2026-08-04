@@ -3450,8 +3450,26 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_warmup_pre_ready_purchases": metrics.get(
                     "calibration_warmup_pre_ready_purchases"
                 ),
+                "calibration_warmup_pre_ready_stake_yen": metrics.get(
+                    "calibration_warmup_pre_ready_stake_yen"
+                ),
+                "calibration_warmup_pre_ready_nonempty_bets": metrics.get(
+                    "calibration_warmup_pre_ready_nonempty_bets"
+                ),
+                "calibration_warmup_pre_ready_authorizations": metrics.get(
+                    "calibration_warmup_pre_ready_authorizations"
+                ),
                 "calibration_warmup_no_purchases_before_ready": metrics.get(
                     "calibration_warmup_no_purchases_before_ready"
+                ),
+                "calibrator_update_logic_violations": metrics.get(
+                    "calibrator_update_logic_violations"
+                ),
+                "calibrator_updates_only_on_teacher_change": metrics.get(
+                    "calibrator_updates_only_on_teacher_change"
+                ),
+                "calibrator_reuses_identical_instance_when_unchanged": metrics.get(
+                    "calibrator_reuses_identical_instance_when_unchanged"
                 ),
                 "calibration_learning_population_unique_races": metrics.get(
                     "calibration_learning_population_unique_races"
@@ -4329,9 +4347,31 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_warmup_pre_ready_purchases": candidate_metrics.get(
                     "calibration_warmup_pre_ready_purchases"
                 ),
+                "calibration_warmup_pre_ready_stake_yen": candidate_metrics.get(
+                    "calibration_warmup_pre_ready_stake_yen"
+                ),
+                "calibration_warmup_pre_ready_nonempty_bets": candidate_metrics.get(
+                    "calibration_warmup_pre_ready_nonempty_bets"
+                ),
+                "calibration_warmup_pre_ready_authorizations": candidate_metrics.get(
+                    "calibration_warmup_pre_ready_authorizations"
+                ),
                 "calibration_warmup_no_purchases_before_ready": (
                     candidate_metrics.get(
                         "calibration_warmup_no_purchases_before_ready"
+                    )
+                ),
+                "calibrator_update_logic_violations": candidate_metrics.get(
+                    "calibrator_update_logic_violations"
+                ),
+                "calibrator_updates_only_on_teacher_change": (
+                    candidate_metrics.get(
+                        "calibrator_updates_only_on_teacher_change"
+                    )
+                ),
+                "calibrator_reuses_identical_instance_when_unchanged": (
+                    candidate_metrics.get(
+                        "calibrator_reuses_identical_instance_when_unchanged"
                     )
                 ),
                 "calibration_learning_population_unique_races": (
@@ -8709,7 +8749,13 @@ def model_performance_audit_snapshot(
                 "calibration_warmup_logic_violations",
                 "calibration_warmup_conjunction_consistent",
                 "calibration_warmup_pre_ready_purchases",
+                "calibration_warmup_pre_ready_stake_yen",
+                "calibration_warmup_pre_ready_nonempty_bets",
+                "calibration_warmup_pre_ready_authorizations",
                 "calibration_warmup_no_purchases_before_ready",
+                "calibrator_update_logic_violations",
+                "calibrator_updates_only_on_teacher_change",
+                "calibrator_reuses_identical_instance_when_unchanged",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",

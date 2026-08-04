@@ -185,7 +185,19 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert warmup["first_ready_boundary"]["candidate_portfolios"] == 2
     assert warmup["first_ready_boundary"]["candidate_days"] == 2
     assert warmup["pre_ready_purchases"] == 0
+    assert warmup["pre_ready_stake_yen"] == 0
+    assert warmup["pre_ready_nonempty_bet_vectors"] == 0
+    assert warmup["pre_ready_purchase_authorizations"] == 0
     assert warmup["no_purchases_before_ready"] is True
+    update_audit = profitable["calibrator_update_audit"]
+    assert update_audit["updates_after_initialization"] == 3
+    assert update_audit["update_logic_violations"] == 0
+    assert update_audit[
+        "updates_only_when_eligible_teacher_population_changes"
+    ] is True
+    assert update_audit[
+        "unchanged_population_reuses_identical_calibrator"
+    ] is True
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -276,6 +288,12 @@ def test_calibration_excludes_candidates_not_strictly_settled_before_decision(
     assert day3["settlement_excluded_training_records"] == 1
     assert day3["newly_admitted_settled_race_batches"] == 0
     assert day3["pending_unsettled_race_batches"] == 2
+    assert day3["teacher_population_changed"] is False
+    assert day3["calibrator_instance_changed"] is False
+    assert day3["calibrator_cache_hit"] is True
+    assert day3["calibration_instance_id"] == result["daily"][1][
+        "calibration_instance_id"
+    ]
     assert day3["calibration_ready"] is False
     assert day3["stake_yen"] == 0
     assert result["daily"][3]["calibration_ready"] is True
@@ -381,6 +399,11 @@ def test_zero_generated_candidates_is_complete_but_not_warm(
         "first_ready_boundary"
     ] is None
     assert result["primary_bankroll"]["stake_yen"] == 0
+    update_audit = result["calibrator_update_audit"]
+    assert update_audit["updates_after_initialization"] == 0
+    assert update_audit["unchanged_population_reuses"] == 3
+    assert update_audit["unique_calibrator_instances"] == 1
+    assert update_audit["calibrator_fits"] == 1
 
 
 def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
@@ -539,7 +562,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v7",
+        "model": "joint_edge_calibrated_replay_v8",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -645,7 +668,20 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "ready_exactly_when_all_thresholds_pass": True,
             "first_ready_boundary": {"evaluation_date": "2026-07-01"},
             "pre_ready_purchases": 0,
+            "pre_ready_stake_yen": 0,
+            "pre_ready_nonempty_bet_vectors": 0,
+            "pre_ready_purchase_authorizations": 0,
             "no_purchases_before_ready": True,
+        },
+        "calibrator_update_audit": {
+            "updates_after_initialization": 30,
+            "unchanged_population_reuses": 5,
+            "unique_calibrator_instances": 31,
+            "calibrator_fits": 31,
+            "update_logic_violations": 0,
+            "unchanged_population_reuse_violations": 0,
+            "updates_only_when_eligible_teacher_population_changes": True,
+            "unchanged_population_reuses_identical_calibrator": True,
         },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
@@ -723,7 +759,15 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary["calibration_warmup_logic_violations"] == 0
     assert summary["calibration_warmup_conjunction_consistent"] is True
     assert summary["calibration_warmup_pre_ready_purchases"] == 0
+    assert summary["calibration_warmup_pre_ready_stake_yen"] == 0
+    assert summary["calibration_warmup_pre_ready_nonempty_bets"] == 0
+    assert summary["calibration_warmup_pre_ready_authorizations"] == 0
     assert summary["calibration_warmup_no_purchases_before_ready"] is True
+    assert summary["calibrator_update_logic_violations"] == 0
+    assert summary["calibrator_updates_only_on_teacher_change"] is True
+    assert summary[
+        "calibrator_reuses_identical_instance_when_unchanged"
+    ] is True
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )

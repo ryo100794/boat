@@ -3898,6 +3898,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         warmup_audit = (
             warmup_audit if isinstance(warmup_audit, dict) else {}
         )
+        calibrator_update_audit = payload.get("calibrator_update_audit")
+        calibrator_update_audit = (
+            calibrator_update_audit
+            if isinstance(calibrator_update_audit, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -4077,8 +4082,47 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "calibration_warmup_pre_ready_purchases": warmup_audit.get(
                 "pre_ready_purchases"
             ),
+            "calibration_warmup_pre_ready_stake_yen": warmup_audit.get(
+                "pre_ready_stake_yen"
+            ),
+            "calibration_warmup_pre_ready_nonempty_bets": warmup_audit.get(
+                "pre_ready_nonempty_bet_vectors"
+            ),
+            "calibration_warmup_pre_ready_authorizations": warmup_audit.get(
+                "pre_ready_purchase_authorizations"
+            ),
             "calibration_warmup_no_purchases_before_ready": warmup_audit.get(
                 "no_purchases_before_ready"
+            ),
+            "calibrator_updates_after_initialization": (
+                calibrator_update_audit.get("updates_after_initialization")
+            ),
+            "calibrator_unchanged_population_reuses": (
+                calibrator_update_audit.get("unchanged_population_reuses")
+            ),
+            "calibrator_unique_instances": calibrator_update_audit.get(
+                "unique_calibrator_instances"
+            ),
+            "calibrator_fits": calibrator_update_audit.get(
+                "calibrator_fits"
+            ),
+            "calibrator_update_logic_violations": (
+                calibrator_update_audit.get("update_logic_violations")
+            ),
+            "calibrator_unchanged_reuse_violations": (
+                calibrator_update_audit.get(
+                    "unchanged_population_reuse_violations"
+                )
+            ),
+            "calibrator_updates_only_on_teacher_change": (
+                calibrator_update_audit.get(
+                    "updates_only_when_eligible_teacher_population_changes"
+                )
+            ),
+            "calibrator_reuses_identical_instance_when_unchanged": (
+                calibrator_update_audit.get(
+                    "unchanged_population_reuses_identical_calibrator"
+                )
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"
