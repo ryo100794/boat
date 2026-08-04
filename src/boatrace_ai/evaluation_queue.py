@@ -5187,6 +5187,26 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 ) or policy.get(
                     "payout_feature_schema"
                 )
+            policy_selection = bankroll.get("policy_selection")
+            if isinstance(policy_selection, dict):
+                for key in (
+                    "source",
+                    "selected_ridge",
+                    "selected_mean_correction_factor",
+                    "selected_ev_threshold",
+                    "selected_min_daily_exposure_fraction",
+                    "minimum_tickets",
+                    "minimum_hits",
+                    "minimum_winning_days",
+                    "minimum_roi",
+                    "minimum_roi_without_largest_hit",
+                    "minimum_effective_hit_count",
+                    "required_roi_ci95_lower",
+                    "minimum_probability_roi_above_one",
+                ):
+                    summary[f"payout_feature_selection_{key}"] = (
+                        policy_selection.get(key)
+                    )
         confidence = payout_walk_forward.get("bankroll_confidence")
         if isinstance(confidence, dict):
             for key, value in confidence.items():
@@ -5223,6 +5243,18 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary["expected_return_selected_ev_threshold"] = (
                     policy_selection.get("selected_ev_threshold")
                 )
+                for key in (
+                    "minimum_tickets",
+                    "minimum_hits",
+                    "minimum_winning_days",
+                    "minimum_roi",
+                    "minimum_roi_without_largest_hit",
+                    "minimum_effective_hit_count",
+                    "minimum_probability_roi_above_one",
+                ):
+                    summary[f"expected_return_selection_{key}"] = (
+                        policy_selection.get(key)
+                    )
             return_calibrator = bankroll.get("return_calibrator")
             if isinstance(return_calibrator, dict):
                 summary["expected_return_max_expected_return"] = (

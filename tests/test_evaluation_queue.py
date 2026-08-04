@@ -2625,6 +2625,21 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
                     "payout_tail_schema": "conditional_payout_tail_v1",
                     "payout_feature_schema": "conditional_payout_interactions_v2",
                 },
+                "policy_selection": {
+                    "source": "pre_evaluation_adaptive_selection",
+                    "selected_ridge": 10.0,
+                    "selected_mean_correction_factor": 0.5,
+                    "selected_ev_threshold": 1.2,
+                    "selected_min_daily_exposure_fraction": 0.0,
+                    "minimum_tickets": 100,
+                    "minimum_hits": 10,
+                    "minimum_winning_days": 8,
+                    "minimum_roi": 1.05,
+                    "minimum_roi_without_largest_hit": 1.05,
+                    "minimum_effective_hit_count": 10.0,
+                    "required_roi_ci95_lower": 1.05,
+                    "minimum_probability_roi_above_one": 0.95,
+                },
             },
             "bankroll_confidence": {
                 "roi_ci95_lower": 1.01,
@@ -2638,6 +2653,11 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     })
 
     assert summary["payout_feature_candidate_roi"] == 1.08
+    assert summary["payout_feature_selection_source"] == (
+        "pre_evaluation_adaptive_selection"
+    )
+    assert summary["payout_feature_selection_minimum_effective_hit_count"] == 10.0
+    assert summary["payout_feature_selection_required_roi_ci95_lower"] == 1.05
     assert summary["payout_feature_candidate_profit_yen"] == 8_000
     assert summary["payout_feature_candidate_stake_yen"] == 100_000
     assert summary["payout_feature_candidate_return_yen"] == 108_000
@@ -2685,6 +2705,13 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                 "policy_selection": {
                     "source": "pre_evaluation_temporal_selection",
                     "selected_ev_threshold": 1.3,
+                    "minimum_tickets": 100,
+                    "minimum_hits": 10,
+                    "minimum_winning_days": 8,
+                    "minimum_roi": 1.05,
+                    "minimum_roi_without_largest_hit": 1.05,
+                    "minimum_effective_hit_count": 10.0,
+                    "minimum_probability_roi_above_one": 0.95,
                 },
                 "return_calibrator": {
                     "max_expected_return": 3.2,
@@ -2731,6 +2758,9 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_gate_pass"] is False
     assert summary["expected_return_promotion_eligible"] is False
     assert summary["expected_return_selected_ev_threshold"] == 1.3
+    assert summary["expected_return_selection_minimum_effective_hit_count"] == 10.0
+    assert summary["expected_return_selection_minimum_roi_without_largest_hit"] == 1.05
+    assert summary["expected_return_selection_minimum_probability_roi_above_one"] == 0.95
     assert summary["expected_return_max_expected_return"] == 3.2
     assert summary["expected_return_factor_min"] == 0.0
     assert summary["expected_return_factor_median"] == 0.61
