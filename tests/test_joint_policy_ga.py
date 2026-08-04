@@ -149,6 +149,12 @@ def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet(
     assert result["best_search_candidate"]["metrics"][
         "constraint_violation"
     ] > 0.0
+    assert result["best_search_candidate"][
+        "validation_joint_value"
+    ]["portfolio"]["passes_purchase_gate"] is False
+    assert result["best_search_candidate"][
+        "validation_bankroll_growth"
+    ] is None
     rejected = [
         row for row in result["ranked_candidates"]
         if row["total_stake_yen"] > 0
@@ -219,6 +225,9 @@ def test_independent_validation_can_reject_search_winner() -> None:
         "passes_purchase_gate"
     ] is False
     assert result["purchase_authorized"] is False
+    assert result["best_search_candidate"][
+        "validation_joint_value"
+    ]["portfolio"]["passes_purchase_gate"] is False
 
 
 def test_process_backend_matches_thread_backend() -> None:

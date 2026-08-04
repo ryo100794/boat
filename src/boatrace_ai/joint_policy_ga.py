@@ -424,16 +424,20 @@ def optimize_joint_portfolio(
         row.metrics.get("growth_evaluation_skipped") is True
         for row in ranked
     )
-    selected_bets = bets(selected.candidate)
-    detailed_value = None
-    if selected_bets:
-        detailed_value = evaluate_joint_market_value(
+    def validate_portfolio(
+        portfolio_bets: Mapping[str, int],
+        *,
+        include_marginal_contributions: bool,
+    ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        if not portfolio_bets:
+            return None, None
+        value = evaluate_joint_market_value(
             validation_draws,
-            bets_yen=selected_bets,
+            bets_yen=portfolio_bets,
             gross_payoff_model=gross_payoff_model,
             operational_costs_yen={
                 ticket: (operational_costs_yen or {}).get(ticket, 0)
-                for ticket in selected_bets
+                for ticket in portfolio_bets
             },
             expected_outcomes=expected_outcomes,
             outer_alpha=policy.outer_alpha,
@@ -443,16 +447,20 @@ def optimize_joint_portfolio(
             minimum_inner_tail_effective_samples=(
                 policy.minimum_inner_tail_effective_samples
             ),
-            include_marginal_contributions=True,
+            include_marginal_contributions=(
+                include_marginal_contributions
+            ),
         )
-        detailed_growth = evaluate_joint_bankroll_growth(
+        if not value["portfolio"]["passes_purchase_gate"]:
+            return value, None
+        growth = evaluate_joint_bankroll_growth(
             validation_draws,
-            bets_yen=selected_bets,
+            bets_yen=portfolio_bets,
             gross_payoff_model=gross_payoff_model,
             available_bankroll_yen=available_bankroll_yen,
             operational_costs_yen={
                 ticket: (operational_costs_yen or {}).get(ticket, 0)
-                for ticket in selected_bets
+                for ticket in portfolio_bets
             },
             expected_outcomes=expected_outcomes,
             outer_alpha=policy.outer_alpha,
@@ -462,8 +470,25 @@ def optimize_joint_portfolio(
                 policy.minimum_inner_tail_effective_samples
             ),
         )
+        return value, growth
+
+    selected_bets = bets(selected.candidate)
+    detailed_value, detailed_growth = validate_portfolio(
+        selected_bets,
+        include_marginal_contributions=True,
+    )
+    best_search_bets = bets(best_search_candidate.candidate)
+    if best_search_bets == selected_bets:
+        best_search_validation_value = detailed_value
+        best_search_validation_growth = detailed_growth
     else:
-        detailed_growth = None
+        (
+            best_search_validation_value,
+            best_search_validation_growth,
+        ) = validate_portfolio(
+            best_search_bets,
+            include_marginal_contributions=False,
+        )
     purchase_authorized = bool(
         selected_bets
         and detailed_value
@@ -474,7 +499,7 @@ def optimize_joint_portfolio(
     )
     return {
         "version": (
-            "joint_portfolio_policy_ga_v4_value_gate_growth_pruning"
+            "joint_portfolio_policy_ga_v5_all_pregate_candidates"
         ),
         "role": "diagnostic_only_never_submits_wagers",
         "parameter_draws": len(parameter_draws),
@@ -497,6 +522,8 @@ def optimize_joint_portfolio(
             "fitness": best_search_candidate.fitness,
             "metrics": dict(best_search_candidate.metrics),
             "first_generation": best_search_candidate.first_generation,
+            "validation_joint_value": best_search_validation_value,
+            "validation_bankroll_growth": best_search_validation_growth,
         },
         "selected": {
             **serialize(selected.candidate),

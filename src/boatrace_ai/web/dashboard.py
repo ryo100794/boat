@@ -3432,6 +3432,27 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_learning_population_candidate_portfolios": metrics.get(
                     "calibration_learning_population_candidate_portfolios"
                 ),
+                "calibration_pregate_candidates_generated": metrics.get(
+                    "calibration_pregate_candidates_generated"
+                ),
+                "calibration_pregate_candidates_registered": metrics.get(
+                    "calibration_pregate_candidates_registered"
+                ),
+                "calibration_all_pregate_candidates_registered": metrics.get(
+                    "calibration_all_pregate_candidates_registered"
+                ),
+                "calibration_warmup_logic_violations": metrics.get(
+                    "calibration_warmup_logic_violations"
+                ),
+                "calibration_warmup_conjunction_consistent": metrics.get(
+                    "calibration_warmup_conjunction_consistent"
+                ),
+                "calibration_warmup_pre_ready_purchases": metrics.get(
+                    "calibration_warmup_pre_ready_purchases"
+                ),
+                "calibration_warmup_no_purchases_before_ready": metrics.get(
+                    "calibration_warmup_no_purchases_before_ready"
+                ),
                 "calibration_learning_population_unique_races": metrics.get(
                     "calibration_learning_population_unique_races"
                 ),
@@ -4280,6 +4301,37 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_learning_population_candidate_portfolios": (
                     candidate_metrics.get(
                         "calibration_learning_population_candidate_portfolios"
+                    )
+                ),
+                "calibration_pregate_candidates_generated": (
+                    candidate_metrics.get(
+                        "calibration_pregate_candidates_generated"
+                    )
+                ),
+                "calibration_pregate_candidates_registered": (
+                    candidate_metrics.get(
+                        "calibration_pregate_candidates_registered"
+                    )
+                ),
+                "calibration_all_pregate_candidates_registered": (
+                    candidate_metrics.get(
+                        "calibration_all_pregate_candidates_registered"
+                    )
+                ),
+                "calibration_warmup_logic_violations": candidate_metrics.get(
+                    "calibration_warmup_logic_violations"
+                ),
+                "calibration_warmup_conjunction_consistent": (
+                    candidate_metrics.get(
+                        "calibration_warmup_conjunction_consistent"
+                    )
+                ),
+                "calibration_warmup_pre_ready_purchases": candidate_metrics.get(
+                    "calibration_warmup_pre_ready_purchases"
+                ),
+                "calibration_warmup_no_purchases_before_ready": (
+                    candidate_metrics.get(
+                        "calibration_warmup_no_purchases_before_ready"
                     )
                 ),
                 "calibration_learning_population_unique_races": (
@@ -8651,6 +8703,13 @@ def model_performance_audit_snapshot(
                 "calibration_learning_population_unique_races",
                 "calibration_learning_population_outcome_filter",
                 "calibration_learning_population_purchase_filter",
+                "calibration_pregate_candidates_generated",
+                "calibration_pregate_candidates_registered",
+                "calibration_all_pregate_candidates_registered",
+                "calibration_warmup_logic_violations",
+                "calibration_warmup_conjunction_consistent",
+                "calibration_warmup_pre_ready_purchases",
+                "calibration_warmup_no_purchases_before_ready",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",

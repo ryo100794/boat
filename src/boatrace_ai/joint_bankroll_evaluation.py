@@ -33,7 +33,7 @@ from .terminal_probability_oof import (
 
 
 EVALUATION_VERSION = (
-    "joint_bankroll_strict_walk_forward_v9_value_gate_growth_pruning"
+    "joint_bankroll_strict_walk_forward_v10_all_pregate_candidates"
 )
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
@@ -223,6 +223,11 @@ def _evaluation_protocol(
                 "skip_growth_only_when_portfolio_purchase_gate_is_false"
             ),
             "statistical_draw_counts_unchanged_by_pruning": True,
+            "calibration_candidate": (
+                "best_nonzero_search_portfolio_independently_validated_"
+                "before_structural_and_calibration_purchase_gates"
+            ),
+            "calibration_population_includes_gate_rejections": True,
             "population_size": configuration["population_size"],
             "generations": configuration["generations"],
             "seed": configuration["seed"],
@@ -1425,6 +1430,18 @@ def run_joint_bankroll_evaluation(
             best_search = search.get("best_search_candidate") or {}
             best_search_metrics = best_search.get("metrics") or {}
             best_search_bets = dict(best_search.get("bets_yen") or {})
+            best_validation_value = (
+                best_search.get("validation_joint_value") or {}
+            )
+            best_validation_growth = (
+                best_search.get("validation_bankroll_growth") or {}
+            )
+            best_validation_portfolio = (
+                best_validation_value.get("portfolio") or {}
+            )
+            best_validation_growth_summary = (
+                best_validation_growth.get("growth") or {}
+            )
             validated_bets = dict(selected.get("bets_yen") or {})
             best_search_stake = sum(best_search_bets.values())
             best_search_return = _realized_receipt(
@@ -1498,6 +1515,32 @@ def run_joint_bankroll_evaluation(
                 "best_search_hypothetical_roi": (
                     best_search_return / best_search_stake
                     if best_search_stake else None
+                ),
+                "pregate_candidate_generated": best_search_stake > 0,
+                "best_search_validation_portfolio_lower_quantile": (
+                    best_validation_portfolio.get("lower_quantile")
+                ),
+                "best_search_validation_purchase_value_gate_passed": bool(
+                    best_validation_portfolio.get(
+                        "passes_purchase_gate"
+                    )
+                ),
+                "best_search_validation_purchase_gate_evaluable": bool(
+                    best_validation_portfolio.get(
+                        "purchase_gate_evaluable"
+                    )
+                ),
+                "best_search_validation_bankroll_growth_lower_quantile": (
+                    best_validation_growth_summary.get("lower_quantile")
+                ),
+                "best_search_validation_growth_gate_passed": bool(
+                    best_validation_growth_summary.get(
+                        "passes_growth_gate"
+                    )
+                ),
+                "best_search_validation_growth_evaluation_skipped": (
+                    bool(best_search_bets)
+                    and not bool(best_validation_growth)
                 ),
                 "purchase_value": portfolio.get("lower_quantile"),
                 "predicted_roi_lower_bound": (

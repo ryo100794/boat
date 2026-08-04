@@ -20,10 +20,14 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v6"
+MODEL_VERSION = "joint_edge_calibrated_replay_v7"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v6_settled_race_batches"
+    "stake_weighted_isotonic_lcb_v7_all_pregate_candidates"
+)
+PRIMARY_RAW_VALUE_SOURCE = (
+    "pregate_best_search_independent_validation_"
+    "portfolio_lower_quantile"
 )
 
 
@@ -85,16 +89,33 @@ def _candidate_record(
         race.get("validation_uses_separate_draw_set")
     )
     if separate_validation:
-        validated_edge = race.get("portfolio_lower_quantile")
+        validated_edge = race.get(
+            "best_search_validation_portfolio_lower_quantile"
+        )
+        if validated_edge is not None:
+            raw_value_source = PRIMARY_RAW_VALUE_SOURCE
+            structural_feasible = bool(
+                race.get(
+                    "best_search_validation_purchase_value_gate_passed"
+                )
+                and race.get(
+                    "best_search_validation_growth_gate_passed"
+                )
+            )
+        else:
+            validated_edge = race.get("portfolio_lower_quantile")
+            raw_value_source = (
+                "legacy_selected_independent_validation_"
+                "portfolio_lower_quantile"
+            )
+            structural_feasible = bool(
+                race.get("purchase_value_gate_passed")
+                and race.get("bankroll_growth_lower_quantile") is not None
+                and float(race["bankroll_growth_lower_quantile"]) > 0.0
+            )
         if validated_edge is None:
             return None
         edge_excess = float(validated_edge) - buy_margin
-        raw_value_source = "independent_validation_portfolio_lower_quantile"
-        structural_feasible = bool(
-            race.get("purchase_value_gate_passed")
-            and race.get("bankroll_growth_lower_quantile") is not None
-            and float(race["bankroll_growth_lower_quantile"]) > 0.0
-        )
     else:
         edge_excess = race.get("best_search_edge_excess")
         if edge_excess is None:
@@ -210,9 +231,7 @@ def _calibrated_value_realization(
         for race in day.get("races") or []:
             if not race.get("base_joint_gate_feasible"):
                 continue
-            if race.get("raw_value_source") != (
-                "independent_validation_portfolio_lower_quantile"
-            ):
+            if race.get("raw_value_source") != PRIMARY_RAW_VALUE_SOURCE:
                 excluded_non_independent += 1
                 continue
             predicted_roi = race.get("calibrated_gross_return")
@@ -377,6 +396,8 @@ def run_joint_edge_calibrated_replay(
     teacher_admissions: list[dict[str, object]] = []
     observed_candidate_race_ids: set[str] = set()
     duplicate_result_batches_excluded = 0
+    pregate_candidates_generated = 0
+    pregate_candidates_missing_independent_value = 0
     replay_days = []
     ready_days = 0
     ready_races = 0
@@ -560,6 +581,15 @@ def run_joint_edge_calibrated_replay(
             record = _candidate_record(
                 race_date, race, buy_margin=buy_margin
             )
+            pregate_generated = bool(
+                race.get("pregate_candidate_generated")
+                if "pregate_candidate_generated" in race
+                else int(race.get("best_search_stake_yen") or 0) > 0
+            )
+            if pregate_generated:
+                pregate_candidates_generated += 1
+                if record is None:
+                    pregate_candidates_missing_independent_value += 1
             if record is not None:
                 record_race_id = str(record["race_id"])
                 if record_race_id in observed_candidate_race_ids:
@@ -813,6 +843,16 @@ def run_joint_edge_calibrated_replay(
         "outcome_filter": "none",
         "purchase_filter": "none_includes_purchased_and_rejected",
         "candidate_portfolios": len(all_candidate_records),
+        "pregate_candidates_generated": pregate_candidates_generated,
+        "pregate_candidates_registered": len(all_candidate_records),
+        "pregate_candidates_missing_independent_value": (
+            pregate_candidates_missing_independent_value
+        ),
+        "all_pregate_candidates_registered": bool(
+            len(all_candidate_records) == pregate_candidates_generated
+            and pregate_candidates_missing_independent_value == 0
+            and duplicate_result_batches_excluded == 0
+        ),
         "unique_races": len({
             str(record.get("race_id") or "")
             for record in all_candidate_records
@@ -874,6 +914,64 @@ def run_joint_edge_calibrated_replay(
         "result_batch_unit": "one_race_candidate_portfolio",
         "teacher_admission_manifest_sha256": _canonical_sha256(
             teacher_admissions
+        ),
+    }
+    warmup_boundaries = [
+        {
+            "evaluation_date": str(fold.get("evaluation_date") or ""),
+            "training_days": int(fold.get("training_days") or 0),
+            "candidate_portfolios": int(fold.get("tickets") or 0),
+            "candidate_days": int(fold.get("candidate_days") or 0),
+            "minimum_training_days_passed": int(
+                fold.get("training_days") or 0
+            ) >= calibration_min_training_days,
+            "minimum_candidate_portfolios_passed": int(
+                fold.get("tickets") or 0
+            ) >= calibration_min_portfolios,
+            "minimum_candidate_days_passed": int(
+                fold.get("candidate_days") or 0
+            ) >= calibration_min_candidate_days,
+            "ready": bool(fold.get("ready")),
+        }
+        for fold in calibration_folds
+    ]
+    for boundary in warmup_boundaries:
+        boundary["conjunction_passed"] = bool(
+            boundary["minimum_training_days_passed"]
+            and boundary["minimum_candidate_portfolios_passed"]
+            and boundary["minimum_candidate_days_passed"]
+        )
+    warmup_logic_violations = [
+        row for row in warmup_boundaries
+        if row["ready"] != row["conjunction_passed"]
+    ]
+    first_ready_boundary = next(
+        (row for row in warmup_boundaries if row["ready"]),
+        None,
+    )
+    warmup_audit = {
+        "version": "all_pregate_candidate_warmup_audit_v1",
+        "logical_operator": "AND",
+        "minimum_training_calendar_days": calibration_min_training_days,
+        "minimum_pregate_candidate_portfolios": (
+            calibration_min_portfolios
+        ),
+        "minimum_candidate_days": calibration_min_candidate_days,
+        "candidate_day_definition": (
+            "day_with_at_least_one_pregate_portfolio_raw_gross_return_"
+            "at_or_above_one_plus_base_buy_margin"
+        ),
+        "population_source": (
+            "all_pregate_candidates_not_only_purchased_candidates"
+        ),
+        "folds": len(warmup_boundaries),
+        "logic_violations": len(warmup_logic_violations),
+        "ready_exactly_when_all_thresholds_pass": bool(
+            warmup_boundaries and not warmup_logic_violations
+        ),
+        "first_ready_boundary": first_ready_boundary,
+        "boundary_manifest_sha256": _canonical_sha256(
+            warmup_boundaries
         ),
     }
     bankroll = {
@@ -1072,8 +1170,7 @@ def run_joint_edge_calibrated_replay(
         "independent_validation_value_only": bool(
             purchased
             and all(
-                race.get("raw_value_source")
-                == "independent_validation_portfolio_lower_quantile"
+                race.get("raw_value_source") == PRIMARY_RAW_VALUE_SOURCE
                 for race in purchased
             )
         ),
@@ -1091,6 +1188,12 @@ def run_joint_edge_calibrated_replay(
         ],
         "results_admitted_only_after_settlement": race_batch_audit[
             "results_admitted_only_after_strict_settlement"
+        ],
+        "all_pregate_candidates_registered": learning_population_audit[
+            "all_pregate_candidates_registered"
+        ],
+        "warmup_conjunction_consistent": warmup_audit[
+            "ready_exactly_when_all_thresholds_pass"
         ],
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
@@ -1135,9 +1238,7 @@ def run_joint_edge_calibrated_replay(
     )
     non_independent_value_purchases = sum(
         int(race.get("stake_yen") or 0) > 0
-        and race.get("raw_value_source") != (
-            "independent_validation_portfolio_lower_quantile"
-        )
+        and race.get("raw_value_source") != PRIMARY_RAW_VALUE_SOURCE
         for day in replay_days
         for race in day.get("races") or []
     )
@@ -1151,6 +1252,10 @@ def run_joint_edge_calibrated_replay(
         same_race_teacher_violations,
         teacher_admission_violations,
         ticket_calibrator_violations,
+        warmup_logic_violations,
+        not learning_population_audit[
+            "all_pregate_candidates_registered"
+        ],
     ))
     mature_observation_window = ready_days >= 30 and ready_races >= 1_000
     purchase_gate_outcome = _purchase_gate_outcome(
@@ -1177,8 +1282,12 @@ def run_joint_edge_calibrated_replay(
             "zero_purchases_is_safe_abstention_not_gate_failure"
         ),
     }
+    warmup_audit.update({
+        "pre_ready_purchases": pre_ready_purchases,
+        "no_purchases_before_ready": pre_ready_purchases == 0,
+    })
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v6",
+        "version": "joint_edge_calibrated_replay_protocol_v7",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -1232,9 +1341,13 @@ def run_joint_edge_calibrated_replay(
             "learning_population": learning_population_audit,
             "sample_weight": "candidate_portfolio_stake_yen",
             "primary_input": (
-                "independent_validation_portfolio_lower_quantile"
+                "pregate_best_search_independent_validation_"
+                "portfolio_lower_quantile"
             ),
-            "legacy_input": "search_edge_explicit_fallback_only",
+            "legacy_input": (
+                "selected_independent_validation_then_search_edge_"
+                "explicit_fallback_only"
+            ),
         },
         "bankroll": {
             "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
@@ -1281,6 +1394,7 @@ def run_joint_edge_calibrated_replay(
         "calibration_learning_population_audit": (
             learning_population_audit
         ),
+        "calibration_warmup_audit": warmup_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,

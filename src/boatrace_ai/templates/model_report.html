@@ -707,11 +707,13 @@ function renderPurchaseValueCalibration(jobs){
     const sameCalibrator=latest.calibration_same_prior_for_all_tickets_in_race===true;
     const settledBatch=latest.calibration_results_admitted_only_after_settlement===true;
     const learningN=latest.calibration_learning_population_candidate_portfolios;
+    const allPregate=latest.calibration_all_pregate_candidates_registered===true;
+    const warmup=latest.calibration_warmup_conjunction_consistent===true&&latest.calibration_warmup_no_purchases_before_ready===true;
     const separateDraws=latest.calibration_search_validation_draw_sets_disjoint===true;
     const identical=latest.calibration_value_population_identical_only===true;
     const gateOutcome=latest.purchase_gate_operational_outcome||"unknown";
     const targetUnit=latest.calibration_target_unit||"unknown-unit";
-    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / candidate-settled-before-t ${settled?"PASS":"FAIL"} (${fmt(settledCandidates)}) / same-race-excluded ${sameRace?"PASS":"FAIL"} / one-calibrator-per-race ${sameCalibrator?"PASS":"FAIL"} / settled-result-batch ${settledBatch?"PASS":"FAIL"} / learning-population ${fmt(learningN)} / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / target ${targetUnit} / gate ${gateOutcome}`;
+    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / candidate-settled-before-t ${settled?"PASS":"FAIL"} (${fmt(settledCandidates)}) / same-race-excluded ${sameRace?"PASS":"FAIL"} / one-calibrator-per-race ${sameCalibrator?"PASS":"FAIL"} / settled-result-batch ${settledBatch?"PASS":"FAIL"} / all-pregate ${allPregate?"PASS":"FAIL"} (${fmt(learningN)}) / warmup-AND ${warmup?"PASS":"FAIL"} / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / target ${targetUnit} / gate ${gateOutcome}`;
   }
 }
 function renderCandidates(rows){

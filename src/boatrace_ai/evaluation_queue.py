@@ -3894,6 +3894,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             learning_population
             if isinstance(learning_population, dict) else {}
         )
+        warmup_audit = payload.get("calibration_warmup_audit")
+        warmup_audit = (
+            warmup_audit if isinstance(warmup_audit, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -4021,6 +4025,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "calibration_learning_population_candidate_portfolios": (
                 learning_population.get("candidate_portfolios")
             ),
+            "calibration_pregate_candidates_generated": (
+                learning_population.get("pregate_candidates_generated")
+            ),
+            "calibration_pregate_candidates_registered": (
+                learning_population.get("pregate_candidates_registered")
+            ),
+            "calibration_pregate_candidates_missing_independent_value": (
+                learning_population.get(
+                    "pregate_candidates_missing_independent_value"
+                )
+            ),
+            "calibration_all_pregate_candidates_registered": (
+                learning_population.get(
+                    "all_pregate_candidates_registered"
+                )
+            ),
             "calibration_learning_population_unique_races": (
                 learning_population.get("unique_races")
             ),
@@ -4032,6 +4052,33 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_learning_population_manifest_sha256": (
                 learning_population.get("population_manifest_sha256")
+            ),
+            "calibration_warmup_logical_operator": warmup_audit.get(
+                "logical_operator"
+            ),
+            "calibration_warmup_minimum_training_days": warmup_audit.get(
+                "minimum_training_calendar_days"
+            ),
+            "calibration_warmup_minimum_pregate_candidates": warmup_audit.get(
+                "minimum_pregate_candidate_portfolios"
+            ),
+            "calibration_warmup_minimum_candidate_days": warmup_audit.get(
+                "minimum_candidate_days"
+            ),
+            "calibration_warmup_logic_violations": warmup_audit.get(
+                "logic_violations"
+            ),
+            "calibration_warmup_conjunction_consistent": warmup_audit.get(
+                "ready_exactly_when_all_thresholds_pass"
+            ),
+            "calibration_warmup_first_ready_boundary": warmup_audit.get(
+                "first_ready_boundary"
+            ),
+            "calibration_warmup_pre_ready_purchases": warmup_audit.get(
+                "pre_ready_purchases"
+            ),
+            "calibration_warmup_no_purchases_before_ready": warmup_audit.get(
+                "no_purchases_before_ready"
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"

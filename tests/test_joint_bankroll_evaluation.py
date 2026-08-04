@@ -254,6 +254,10 @@ def test_strict_walk_forward_runs_joint_paths_through_daily_bankroll(
     assert diagnostic_race["validation_outer_sample_count_r"] == 2
     assert diagnostic_race["validation_uses_separate_draw_set"] is True
     assert diagnostic_race["best_search_constraint_violation"] is not None
+    assert diagnostic_race["pregate_candidate_generated"] is True
+    assert diagnostic_race[
+        "best_search_validation_portfolio_lower_quantile"
+    ] is not None
     completed = [
         row for row in progress
         if row["event"] == "joint_bankroll_day_completed"

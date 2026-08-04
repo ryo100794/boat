@@ -41,6 +41,11 @@ def _base_artifact(path: Path, *, day3_payout: int = 200) -> Path:
                 "portfolio_lower_quantile": 0.20,
                 "purchase_value_gate_passed": True,
                 "bankroll_growth_lower_quantile": 0.01,
+                "pregate_candidate_generated": True,
+                "best_search_validation_portfolio_lower_quantile": 0.20,
+                "best_search_validation_purchase_value_gate_passed": True,
+                "best_search_validation_bankroll_growth_lower_quantile": 0.01,
+                "best_search_validation_growth_gate_passed": True,
             }],
         })
     payload = {
@@ -93,7 +98,8 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     changed_first_ready = changed_current["daily"][2]["races"][0]
     assert first_ready["purchase_authorized"] is True
     assert first_ready["raw_value_source"] == (
-        "independent_validation_portfolio_lower_quantile"
+        "pregate_best_search_independent_validation_"
+        "portfolio_lower_quantile"
     )
     assert changed_first_ready["purchase_authorized"] is True
     assert first_ready["calibrated_gross_return_lcb95"] == (
@@ -113,7 +119,8 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
         "independent_validation_value_only"
     ] is True
     assert profitable["calibration_input_sources"] == {
-        "independent_validation_portfolio_lower_quantile": 4
+        "pregate_best_search_independent_validation_"
+        "portfolio_lower_quantile": 4
     }
     independence = profitable["calibration_independence_audit"]
     assert independence["strict_prior_fold_violations"] == 0
@@ -155,6 +162,10 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     ] is True
     population = profitable["calibration_learning_population_audit"]
     assert population["candidate_portfolios"] == 4
+    assert population["pregate_candidates_generated"] == 4
+    assert population["pregate_candidates_registered"] == 4
+    assert population["pregate_candidates_missing_independent_value"] == 0
+    assert population["all_pregate_candidates_registered"] is True
     assert population["unique_races"] == 4
     assert population["outcome_filter"] == "none"
     assert population["purchase_filter"] == (
@@ -163,6 +174,18 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert population["positive_return_portfolios"] + population[
         "zero_return_portfolios"
     ] == population["candidate_portfolios"]
+    warmup = profitable["calibration_warmup_audit"]
+    assert warmup["logical_operator"] == "AND"
+    assert warmup["logic_violations"] == 0
+    assert warmup["ready_exactly_when_all_thresholds_pass"] is True
+    assert warmup["first_ready_boundary"]["evaluation_date"] == (
+        "2026-07-03"
+    )
+    assert warmup["first_ready_boundary"]["training_days"] == 2
+    assert warmup["first_ready_boundary"]["candidate_portfolios"] == 2
+    assert warmup["first_ready_boundary"]["candidate_days"] == 2
+    assert warmup["pre_ready_purchases"] == 0
+    assert warmup["no_purchases_before_ready"] is True
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -209,6 +232,9 @@ def test_independent_validation_gate_is_required_after_calibration_ready(
     artifact = _base_artifact(tmp_path / "validation-reject.json")
     payload = json.loads(artifact.read_text(encoding="utf-8"))
     payload["daily"][2]["races"][0]["purchase_value_gate_passed"] = False
+    payload["daily"][2]["races"][0][
+        "best_search_validation_purchase_value_gate_passed"
+    ] = False
     artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     result = _run(artifact)
@@ -217,6 +243,12 @@ def test_independent_validation_gate_is_required_after_calibration_ready(
     assert rejected["base_joint_gate_feasible"] is False
     assert rejected["purchase_authorized"] is False
     assert rejected["rejection_reason"] == "base_joint_gate_not_feasible"
+    assert result["calibration_learning_population_audit"][
+        "candidate_portfolios"
+    ] == 4
+    assert result["calibration_learning_population_audit"][
+        "structurally_rejected_portfolios"
+    ] == 1
 
 
 @pytest.mark.parametrize("settlement_time", [
@@ -324,6 +356,31 @@ def test_all_tickets_in_race_share_one_frozen_prior_calibrator(
     assert result["same_race_calibrator_settlement_batch_audit"][
         "ticket_calibrator_instance_violations"
     ] == 0
+
+
+def test_zero_generated_candidates_is_complete_but_not_warm(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "zero-candidates.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    for day in payload["daily"]:
+        race = day["races"][0]
+        race["pregate_candidate_generated"] = False
+        race["best_search_stake_yen"] = 0
+        race["best_search_bets_yen"] = {}
+        race["best_search_hypothetical_return_yen"] = 0
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    population = result["calibration_learning_population_audit"]
+    assert population["pregate_candidates_generated"] == 0
+    assert population["pregate_candidates_registered"] == 0
+    assert population["all_pregate_candidates_registered"] is True
+    assert result["calibration_warmup_audit"][
+        "first_ready_boundary"
+    ] is None
+    assert result["primary_bankroll"]["stake_yen"] == 0
 
 
 def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
@@ -482,7 +539,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v6",
+        "model": "joint_edge_calibrated_replay_v7",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -570,10 +627,25 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "outcome_filter": "none",
             "purchase_filter": "none_includes_purchased_and_rejected",
             "candidate_portfolios": 400,
+            "pregate_candidates_generated": 400,
+            "pregate_candidates_registered": 400,
+            "pregate_candidates_missing_independent_value": 0,
+            "all_pregate_candidates_registered": True,
             "unique_races": 400,
             "positive_return_portfolios": 40,
             "zero_return_portfolios": 360,
             "population_manifest_sha256": "population",
+        },
+        "calibration_warmup_audit": {
+            "logical_operator": "AND",
+            "minimum_training_calendar_days": 30,
+            "minimum_pregate_candidate_portfolios": 300,
+            "minimum_candidate_days": 20,
+            "logic_violations": 0,
+            "ready_exactly_when_all_thresholds_pass": True,
+            "first_ready_boundary": {"evaluation_date": "2026-07-01"},
+            "pre_ready_purchases": 0,
+            "no_purchases_before_ready": True,
         },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
@@ -638,12 +710,20 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary[
         "calibration_learning_population_candidate_portfolios"
     ] == 400
+    assert summary["calibration_pregate_candidates_generated"] == 400
+    assert summary["calibration_pregate_candidates_registered"] == 400
+    assert summary["calibration_all_pregate_candidates_registered"] is True
     assert summary[
         "calibration_learning_population_unique_races"
     ] == 400
     assert summary[
         "calibration_learning_population_outcome_filter"
     ] == "none"
+    assert summary["calibration_warmup_logical_operator"] == "AND"
+    assert summary["calibration_warmup_logic_violations"] == 0
+    assert summary["calibration_warmup_conjunction_consistent"] is True
+    assert summary["calibration_warmup_pre_ready_purchases"] == 0
+    assert summary["calibration_warmup_no_purchases_before_ready"] is True
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )
