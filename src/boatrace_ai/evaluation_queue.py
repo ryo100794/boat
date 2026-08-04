@@ -5222,6 +5222,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary["expected_return_selected_ev_threshold"] = (
                     policy_selection.get("selected_ev_threshold")
                 )
+            return_calibrator = bankroll.get("return_calibrator")
+            if isinstance(return_calibrator, dict):
+                summary["expected_return_max_expected_return"] = (
+                    return_calibrator.get("max_expected_return")
+                )
+                combination = return_calibrator.get(
+                    "combination_calibration"
+                )
+                if isinstance(combination, dict):
+                    for key in (
+                        "factor_min",
+                        "factor_median",
+                        "factor_max",
+                        "zero_factor_combinations",
+                    ):
+                        summary[f"expected_return_{key}"] = combination.get(key)
         confidence = expected_return.get("bankroll_confidence")
         if isinstance(confidence, dict):
             for key, value in confidence.items():

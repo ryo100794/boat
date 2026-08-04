@@ -123,6 +123,9 @@ def _combination_calibration_summary(calibrator: Any) -> dict[str, Any]:
         "factor_min": float(calibrator.factors.min()),
         "factor_median": float(np.median(calibrator.factors)),
         "factor_max": float(calibrator.factors.max()),
+        "zero_factor_combinations": int(
+            np.count_nonzero(calibrator.factors == 0.0)
+        ),
         "factors": {
             combination: float(calibrator.factors[index])
             for index, combination in enumerate(COMBINATION_LABELS)

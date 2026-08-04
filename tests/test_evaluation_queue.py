@@ -2668,6 +2668,15 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
                     "source": "pre_evaluation_temporal_selection",
                     "selected_ev_threshold": 1.3,
                 },
+                "return_calibrator": {
+                    "max_expected_return": 3.2,
+                    "combination_calibration": {
+                        "factor_min": 0.0,
+                        "factor_median": 0.61,
+                        "factor_max": 1.04,
+                        "zero_factor_combinations": 7,
+                    },
+                },
             },
             "bankroll_confidence": {
                 "roi_ci95_lower": 0.97,
@@ -2703,6 +2712,11 @@ def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
     assert summary["expected_return_gate_pass"] is False
     assert summary["expected_return_promotion_eligible"] is False
     assert summary["expected_return_selected_ev_threshold"] == 1.3
+    assert summary["expected_return_max_expected_return"] == 3.2
+    assert summary["expected_return_factor_min"] == 0.0
+    assert summary["expected_return_factor_median"] == 0.61
+    assert summary["expected_return_factor_max"] == 1.04
+    assert summary["expected_return_zero_factor_combinations"] == 7
     assert summary["expected_return_tail_portfolio_diagnostics"] == tail
     assert summary["expected_return_fixed_roi"] == 0.96
     assert summary["expected_return_fixed_roi_without_largest_hit"] == 0.91
