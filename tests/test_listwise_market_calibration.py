@@ -1208,6 +1208,18 @@ def test_trend_point_required_ticket_count_is_explicit() -> None:
     assert result["trend_point_market_offset_kelly_walk_forward"][
         "registered_odds_safety_factor"
     ] == 1.10
+    control = result["trend_point_market_only_control_diagnostic"]
+    prospective_control = result[
+        "trend_point_market_only_control_walk_forward"
+    ]
+    assert control["calibration"]["mode"] == (
+        "raw_market_probability_control"
+    )
+    assert control["promotion_eligible"] is False
+    assert control["policy"]["odds_safety_factor"] == 1.10
+    assert control["policy"]["required_ticket_count"] == 2
+    assert prospective_control["registered_after"] == "2026-07-21"
+    assert prospective_control["promotion_eligible"] is False
     empirical = result["trend_point_empirical_lcb_walk_forward"]
     assert empirical["status"] == "unsupported_requested_ticket_constraints"
     assert empirical["promotion_gate"]["requested_policy_supported"] is False

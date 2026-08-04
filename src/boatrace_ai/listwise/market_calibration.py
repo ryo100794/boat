@@ -5015,6 +5015,73 @@ def walk_forward_evaluate(
         "promotion_eligible": False,
         "closing_context_features": trend_point_closing_context_features,
     })
+    market_only_control_races = []
+    market_only_control_days: dict[str, dict[str, Any]] = {}
+    for race in (
+        trend_point_policy_races if trend_point_input_ready else ()
+    ):
+        item = dict(race)
+        probabilities = blend_probabilities(
+            item["model_probabilities"],
+            item["market_probabilities"],
+            model_weight=0.0,
+            temperature=1.0,
+        )
+        prediction_date = str(item["race_date"])
+        audit = {
+            "prediction_date": prediction_date,
+            "mode": "raw_market_probability_control",
+            "ready": True,
+            "fallback_reason": None,
+            "trained_through_date": None,
+            "training_days": 0,
+            "training_races": 0,
+            "fitted": False,
+            "converged": True,
+            "artifact": None,
+            "regularization_selection": None,
+        }
+        item["_policy_calibrated_probabilities"] = probabilities
+        item["_market_kelly_calibration"] = audit
+        market_only_control_races.append(item)
+        market_only_control_days[prediction_date] = audit
+    market_only_control_calibration = {
+        "mode": "raw_market_probability_control",
+        "minimum_training_days": 0,
+        "minimum_training_races": 0,
+        "ready_days": len(market_only_control_days),
+        "fallback_days": 0,
+        "ready_races": len(market_only_control_races),
+        "fallback_races": 0,
+        "days": [
+            market_only_control_days[value]
+            for value in sorted(market_only_control_days)
+        ],
+    }
+    trend_point_market_only_control = (
+        evaluate_attached_market_kelly_challenger(
+            market_only_control_races,
+            calibration=market_only_control_calibration,
+            evaluation_dates=evaluation_date_set,
+            odds_safety_factor=trend_point_odds_safety_factor,
+            required_ticket_count=trend_point_required_ticket_count,
+            require_reversed_place_pair=(
+                trend_point_require_reversed_place_pair
+            ),
+            maximum_forecast_odds=trend_point_maximum_forecast_odds,
+            minimum_race_number=trend_point_minimum_race_number,
+            maximum_race_number=trend_point_maximum_race_number,
+        )
+    )
+    trend_point_market_only_control.update({
+        "challenger": "trend_point_raw_market_probability_control",
+        "comparison_role": (
+            "negative control using the identical closing-odds forecast and "
+            "Kelly constraints with raw decision-time market probabilities"
+        ),
+        "promotion_eligible": False,
+        "closing_context_features": trend_point_closing_context_features,
+    })
     trend_point_reversed_place_pair_diagnostic = None
     if trend_point_required_ticket_count == 2:
         trend_point_reversed_place_pair_diagnostic = (
@@ -5080,6 +5147,36 @@ def walk_forward_evaluate(
         "promotion_eligible": bool(
             trend_point_prospective["promotion_gate"]["pass"]
         ),
+    })
+    trend_point_market_only_control_prospective = (
+        evaluate_attached_market_kelly_challenger(
+            market_only_control_races,
+            calibration=market_only_control_calibration,
+            evaluation_dates=trend_point_evaluation_dates,
+            odds_safety_factor=trend_point_odds_safety_factor,
+            required_ticket_count=trend_point_required_ticket_count,
+            require_reversed_place_pair=(
+                trend_point_require_reversed_place_pair
+            ),
+            maximum_forecast_odds=trend_point_maximum_forecast_odds,
+            minimum_race_number=trend_point_minimum_race_number,
+            maximum_race_number=trend_point_maximum_race_number,
+        )
+    )
+    trend_point_market_only_control_prospective.update({
+        "challenger": "trend_point_raw_market_probability_control",
+        "comparison_role": (
+            "prospective negative control using raw decision-time market "
+            "probabilities with the candidate closing-odds forecast"
+        ),
+        "registered_after": trend_point_registered_after,
+        "status": (
+            "evaluating"
+            if trend_point_evaluation_dates
+            else "waiting_for_first_unseen_day"
+        ),
+        "promotion_eligible": False,
+        "closing_context_features": trend_point_closing_context_features,
     })
     trend_empirical_policy_supported = bool(
         trend_point_required_ticket_count is None
@@ -5711,10 +5808,16 @@ def walk_forward_evaluate(
             conformal_lower_prospective
         ),
         "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
+        "trend_point_market_only_control_diagnostic": (
+            trend_point_market_only_control
+        ),
         "trend_point_reversed_place_pair_diagnostic": (
             trend_point_reversed_place_pair_diagnostic
         ),
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
+        "trend_point_market_only_control_walk_forward": (
+            trend_point_market_only_control_prospective
+        ),
         "trend_point_empirical_lcb_walk_forward": trend_point_empirical_lcb,
         "trend_point_odds_safety_sweep": trend_point_safety_sweep,
         "prequential_conditional_order": conditional_order_report,
