@@ -611,6 +611,14 @@ def enqueue_job(
             "evaluation_from",
             "evaluation_through",
         ),
+        "fixed_model_conditional_order": (
+            "model_input",
+            "cache_prefix",
+            "expected_model_sha256",
+            "training_through",
+            "evaluation_from",
+            "evaluation_through",
+        ),
     }.get(task_type)
     semantic_identity = None
     if semantic_keys and all(name in parameters for name in semantic_keys):
@@ -6086,7 +6094,7 @@ def periodic_model_cache_archive_paths(
         raise ValueError("invalid periodic model-cache archive limits")
     rows = conn.execute(
         """
-        SELECT job_id
+        SELECT job_id, parameters
         FROM model_evaluation_jobs
         WHERE status IN ('queued', 'running')
         """
@@ -6095,6 +6103,29 @@ def periodic_model_cache_archive_paths(
     root = app_root / "data" / "models" / "evaluation_cache"
     if not root.is_dir():
         return []
+    active_cache_matrices: set[Path] = set()
+    for row in rows:
+        parameters = (
+            row["parameters"]
+            if "parameters" in row.keys()
+            else {}
+        )
+        if isinstance(parameters, str):
+            try:
+                parameters = json.loads(parameters)
+            except json.JSONDecodeError:
+                parameters = {}
+        if not isinstance(parameters, dict):
+            continue
+        cache_prefix = parameters.get("cache_prefix")
+        if not isinstance(cache_prefix, str) or not cache_prefix.strip():
+            continue
+        prefix = Path(cache_prefix)
+        if not prefix.is_absolute():
+            prefix = app_root / prefix
+        active_cache_matrices.add(
+            Path(f"{prefix.resolve()}.matrix.npz")
+        )
     cutoff = now.timestamp() - minimum_age_seconds
     candidates: list[tuple[float, int, Path]] = []
     for path in root.rglob("*.matrix.npz"):
@@ -6106,6 +6137,8 @@ def periodic_model_cache_archive_paths(
             continue
         match = re.search(r"(?:^|/)job-(\d{8})(?:-|/)", path.as_posix())
         if match and int(match.group(1)) in active_job_ids:
+            continue
+        if path.resolve() in active_cache_matrices:
             continue
         candidates.append((stat.st_mtime, -stat.st_size, path))
     selected: list[str] = []

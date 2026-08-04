@@ -25,7 +25,14 @@ class _Queue:
 
     def execute(self, query, params=()):
         if "SELECT job_id" in query:
-            return _Rows([{"job_id": value} for value in self.active])
+            return _Rows([
+                (
+                    value
+                    if isinstance(value, dict)
+                    else {"job_id": value, "parameters": {}}
+                )
+                for value in self.active
+            ])
         if "SELECT COUNT(*) AS count" in query:
             return _Rows([{"count": 0}])
         raise AssertionError(query)
@@ -59,6 +66,26 @@ def test_periodic_cache_selection_excludes_recent_active_and_archived(tmp_path):
     )
 
     assert selected == [str(old.relative_to(tmp_path))]
+
+
+def test_periodic_cache_selection_protects_active_dependency_prefix(tmp_path):
+    dependent = _matrix(tmp_path, 11732, age_hours=48)
+    other = _matrix(tmp_path, 11733, age_hours=48)
+    prefix = str(dependent)[: -len(".matrix.npz")]
+    queue = _Queue(active=({
+        "job_id": 12499,
+        "parameters": {
+            "cache_prefix": str(Path(prefix).relative_to(tmp_path)),
+        },
+    },))
+
+    selected = periodic_model_cache_archive_paths(
+        queue,
+        app_root=tmp_path,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert selected == [str(other.relative_to(tmp_path))]
 
 
 def test_periodic_seed_registers_explicit_model_cache_paths(monkeypatch, tmp_path):
