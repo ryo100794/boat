@@ -4453,6 +4453,7 @@ def test_market_residual_reused_holdout_result_contract() -> None:
             }],
         },
         "research_coverage_gate": {
+            "source": "coverage_gate.clean_dates",
             "requested_from": "2025-07-26",
             "requested_through": "2026-08-02",
             "requested_calendar_days": 373,
@@ -4492,6 +4493,35 @@ def test_market_residual_reused_holdout_result_contract() -> None:
                 "trend_point_reversed_place_pair_diagnostic": None,
             },
         )
+
+
+def test_load_result_migrates_legacy_research_coverage(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-market-research.json"
+    path.write_text(
+        json.dumps({
+            "reused_holdout_research_only": True,
+            "from_date": "2025-07-26",
+            "through_date": "2026-08-02",
+            "coverage_gate": {
+                "clean_dates": ["2025-07-26", "2025-07-27"],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    payload, summary = evaluation_queue._load_result(path)
+
+    gate = payload["research_coverage_gate"]
+    assert gate["source"] == "coverage_gate.clean_dates"
+    assert gate["clean_days"] == 2
+    assert gate["clean_day_fraction"] == 2 / 373
+    assert gate["pass"] is False
+    assert gate["migrated_from_legacy_result"] is True
+    assert summary["research_clean_days"] == 2
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["research_coverage_gate"] == gate
 
 
 def test_market_residual_walk_forward_builds_fixed_model_blend_command(

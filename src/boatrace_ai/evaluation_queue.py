@@ -5589,11 +5589,67 @@ def _attach_tail_portfolio_diagnostics(value: Any) -> bool:
     return changed
 
 
+def _attach_research_holdout_coverage(payload: dict[str, Any]) -> bool:
+    """Upgrade legacy research results from their recorded clean-day ledger."""
+    if (
+        payload.get("reused_holdout_research_only") is not True
+        or isinstance(payload.get("research_coverage_gate"), dict)
+    ):
+        return False
+    coverage = payload.get("coverage_gate")
+    if not isinstance(coverage, dict):
+        return False
+    clean_dates = sorted({
+        str(value) for value in (coverage.get("clean_dates") or [])
+    })
+    if not clean_dates:
+        return False
+    try:
+        requested_from = datetime.strptime(
+            str(payload.get("from_date")), "%Y-%m-%d"
+        ).date()
+        requested_through = datetime.strptime(
+            str(payload.get("through_date")), "%Y-%m-%d"
+        ).date()
+        parsed_clean_dates = [
+            datetime.strptime(value, "%Y-%m-%d").date()
+            for value in clean_dates
+        ]
+    except ValueError:
+        return False
+    requested_calendar_days = (
+        requested_through - requested_from
+    ).days + 1
+    if (
+        requested_calendar_days <= 0
+        or any(
+            value < requested_from or value > requested_through
+            for value in parsed_clean_dates
+        )
+    ):
+        return False
+    minimum_clean_days = 300
+    payload["research_coverage_gate"] = {
+        "source": "coverage_gate.clean_dates",
+        "requested_from": requested_from.isoformat(),
+        "requested_through": requested_through.isoformat(),
+        "requested_calendar_days": requested_calendar_days,
+        "minimum_clean_days": minimum_clean_days,
+        "clean_days": len(clean_dates),
+        "clean_day_fraction": len(clean_dates) / requested_calendar_days,
+        "pass": len(clean_dates) >= minimum_clean_days,
+        "migrated_from_legacy_result": True,
+    }
+    return True
+
+
 def _load_result(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("evaluation result must be a JSON object")
-    if _attach_tail_portfolio_diagnostics(payload):
+    changed = _attach_tail_portfolio_diagnostics(payload)
+    changed = _attach_research_holdout_coverage(payload) or changed
+    if changed:
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -5737,6 +5793,8 @@ def _validate_job_result_contract(
             )
             or research_coverage.get("requested_from")
             != requested_from.isoformat()
+            or research_coverage.get("source")
+            != "coverage_gate.clean_dates"
             or research_coverage.get("requested_through")
             != requested_through.isoformat()
             or int(research_coverage.get("requested_calendar_days") or 0)

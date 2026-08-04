@@ -6779,6 +6779,7 @@ def research_holdout_coverage_gate(
     dates = sorted({str(value) for value in clean_dates})
     requested_calendar_days = (end - start).days + 1
     return {
+        "source": "coverage_gate.clean_dates",
         "requested_from": start.isoformat(),
         "requested_through": end.isoformat(),
         "requested_calendar_days": requested_calendar_days,

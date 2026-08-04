@@ -1295,6 +1295,7 @@ def test_research_holdout_coverage_requires_300_actual_clean_days() -> None:
     )
 
     assert failing["requested_calendar_days"] == 365
+    assert failing["source"] == "coverage_gate.clean_dates"
     assert failing["clean_days"] == 299
     assert failing["pass"] is False
     assert passing["clean_days"] == 300
