@@ -329,6 +329,7 @@ def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> No
     assert result["promotion_gate"]["sample_size_pass"] is False
     assert result["promotion_gate"]["evaluated_races_pass"] is False
     assert result["promotion_gate"]["effective_hit_count_pass"] is False
+    assert result["promotion_gate"]["largest_hit_return_share_pass"] is False
     assert result["promotion_gate"]["profitable_day_fraction_pass"] is True
     assert result["promotion_gate"]["market_log_loss_confidence_pass"] is False
     assert result["promotion_gate"]["market_top5_confidence_pass"] is False
@@ -399,6 +400,12 @@ def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
     assert profitable["promotion_gate"]["minimum_evaluated_races"] == 1_000
     assert profitable["promotion_gate"]["minimum_tickets"] == 200
     assert profitable["promotion_gate"]["minimum_effective_hits"] == 20.0
+    assert profitable["promotion_gate"][
+        "maximum_largest_hit_return_share"
+    ] == 0.15
+    assert profitable["promotion_gate"][
+        "largest_hit_return_share_pass"
+    ] is False
     assert profitable["promotion_gate"]["minimum_profitable_day_fraction"] == 0.60
     assert profitable["promotion_gate"]["minimum_market_confidence"] == 0.95
     assert profitable["promotion_gate"]["clean_evaluation_days_pass"] is False

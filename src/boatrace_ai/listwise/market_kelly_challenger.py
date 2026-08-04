@@ -192,6 +192,7 @@ def _promotion_gate(
     effective_hit_count = float(
         reliability.get("effective_hit_count") or 0.0
     )
+    largest_hit_return_share = reliability.get("largest_hit_return_share")
     log_loss_confidence = float(
         market.get("challenger_improvement_confidence") or 0.0
     )
@@ -208,6 +209,7 @@ def _promotion_gate(
         "minimum_hits": 20,
         "minimum_effective_hits": 20.0,
         "minimum_profitable_day_fraction": 0.60,
+        "maximum_largest_hit_return_share": 0.15,
         "minimum_market_confidence": 0.95,
         "minimum_selected_probability_calibration_pvalue": 0.05,
         "sample_size_pass": (
@@ -218,6 +220,10 @@ def _promotion_gate(
         "clean_evaluation_days_pass": len(daily) >= 30,
         "evaluated_races_pass": evaluated_races >= 1_000,
         "effective_hit_count_pass": effective_hit_count >= 20.0,
+        "largest_hit_return_share_pass": bool(
+            largest_hit_return_share is not None
+            and float(largest_hit_return_share) <= 0.15
+        ),
         "profitable_day_fraction_pass": profitable_day_fraction >= 0.60,
         "market_log_loss_confidence_pass": log_loss_confidence >= 0.95,
         "market_top5_confidence_pass": top5_confidence >= 0.95,
@@ -249,6 +255,7 @@ def _promotion_gate(
             "clean_evaluation_days_pass",
             "evaluated_races_pass",
             "effective_hit_count_pass",
+            "largest_hit_return_share_pass",
             "profitable_day_fraction_pass",
             "market_log_loss_confidence_pass",
             "market_top5_confidence_pass",
