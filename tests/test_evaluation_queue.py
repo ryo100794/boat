@@ -1881,7 +1881,19 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
                     "hit_tickets": 8,
                     "roi": 1.1,
                     "roi_without_largest_hit": 0.9,
-                    "policy": {"allocation_filter": allocation_filter},
+                    "policy": {
+                        "allocation_filter": allocation_filter,
+                        **(
+                            {
+                                "maximum_estimated_odds": 100.0,
+                                "maximum_estimated_odds_stage": (
+                                    "before_daily_allocation"
+                                ),
+                            }
+                            if key.endswith("_normal_odds")
+                            else {}
+                        ),
+                    },
                 },
             }
             for key, allocation_filter in pair_filters.items()

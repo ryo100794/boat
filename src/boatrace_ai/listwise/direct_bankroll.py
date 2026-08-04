@@ -320,6 +320,7 @@ def standard_direct_policy() -> dict[str, Any]:
         "min_stake_yen": 100,
         "bet_type": "3連単",
         "include_odds": False,
+        "maximum_estimated_odds": None,
         "payout_estimator": (
             "training-period trifecta payout mean with global prior"
         ),
@@ -1453,6 +1454,16 @@ def simulate_direct_bankroll(
     if values.shape != (len(race_keys), len(COMBINATION_LABELS)):
         raise ValueError("probability matrix and race keys must align")
     selected_policy = dict(policy or standard_direct_policy())
+    maximum_estimated_odds = selected_policy.get(
+        "maximum_estimated_odds"
+    )
+    if maximum_estimated_odds is not None and (
+        not math.isfinite(float(maximum_estimated_odds))
+        or float(maximum_estimated_odds) <= 1.0
+    ):
+        raise ValueError(
+            "maximum_estimated_odds must be finite and greater than 1.0"
+        )
     if allocation_filter is not None:
         if not allocation_filter_name:
             raise ValueError(
@@ -1472,14 +1483,21 @@ def simulate_direct_bankroll(
         if actual is None:
             continue
         evaluated_by_day[race_date].add(race_id)
+        generated_candidates = direct_candidates(
+            values[row_index],
+            race_key=race_key,
+            actual=actual,
+            payout_model=payout_model,
+            ev_threshold=float(selected_policy["ev_threshold"]),
+        )
+        if maximum_estimated_odds is not None:
+            generated_candidates = [
+                row for row in generated_candidates
+                if float(row["estimated_odds"])
+                <= float(maximum_estimated_odds)
+            ]
         candidates_by_day[race_date].extend(
-            direct_candidates(
-                values[row_index],
-                race_key=race_key,
-                actual=actual,
-                payout_model=payout_model,
-                ev_threshold=float(selected_policy["ev_threshold"]),
-            )
+            generated_candidates
         )
 
     totals = zero_totals()

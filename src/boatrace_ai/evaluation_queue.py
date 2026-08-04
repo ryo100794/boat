@@ -6140,6 +6140,15 @@ def _validate_job_result_contract(
                 or pair_bankroll.get("evaluated_races") != expected_races
                 or not isinstance(policy, dict)
                 or policy.get("allocation_filter") != expected_filter
+                or (
+                    key.endswith("_normal_odds")
+                    and (
+                        float(policy.get("maximum_estimated_odds") or 0.0)
+                        != 100.0
+                        or policy.get("maximum_estimated_odds_stage")
+                        != "before_daily_allocation"
+                    )
+                )
                 or not _valid_tail_portfolio_contract(pair_bankroll)
             ):
                 raise ValueError(

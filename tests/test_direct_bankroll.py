@@ -233,6 +233,25 @@ def test_direct_bankroll_reversed_pair_filter_uses_post_allocation_count() -> No
         "exact_two_same_winner_reversed_second_third"
     )
 
+    allocation_sizes = []
+    capped_policy = dict(policy)
+    capped_policy["maximum_estimated_odds"] = 10.0
+    capped = simulate_direct_bankroll(
+        probabilities,
+        race_keys=[("test", "2026-07-20", "01", 1)],
+        payouts=payouts,
+        training_races={"train"},
+        policy=capped_policy,
+        allocation_filter=(
+            lambda rows: allocation_sizes.append(len(rows)) or rows
+        ),
+        allocation_filter_name="capture_pre_allocation_odds_cap",
+    )
+
+    assert allocation_sizes == [0]
+    assert capped["selected_tickets"] == 0
+    assert capped["policy"]["maximum_estimated_odds"] == 10.0
+
 
 
 def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:

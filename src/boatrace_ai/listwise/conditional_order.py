@@ -28,6 +28,7 @@ from .direct_bankroll import (
     filter_exact_two_allocations,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
+    standard_direct_policy,
     validate_conditional_payout_inference_state,
 )
 from .return_bankroll import (
@@ -641,6 +642,12 @@ def evaluate_direct_pair_diagnostics(
         require_reversed_place_pair=True,
         maximum_estimated_odds=100.0,
     )
+    normal_odds_policy = standard_direct_policy()
+    normal_odds_policy.update({
+        "maximum_estimated_odds": 100.0,
+        "maximum_estimated_odds_field": "estimated_odds",
+        "maximum_estimated_odds_stage": "before_daily_allocation",
+    })
     pair_bankrolls = {
         "baseline_exact_two": simulate_direct_bankroll(
             baseline_probabilities,
@@ -683,6 +690,7 @@ def evaluate_direct_pair_diagnostics(
             race_keys=race_keys,
             payouts=payouts,
             training_races=training_races,
+            policy=normal_odds_policy,
             allocation_filter=exact_two_normal_odds_filter,
             allocation_filter_name=(
                 "exact_two_allocated_tickets_max_estimated_odds_100"
@@ -693,6 +701,7 @@ def evaluate_direct_pair_diagnostics(
             race_keys=race_keys,
             payouts=payouts,
             training_races=training_races,
+            policy=normal_odds_policy,
             allocation_filter=reversed_pair_normal_odds_filter,
             allocation_filter_name=(
                 "exact_two_same_winner_reversed_second_third_"
@@ -704,6 +713,7 @@ def evaluate_direct_pair_diagnostics(
             race_keys=race_keys,
             payouts=payouts,
             training_races=training_races,
+            policy=normal_odds_policy,
             allocation_filter=exact_two_normal_odds_filter,
             allocation_filter_name=(
                 "exact_two_allocated_tickets_max_estimated_odds_100"
@@ -715,6 +725,7 @@ def evaluate_direct_pair_diagnostics(
                 race_keys=race_keys,
                 payouts=payouts,
                 training_races=training_races,
+                policy=normal_odds_policy,
                 allocation_filter=reversed_pair_normal_odds_filter,
                 allocation_filter_name=(
                     "exact_two_same_winner_reversed_second_third_"
