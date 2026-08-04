@@ -12,18 +12,26 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
             "evaluation_from": "2026-07-01",
             "evaluation_through": "2026-07-19",
             "nonlinear_market_offset_residual_v38": {
+                "market_is_exact_nested_null": True,
+                "selected_tree_preset": "compact",
                 "selected_shrinkage": 0.25,
+                "inner_fit_through": "2026-06-20",
+                "inner_validation_from": "2026-06-21",
                 "artifact": {
                     "feature_dimension": 121,
                     "objective": (
                         "grouped_multinomial_logloss_with_fixed_market_offset"
                     ),
                     "training_races": 6972,
+                    "booster_sha256": "a" * 64,
                 },
                 "metrics": {
                     "evaluated_races": 2744,
+                    "evaluated_days": 19,
                     "trifecta_log_loss": 3.69,
                     "market_trifecta_log_loss": 3.70,
+                    "log_loss_delta_vs_market": -0.01,
+                    "days_better_than_market": 13,
                     "trifecta_top5_hit_rate": 0.374,
                     "market_trifecta_top5_hit_rate": 0.372,
                 },
@@ -51,6 +59,11 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert summary["model"] == "nonlinear_market_offset_residual_v38"
     assert summary["trifecta_log_loss"] == 3.69
     assert summary["market_trifecta_log_loss"] == 3.70
+    assert summary["residual_selected_shrinkage"] == 0.25
+    assert summary["residual_selected_tree_preset"] == "compact"
+    assert summary["residual_log_loss_delta_vs_market"] == -0.01
+    assert summary["residual_days_better_than_market"] == 13
+    assert summary["residual_booster_sha256"] == "a" * 64
     assert summary["residual_objective"] == (
         "grouped_multinomial_logloss_with_fixed_market_offset"
     )

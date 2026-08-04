@@ -106,6 +106,22 @@ def apply_archive_residual_summary(
         "evaluation_from": temporal.get("evaluation_from"),
         "evaluation_through": temporal.get("evaluation_through"),
     })
+    for key in (
+        "evaluated_days",
+        "log_loss_delta_vs_market",
+        "days_better_than_market",
+    ):
+        if metrics.get(key) is not None:
+            summary[f"residual_{key}"] = metrics.get(key)
+    for key in (
+        "market_is_exact_nested_null",
+        "selected_tree_preset",
+        "selected_shrinkage",
+        "inner_fit_through",
+        "inner_validation_from",
+    ):
+        if selected.get(key) is not None:
+            summary[f"residual_{key}"] = selected.get(key)
     artifact = selected.get(str(selected_artifact_key))
     if isinstance(artifact, Mapping):
         for key in (
@@ -121,6 +137,8 @@ def apply_archive_residual_summary(
             "iterations",
             "converged",
             "training_races",
+            "tree_preset",
+            "booster_sha256",
         ):
             if key in artifact:
                 summary[f"residual_{key}"] = artifact[key]
