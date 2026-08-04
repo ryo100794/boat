@@ -20,10 +20,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v4"
+MODEL_VERSION = "joint_edge_calibrated_replay_v5"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v4"
+    "stake_weighted_isotonic_lcb_v5_race_independent"
 )
 
 
@@ -77,6 +77,9 @@ def _candidate_record(
     *,
     buy_margin: float,
 ) -> dict[str, object] | None:
+    race_id = str(race.get("race_id") or "")
+    if not race_id:
+        raise ValueError("candidate calibration record requires race_id")
     stake = int(race.get("best_search_stake_yen") or 0)
     separate_validation = bool(
         race.get("validation_uses_separate_draw_set")
@@ -117,6 +120,7 @@ def _candidate_record(
         "settlement_available_at",
     )
     return {
+        "race_id": race_id,
         "race_date": race_date,
         "settlement_available_at": settlement_available_at.isoformat(),
         "raw_estimated_ev": raw_gross_return,
@@ -374,6 +378,14 @@ def run_joint_edge_calibrated_replay(
     for day_index, source_day in enumerate(payload["daily"]):
         race_date = str(source_day.get("race_date") or "")
         source_races = source_day.get("races") or []
+        evaluation_race_ids = [
+            str(race.get("race_id") or "") for race in source_races
+        ]
+        if any(not race_id for race_id in evaluation_race_ids):
+            raise ValueError("every evaluation race requires race_id")
+        if len(evaluation_race_ids) != len(set(evaluation_race_ids)):
+            raise ValueError("evaluation fold contains duplicate race_id")
+        evaluation_race_id_set = set(evaluation_race_ids)
         day_decision_instants = [
             _decision_time(race, decision_times) for race in source_races
         ]
@@ -384,15 +396,39 @@ def run_joint_edge_calibrated_replay(
                 "calibration_asof",
             ),
         )
-        eligible_training_records = [
+        settled_training_records = [
             record for record in training_records
             if _instant(
                 record.get("settlement_available_at"),
                 "training_settlement_available_at",
             ) < calibration_asof
         ]
+        same_race_excluded_records = [
+            record for record in settled_training_records
+            if str(record.get("race_id") or "") in evaluation_race_id_set
+        ]
+        eligible_training_records = [
+            record for record in settled_training_records
+            if str(record.get("race_id") or "") not in evaluation_race_id_set
+        ]
         excluded_unsettled_records = (
-            len(training_records) - len(eligible_training_records)
+            len(training_records) - len(settled_training_records)
+        )
+        eligible_training_race_ids = [
+            str(record.get("race_id") or "")
+            for record in eligible_training_records
+        ]
+        if len(eligible_training_race_ids) != len(
+            set(eligible_training_race_ids)
+        ):
+            raise ValueError(
+                "calibration teacher contains duplicate race_id"
+            )
+        same_race_teacher_overlap = sorted(
+            evaluation_race_id_set.intersection(eligible_training_race_ids)
+        )
+        training_race_manifest_sha256 = _canonical_sha256(
+            sorted(eligible_training_race_ids)
         )
         latest_training_settlement_instant = max(
             (
@@ -427,6 +463,21 @@ def run_joint_edge_calibrated_replay(
             ),
             "settlement_excluded_training_records": (
                 excluded_unsettled_records
+            ),
+            "same_race_excluded_training_records": len(
+                same_race_excluded_records
+            ),
+            "same_race_teacher_overlap_count": len(
+                same_race_teacher_overlap
+            ),
+            "same_race_teacher_overlap_race_ids": (
+                same_race_teacher_overlap
+            ),
+            "eligible_training_unique_races": len(
+                eligible_training_race_ids
+            ),
+            "eligible_training_race_manifest_sha256": (
+                training_race_manifest_sha256
             ),
             "latest_training_settlement_available_at": (
                 latest_training_settlement
@@ -566,6 +617,27 @@ def run_joint_edge_calibrated_replay(
                 "calibration_trained_through_date": (
                     calibrator.trained_through_date
                 ),
+                "calibration_ready": calibrator.ready,
+                "calibration_information_cutoff": (
+                    calibration_asof.isoformat()
+                ),
+                "calibration_latest_training_settlement_available_at": (
+                    latest_training_settlement
+                ),
+                "calibration_latest_settlement_strictly_before_"
+                "evaluation_time_t": bool(
+                    latest_training_settlement_instant is None
+                    or latest_training_settlement_instant < purchase_at
+                ),
+                "calibration_settlement_eligible_training_records": len(
+                    eligible_training_records
+                ),
+                "calibration_same_race_teacher_overlap_count": len(
+                    same_race_teacher_overlap
+                ),
+                "calibration_training_race_manifest_sha256": (
+                    training_race_manifest_sha256
+                ),
                 "base_joint_gate_feasible": structural_feasible,
                 "counterfactual_stake_yen": counterfactual_stake,
                 "counterfactual_return_yen": counterfactual_return,
@@ -594,6 +666,18 @@ def run_joint_edge_calibrated_replay(
             ),
             "settlement_excluded_training_records": (
                 excluded_unsettled_records
+            ),
+            "same_race_excluded_training_records": len(
+                same_race_excluded_records
+            ),
+            "same_race_teacher_overlap_count": len(
+                same_race_teacher_overlap
+            ),
+            "eligible_training_unique_races": len(
+                eligible_training_race_ids
+            ),
+            "eligible_training_race_manifest_sha256": (
+                training_race_manifest_sha256
             ),
             "calibration_ready": calibrator.ready,
             "calibration_trained_through_date": calibrator.trained_through_date,
@@ -687,6 +771,15 @@ def run_joint_edge_calibrated_replay(
             "strict_settlement_before_decision": bool(
                 fold.get("strict_settlement_before_decision")
             ),
+            "same_race_teacher_overlap_count": int(
+                fold.get("same_race_teacher_overlap_count") or 0
+            ),
+            "eligible_training_unique_races": int(
+                fold.get("eligible_training_unique_races") or 0
+            ),
+            "eligible_training_race_manifest_sha256": str(
+                fold.get("eligible_training_race_manifest_sha256") or ""
+            ),
         }
         for fold in calibration_folds
         if fold.get("ready")
@@ -710,8 +803,53 @@ def run_joint_edge_calibrated_replay(
             )
         )
     ]
+    ready_candidate_boundaries = [
+        {
+            "race_id": str(race.get("race_id") or ""),
+            "evaluation_time_t": str(
+                race.get("evaluation_time_t") or ""
+            ),
+            "latest_training_settlement_available_at": race.get(
+                "calibration_latest_training_settlement_available_at"
+            ),
+            "strict_settlement_before_evaluation_time_t": bool(
+                race.get(
+                    "calibration_latest_settlement_strictly_before_"
+                    "evaluation_time_t"
+                )
+            ),
+            "same_race_teacher_overlap_count": int(
+                race.get(
+                    "calibration_same_race_teacher_overlap_count"
+                ) or 0
+            ),
+            "training_race_manifest_sha256": str(
+                race.get("calibration_training_race_manifest_sha256") or ""
+            ),
+        }
+        for day in replay_days
+        for race in day.get("races") or []
+        if race.get("calibration_ready")
+    ]
+    candidate_settlement_violations = [
+        row for row in ready_candidate_boundaries
+        if not row["strict_settlement_before_evaluation_time_t"]
+        or (
+            row["latest_training_settlement_available_at"] is not None
+            and _instant(
+                row["latest_training_settlement_available_at"],
+                "latest_training_settlement_available_at",
+            ) >= _instant(
+                row["evaluation_time_t"], "evaluation_time_t"
+            )
+        )
+    ]
+    same_race_teacher_violations = [
+        row for row in ready_boundaries
+        if row["same_race_teacher_overlap_count"] != 0
+    ]
     independence_audit = {
-        "version": "strict_prior_calibrated_value_independence_audit_v1",
+        "version": "strict_prior_calibrated_value_independence_audit_v2",
         "calibration_folds": len(calibration_folds),
         "calibration_ready_folds": len(ready_boundaries),
         "strict_prior_fold_violations": len(strict_prior_violations),
@@ -724,9 +862,32 @@ def run_joint_edge_calibrated_replay(
         "settlement_before_decision_for_every_ready_fold": bool(
             ready_boundaries and not strict_settlement_violations
         ),
+        "ready_candidate_calibration_boundaries": len(
+            ready_candidate_boundaries
+        ),
+        "candidate_settlement_boundary_violations": len(
+            candidate_settlement_violations
+        ),
+        "settlement_before_decision_for_every_ready_candidate": bool(
+            ready_candidate_boundaries
+            and not candidate_settlement_violations
+        ),
+        "candidate_boundary_manifest_sha256": _canonical_sha256(
+            ready_candidate_boundaries
+        ),
         "settlement_boundary_definition": (
             "candidate_settlement_available_at_strictly_before_"
             "earliest_evaluation_time_t_of_fold"
+        ),
+        "same_race_teacher_fold_violations": len(
+            same_race_teacher_violations
+        ),
+        "same_race_excluded_for_every_ready_fold": bool(
+            ready_boundaries and not same_race_teacher_violations
+        ),
+        "same_race_rule": (
+            "evaluation_race_id_must_not_appear_in_calibration_teacher_"
+            "and_one_candidate_portfolio_per_race"
         ),
         "fold_boundary_manifest_sha256": _canonical_sha256(ready_boundaries),
         "search_validation_draw_sets_disjoint": (
@@ -758,7 +919,10 @@ def run_joint_edge_calibrated_replay(
             "strict_prior_training_for_every_ready_fold"
         ],
         "strict_settlement_before_decision": independence_audit[
-            "settlement_before_decision_for_every_ready_fold"
+            "settlement_before_decision_for_every_ready_candidate"
+        ],
+        "same_race_calibration_independence": independence_audit[
+            "same_race_excluded_for_every_ready_fold"
         ],
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
@@ -815,6 +979,8 @@ def run_joint_edge_calibrated_replay(
         non_independent_value_purchases,
         strict_prior_violations,
         strict_settlement_violations,
+        candidate_settlement_violations,
+        same_race_teacher_violations,
     ))
     mature_observation_window = ready_days >= 30 and ready_races >= 1_000
     purchase_gate_outcome = _purchase_gate_outcome(
@@ -842,7 +1008,7 @@ def run_joint_edge_calibrated_replay(
         ),
     }
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v4",
+        "version": "joint_edge_calibrated_replay_protocol_v5",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -876,6 +1042,13 @@ def run_joint_edge_calibrated_replay(
             "information_boundary": (
                 "strictly_prior_complete_days_and_settlement_available_at_"
                 "strictly_before_fold_earliest_decision_time"
+            ),
+            "same_race_rule": (
+                "exclude_all_teacher_records_with_evaluation_race_id_"
+                "and_reject_duplicate_race_ids_within_a_fold"
+            ),
+            "independent_sample_unit": (
+                "one_stake_weighted_candidate_portfolio_per_race"
             ),
             "sample_weight": "candidate_portfolio_stake_yen",
             "primary_input": (

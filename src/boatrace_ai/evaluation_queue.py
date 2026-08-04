@@ -3928,8 +3928,44 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                     "settlement_before_decision_for_every_ready_fold"
                 )
             ),
+            "calibration_ready_candidate_boundaries": (
+                independence_audit.get(
+                    "ready_candidate_calibration_boundaries"
+                )
+            ),
+            "calibration_candidate_settlement_boundary_violations": (
+                independence_audit.get(
+                    "candidate_settlement_boundary_violations"
+                )
+            ),
+            "calibration_settlement_before_decision_all_ready_candidates": (
+                independence_audit.get(
+                    "settlement_before_decision_for_every_ready_candidate"
+                )
+            ),
+            "calibration_candidate_boundary_manifest_sha256": (
+                independence_audit.get(
+                    "candidate_boundary_manifest_sha256"
+                )
+            ),
             "calibration_settlement_boundary_definition": (
                 independence_audit.get("settlement_boundary_definition")
+            ),
+            "calibration_same_race_teacher_fold_violations": (
+                independence_audit.get(
+                    "same_race_teacher_fold_violations"
+                )
+            ),
+            "calibration_same_race_excluded_all_ready_folds": (
+                independence_audit.get(
+                    "same_race_excluded_for_every_ready_fold"
+                )
+            ),
+            "calibration_same_race_rule": independence_audit.get(
+                "same_race_rule"
+            ),
+            "calibration_independent_sample_unit": (
+                calibration_protocol.get("independent_sample_unit")
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"

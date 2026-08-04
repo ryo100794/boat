@@ -3386,8 +3386,36 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                         "calibration_settlement_before_decision_all_ready_folds"
                     )
                 ),
+                "calibration_ready_candidate_boundaries": metrics.get(
+                    "calibration_ready_candidate_boundaries"
+                ),
+                "calibration_candidate_settlement_boundary_violations": (
+                    metrics.get(
+                        "calibration_candidate_settlement_boundary_violations"
+                    )
+                ),
+                "calibration_settlement_before_decision_all_ready_candidates": (
+                    metrics.get(
+                        "calibration_settlement_before_decision_all_ready_candidates"
+                    )
+                ),
+                "calibration_candidate_boundary_manifest_sha256": metrics.get(
+                    "calibration_candidate_boundary_manifest_sha256"
+                ),
                 "calibration_settlement_boundary_definition": metrics.get(
                     "calibration_settlement_boundary_definition"
+                ),
+                "calibration_same_race_teacher_fold_violations": metrics.get(
+                    "calibration_same_race_teacher_fold_violations"
+                ),
+                "calibration_same_race_excluded_all_ready_folds": metrics.get(
+                    "calibration_same_race_excluded_all_ready_folds"
+                ),
+                "calibration_same_race_rule": metrics.get(
+                    "calibration_same_race_rule"
+                ),
+                "calibration_independent_sample_unit": metrics.get(
+                    "calibration_independent_sample_unit"
                 ),
                 "calibration_target_unit": metrics.get(
                     "calibration_target_unit"
@@ -4164,10 +4192,46 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                         "calibration_settlement_before_decision_all_ready_folds"
                     )
                 ),
+                "calibration_ready_candidate_boundaries": (
+                    candidate_metrics.get(
+                        "calibration_ready_candidate_boundaries"
+                    )
+                ),
+                "calibration_candidate_settlement_boundary_violations": (
+                    candidate_metrics.get(
+                        "calibration_candidate_settlement_boundary_violations"
+                    )
+                ),
+                "calibration_settlement_before_decision_all_ready_candidates": (
+                    candidate_metrics.get(
+                        "calibration_settlement_before_decision_all_ready_candidates"
+                    )
+                ),
+                "calibration_candidate_boundary_manifest_sha256": (
+                    candidate_metrics.get(
+                        "calibration_candidate_boundary_manifest_sha256"
+                    )
+                ),
                 "calibration_settlement_boundary_definition": (
                     candidate_metrics.get(
                         "calibration_settlement_boundary_definition"
                     )
+                ),
+                "calibration_same_race_teacher_fold_violations": (
+                    candidate_metrics.get(
+                        "calibration_same_race_teacher_fold_violations"
+                    )
+                ),
+                "calibration_same_race_excluded_all_ready_folds": (
+                    candidate_metrics.get(
+                        "calibration_same_race_excluded_all_ready_folds"
+                    )
+                ),
+                "calibration_same_race_rule": candidate_metrics.get(
+                    "calibration_same_race_rule"
+                ),
+                "calibration_independent_sample_unit": candidate_metrics.get(
+                    "calibration_independent_sample_unit"
                 ),
                 "calibration_target_unit": candidate_metrics.get(
                     "calibration_target_unit"
@@ -8506,7 +8570,15 @@ def model_performance_audit_snapshot(
                 "calibration_strict_prior_all_ready_folds",
                 "calibration_strict_settlement_fold_violations",
                 "calibration_settlement_before_decision_all_ready_folds",
+                "calibration_ready_candidate_boundaries",
+                "calibration_candidate_settlement_boundary_violations",
+                "calibration_settlement_before_decision_all_ready_candidates",
+                "calibration_candidate_boundary_manifest_sha256",
                 "calibration_settlement_boundary_definition",
+                "calibration_same_race_teacher_fold_violations",
+                "calibration_same_race_excluded_all_ready_folds",
+                "calibration_same_race_rule",
+                "calibration_independent_sample_unit",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",

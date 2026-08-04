@@ -122,6 +122,24 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert independence[
         "settlement_before_decision_for_every_ready_fold"
     ] is True
+    assert independence[
+        "settlement_before_decision_for_every_ready_candidate"
+    ] is True
+    assert independence["candidate_settlement_boundary_violations"] == 0
+    assert independence["ready_candidate_calibration_boundaries"] == 2
+    assert len(independence["candidate_boundary_manifest_sha256"]) == 64
+    assert all(
+        race[
+            "calibration_latest_settlement_strictly_before_"
+            "evaluation_time_t"
+        ] is True
+        for day in profitable["daily"] if day["calibration_ready"]
+        for race in day["races"]
+    )
+    assert independence["same_race_teacher_fold_violations"] == 0
+    assert independence[
+        "same_race_excluded_for_every_ready_fold"
+    ] is True
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -150,6 +168,9 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert calibration_protocol["purchase_condition"] == (
         "calibrated_gross_return_lcb95_greater_than_"
         "one_plus_calibration_margin"
+    )
+    assert calibration_protocol["independent_sample_unit"] == (
+        "one_stake_weighted_candidate_portfolio_per_race"
     )
     assert profitable["formal_purchase_value"]["value_unit"] == (
         "net_expected_edge_equals_gross_return_minus_one"
@@ -205,6 +226,45 @@ def test_calibration_excludes_candidates_not_strictly_settled_before_decision(
     assert result["calibration_independence_audit"][
         "strict_settlement_fold_violations"
     ] == 0
+
+
+def test_calibration_excludes_prior_record_from_same_race(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "same-race.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    repeated_race_id = payload["daily"][0]["races"][0]["race_id"]
+    payload["daily"][2]["races"][0]["race_id"] = repeated_race_id
+    payload["daily"] = payload["daily"][:3]
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    day3 = result["daily"][2]
+    race3 = day3["races"][0]
+    assert day3["same_race_excluded_training_records"] == 1
+    assert day3["same_race_teacher_overlap_count"] == 0
+    assert day3["eligible_training_unique_races"] == 1
+    assert day3["calibration_ready"] is False
+    assert race3["calibration_same_race_teacher_overlap_count"] == 0
+    assert result["calibration_independence_audit"][
+        "same_race_teacher_fold_violations"
+    ] == 0
+
+
+def test_duplicate_race_id_within_evaluation_fold_fails_closed(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "duplicate-race.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    duplicate = dict(payload["daily"][0]["races"][0])
+    payload["daily"][0]["races"].append(duplicate)
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="evaluation fold contains duplicate race_id"
+    ):
+        _run(artifact)
 
 
 def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
@@ -363,7 +423,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v4",
+        "model": "joint_edge_calibrated_replay_v5",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -376,6 +436,9 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
                 "purchase_condition": (
                     "calibrated_gross_return_lcb95_greater_than_"
                     "one_plus_calibration_margin"
+                ),
+                "independent_sample_unit": (
+                    "one_stake_weighted_candidate_portfolio_per_race"
                 ),
             },
         },
@@ -404,9 +467,19 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "strict_prior_training_for_every_ready_fold": True,
             "strict_settlement_fold_violations": 0,
             "settlement_before_decision_for_every_ready_fold": True,
+            "ready_candidate_calibration_boundaries": 280,
+            "candidate_settlement_boundary_violations": 0,
+            "settlement_before_decision_for_every_ready_candidate": True,
+            "candidate_boundary_manifest_sha256": "candidate-boundaries",
             "settlement_boundary_definition": (
                 "candidate_settlement_available_at_strictly_before_"
                 "earliest_evaluation_time_t_of_fold"
+            ),
+            "same_race_teacher_fold_violations": 0,
+            "same_race_excluded_for_every_ready_fold": True,
+            "same_race_rule": (
+                "evaluation_race_id_must_not_appear_in_calibration_teacher_"
+                "and_one_candidate_portfolio_per_race"
             ),
             "search_validation_draw_sets_disjoint": True,
             "value_population_manifest_sha256": "abc123",
@@ -454,6 +527,22 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary[
         "calibration_settlement_before_decision_all_ready_folds"
     ] is True
+    assert summary[
+        "calibration_settlement_before_decision_all_ready_candidates"
+    ] is True
+    assert summary[
+        "calibration_candidate_settlement_boundary_violations"
+    ] == 0
+    assert summary["calibration_ready_candidate_boundaries"] == 280
+    assert summary[
+        "calibration_same_race_teacher_fold_violations"
+    ] == 0
+    assert summary[
+        "calibration_same_race_excluded_all_ready_folds"
+    ] is True
+    assert summary["calibration_independent_sample_unit"] == (
+        "one_stake_weighted_candidate_portfolio_per_race"
+    )
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )
