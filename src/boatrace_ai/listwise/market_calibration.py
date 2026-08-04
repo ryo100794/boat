@@ -97,6 +97,9 @@ from .conditional_stagewise import (
 )
 from .model import ListwiseLinearModel, stable_softmax
 from .paired_bootstrap import paired_mean_bootstrap
+from .prequential_conditional_order import (
+    apply_prequential_conditional_order,
+)
 from .stagewise_blend import (
     StagewiseBlendModel,
     blend_probabilities as blend_architecture_probabilities,
@@ -3592,6 +3595,7 @@ def walk_forward_evaluate(
     trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
     trend_point_odds_safety_sweep: bool = False,
     trend_point_required_ticket_count: int | None = None,
+    prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
     try:
         date.fromisoformat(trend_point_registered_after)
@@ -3609,6 +3613,29 @@ def walk_forward_evaluate(
     ):
         raise ValueError(
             "trend_point_required_ticket_count must be an integer from 1 to 120"
+        )
+    if not isinstance(prequential_conditional_order, bool):
+        raise ValueError("prequential_conditional_order must be a boolean")
+    conditional_order_report = None
+    if prequential_conditional_order:
+        if calibrator_strategy in {
+            "odds_path_crossfit_conservative_ev",
+            "odds_path_market_offset_crossfit_conservative_ev",
+            "odds_path_market_offset_discrete_log_ev_v9",
+            "odds_path_market_offset_selection_conformal_discrete_ev_v10",
+            "odds_path_role_integrated_multihorizon_v11",
+            "odds_path_role_integrated_t300_nonlinear_v12",
+            "odds_path_role_integrated_edge_conditional_lcb_v13",
+            "odds_path_role_integrated_registered_band_lcb_v14",
+            "odds_path_role_integrated_selection_free_envelope_v15",
+            "odds_path_role_integrated_fixed_band_passthrough_v16",
+        }:
+            raise ValueError(
+                "prequential_conditional_order is not supported by the "
+                "routed calibrator strategy"
+            )
+        races, conditional_order_report = (
+            apply_prequential_conditional_order(races)
         )
     if calibrator_strategy == "odds_path_crossfit_conservative_ev":
         from .odds_path_conservative_v7 import walk_forward_evaluate_v7
@@ -5299,6 +5326,7 @@ def walk_forward_evaluate(
         "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
         "trend_point_odds_safety_sweep": trend_point_safety_sweep,
+        "prequential_conditional_order": conditional_order_report,
         "deployment_configuration": deployment_configuration,
         **(
             {
@@ -7213,6 +7241,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--trend-point-required-ticket-count",
         type=int,
     )
+    parser.add_argument(
+        "--prequential-conditional-order",
+        action="store_true",
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -7360,6 +7392,7 @@ def main(argv: list[str] | None = None) -> int:
         trend_point_required_ticket_count=(
             args.trend_point_required_ticket_count
         ),
+        prequential_conditional_order=args.prequential_conditional_order,
     )
     apply_trend_point_formal_coverage_gate(
         result,

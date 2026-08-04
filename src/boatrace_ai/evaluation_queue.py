@@ -2177,6 +2177,7 @@ def build_command(
             "trend_point_registered_after",
             "trend_point_odds_safety_sweep",
             "trend_point_required_ticket_count",
+            "prequential_conditional_order",
             "expected_model_sha256",
             "prospective_candidate",
         }
@@ -2361,6 +2362,15 @@ def build_command(
                 "--trend-point-required-ticket-count",
                 str(required_ticket_count),
             ])
+        conditional_order = params.get(
+            "prequential_conditional_order", False
+        )
+        if not isinstance(conditional_order, bool):
+            raise ValueError(
+                "prequential_conditional_order must be a boolean"
+            )
+        if conditional_order:
+            command.append("--prequential-conditional-order")
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",
@@ -4480,6 +4490,27 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 summary[f"top5_narrow_retrospective_{key}"] = (
                     retrospective_top5[key]
                 )
+    conditional_order = payload.get("prequential_conditional_order")
+    if isinstance(conditional_order, dict):
+        summary["prequential_conditional_order"] = {
+            key: conditional_order.get(key)
+            for key in (
+                "status",
+                "method",
+                "minimum_prior_days",
+                "available_days",
+                "transformed_days",
+                "transformed_races",
+                "baseline_log_loss",
+                "conditional_log_loss",
+                "log_loss_difference",
+                "baseline_top5_hit_rate",
+                "conditional_top5_hit_rate",
+                "top5_hit_rate_difference",
+                "improving_days",
+            )
+            if key in conditional_order
+        }
     trend_point = payload.get(
         "trend_point_market_offset_kelly_walk_forward"
     )

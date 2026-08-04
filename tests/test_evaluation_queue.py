@@ -1936,6 +1936,22 @@ def test_result_summary_exposes_bankroll_gate_and_temporal_folds() -> None:
 def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None:
     summary = summarize_result({
         "source_model_sha256": "a" * 64,
+        "prequential_conditional_order": {
+            "status": "evaluated",
+            "method": "strict_prior",
+            "minimum_prior_days": 4,
+            "available_days": 15,
+            "transformed_days": 11,
+            "transformed_races": 1630,
+            "baseline_log_loss": 3.8575,
+            "conditional_log_loss": 3.7908,
+            "log_loss_difference": -0.0667,
+            "baseline_top5_hit_rate": 0.3423,
+            "conditional_top5_hit_rate": 0.3521,
+            "top5_hit_rate_difference": 0.0098,
+            "improving_days": 11,
+            "daily": [{"must": "not leak into summary"}],
+        },
         "trend_point_market_offset_kelly_walk_forward": {
             "status": "evaluating",
             "registered_after": "2026-08-03",
@@ -2001,6 +2017,11 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
     })
 
     assert summary["trend_point_prospective_registered_after"] == "2026-08-03"
+    conditional = summary["prequential_conditional_order"]
+    assert conditional["transformed_races"] == 1630
+    assert conditional["log_loss_difference"] == -0.0667
+    assert conditional["improving_days"] == 11
+    assert "daily" not in conditional
     assert summary["source_model_sha256"] == "a" * 64
     assert summary["trend_point_prospective_evaluation_days"] == 4
     assert summary["trend_point_prospective_tickets"] == 104
@@ -3919,6 +3940,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "closing_odds_min_training_races": 250,
                 "trend_point_odds_safety_sweep": True,
                 "trend_point_required_ticket_count": 2,
+                "prequential_conditional_order": True,
             },
         ),
         app_root=root,
@@ -3959,6 +3981,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[
         command.index("--trend-point-required-ticket-count") + 1
     ] == "2"
+    assert "--prequential-conditional-order" in command
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 

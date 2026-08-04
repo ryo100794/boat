@@ -1159,6 +1159,45 @@ def test_trend_point_required_ticket_count_is_explicit() -> None:
             races,
             trend_point_required_ticket_count=0,
         )
+
+
+def test_prequential_conditional_order_is_explicit_and_audited() -> None:
+    races = [
+        _race("2026-07-20", 1),
+        _race("2026-07-21", 1),
+        _race("2026-07-22", 1),
+    ]
+
+    disabled = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=["2026-07-22"],
+    )
+    enabled = walk_forward_evaluate(
+        races,
+        min_calibration_days=2,
+        evaluation_dates=["2026-07-22"],
+        prequential_conditional_order=True,
+    )
+
+    assert disabled["prequential_conditional_order"] is None
+    report = enabled["prequential_conditional_order"]
+    assert report["status"] == "waiting"
+    assert report["minimum_prior_days"] == 4
+    assert report["transformed_races"] == 0
+    with pytest.raises(ValueError, match="must be a boolean"):
+        walk_forward_evaluate(
+            races,
+            prequential_conditional_order="yes",
+        )
+    with pytest.raises(ValueError, match="routed calibrator strategy"):
+        walk_forward_evaluate(
+            races,
+            calibrator_strategy="odds_path_market_offset_discrete_log_ev_v9",
+            prequential_conditional_order=True,
+        )
+
+
 def test_fixed_benchmark_population_is_provisional_until_seven_days() -> None:
 
 
