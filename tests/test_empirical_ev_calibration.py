@@ -29,6 +29,8 @@ def test_empty_data_returns_auditable_not_ready_artifact() -> None:
     assert artifact.training_days == 0
     assert artifact.tickets == 0
     assert artifact.total_exposure_weight == 0.0
+    assert artifact.training_raw_ev_min is None
+    assert artifact.training_raw_ev_max is None
     assert set(artifact.ready_reasons) == {
         "insufficient_training_days",
         "insufficient_tickets",
@@ -38,6 +40,7 @@ def test_empty_data_returns_auditable_not_ready_artifact() -> None:
     assert prediction["support"] == 0
     assert prediction["empirical_ev"] is None
     assert prediction["empirical_ev_lcb95"] is None
+    assert prediction["input_in_training_range"] is False
 
 
 def test_ready_gate_counts_days_tickets_and_candidate_days_separately() -> None:
@@ -111,6 +114,11 @@ def test_predict_reports_fixed_bin_bounds_and_support() -> None:
     assert prediction["positive_return_days"] == 1
     assert prediction["return_hhi"] == pytest.approx(1.0)
     assert prediction["empirical_ev"] == pytest.approx(1.0)
+    assert prediction["training_raw_ev_min"] == pytest.approx(1.01)
+    assert prediction["training_raw_ev_max"] == pytest.approx(1.04)
+    assert prediction["input_in_training_range"] is True
+    assert artifact.predict(1.005)["input_in_training_range"] is False
+    assert artifact.predict(1.05)["input_in_training_range"] is False
 
 
 def test_sample_weight_estimates_total_return_over_total_exposure() -> None:

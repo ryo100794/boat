@@ -3903,6 +3903,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             calibrator_update_audit
             if isinstance(calibrator_update_audit, dict) else {}
         )
+        input_range_audit = payload.get("calibration_input_range_audit")
+        input_range_audit = (
+            input_range_audit if isinstance(input_range_audit, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -4123,6 +4127,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 calibrator_update_audit.get(
                     "unchanged_population_reuses_identical_calibrator"
                 )
+            ),
+            "calibrator_missing_decision_bindings": (
+                calibrator_update_audit.get(
+                    "missing_decision_calibrator_bindings"
+                )
+            ),
+            "calibrator_instance_artifact_collisions": (
+                calibrator_update_audit.get("instance_artifact_collisions")
+            ),
+            "calibrator_instance_ledger_collisions": (
+                calibrator_update_audit.get("instance_ledger_collisions")
+            ),
+            "calibrator_every_decision_bound_to_prior_ledger_artifact": (
+                calibrator_update_audit.get(
+                    "every_decision_bound_to_full_prior_ledger_artifact"
+                )
+            ),
+            "calibration_input_range_ready_candidates": (
+                input_range_audit.get("ready_candidates_with_raw_input")
+            ),
+            "calibration_input_range_out_of_range_candidates": (
+                input_range_audit.get("out_of_range_candidates")
+            ),
+            "calibration_input_range_purchase_violations": (
+                input_range_audit.get("out_of_range_purchase_violations")
+            ),
+            "calibration_input_range_all_rejected": input_range_audit.get(
+                "all_out_of_range_inputs_rejected"
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"

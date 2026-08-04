@@ -198,6 +198,15 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert update_audit[
         "unchanged_population_reuses_identical_calibrator"
     ] is True
+    assert update_audit[
+        "every_decision_bound_to_full_prior_ledger_artifact"
+    ] is True
+    assert update_audit["missing_decision_calibrator_bindings"] == 0
+    assert update_audit["instance_artifact_collisions"] == 0
+    assert update_audit["instance_ledger_collisions"] == 0
+    range_audit = profitable["calibration_input_range_audit"]
+    assert range_audit["out_of_range_candidates"] == 0
+    assert range_audit["out_of_range_purchase_violations"] == 0
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -294,6 +303,9 @@ def test_calibration_excludes_candidates_not_strictly_settled_before_decision(
     assert day3["calibration_instance_id"] == result["daily"][1][
         "calibration_instance_id"
     ]
+    assert day3["calibrator_artifact_sha256"] == result["daily"][1][
+        "calibrator_artifact_sha256"
+    ]
     assert day3["calibration_ready"] is False
     assert day3["stake_yen"] == 0
     assert result["daily"][3]["calibration_ready"] is True
@@ -349,6 +361,73 @@ def test_duplicate_race_id_within_evaluation_fold_fails_closed(
         ValueError, match="evaluation fold contains duplicate race_id"
     ):
         _run(artifact)
+
+
+def test_out_of_training_range_raw_value_is_never_purchased(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "out-of-range.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    race = payload["daily"][2]["races"][0]
+    race["best_search_validation_portfolio_lower_quantile"] = 0.50
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    replayed = result["daily"][2]["races"][0]
+    assert replayed["calibration_ready"] is True
+    assert replayed["raw_portfolio_gross_return_estimate"] == 1.5
+    assert replayed["calibration_training_raw_input_min"] == 1.2
+    assert replayed["calibration_training_raw_input_max"] == 1.2
+    assert replayed["calibration_input_in_training_range"] is False
+    assert replayed["purchase_authorized"] is False
+    assert replayed["stake_yen"] == 0
+    assert replayed["rejection_reason"] == (
+        "calibration_input_out_of_training_range"
+    )
+    audit = result["calibration_input_range_audit"]
+    assert audit["out_of_range_candidates"] == 1
+    assert audit["out_of_range_purchase_violations"] == 0
+    assert audit["all_out_of_range_inputs_rejected"] is True
+
+
+def test_later_same_day_decision_rebuilds_from_settled_prior_race(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "same-day-update.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    first = payload["daily"][2]["races"][0]
+    second = dict(first)
+    second["race_id"] = "race-3-later"
+    second["evaluation_time_t"] = "2026-07-03T11:00:00+09:00"
+    second["settlement_available_at"] = "2026-07-03T11:10:00+09:00"
+    payload["daily"][2]["races"].append(second)
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    folds = [
+        fold for fold in result["calibration_folds"]
+        if fold["evaluation_date"] == "2026-07-03"
+    ]
+    assert len(folds) == 2
+    early, later = folds
+    assert early["settlement_eligible_training_records"] == 2
+    assert later["settlement_eligible_training_records"] == 3
+    assert later["newly_admitted_settled_race_batches"] == 1
+    assert later["latest_training_settlement_available_at"] == (
+        "2026-07-03T10:10:00+09:00"
+    )
+    assert later["strict_settlement_before_decision"] is True
+    assert later["trained_through_date"] == "2026-07-03"
+    assert later["teacher_population_changed"] is True
+    assert later["calibrator_instance_changed"] is True
+    assert later["calibration_instance_id"] != early[
+        "calibration_instance_id"
+    ]
+    assert result["calibrator_update_audit"][
+        "every_decision_bound_to_full_prior_ledger_artifact"
+    ] is True
 
 
 def test_all_tickets_in_race_share_one_frozen_prior_calibrator(
@@ -562,7 +641,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v8",
+        "model": "joint_edge_calibrated_replay_v9",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -682,6 +761,16 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "unchanged_population_reuse_violations": 0,
             "updates_only_when_eligible_teacher_population_changes": True,
             "unchanged_population_reuses_identical_calibrator": True,
+            "missing_decision_calibrator_bindings": 0,
+            "instance_artifact_collisions": 0,
+            "instance_ledger_collisions": 0,
+            "every_decision_bound_to_full_prior_ledger_artifact": True,
+        },
+        "calibration_input_range_audit": {
+            "ready_candidates_with_raw_input": 280,
+            "out_of_range_candidates": 3,
+            "out_of_range_purchase_violations": 0,
+            "all_out_of_range_inputs_rejected": True,
         },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
@@ -768,6 +857,14 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary[
         "calibrator_reuses_identical_instance_when_unchanged"
     ] is True
+    assert summary[
+        "calibrator_every_decision_bound_to_prior_ledger_artifact"
+    ] is True
+    assert summary[
+        "calibration_input_range_out_of_range_candidates"
+    ] == 3
+    assert summary["calibration_input_range_purchase_violations"] == 0
+    assert summary["calibration_input_range_all_rejected"] is True
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )

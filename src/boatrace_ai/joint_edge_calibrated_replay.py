@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+from math import isfinite
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -20,10 +21,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v8"
+MODEL_VERSION = "joint_edge_calibrated_replay_v9"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v8_teacher_change_updates_only"
+    "stake_weighted_isotonic_lcb_v9_rebuild_equivalent_range_guard"
 )
 PRIMARY_RAW_VALUE_SOURCE = (
     "pregate_best_search_independent_validation_"
@@ -49,6 +50,23 @@ def _canonical_sha256(value: object) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _finite_audit_value(value: object) -> object:
+    if isinstance(value, float) and not isfinite(value):
+        if value == float("inf"):
+            return "Infinity"
+        if value == float("-inf"):
+            return "-Infinity"
+        return "NaN"
+    if isinstance(value, Mapping):
+        return {
+            str(key): _finite_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_finite_audit_value(item) for item in value]
+    return value
 
 
 def _load_payload(path: Path) -> dict[str, Any]:
@@ -116,11 +134,15 @@ def _candidate_record(
         if validated_edge is None:
             return None
         edge_excess = float(validated_edge) - buy_margin
+        if not isfinite(edge_excess):
+            return None
     else:
         edge_excess = race.get("best_search_edge_excess")
         if edge_excess is None:
             return None
         edge_excess = float(edge_excess)
+        if not isfinite(edge_excess):
+            return None
         raw_value_source = "legacy_search_edge_fallback"
         structural_feasible = bool(
             edge_excess > 0.0
@@ -409,6 +431,203 @@ def run_joint_edge_calibrated_replay(
     previous_calibration_instance_id: str | None = None
     previous_training_race_manifest_sha256: str | None = None
 
+    def calibrator_at_decision(
+        *,
+        race_date: str,
+        race_id: str,
+        calibration_asof: datetime,
+    ) -> dict[str, Any]:
+        nonlocal pending_training_records
+        nonlocal previous_calibration_instance_id
+        nonlocal previous_training_race_manifest_sha256
+
+        matured_training_records = [
+            record for record in pending_training_records
+            if _instant(
+                record.get("settlement_available_at"),
+                "pending_settlement_available_at",
+            ) < calibration_asof
+        ]
+        pending_training_records = [
+            record for record in pending_training_records
+            if _instant(
+                record.get("settlement_available_at"),
+                "pending_settlement_available_at",
+            ) >= calibration_asof
+        ]
+        for record in matured_training_records:
+            admitted = {
+                **record,
+                "teacher_admitted_at": calibration_asof.isoformat(),
+            }
+            training_records.append(admitted)
+            teacher_admissions.append({
+                "race_id": admitted["race_id"],
+                "settlement_available_at": admitted[
+                    "settlement_available_at"
+                ],
+                "teacher_admitted_at": admitted["teacher_admitted_at"],
+            })
+        same_race_excluded_records = [
+            record for record in training_records
+            if str(record.get("race_id") or "") == race_id
+        ]
+        eligible_training_records = [
+            record for record in training_records
+            if str(record.get("race_id") or "") != race_id
+        ]
+        eligible_training_race_ids = [
+            str(record.get("race_id") or "")
+            for record in eligible_training_records
+        ]
+        if len(eligible_training_race_ids) != len(
+            set(eligible_training_race_ids)
+        ):
+            raise ValueError(
+                "calibration teacher contains duplicate race_id"
+            )
+        same_race_teacher_overlap = sorted(
+            {race_id}.intersection(eligible_training_race_ids)
+        )
+        training_race_manifest_sha256 = _canonical_sha256(
+            sorted(eligible_training_race_ids)
+        )
+        calibration_fit_seed = (
+            seed + int(training_race_manifest_sha256[:16], 16)
+        ) % (2**32 - 1)
+        calibration_instance_id = _canonical_sha256({
+            "calibration_version": CALIBRATION_VERSION,
+            "training_race_manifest_sha256": (
+                training_race_manifest_sha256
+            ),
+            "bootstrap_samples": calibration_bootstrap_samples,
+            "fit_seed": calibration_fit_seed,
+            "margin": calibration_margin,
+            "min_training_days": calibration_min_training_days,
+            "min_portfolios": calibration_min_portfolios,
+            "min_candidate_days": calibration_min_candidate_days,
+            "shape_constraint": "isotonic",
+            "quantile_method": "inverted_cdf",
+        })
+        calibrator_cache_hit = calibration_instance_id in calibrator_cache
+        teacher_population_changed = bool(
+            previous_training_race_manifest_sha256 is None
+            or previous_training_race_manifest_sha256
+            != training_race_manifest_sha256
+        )
+        calibrator_instance_changed = bool(
+            previous_calibration_instance_id is None
+            or previous_calibration_instance_id != calibration_instance_id
+        )
+        latest_training_settlement_instant = max(
+            (
+                _instant(
+                    record.get("settlement_available_at"),
+                    "training_settlement_available_at",
+                )
+                for record in eligible_training_records
+            ),
+            default=None,
+        )
+        latest_training_settlement = (
+            latest_training_settlement_instant.isoformat()
+            if latest_training_settlement_instant is not None else None
+        )
+        if calibrator_cache_hit:
+            calibrator = calibrator_cache[calibration_instance_id]
+        else:
+            calibrator = fit_empirical_ev_calibration(
+                eligible_training_records,
+                bootstrap_samples=calibration_bootstrap_samples,
+                seed=calibration_fit_seed,
+                min_days=calibration_min_training_days,
+                min_tickets=calibration_min_portfolios,
+                min_candidate_days=calibration_min_candidate_days,
+                candidate_min_raw_ev=1.0 + buy_margin,
+                shape_constraint="isotonic",
+                quantile_method="inverted_cdf",
+            )
+            calibrator_cache[calibration_instance_id] = calibrator
+        calibrator_artifact_sha256 = _canonical_sha256(
+            _finite_audit_value(calibrator.as_dict())
+        )
+        event = {
+            "race_id": race_id,
+            "evaluation_date": race_date,
+            "evaluation_time_t": calibration_asof.isoformat(),
+            "training_race_manifest_sha256": (
+                training_race_manifest_sha256
+            ),
+            "calibration_instance_id": calibration_instance_id,
+            "calibrator_artifact_sha256": calibrator_artifact_sha256,
+            "teacher_population_changed": teacher_population_changed,
+            "calibrator_instance_changed": calibrator_instance_changed,
+            "cache_hit": calibrator_cache_hit,
+            "fit_seed": calibration_fit_seed,
+        }
+        calibrator_update_events.append(event)
+        fold = {
+            **event,
+            "calibration_information_cutoff": calibration_asof.isoformat(),
+            "calibration_fit_seed": calibration_fit_seed,
+            "calibrator_cache_hit": calibrator_cache_hit,
+            "newly_admitted_settled_race_batches": len(
+                matured_training_records
+            ),
+            "pending_unsettled_race_batches": len(
+                pending_training_records
+            ),
+            "settlement_eligible_training_records": len(
+                eligible_training_records
+            ),
+            "settlement_excluded_training_records": len(
+                pending_training_records
+            ),
+            "same_race_excluded_training_records": len(
+                same_race_excluded_records
+            ),
+            "same_race_teacher_overlap_count": len(
+                same_race_teacher_overlap
+            ),
+            "same_race_teacher_overlap_race_ids": (
+                same_race_teacher_overlap
+            ),
+            "eligible_training_unique_races": len(
+                eligible_training_race_ids
+            ),
+            "eligible_training_race_manifest_sha256": (
+                training_race_manifest_sha256
+            ),
+            "latest_training_settlement_available_at": (
+                latest_training_settlement
+            ),
+            "strict_settlement_before_decision": bool(
+                latest_training_settlement_instant is None
+                or latest_training_settlement_instant < calibration_asof
+            ),
+            **calibrator.as_dict(),
+        }
+        calibration_folds.append(fold)
+        previous_calibration_instance_id = calibration_instance_id
+        previous_training_race_manifest_sha256 = (
+            training_race_manifest_sha256
+        )
+        return {
+            "calibrator": calibrator,
+            "fold": fold,
+            "latest_training_settlement_instant": (
+                latest_training_settlement_instant
+            ),
+            "latest_training_settlement": latest_training_settlement,
+            "eligible_training_records": eligible_training_records,
+            "same_race_teacher_overlap": same_race_teacher_overlap,
+            "training_race_manifest_sha256": (
+                training_race_manifest_sha256
+            ),
+            "calibration_instance_id": calibration_instance_id,
+            "calibrator_artifact_sha256": calibrator_artifact_sha256,
+        }
+
     for source_day in payload["daily"]:
         race_date = str(source_day.get("race_date") or "")
         source_races = source_day.get("races") or []
@@ -419,7 +638,12 @@ def run_joint_edge_calibrated_replay(
             raise ValueError("every evaluation race requires race_id")
         if len(evaluation_race_ids) != len(set(evaluation_race_ids)):
             raise ValueError("evaluation fold contains duplicate race_id")
-        evaluation_race_id_set = set(evaluation_race_ids)
+        # This fold belongs to the first decision of the day. Later races get
+        # their own fold below, so only the race being decided may be excluded
+        # from its teacher ledger here.
+        evaluation_race_id_set = (
+            {evaluation_race_ids[0]} if evaluation_race_ids else set()
+        )
         day_decision_instants = [
             _decision_time(race, decision_times) for race in source_races
         ]
@@ -539,21 +763,38 @@ def run_joint_edge_calibrated_replay(
                 quantile_method="inverted_cdf",
             )
             calibrator_cache[calibration_instance_id] = calibrator
+        calibrator_artifact_sha256 = _canonical_sha256(
+            _finite_audit_value(calibrator.as_dict())
+        )
         calibrator_update_events.append({
+            "race_id": (
+                evaluation_race_ids[0] if evaluation_race_ids else ""
+            ),
             "evaluation_date": race_date,
+            "evaluation_time_t": calibration_asof.isoformat(),
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
             "calibration_instance_id": calibration_instance_id,
+            "calibrator_artifact_sha256": (
+                calibrator_artifact_sha256
+            ),
             "teacher_population_changed": teacher_population_changed,
             "calibrator_instance_changed": calibrator_instance_changed,
             "cache_hit": calibrator_cache_hit,
             "fit_seed": calibration_fit_seed,
         })
         calibration_folds.append({
+            "race_id": (
+                evaluation_race_ids[0] if evaluation_race_ids else ""
+            ),
             "evaluation_date": race_date,
+            "evaluation_time_t": calibration_asof.isoformat(),
             "calibration_information_cutoff": calibration_asof.isoformat(),
             "calibration_instance_id": calibration_instance_id,
+            "calibrator_artifact_sha256": (
+                calibrator_artifact_sha256
+            ),
             "calibration_fit_seed": calibration_fit_seed,
             "calibrator_cache_hit": calibrator_cache_hit,
             "teacher_population_changed": teacher_population_changed,
@@ -598,11 +839,6 @@ def run_joint_edge_calibrated_replay(
         previous_training_race_manifest_sha256 = (
             training_race_manifest_sha256
         )
-        if calibrator.trained_through_date is not None and (
-            calibrator.trained_through_date >= race_date
-        ):
-            raise ValueError("calibration teacher is not strictly prior")
-
         balance = initial_daily_bankroll_yen
         peak = balance
         maximum_drawdown_yen = 0
@@ -611,17 +847,53 @@ def run_joint_edge_calibrated_replay(
         hits = 0
         pending: list[tuple[datetime, int]] = []
         replay_races = []
-        current_training_records = []
-        if calibrator.ready:
-            ready_days += 1
-            ready_races += len(source_races)
+        day_has_ready = False
+        day_folds: list[dict[str, Any]] = []
 
-        for race, purchase_at in zip(source_races, day_decision_instants):
+        for race_index, (race, purchase_at) in enumerate(zip(
+            source_races, day_decision_instants
+        )):
             pending, matured = _release_matured_receipts(
                 pending, asof=purchase_at
             )
             balance += matured
             peak = max(peak, balance)
+            if race_index == 0:
+                fold = calibration_folds[-1]
+            else:
+                state = calibrator_at_decision(
+                    race_date=race_date,
+                    race_id=str(race.get("race_id") or ""),
+                    calibration_asof=purchase_at,
+                )
+                calibrator = state["calibrator"]
+                fold = state["fold"]
+                calibration_asof = purchase_at
+                calibration_instance_id = state[
+                    "calibration_instance_id"
+                ]
+                calibrator_artifact_sha256 = state[
+                    "calibrator_artifact_sha256"
+                ]
+                latest_training_settlement_instant = state[
+                    "latest_training_settlement_instant"
+                ]
+                latest_training_settlement = state[
+                    "latest_training_settlement"
+                ]
+                eligible_training_records = state[
+                    "eligible_training_records"
+                ]
+                same_race_teacher_overlap = state[
+                    "same_race_teacher_overlap"
+                ]
+                training_race_manifest_sha256 = state[
+                    "training_race_manifest_sha256"
+                ]
+            day_folds.append(fold)
+            if calibrator.ready:
+                day_has_ready = True
+                ready_races += 1
             record = _candidate_record(
                 race_date, race, buy_margin=buy_margin
             )
@@ -639,7 +911,14 @@ def run_joint_edge_calibrated_replay(
                 if record_race_id in observed_candidate_race_ids:
                     duplicate_result_batches_excluded += 1
                 else:
-                    current_training_records.append(record)
+                    if _instant(
+                        record.get("settlement_available_at"),
+                        "settlement_available_at",
+                    ) < purchase_at:
+                        raise ValueError(
+                            "candidate settlement precedes decision"
+                        )
+                    pending_training_records.append(record)
                     observed_candidate_race_ids.add(record_race_id)
 
             raw_gross = (
@@ -651,12 +930,16 @@ def run_joint_edge_calibrated_replay(
                 if calibrator.ready and raw_gross is not None else {}
             )
             calibrated_lcb = prediction.get("empirical_ev_lcb95")
+            input_in_training_range = bool(
+                prediction.get("input_in_training_range")
+            )
             structural_feasible = bool(
                 record is not None and record["structural_feasible"]
             )
             authorized = bool(
                 calibrator.ready
                 and structural_feasible
+                and input_in_training_range
                 and calibrated_lcb is not None
                 and float(calibrated_lcb) > 1.0 + calibration_margin
             )
@@ -665,6 +948,8 @@ def run_joint_edge_calibrated_replay(
                 reason = "calibration_not_ready"
             elif not structural_feasible:
                 reason = "base_joint_gate_not_feasible"
+            elif not input_in_training_range:
+                reason = "calibration_input_out_of_training_range"
             elif calibrated_lcb is None:
                 reason = "calibration_lcb_missing"
             elif float(calibrated_lcb) <= 1.0 + calibration_margin:
@@ -738,11 +1023,23 @@ def run_joint_edge_calibrated_replay(
                 ),
                 "calibration_support": prediction.get("support"),
                 "calibration_support_days": prediction.get("support_days"),
+                "calibration_training_raw_input_min": prediction.get(
+                    "training_raw_ev_min"
+                ),
+                "calibration_training_raw_input_max": prediction.get(
+                    "training_raw_ev_max"
+                ),
+                "calibration_input_in_training_range": (
+                    input_in_training_range
+                ),
                 "calibration_trained_through_date": (
                     calibrator.trained_through_date
                 ),
                 "calibration_ready": calibrator.ready,
                 "calibration_instance_id": calibration_instance_id,
+                "calibrator_artifact_sha256": (
+                    calibrator_artifact_sha256
+                ),
                 "ticket_calibration_instance_count": (
                     1 if proposed_bets else 0
                 ),
@@ -786,41 +1083,64 @@ def run_joint_edge_calibrated_replay(
         for _available_at, receipt in pending:
             balance += receipt
             peak = max(peak, balance)
-        pending_training_records.extend(current_training_records)
+        if day_has_ready:
+            ready_days += 1
+        first_fold = day_folds[0] if day_folds else {}
+        last_fold = day_folds[-1] if day_folds else {}
         replay_days.append({
             "race_date": race_date,
-            "calibration_information_cutoff": calibration_asof.isoformat(),
-            "calibration_instance_id": calibration_instance_id,
-            "calibration_fit_seed": calibration_fit_seed,
-            "calibrator_cache_hit": calibrator_cache_hit,
-            "teacher_population_changed": teacher_population_changed,
-            "calibrator_instance_changed": calibrator_instance_changed,
-            "newly_admitted_settled_race_batches": len(
-                matured_training_records
+            "calibration_information_cutoff": first_fold.get(
+                "calibration_information_cutoff"
             ),
-            "pending_unsettled_race_batches": len(
-                pending_training_records
+            "calibration_instance_id": last_fold.get(
+                "calibration_instance_id"
             ),
-            "settlement_eligible_training_records": len(
-                eligible_training_records
+            "calibration_instance_ids": sorted({
+                str(fold.get("calibration_instance_id") or "")
+                for fold in day_folds
+            }),
+            "calibrator_artifact_sha256": last_fold.get(
+                "calibrator_artifact_sha256"
             ),
-            "settlement_excluded_training_records": (
-                excluded_unsettled_records
+            "calibration_fit_seed": last_fold.get("calibration_fit_seed"),
+            "calibrator_cache_hit": last_fold.get("calibrator_cache_hit"),
+            "teacher_population_changed": last_fold.get(
+                "teacher_population_changed"
             ),
-            "same_race_excluded_training_records": len(
-                same_race_excluded_records
+            "calibrator_instance_changed": last_fold.get(
+                "calibrator_instance_changed"
             ),
-            "same_race_teacher_overlap_count": len(
-                same_race_teacher_overlap
+            "newly_admitted_settled_race_batches": sum(
+                int(fold.get("newly_admitted_settled_race_batches") or 0)
+                for fold in day_folds
             ),
-            "eligible_training_unique_races": len(
-                eligible_training_race_ids
+            "pending_unsettled_race_batches": last_fold.get(
+                "pending_unsettled_race_batches"
+            ) if not source_races else len(pending_training_records),
+            "settlement_eligible_training_records": last_fold.get(
+                "settlement_eligible_training_records"
             ),
-            "eligible_training_race_manifest_sha256": (
-                training_race_manifest_sha256
+            "settlement_excluded_training_records": last_fold.get(
+                "settlement_excluded_training_records"
             ),
-            "calibration_ready": calibrator.ready,
-            "calibration_trained_through_date": calibrator.trained_through_date,
+            "same_race_excluded_training_records": sum(
+                int(fold.get("same_race_excluded_training_records") or 0)
+                for fold in day_folds
+            ),
+            "same_race_teacher_overlap_count": sum(
+                int(fold.get("same_race_teacher_overlap_count") or 0)
+                for fold in day_folds
+            ),
+            "eligible_training_unique_races": last_fold.get(
+                "eligible_training_unique_races"
+            ),
+            "eligible_training_race_manifest_sha256": last_fold.get(
+                "eligible_training_race_manifest_sha256"
+            ),
+            "calibration_ready": day_has_ready,
+            "calibration_trained_through_date": last_fold.get(
+                "trained_through_date"
+            ),
             "opening_bankroll_yen": initial_daily_bankroll_yen,
             "closing_bankroll_yen": balance,
             "stake_yen": stake_yen,
@@ -1094,8 +1414,17 @@ def run_joint_edge_calibrated_replay(
     ]
     strict_prior_violations = [
         row for row in ready_boundaries
-        if not row["trained_through_date"]
-        or row["trained_through_date"] >= row["evaluation_date"]
+        if not row["calibration_information_cutoff"]
+        or (
+            row["latest_training_settlement_available_at"] is not None
+            and _instant(
+                row["latest_training_settlement_available_at"],
+                "latest_training_settlement_available_at",
+            ) >= _instant(
+                row["calibration_information_cutoff"],
+                "calibration_information_cutoff",
+            )
+        )
     ]
     strict_settlement_violations = [
         row for row in ready_boundaries
@@ -1157,7 +1486,7 @@ def run_joint_edge_calibrated_replay(
         if row["same_race_teacher_overlap_count"] != 0
     ]
     independence_audit = {
-        "version": "strict_prior_calibrated_value_independence_audit_v2",
+        "version": "strict_prior_calibrated_value_independence_audit_v3",
         "calibration_folds": len(calibration_folds),
         "calibration_ready_folds": len(ready_boundaries),
         "strict_prior_fold_violations": len(strict_prior_violations),
@@ -1228,6 +1557,49 @@ def run_joint_edge_calibrated_replay(
             or not row["cache_hit"]
         )
     ]
+    calibrator_decision_rows = [
+        {
+            "race_id": str(race.get("race_id") or ""),
+            "evaluation_time_t": str(
+                race.get("evaluation_time_t") or ""
+            ),
+            "training_race_manifest_sha256": str(
+                race.get("calibration_training_race_manifest_sha256") or ""
+            ),
+            "calibration_instance_id": str(
+                race.get("calibration_instance_id") or ""
+            ),
+            "calibrator_artifact_sha256": str(
+                race.get("calibrator_artifact_sha256") or ""
+            ),
+        }
+        for day in replay_days
+        for race in day.get("races") or []
+    ]
+    missing_decision_calibrator_bindings = [
+        row for row in calibrator_decision_rows
+        if not all(row.values())
+    ]
+    instance_artifact_sets: dict[str, set[str]] = {}
+    instance_ledger_sets: dict[str, set[str]] = {}
+    for row in calibrator_decision_rows:
+        instance_id = row["calibration_instance_id"]
+        instance_artifact_sets.setdefault(instance_id, set()).add(
+            row["calibrator_artifact_sha256"]
+        )
+        instance_ledger_sets.setdefault(instance_id, set()).add(
+            row["training_race_manifest_sha256"]
+        )
+    instance_artifact_collisions = {
+        key: sorted(values)
+        for key, values in instance_artifact_sets.items()
+        if key and len(values) != 1
+    }
+    instance_ledger_collisions = {
+        key: sorted(values)
+        for key, values in instance_ledger_sets.items()
+        if key and len(values) != 1
+    }
     calibrator_update_audit = {
         "version": "strict_prior_calibrator_update_audit_v1",
         "folds": len(calibrator_update_events),
@@ -1269,6 +1641,68 @@ def run_joint_edge_calibrated_replay(
         "event_manifest_sha256": _canonical_sha256(
             calibrator_update_events
         ),
+        "decision_bindings": len(calibrator_decision_rows),
+        "missing_decision_calibrator_bindings": len(
+            missing_decision_calibrator_bindings
+        ),
+        "instance_artifact_collisions": len(
+            instance_artifact_collisions
+        ),
+        "instance_ledger_collisions": len(instance_ledger_collisions),
+        "every_decision_bound_to_full_prior_ledger_artifact": bool(
+            calibrator_decision_rows
+            and not missing_decision_calibrator_bindings
+            and not instance_artifact_collisions
+            and not instance_ledger_collisions
+        ),
+        "reconstruction_mode": (
+            "full_refit_from_complete_eligible_prior_ledger_when_manifest_"
+            "changes_exact_artifact_reuse_when_manifest_is_unchanged"
+        ),
+        "decision_binding_manifest_sha256": _canonical_sha256(
+            calibrator_decision_rows
+        ),
+    }
+    range_evaluable_candidates = [
+        race
+        for day in replay_days
+        for race in day.get("races") or []
+        if race.get("calibration_ready")
+        and race.get("raw_portfolio_gross_return_estimate") is not None
+    ]
+    out_of_range_candidates = [
+        race for race in range_evaluable_candidates
+        if not race.get("calibration_input_in_training_range")
+    ]
+    out_of_range_purchases = [
+        race for race in out_of_range_candidates
+        if int(race.get("stake_yen") or 0) > 0
+        or race.get("purchase_authorized")
+        or race.get("bets_yen")
+    ]
+    calibration_input_range_audit = {
+        "version": "calibration_raw_input_range_guard_v1",
+        "ready_candidates_with_raw_input": len(
+            range_evaluable_candidates
+        ),
+        "in_range_candidates": (
+            len(range_evaluable_candidates) - len(out_of_range_candidates)
+        ),
+        "out_of_range_candidates": len(out_of_range_candidates),
+        "out_of_range_purchase_violations": len(out_of_range_purchases),
+        "out_of_range_action": "reject_purchase_no_extrapolation",
+        "all_out_of_range_inputs_rejected": not out_of_range_purchases,
+        "candidate_manifest_sha256": _canonical_sha256([
+            [
+                race.get("race_id"),
+                race.get("raw_portfolio_gross_return_estimate"),
+                race.get("calibration_training_raw_input_min"),
+                race.get("calibration_training_raw_input_max"),
+                race.get("calibration_input_in_training_range"),
+                race.get("rejection_reason"),
+            ]
+            for race in range_evaluable_candidates
+        ]),
     }
     formal_gate = {
         "independent_validation_value_only": bool(
@@ -1307,6 +1741,14 @@ def run_joint_edge_calibrated_replay(
                 "unchanged_population_reuses_identical_calibrator"
             ]
         ),
+        "each_decision_has_equivalent_prior_ledger_calibrator": (
+            calibrator_update_audit[
+                "every_decision_bound_to_full_prior_ledger_artifact"
+            ]
+        ),
+        "out_of_range_inputs_rejected": calibration_input_range_audit[
+            "all_out_of_range_inputs_rejected"
+        ],
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
         ),
@@ -1335,23 +1777,27 @@ def run_joint_edge_calibrated_replay(
     }
     pre_ready_purchases = sum(
         int(race.get("stake_yen") or 0) > 0
-        for day in replay_days if not day.get("calibration_ready")
+        for day in replay_days
         for race in day.get("races") or []
+        if not race.get("calibration_ready")
     )
     pre_ready_stake_yen = sum(
         int(race.get("stake_yen") or 0)
-        for day in replay_days if not day.get("calibration_ready")
+        for day in replay_days
         for race in day.get("races") or []
+        if not race.get("calibration_ready")
     )
     pre_ready_nonempty_bet_vectors = sum(
         bool(race.get("bets_yen"))
-        for day in replay_days if not day.get("calibration_ready")
+        for day in replay_days
         for race in day.get("races") or []
+        if not race.get("calibration_ready")
     )
     pre_ready_purchase_authorizations = sum(
         bool(race.get("purchase_authorized"))
-        for day in replay_days if not day.get("calibration_ready")
+        for day in replay_days
         for race in day.get("races") or []
+        if not race.get("calibration_ready")
     )
     strict_zero_stake_before_warmup = not any((
         pre_ready_purchases,
@@ -1391,6 +1837,10 @@ def run_joint_edge_calibrated_replay(
         warmup_logic_violations,
         calibrator_update_logic_violations,
         unchanged_population_reuse_violations,
+        missing_decision_calibrator_bindings,
+        instance_artifact_collisions,
+        instance_ledger_collisions,
+        out_of_range_purchases,
         not strict_zero_stake_before_warmup,
         not learning_population_audit[
             "all_pregate_candidates_registered"
@@ -1440,7 +1890,7 @@ def run_joint_edge_calibrated_replay(
         "no_purchases_before_ready": strict_zero_stake_before_warmup,
     })
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v8",
+        "version": "joint_edge_calibrated_replay_protocol_v9",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -1472,8 +1922,8 @@ def run_joint_edge_calibrated_replay(
                 "one_plus_calibration_margin"
             ),
             "information_boundary": (
-                "strictly_prior_complete_days_and_settlement_available_at_"
-                "strictly_before_fold_earliest_decision_time"
+                "all_candidate_race_batches_with_settlement_available_at_"
+                "strictly_before_each_candidate_decision_time"
             ),
             "same_race_rule": (
                 "exclude_all_teacher_records_with_evaluation_race_id_"
@@ -1492,11 +1942,16 @@ def run_joint_edge_calibrated_replay(
                 "calibration_information_cutoff"
             ),
             "update_rule": (
-                "fit_or_switch_calibrator_only_when_eligible_teacher_"
-                "race_manifest_changes_otherwise_reuse_identical_instance"
+                "at_each_race_decision_fit_or_switch_calibrator_only_when_"
+                "eligible_teacher_race_manifest_changes_otherwise_reuse_"
+                "identical_instance"
             ),
             "bootstrap_seed_rule": (
                 "deterministic_from_base_seed_and_teacher_race_manifest"
+            ),
+            "out_of_range_input_rule": (
+                "reject_purchase_when_raw_gross_return_is_outside_"
+                "strict_prior_training_raw_min_max"
             ),
             "learning_population": learning_population_audit,
             "sample_weight": "candidate_portfolio_stake_yen",
@@ -1556,6 +2011,7 @@ def run_joint_edge_calibrated_replay(
         ),
         "calibration_warmup_audit": warmup_audit,
         "calibrator_update_audit": calibrator_update_audit,
+        "calibration_input_range_audit": calibration_input_range_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,

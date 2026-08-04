@@ -58,6 +58,8 @@ class EmpiricalEVCalibrationArtifact:
     training_days: int
     tickets: int
     total_exposure_weight: float
+    training_raw_ev_min: float | None
+    training_raw_ev_max: float | None
     candidate_days: int
     candidate_min_raw_ev: float
     min_days: int
@@ -73,12 +75,23 @@ class EmpiricalEVCalibrationArtifact:
         raw_ev: float,
         probability_rank: int | None = None,
         forecast_odds: float | None = None,
-    ) -> dict[str, int | float | None]:
+    ) -> dict[str, int | float | bool | None]:
         # Context is accepted so global and contextual artifacts share one policy API.
         del probability_rank, forecast_odds
         value = _finite_float(raw_ev, "raw_ev")
         index = _bin_index(value, tuple(bin_.upper for bin_ in self.bins))
-        return self.bins[index].as_dict()
+        prediction: dict[str, int | float | bool | None] = {
+            **self.bins[index].as_dict(),
+            "training_raw_ev_min": self.training_raw_ev_min,
+            "training_raw_ev_max": self.training_raw_ev_max,
+            "input_in_training_range": bool(
+                self.training_raw_ev_min is not None
+                and self.training_raw_ev_max is not None
+                and self.training_raw_ev_min <= value
+                <= self.training_raw_ev_max
+            ),
+        }
+        return prediction
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -88,6 +101,8 @@ class EmpiricalEVCalibrationArtifact:
             "training_days": self.training_days,
             "tickets": self.tickets,
             "total_exposure_weight": self.total_exposure_weight,
+            "training_raw_ev_min": self.training_raw_ev_min,
+            "training_raw_ev_max": self.training_raw_ev_max,
             "weighting": "optional_sample_weight_default_1",
             "candidate_days": self.candidate_days,
             "candidate_min_raw_ev": self.candidate_min_raw_ev,
@@ -320,8 +335,8 @@ def fit_empirical_ev_calibration(
 ) -> EmpiricalEVCalibrationArtifact:
     """Fit a date-clustered empirical return calibration artifact.
 
-    Callers must supply records from dates strictly before the prediction date.
-    The artifact records the latest included date so that boundary can be audited.
+    Callers must supply records available strictly before prediction time.
+    The artifact clusters by race date and records the latest included date.
     """
     edges = _validate_edges(bin_edges)
     if shape_constraint not in {"isotonic", "bandwise"}:
@@ -429,6 +444,12 @@ def fit_empirical_ev_calibration(
         training_days=len(dates),
         tickets=len(rows),
         total_exposure_weight=float(exposure_weights.sum()),
+        training_raw_ev_min=(
+            min(row.raw_ev for row in rows) if rows else None
+        ),
+        training_raw_ev_max=(
+            max(row.raw_ev for row in rows) if rows else None
+        ),
         candidate_days=len(candidate_dates),
         candidate_min_raw_ev=candidate_threshold,
         min_days=min_days,

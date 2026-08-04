@@ -3471,6 +3471,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibrator_reuses_identical_instance_when_unchanged": metrics.get(
                     "calibrator_reuses_identical_instance_when_unchanged"
                 ),
+                "calibrator_every_decision_bound_to_prior_ledger_artifact": metrics.get(
+                    "calibrator_every_decision_bound_to_prior_ledger_artifact"
+                ),
+                "calibration_input_range_out_of_range_candidates": metrics.get(
+                    "calibration_input_range_out_of_range_candidates"
+                ),
+                "calibration_input_range_purchase_violations": metrics.get(
+                    "calibration_input_range_purchase_violations"
+                ),
+                "calibration_input_range_all_rejected": metrics.get(
+                    "calibration_input_range_all_rejected"
+                ),
                 "calibration_learning_population_unique_races": metrics.get(
                     "calibration_learning_population_unique_races"
                 ),
@@ -4373,6 +4385,24 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     candidate_metrics.get(
                         "calibrator_reuses_identical_instance_when_unchanged"
                     )
+                ),
+                "calibrator_every_decision_bound_to_prior_ledger_artifact": (
+                    candidate_metrics.get(
+                        "calibrator_every_decision_bound_to_prior_ledger_artifact"
+                    )
+                ),
+                "calibration_input_range_out_of_range_candidates": (
+                    candidate_metrics.get(
+                        "calibration_input_range_out_of_range_candidates"
+                    )
+                ),
+                "calibration_input_range_purchase_violations": (
+                    candidate_metrics.get(
+                        "calibration_input_range_purchase_violations"
+                    )
+                ),
+                "calibration_input_range_all_rejected": candidate_metrics.get(
+                    "calibration_input_range_all_rejected"
                 ),
                 "calibration_learning_population_unique_races": (
                     candidate_metrics.get(
@@ -8756,6 +8786,10 @@ def model_performance_audit_snapshot(
                 "calibrator_update_logic_violations",
                 "calibrator_updates_only_on_teacher_change",
                 "calibrator_reuses_identical_instance_when_unchanged",
+                "calibrator_every_decision_bound_to_prior_ledger_artifact",
+                "calibration_input_range_out_of_range_candidates",
+                "calibration_input_range_purchase_violations",
+                "calibration_input_range_all_rejected",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",
