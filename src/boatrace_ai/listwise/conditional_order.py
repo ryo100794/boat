@@ -440,6 +440,16 @@ def bankroll_promotion_gate(
     baseline: dict[str, Any],
     confidence: dict[str, Any],
 ) -> dict[str, Any]:
+    evaluation_days = int(candidate.get("evaluation_days") or 0)
+    evaluated_races = int(candidate.get("evaluated_races") or 0)
+    selected_tickets = int(
+        candidate.get("selected_tickets") or candidate.get("tickets") or 0
+    )
+    hit_tickets = int(candidate.get("hit_tickets") or 0)
+    winning_days = int(candidate.get("winning_days") or 0)
+    profitable_day_fraction = (
+        winning_days / evaluation_days if evaluation_days else 0.0
+    )
     values = {
         "roi": float(candidate["roi"]),
         "profit_yen": float(candidate["profit_yen"]),
@@ -451,12 +461,23 @@ def bankroll_promotion_gate(
         "roi_without_largest_hit": float(
             candidate.get("roi_without_largest_hit") or 0.0
         ),
+        "profitable_day_fraction": profitable_day_fraction,
     }
     if not all(math.isfinite(value) for value in values.values()):
         raise ValueError("bankroll promotion metrics must be finite")
     gate = {
         "minimum_roi": 1.0,
         "minimum_probability_roi_above_one": 0.95,
+        "minimum_evaluation_days": 365,
+        "minimum_evaluated_races": 1_000,
+        "minimum_selected_tickets": 200,
+        "minimum_hit_tickets": 20,
+        "minimum_profitable_day_fraction": 0.60,
+        "evaluation_days": evaluation_days,
+        "evaluated_races": evaluated_races,
+        "selected_tickets": selected_tickets,
+        "hit_tickets": hit_tickets,
+        "winning_days": winning_days,
         **values,
         "roi_pass": values["roi"] > 1.0,
         "profit_pass": values["profit_yen"] > 0.0,
@@ -466,6 +487,11 @@ def bankroll_promotion_gate(
         "largest_hit_excluded_roi_pass": (
             values["roi_without_largest_hit"] > 1.0
         ),
+        "evaluation_days_pass": evaluation_days >= 365,
+        "evaluated_races_pass": evaluated_races >= 1_000,
+        "selected_tickets_pass": selected_tickets >= 200,
+        "hit_tickets_pass": hit_tickets >= 20,
+        "profitable_day_fraction_pass": profitable_day_fraction >= 0.60,
     }
     gate["probability_roi_above_one_pass"] = (
         values["probability_roi_above_one"]
@@ -478,6 +504,11 @@ def bankroll_promotion_gate(
         and gate["roi_ci_lower_above_one"]
         and gate["roi_delta_ci_lower_above_zero"]
         and gate["largest_hit_excluded_roi_pass"]
+        and gate["evaluation_days_pass"]
+        and gate["evaluated_races_pass"]
+        and gate["selected_tickets_pass"]
+        and gate["hit_tickets_pass"]
+        and gate["profitable_day_fraction_pass"]
         and gate["probability_roi_above_one_pass"]
     )
     return gate

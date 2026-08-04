@@ -41,6 +41,11 @@ def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> Non
         "roi": 1.05,
         "profit_yen": 5_000,
         "roi_without_largest_hit": 1.01,
+        "evaluation_days": 365,
+        "evaluated_races": 49_581,
+        "selected_tickets": 300,
+        "hit_tickets": 30,
+        "winning_days": 220,
     }
     baseline = {"roi": 0.90, "profit_yen": -10_000}
 
@@ -80,6 +85,15 @@ def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> Non
             "probability_roi_above_one": 0.95,
         },
     )
+    too_small = bankroll_promotion_gate(
+        {**candidate, "selected_tickets": 199},
+        baseline,
+        {
+            "roi_ci95_lower": 1.01,
+            "roi_delta_ci95_lower": 0.01,
+            "probability_roi_above_one": 0.95,
+        },
+    )
 
     assert weak["roi_pass"] is True
     assert weak["roi_ci_lower_above_one"] is False
@@ -88,7 +102,10 @@ def test_bankroll_promotion_requires_absolute_and_paired_roi_confidence() -> Non
     assert weak_probability["pass"] is False
     assert fragile["largest_hit_excluded_roi_pass"] is False
     assert fragile["pass"] is False
+    assert too_small["selected_tickets_pass"] is False
+    assert too_small["pass"] is False
     assert strong["largest_hit_excluded_roi_pass"] is True
+    assert strong["profitable_day_fraction_pass"] is True
     assert strong["probability_roi_above_one_pass"] is True
     assert strong["pass"] is True
 
