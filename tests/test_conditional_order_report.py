@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from boatrace_ai.listwise.conditional_order import (
+    _attach_expected_return_state,
     _conditional_payout_holdout_gate,
     _conditional_payout_promotion_status,
+)
+from boatrace_ai.listwise.return_calibrator import (
+    CombinationReturnCalibrator,
+    ExpectedReturnCalibrator,
 )
 from boatrace_ai.web import dashboard
 
@@ -158,6 +164,43 @@ def _artifact(*, bankroll_pass: bool = False) -> dict:
         },
         "promotion_eligible": bankroll_pass,
     }
+
+
+def test_expected_return_next_day_state_is_attached_to_artifact() -> None:
+    state = {
+        "state_schema": "expected_return_next_day_inference_v1",
+        "state_role": "next_day_inference_after_evaluation",
+        "trained_through": "2026-08-02",
+        "valid_for_dates_after": "2026-08-02",
+        "contains_evaluation_outcomes": True,
+        "holdout_replay_state": False,
+        "return_calibrator": ExpectedReturnCalibrator(
+            weights=np.zeros(58),
+            regularization=0.01,
+            training_samples=120,
+            iterations=1,
+            converged=True,
+            objective=0.0,
+            gradient_norm=0.0,
+        ),
+        "combination_calibrator": CombinationReturnCalibrator(
+            factors=np.ones(120),
+            point_ratios=np.ones(120),
+            lower_bounds=np.ones(120),
+            training_races=1,
+            training_days=1,
+            bootstrap_samples=2_000,
+        ),
+        "policy": {"ev_threshold": 1.2},
+    }
+    gate = {"pass": False}
+
+    artifact = _attach_expected_return_state(
+        {"model_name": "test"}, state, gate
+    )
+
+    assert artifact["expected_return_state"] is state
+    assert artifact["expected_return_gate"] == gate
 
 
 def test_conditional_order_track_keeps_revenue_gate_open(tmp_path) -> None:

@@ -28,7 +28,10 @@ from .direct_bankroll import (
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
 )
-from .return_bankroll import simulate_expected_return_calibrated_bankroll
+from .return_bankroll import (
+    simulate_expected_return_calibrated_bankroll,
+    validate_expected_return_inference_state,
+)
 from .model import ListwiseLinearModel, stable_softmax
 from .newton_refine import dump_joblib_atomic
 from .paired_bootstrap import paired_mean_bootstrap
@@ -71,6 +74,19 @@ def _attach_conditional_payout_state(
         **artifact,
         "conditional_payout_state": state,
         "conditional_payout_gate": dict(gate),
+    }
+
+
+def _attach_expected_return_state(
+    artifact: dict[str, Any],
+    state: dict[str, Any],
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    validate_expected_return_inference_state(state)
+    return {
+        **artifact,
+        "expected_return_state": state,
+        "expected_return_gate": dict(gate),
     }
 
 
@@ -684,6 +700,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         minimum_selection_roi=args.payout_minimum_selection_roi,
         state_output=conditional_payout_state,
     )
+    expected_return_state: dict[str, Any] = {}
     expected_return_bankroll = simulate_expected_return_calibrated_bankroll(
         candidate_probabilities,
         race_keys=evaluation_keys,
@@ -709,6 +726,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         minimum_selection_winning_days=(
             args.return_minimum_selection_winning_days
         ),
+        state_output=expected_return_state,
     )
     expected_return_fixed_bankroll = expected_return_bankroll.pop(
         "fixed_threshold_comparison", None
@@ -782,6 +800,11 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         conditional_payout_state,
         conditional_payout_gate,
     )
+    artifact = _attach_expected_return_state(
+        artifact,
+        expected_return_state,
+        expected_return_gate,
+    )
     model_output = Path(args.model_output)
     dump_joblib_atomic(model_output, artifact)
     artifact_saved = model_output.is_file() and model_output.stat().st_size > 0
@@ -837,6 +860,10 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
                 "confirmation required"
             ),
             "promotion_eligible": False,
+            "artifact_state_saved": True,
+            "state_schema": expected_return_state["state_schema"],
+            "state_trained_through": expected_return_state["trained_through"],
+            "state_role": expected_return_state["state_role"],
             "bankroll": expected_return_bankroll,
             "bankroll_confidence": expected_return_confidence,
             "diagnostic_gate": expected_return_gate,

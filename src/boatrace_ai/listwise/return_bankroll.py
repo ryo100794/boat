@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import Any, MutableMapping
 
 import numpy as np
 
@@ -24,6 +24,8 @@ from .direct_bankroll import (
     standard_direct_policy,
 )
 from .return_calibrator import (
+    CombinationReturnCalibrator,
+    ExpectedReturnCalibrator,
     calibrate_combination_returns,
     expected_return_poisson_loss,
     fit_combination_return_calibrator,
@@ -38,6 +40,73 @@ from .return_policy import (
 
 
 COMBINATION_LANES = np.asarray(TRIFECTA_COMBINATIONS, dtype=np.int64) - 1
+EXPECTED_RETURN_STATE_SCHEMA = "expected_return_next_day_inference_v1"
+EXPECTED_RETURN_STATE_KEYS = frozenset(
+    {
+        "state_schema",
+        "state_role",
+        "trained_through",
+        "valid_for_dates_after",
+        "contains_evaluation_outcomes",
+        "holdout_replay_state",
+        "return_calibrator",
+        "combination_calibrator",
+        "policy",
+    }
+)
+
+
+def validate_expected_return_inference_state(
+    state: dict[str, Any],
+) -> None:
+    missing = EXPECTED_RETURN_STATE_KEYS - set(state)
+    if missing:
+        raise ValueError(
+            "expected return inference state is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    if state["state_schema"] != EXPECTED_RETURN_STATE_SCHEMA:
+        raise ValueError("expected return inference state schema is invalid")
+    if state["state_role"] != "next_day_inference_after_evaluation":
+        raise ValueError("expected return state is not for next-day inference")
+    if state["contains_evaluation_outcomes"] is not True:
+        raise ValueError("expected return state must include completed evaluation")
+    if state["holdout_replay_state"] is not False:
+        raise ValueError("expected return state must not replay its holdout")
+    if not isinstance(state["return_calibrator"], ExpectedReturnCalibrator):
+        raise ValueError("expected return state calibrator is invalid")
+    if not isinstance(
+        state["combination_calibrator"], CombinationReturnCalibrator
+    ):
+        raise ValueError("expected return state combination calibrator is invalid")
+    if not isinstance(state["policy"], dict):
+        raise ValueError("expected return state policy is invalid")
+
+
+def predict_expected_returns_from_state(
+    state: dict[str, Any],
+    candidate_probabilities: np.ndarray,
+    market_probabilities: np.ndarray,
+    race_keys: list[tuple[str, str, str, int]],
+    *,
+    batch_races: int = 500,
+) -> np.ndarray:
+    validate_expected_return_inference_state(state)
+    if race_keys and str(race_keys[0][1]) <= str(state["valid_for_dates_after"]):
+        raise ValueError(
+            "expected return next-day state cannot score its training period"
+        )
+    predicted = predict_expected_returns(
+        state["return_calibrator"],
+        candidate_probabilities,
+        market_probabilities,
+        race_keys,
+        COMBINATION_LANES,
+        batch_races=batch_races,
+    )
+    return calibrate_combination_returns(
+        state["combination_calibrator"], predicted
+    )
 
 
 def _combination_calibration_summary(calibrator: Any) -> dict[str, Any]:
@@ -322,6 +391,7 @@ def simulate_expected_return_calibrated_bankroll(
     minimum_selection_roi: float = 1.05,
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
+    state_output: MutableMapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_nondecreasing_race_dates(race_keys, name="race_keys")
     _validate_nondecreasing_race_dates(
@@ -600,4 +670,59 @@ def simulate_expected_return_calibrated_bankroll(
         "combination_calibration": selection_combination_calibration,
         "threshold_diagnostics": policy_diagnostics,
     }
+    if state_output is not None:
+        combined_probabilities = np.concatenate(
+            (calibration_values, values), axis=0
+        )
+        combined_market = np.concatenate(
+            (calibration_market_values, market_values), axis=0
+        )
+        combined_keys = [*calibration_race_keys, *race_keys]
+        deployment_calibrator = fit_expected_return_calibrator(
+            combined_probabilities,
+            combined_market,
+            combined_keys,
+            payouts,
+            COMBINATION_LANES,
+            COMBINATION_INDEX,
+            regularization=selected_regularization,
+            max_iterations=max_iterations,
+            batch_races=batch_races,
+        )
+        deployment_returns = predict_expected_returns(
+            deployment_calibrator,
+            combined_probabilities,
+            combined_market,
+            combined_keys,
+            COMBINATION_LANES,
+            batch_races=batch_races,
+        )
+        deployment_combination_calibrator = (
+            fit_combination_return_calibrator(
+                deployment_returns,
+                combined_keys,
+                payouts,
+                COMBINATION_INDEX,
+            )
+        )
+        trained_through = (
+            str(combined_keys[-1][1]) if combined_keys else ""
+        )
+        state_output.clear()
+        state_output.update(
+            {
+                "state_schema": EXPECTED_RETURN_STATE_SCHEMA,
+                "state_role": "next_day_inference_after_evaluation",
+                "trained_through": trained_through,
+                "valid_for_dates_after": trained_through,
+                "contains_evaluation_outcomes": True,
+                "holdout_replay_state": False,
+                "return_calibrator": deployment_calibrator,
+                "combination_calibrator": (
+                    deployment_combination_calibrator
+                ),
+                "policy": dict(selected_policy),
+            }
+        )
+        validate_expected_return_inference_state(dict(state_output))
     return result

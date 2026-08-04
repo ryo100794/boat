@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import joblib
 import numpy as np
 import pytest
 
@@ -9,7 +12,9 @@ from boatrace_ai.listwise.direct_bankroll import (
 )
 from boatrace_ai.listwise.return_bankroll import (
     _select_return_regularization,
+    predict_expected_returns_from_state,
     simulate_expected_return_calibrated_bankroll,
+    validate_expected_return_inference_state,
 )
 
 from boatrace_ai.listwise.return_calibrator import (
@@ -200,7 +205,9 @@ def test_return_regularization_uses_pre_policy_temporal_validation() -> None:
     assert period["validation_from"] == "2026-06-03"
 
 
-def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
+def test_expected_return_bankroll_uses_pre_evaluation_calibration(
+    tmp_path: Path,
+) -> None:
     target_index = ALL_COMBINATIONS.index("1-2-3")
     calibration_keys = [
         (
@@ -237,6 +244,7 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
         }
     )
     policy = {**standard_direct_policy(), "ev_threshold": 0.9}
+    state = {}
 
     result = simulate_expected_return_calibrated_bankroll(
         candidate,
@@ -254,6 +262,7 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
         batch_races=50,
         policy_selection_days=2,
         minimum_selection_tickets=10_000,
+        state_output=state,
     )
 
     assert result["evaluated_races"] == 2
@@ -274,6 +283,33 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration() -> None:
     assert selection["training_races"] == 100
     assert selection["training_days"] == 2
     assert set(selection["factors"]) == set(ALL_COMBINATIONS)
+    validate_expected_return_inference_state(state)
+    assert state["trained_through"] == "2026-07-02"
+    assert state["valid_for_dates_after"] == "2026-07-02"
+    assert state["contains_evaluation_outcomes"] is True
+    assert state["holdout_replay_state"] is False
+    assert state["return_calibrator"].training_samples == 202 * 120
+
+    state_path = tmp_path / "expected-return-state.joblib"
+    joblib.dump(state, state_path)
+    restored = joblib.load(state_path)
+    next_candidate = candidate[:1]
+    next_market = market[:1]
+    next_keys = [("next-1", "2026-07-03", "01", 1)]
+    before = predict_expected_returns_from_state(
+        state, next_candidate, next_market, next_keys
+    )
+    after = predict_expected_returns_from_state(
+        restored, next_candidate, next_market, next_keys
+    )
+    np.testing.assert_allclose(before, after)
+    with pytest.raises(ValueError, match="cannot score its training period"):
+        predict_expected_returns_from_state(
+            restored,
+            next_candidate,
+            next_market,
+            [("replay", "2026-07-02", "01", 1)],
+        )
 
 
 def test_expected_return_bankroll_rejects_temporal_leakage() -> None:

@@ -1757,9 +1757,17 @@ def test_fixed_model_conditional_order_result_contract() -> None:
         "bankroll": {"evaluated_races": 49_581},
         "baseline_bankroll": {"evaluated_races": 49_581},
         "conditional_payout_walk_forward": {
+            "artifact_state_saved": True,
+            "state_schema": "conditional_payout_next_day_inference_v1",
+            "state_trained_through": "2026-08-02",
+            "state_role": "next_day_inference_after_evaluation",
             "bankroll": {"evaluated_races": 49_581}
         },
         "expected_return_calibration": {
+            "artifact_state_saved": True,
+            "state_schema": "expected_return_next_day_inference_v1",
+            "state_trained_through": "2026-08-02",
+            "state_role": "next_day_inference_after_evaluation",
             "bankroll": {"evaluated_races": 49_581}
         },
     }
@@ -1787,7 +1795,27 @@ def test_fixed_model_conditional_order_result_contract() -> None:
             {
                 **payload,
                 "conditional_payout_walk_forward": {
+                    "artifact_state_saved": True,
+                    "state_schema": (
+                        "conditional_payout_next_day_inference_v1"
+                    ),
+                    "state_trained_through": "2026-08-02",
+                    "state_role": "next_day_inference_after_evaluation",
                     "bankroll": {"evaluated_races": 49_580}
+                },
+            },
+        )
+    with pytest.raises(
+        ValueError,
+        match="expected_return_calibration trained_through mismatch",
+    ):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {
+                **payload,
+                "expected_return_calibration": {
+                    **payload["expected_return_calibration"],
+                    "state_trained_through": "2026-08-01",
                 },
             },
         )

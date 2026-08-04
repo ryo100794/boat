@@ -5483,6 +5483,45 @@ def _validate_job_result_contract(
                 "expected_return_fixed_threshold.bankroll.evaluated_races "
                 "mismatch"
             )
+    state_contracts = (
+        (
+            "conditional_payout_walk_forward",
+            "conditional_payout_next_day_inference_v1",
+        ),
+        (
+            "expected_return_calibration",
+            "expected_return_next_day_inference_v1",
+        ),
+    )
+    for key, expected_schema in state_contracts:
+        component = payload.get(key)
+        if not isinstance(component, dict):
+            raise ValueError(
+                f"fixed model conditional order result {key} is missing"
+            )
+        if component.get("artifact_state_saved") is not True:
+            raise ValueError(
+                f"fixed model conditional order result {key} state not saved"
+            )
+        if str(component.get("state_schema") or "") != expected_schema:
+            raise ValueError(
+                f"fixed model conditional order result {key} schema mismatch"
+            )
+        if (
+            str(component.get("state_trained_through") or "")
+            != str(parameters["evaluation_through"])
+        ):
+            raise ValueError(
+                f"fixed model conditional order result {key} "
+                "trained_through mismatch"
+            )
+        if (
+            str(component.get("state_role") or "")
+            != "next_day_inference_after_evaluation"
+        ):
+            raise ValueError(
+                f"fixed model conditional order result {key} role mismatch"
+            )
 
 
 def complete_job(
