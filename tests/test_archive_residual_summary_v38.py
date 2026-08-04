@@ -51,6 +51,40 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
                     }
                 ],
             },
+            "nested_nonlinear_value_calibration_v40": {
+                "model": "nested_nonlinear_value_calibration_v40",
+                "status": "completed",
+                "model_training_from": "2026-05-10",
+                "model_training_through": "2026-05-31",
+                "model_training_days": 22,
+                "value_calibration_from": "2026-06-01",
+                "value_calibration_through": "2026-06-30",
+                "value_calibration_days": 30,
+                "evaluation_from": "2026-07-01",
+                "evaluation_through": "2026-07-19",
+                "evaluation_probability_metrics": {
+                    "evaluated_races": 2744,
+                    "trifecta_log_loss": 3.71,
+                    "market_trifecta_log_loss": 3.70,
+                    "log_loss_delta_vs_market": 0.01,
+                },
+                "empirical_ev_calibration": {
+                    "ready": True,
+                    "ready_reasons": [],
+                },
+                "calibration_ledger_candidates": 20000,
+                "bankroll": {
+                    "tickets": 0,
+                    "stake_yen": 0,
+                    "return_yen": 0,
+                    "profit_yen": 0,
+                    "roi": None,
+                    "roi_display": "N/A",
+                    "roi_ci95_lower": None,
+                    "probability_roi_above_one": None,
+                },
+                "promotion_eligible": False,
+            },
         },
     }
 
@@ -72,3 +106,8 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert policy["shrinkage"] == 1.0
     assert policy["roi"] == 1.0518
     assert summary["promotion_eligible"] is False
+    assert summary["nested_value_model_training_days"] == 22
+    assert summary["nested_value_calibration_days"] == 30
+    assert summary["nested_value_calibration_ready"] is True
+    assert summary["nested_value_roi_display"] == "N/A"
+    assert summary["nested_value_promotion_eligible"] is False

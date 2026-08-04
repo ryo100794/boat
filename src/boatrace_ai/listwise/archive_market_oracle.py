@@ -61,10 +61,13 @@ from .nonlinear_market_residual_v38 import (
     fit_temporal_nonlinear_market_residual,
     nonlinear_residual_probabilities,
 )
+from .nested_nonlinear_value_v40 import (
+    evaluate_nested_nonlinear_value_v40,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 12
+EVALUATION_VERSION = 13
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -581,6 +584,11 @@ def temporal_residual_diagnostic(
         "untouched outer-split research only; full residual strength is a "
         "fixed sensitivity control and cannot be selected from outer ROI"
     )
+    nested_nonlinear_value = evaluate_nested_nonlinear_value_v40(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -607,6 +615,7 @@ def temporal_residual_diagnostic(
         "conditional_ticket_residual_v30": conditional_ticket_residual,
         "ticket_utility_meta_ranking_v31": ticket_utility_roles,
         "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
+        "nested_nonlinear_value_calibration_v40": nested_nonlinear_value,
     }
 
 

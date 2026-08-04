@@ -279,3 +279,81 @@ def apply_archive_residual_summary(
                 if calibration.get(key) is not None
             }
     summary["residual_purchase_policies"] = compact_policies
+    nested = temporal.get("nested_nonlinear_value_calibration_v40")
+    if isinstance(nested, Mapping):
+        nested_probability = nested.get("evaluation_probability_metrics")
+        nested_probability = (
+            nested_probability
+            if isinstance(nested_probability, Mapping)
+            else {}
+        )
+        nested_calibration = nested.get("empirical_ev_calibration")
+        nested_calibration = (
+            nested_calibration
+            if isinstance(nested_calibration, Mapping)
+            else {}
+        )
+        nested_bankroll = nested.get("bankroll")
+        nested_bankroll = (
+            nested_bankroll if isinstance(nested_bankroll, Mapping) else {}
+        )
+        summary.update({
+            "nested_value_model": nested.get("model"),
+            "nested_value_status": nested.get("status"),
+            "nested_value_model_training_from": nested.get(
+                "model_training_from"
+            ),
+            "nested_value_model_training_through": nested.get(
+                "model_training_through"
+            ),
+            "nested_value_model_training_days": nested.get(
+                "model_training_days"
+            ),
+            "nested_value_calibration_from": nested.get(
+                "value_calibration_from"
+            ),
+            "nested_value_calibration_through": nested.get(
+                "value_calibration_through"
+            ),
+            "nested_value_calibration_days": nested.get(
+                "value_calibration_days"
+            ),
+            "nested_value_evaluation_from": nested.get("evaluation_from"),
+            "nested_value_evaluation_through": nested.get(
+                "evaluation_through"
+            ),
+            "nested_value_evaluated_races": nested_probability.get(
+                "evaluated_races"
+            ),
+            "nested_value_trifecta_log_loss": nested_probability.get(
+                "trifecta_log_loss"
+            ),
+            "nested_value_market_trifecta_log_loss": nested_probability.get(
+                "market_trifecta_log_loss"
+            ),
+            "nested_value_log_loss_delta_vs_market": nested_probability.get(
+                "log_loss_delta_vs_market"
+            ),
+            "nested_value_calibration_ready": nested_calibration.get("ready"),
+            "nested_value_calibration_ready_reasons": nested_calibration.get(
+                "ready_reasons"
+            ),
+            "nested_value_calibration_candidates": nested.get(
+                "calibration_ledger_candidates"
+            ),
+            "nested_value_tickets": nested_bankroll.get("tickets"),
+            "nested_value_stake_yen": nested_bankroll.get("stake_yen"),
+            "nested_value_return_yen": nested_bankroll.get("return_yen"),
+            "nested_value_profit_yen": nested_bankroll.get("profit_yen"),
+            "nested_value_roi": nested_bankroll.get("roi"),
+            "nested_value_roi_display": nested_bankroll.get("roi_display"),
+            "nested_value_roi_ci95_lower": nested_bankroll.get(
+                "roi_ci95_lower"
+            ),
+            "nested_value_probability_roi_above_one": nested_bankroll.get(
+                "probability_roi_above_one"
+            ),
+            "nested_value_promotion_eligible": bool(
+                nested.get("promotion_eligible")
+            ),
+        })
