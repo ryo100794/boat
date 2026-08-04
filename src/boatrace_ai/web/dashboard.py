@@ -3483,6 +3483,24 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_input_range_all_rejected": metrics.get(
                     "calibration_input_range_all_rejected"
                 ),
+                "calibration_lcb_confidence_level": metrics.get(
+                    "calibration_lcb_confidence_level"
+                ),
+                "calibration_lcb_cluster_unit": metrics.get(
+                    "calibration_lcb_cluster_unit"
+                ),
+                "calibration_lcb_invalid_candidate_bounds": metrics.get(
+                    "calibration_lcb_invalid_candidate_bounds"
+                ),
+                "calibration_lcb_definition_fold_violations": metrics.get(
+                    "calibration_lcb_definition_fold_violations"
+                ),
+                "calibration_lcb_purchase_violations": metrics.get(
+                    "calibration_lcb_purchase_violations"
+                ),
+                "calibration_lcb_strict_threshold_enforced": metrics.get(
+                    "calibration_lcb_strict_threshold_enforced"
+                ),
                 "calibration_learning_population_unique_races": metrics.get(
                     "calibration_learning_population_unique_races"
                 ),
@@ -4403,6 +4421,30 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "calibration_input_range_all_rejected": candidate_metrics.get(
                     "calibration_input_range_all_rejected"
+                ),
+                "calibration_lcb_confidence_level": candidate_metrics.get(
+                    "calibration_lcb_confidence_level"
+                ),
+                "calibration_lcb_cluster_unit": candidate_metrics.get(
+                    "calibration_lcb_cluster_unit"
+                ),
+                "calibration_lcb_invalid_candidate_bounds": (
+                    candidate_metrics.get(
+                        "calibration_lcb_invalid_candidate_bounds"
+                    )
+                ),
+                "calibration_lcb_definition_fold_violations": (
+                    candidate_metrics.get(
+                        "calibration_lcb_definition_fold_violations"
+                    )
+                ),
+                "calibration_lcb_purchase_violations": candidate_metrics.get(
+                    "calibration_lcb_purchase_violations"
+                ),
+                "calibration_lcb_strict_threshold_enforced": (
+                    candidate_metrics.get(
+                        "calibration_lcb_strict_threshold_enforced"
+                    )
                 ),
                 "calibration_learning_population_unique_races": (
                     candidate_metrics.get(
@@ -8790,6 +8832,12 @@ def model_performance_audit_snapshot(
                 "calibration_input_range_out_of_range_candidates",
                 "calibration_input_range_purchase_violations",
                 "calibration_input_range_all_rejected",
+                "calibration_lcb_confidence_level",
+                "calibration_lcb_cluster_unit",
+                "calibration_lcb_invalid_candidate_bounds",
+                "calibration_lcb_definition_fold_violations",
+                "calibration_lcb_purchase_violations",
+                "calibration_lcb_strict_threshold_enforced",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",

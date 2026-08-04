@@ -207,6 +207,17 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     range_audit = profitable["calibration_input_range_audit"]
     assert range_audit["out_of_range_candidates"] == 0
     assert range_audit["out_of_range_purchase_violations"] == 0
+    lcb_audit = profitable["calibration_lcb_audit"]
+    assert lcb_audit["tail_probability"] == pytest.approx(0.05)
+    assert lcb_audit["confidence_level"] == pytest.approx(0.95)
+    assert lcb_audit["sidedness"] == "one_sided_lower"
+    assert lcb_audit["cluster_unit"] == "race_date"
+    assert lcb_audit["definition_fold_violations"] == 0
+    assert lcb_audit["invalid_or_above_point_candidate_bounds"] == 0
+    assert lcb_audit[
+        "missing_nonfinite_or_below_threshold_purchase_violations"
+    ] == 0
+    assert lcb_audit["strict_lcb_purchase_threshold_enforced"] is True
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -537,6 +548,32 @@ def test_replay_no_bets_until_calibration_support_is_ready(
     assert gate["outcome"] == "accumulating_strict_prior_calibration"
 
 
+def test_lcb_equal_to_threshold_is_rejected_fail_closed(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "equal-lcb.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    for day in payload["daily"][:2]:
+        race = day["races"][0]
+        race["actual_payout_yen"] = 100
+        race["best_search_hypothetical_return_yen"] = 100
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+    first_ready = result["daily"][2]["races"][0]
+
+    assert first_ready["calibrated_gross_return"] == pytest.approx(1.0)
+    assert first_ready["calibrated_gross_return_lcb95"] == pytest.approx(1.0)
+    assert first_ready["purchase_authorized"] is False
+    assert first_ready["stake_yen"] == 0
+    assert first_ready["rejection_reason"] == (
+        "calibration_lcb_not_above_margin"
+    )
+    assert result["calibration_lcb_audit"][
+        "strict_lcb_purchase_threshold_enforced"
+    ] is True
+
+
 def test_mature_zero_purchase_window_is_safe_abstention_not_gate_failure() -> None:
     assert _purchase_gate_outcome(
         mature_observation_window=True,
@@ -641,7 +678,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v9",
+        "model": "joint_edge_calibrated_replay_v10",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -772,6 +809,18 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "out_of_range_purchase_violations": 0,
             "all_out_of_range_inputs_rejected": True,
         },
+        "calibration_lcb_audit": {
+            "tail_probability": 0.05,
+            "confidence_level": 0.95,
+            "cluster_unit": "race_date",
+            "quantile_method": "inverted_cdf",
+            "invalid_or_above_point_candidate_bounds": 0,
+            "definition_fold_violations": 0,
+            "missing_nonfinite_or_below_threshold_purchase_violations": 0,
+            "all_evaluable_bounds_finite_and_not_above_point": True,
+            "one_sided_95_definition_consistent_for_every_fold": True,
+            "strict_lcb_purchase_threshold_enforced": True,
+        },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
             "candidate_portfolios": 400,
@@ -865,6 +914,12 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     ] == 3
     assert summary["calibration_input_range_purchase_violations"] == 0
     assert summary["calibration_input_range_all_rejected"] is True
+    assert summary["calibration_lcb_confidence_level"] == pytest.approx(0.95)
+    assert summary["calibration_lcb_cluster_unit"] == "race_date"
+    assert summary["calibration_lcb_invalid_candidate_bounds"] == 0
+    assert summary["calibration_lcb_definition_fold_violations"] == 0
+    assert summary["calibration_lcb_purchase_violations"] == 0
+    assert summary["calibration_lcb_strict_threshold_enforced"] is True
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )

@@ -19,6 +19,8 @@ DEFAULT_BIN_EDGES = (
 )
 DEFAULT_BOOTSTRAP_SAMPLES = 5_000
 DEFAULT_SEED = 20260728
+LCB_TAIL_PROBABILITY = 0.05
+LCB_CONFIDENCE_LEVEL = 1.0 - LCB_TAIL_PROBABILITY
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,15 @@ class EmpiricalEVCalibrationArtifact:
             "min_candidate_days": self.min_candidate_days,
             "bootstrap_samples": self.bootstrap_samples,
             "seed": self.seed,
+            "lcb_tail_probability": LCB_TAIL_PROBABILITY,
+            "lcb_confidence_level": LCB_CONFIDENCE_LEVEL,
+            "lcb_sidedness": "one_sided_lower",
+            "lcb_estimator": (
+                "nonparametric_race_date_cluster_percentile_bootstrap"
+            ),
+            "bootstrap_cluster_unit": "race_date",
+            "bootstrap_resample_cluster_count": self.training_days,
+            "lcb_capped_at_point_estimate": True,
             "shape_constraint": self.shape_constraint,
             "quantile_method": self.quantile_method,
             "bins": [bin_.as_dict() for bin_ in self.bins],
@@ -316,7 +327,10 @@ def _bootstrap_lcb(
         if not np.all(np.isfinite(predictions[sample])):
             raise ValueError("bootstrap aggregates exceed float64 range")
     return np.quantile(
-        predictions, 0.05, axis=0, method=quantile_method
+        predictions,
+        LCB_TAIL_PROBABILITY,
+        axis=0,
+        method=quantile_method,
     )
 
 

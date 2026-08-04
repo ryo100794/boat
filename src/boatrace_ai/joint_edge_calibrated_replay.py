@@ -21,10 +21,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v9"
+MODEL_VERSION = "joint_edge_calibrated_replay_v10"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v9_rebuild_equivalent_range_guard"
+    "stake_weighted_isotonic_lcb_v10_one_sided_lcb_audit"
 )
 PRIMARY_RAW_VALUE_SOURCE = (
     "pregate_best_search_independent_validation_"
@@ -1017,6 +1017,21 @@ def run_joint_edge_calibrated_replay(
                 ),
                 "calibrated_gross_return": prediction.get("empirical_ev"),
                 "calibrated_gross_return_lcb95": calibrated_lcb,
+                "calibration_lcb_tail_probability": (
+                    calibrator.as_dict()["lcb_tail_probability"]
+                ),
+                "calibration_lcb_confidence_level": (
+                    calibrator.as_dict()["lcb_confidence_level"]
+                ),
+                "calibration_lcb_sidedness": (
+                    calibrator.as_dict()["lcb_sidedness"]
+                ),
+                "calibration_lcb_estimator": (
+                    calibrator.as_dict()["lcb_estimator"]
+                ),
+                "calibration_lcb_cluster_unit": (
+                    calibrator.as_dict()["bootstrap_cluster_unit"]
+                ),
                 "formal_purchase_value": (
                     float(calibrated_lcb) - 1.0
                     if calibrated_lcb is not None else None
@@ -1704,6 +1719,100 @@ def run_joint_edge_calibrated_replay(
             for race in range_evaluable_candidates
         ]),
     }
+    lcb_evaluable_candidates = [
+        race for race in range_evaluable_candidates
+        if race.get("calibration_input_in_training_range")
+    ]
+    lcb_invalid_candidates = [
+        race for race in lcb_evaluable_candidates
+        if (
+            race.get("calibrated_gross_return_lcb95") is None
+            or race.get("calibrated_gross_return") is None
+            or not isfinite(float(race["calibrated_gross_return_lcb95"]))
+            or not isfinite(float(race["calibrated_gross_return"]))
+            or float(race["calibrated_gross_return_lcb95"])
+            > float(race["calibrated_gross_return"]) + 1e-12
+        )
+    ]
+    lcb_purchase_violations = [
+        race
+        for day in replay_days
+        for race in day.get("races") or []
+        if (
+            int(race.get("stake_yen") or 0) > 0
+            or race.get("purchase_authorized")
+            or race.get("bets_yen")
+        )
+        and (
+            race.get("calibrated_gross_return_lcb95") is None
+            or not isfinite(
+                float(race["calibrated_gross_return_lcb95"])
+            )
+            or float(race["calibrated_gross_return_lcb95"])
+            <= 1.0 + calibration_margin
+        )
+    ]
+    lcb_definition_fold_violations = [
+        fold for fold in calibration_folds
+        if (
+            float(fold.get("lcb_tail_probability") or -1.0) != 0.05
+            or float(fold.get("lcb_confidence_level") or -1.0) != 0.95
+            or fold.get("lcb_sidedness") != "one_sided_lower"
+            or fold.get("lcb_estimator") != (
+                "nonparametric_race_date_cluster_percentile_bootstrap"
+            )
+            or fold.get("bootstrap_cluster_unit") != "race_date"
+            or fold.get("quantile_method") != "inverted_cdf"
+            or not fold.get("lcb_capped_at_point_estimate")
+        )
+    ]
+    calibration_lcb_audit = {
+        "version": "strict_prior_one_sided_lcb95_audit_v1",
+        "tail_probability": 0.05,
+        "confidence_level": 0.95,
+        "sidedness": "one_sided_lower",
+        "estimator": (
+            "nonparametric_race_date_cluster_percentile_bootstrap"
+        ),
+        "cluster_unit": "race_date",
+        "quantile_method": "inverted_cdf",
+        "bootstrap_samples_per_fit": calibration_bootstrap_samples,
+        "ready_in_range_candidates": len(lcb_evaluable_candidates),
+        "invalid_or_above_point_candidate_bounds": len(
+            lcb_invalid_candidates
+        ),
+        "definition_fold_violations": len(
+            lcb_definition_fold_violations
+        ),
+        "purchase_threshold": 1.0 + calibration_margin,
+        "threshold_comparison": "strictly_greater_than",
+        "missing_nonfinite_or_below_threshold_purchase_violations": len(
+            lcb_purchase_violations
+        ),
+        "all_evaluable_bounds_finite_and_not_above_point": (
+            not lcb_invalid_candidates
+        ),
+        "one_sided_95_definition_consistent_for_every_fold": bool(
+            calibration_folds and not lcb_definition_fold_violations
+        ),
+        "strict_lcb_purchase_threshold_enforced": (
+            not lcb_purchase_violations
+        ),
+        "fail_closed_rule": (
+            "reject_when_lcb_missing_nonfinite_or_not_strictly_above_"
+            "one_plus_calibration_margin"
+        ),
+        "candidate_manifest_sha256": _canonical_sha256([
+            [
+                race.get("race_id"),
+                race.get("calibrated_gross_return"),
+                race.get("calibrated_gross_return_lcb95"),
+                race.get("purchase_authorized"),
+                race.get("stake_yen"),
+            ]
+            for race in lcb_evaluable_candidates
+        ]),
+    }
     formal_gate = {
         "independent_validation_value_only": bool(
             purchased
@@ -1749,6 +1858,17 @@ def run_joint_edge_calibrated_replay(
         "out_of_range_inputs_rejected": calibration_input_range_audit[
             "all_out_of_range_inputs_rejected"
         ],
+        "one_sided_lcb95_valid_and_enforced": bool(
+            calibration_lcb_audit[
+                "all_evaluable_bounds_finite_and_not_above_point"
+            ]
+            and calibration_lcb_audit[
+                "one_sided_95_definition_consistent_for_every_fold"
+            ]
+            and calibration_lcb_audit[
+                "strict_lcb_purchase_threshold_enforced"
+            ]
+        ),
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
         ),
@@ -1841,6 +1961,8 @@ def run_joint_edge_calibrated_replay(
         instance_artifact_collisions,
         instance_ledger_collisions,
         out_of_range_purchases,
+        lcb_definition_fold_violations,
+        lcb_purchase_violations,
         not strict_zero_stake_before_warmup,
         not learning_population_audit[
             "all_pregate_candidates_registered"
@@ -1872,6 +1994,18 @@ def run_joint_edge_calibrated_replay(
         "below_calibrated_lcb_threshold_purchases": (
             below_threshold_purchases
         ),
+        "lcb_definition_fold_violations": len(
+            lcb_definition_fold_violations
+        ),
+        "lcb_invalid_or_above_point_candidates": len(
+            lcb_invalid_candidates
+        ),
+        "lcb_missing_nonfinite_or_below_threshold_purchase_violations": (
+            len(lcb_purchase_violations)
+        ),
+        "one_sided_lcb95_valid_and_enforced": formal_gate[
+            "one_sided_lcb95_valid_and_enforced"
+        ],
         "non_independent_value_purchases": non_independent_value_purchases,
         "observed_purchased_portfolios": len(purchased),
         "interpretation": (
@@ -1890,7 +2024,7 @@ def run_joint_edge_calibrated_replay(
         "no_purchases_before_ready": strict_zero_stake_before_warmup,
     })
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v9",
+        "version": "joint_edge_calibrated_replay_protocol_v10",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -1909,6 +2043,19 @@ def run_joint_edge_calibrated_replay(
             "min_candidate_days": calibration_min_candidate_days,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
+            "lcb_tail_probability": 0.05,
+            "lcb_confidence_level": 0.95,
+            "lcb_sidedness": "one_sided_lower",
+            "lcb_estimator": (
+                "nonparametric_race_date_cluster_percentile_bootstrap"
+            ),
+            "bootstrap_cluster_unit": "race_date",
+            "bootstrap_resample_cluster_count": (
+                "all_strict_prior_training_calendar_days"
+            ),
+            "lcb_point_estimate_cap": (
+                "lower_bound_is_never_above_isotonic_point_estimate"
+            ),
             "teacher": (
                 "stake_weighted_fixed_candidate_"
                 "realized_gross_return_per_yen"
@@ -2012,6 +2159,7 @@ def run_joint_edge_calibrated_replay(
         "calibration_warmup_audit": warmup_audit,
         "calibrator_update_audit": calibrator_update_audit,
         "calibration_input_range_audit": calibration_input_range_audit,
+        "calibration_lcb_audit": calibration_lcb_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,

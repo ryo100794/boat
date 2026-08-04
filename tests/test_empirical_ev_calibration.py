@@ -119,6 +119,13 @@ def test_predict_reports_fixed_bin_bounds_and_support() -> None:
     assert prediction["input_in_training_range"] is True
     assert artifact.predict(1.005)["input_in_training_range"] is False
     assert artifact.predict(1.05)["input_in_training_range"] is False
+    audit = artifact.as_dict()
+    assert audit["lcb_tail_probability"] == pytest.approx(0.05)
+    assert audit["lcb_confidence_level"] == pytest.approx(0.95)
+    assert audit["lcb_sidedness"] == "one_sided_lower"
+    assert audit["bootstrap_cluster_unit"] == "race_date"
+    assert audit["bootstrap_resample_cluster_count"] == 1
+    assert audit["lcb_capped_at_point_estimate"] is True
 
 
 def test_sample_weight_estimates_total_return_over_total_exposure() -> None:

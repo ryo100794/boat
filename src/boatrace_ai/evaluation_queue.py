@@ -3907,6 +3907,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         input_range_audit = (
             input_range_audit if isinstance(input_range_audit, dict) else {}
         )
+        lcb_audit = payload.get("calibration_lcb_audit")
+        lcb_audit = lcb_audit if isinstance(lcb_audit, dict) else {}
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -4155,6 +4157,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_input_range_all_rejected": input_range_audit.get(
                 "all_out_of_range_inputs_rejected"
+            ),
+            "calibration_lcb_tail_probability": lcb_audit.get(
+                "tail_probability"
+            ),
+            "calibration_lcb_confidence_level": lcb_audit.get(
+                "confidence_level"
+            ),
+            "calibration_lcb_cluster_unit": lcb_audit.get("cluster_unit"),
+            "calibration_lcb_quantile_method": lcb_audit.get(
+                "quantile_method"
+            ),
+            "calibration_lcb_invalid_candidate_bounds": lcb_audit.get(
+                "invalid_or_above_point_candidate_bounds"
+            ),
+            "calibration_lcb_definition_fold_violations": lcb_audit.get(
+                "definition_fold_violations"
+            ),
+            "calibration_lcb_purchase_violations": lcb_audit.get(
+                "missing_nonfinite_or_below_threshold_purchase_violations"
+            ),
+            "calibration_lcb_all_bounds_valid": lcb_audit.get(
+                "all_evaluable_bounds_finite_and_not_above_point"
+            ),
+            "calibration_lcb_definition_consistent": lcb_audit.get(
+                "one_sided_95_definition_consistent_for_every_fold"
+            ),
+            "calibration_lcb_strict_threshold_enforced": lcb_audit.get(
+                "strict_lcb_purchase_threshold_enforced"
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"
