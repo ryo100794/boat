@@ -1815,6 +1815,20 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
         "conditional_reversed_place_pair": (
             "exact_two_same_winner_reversed_second_third"
         ),
+        "baseline_exact_two_normal_odds": (
+            "exact_two_allocated_tickets_max_estimated_odds_100"
+        ),
+        "baseline_reversed_place_pair_normal_odds": (
+            "exact_two_same_winner_reversed_second_third_"
+            "max_estimated_odds_100"
+        ),
+        "conditional_exact_two_normal_odds": (
+            "exact_two_allocated_tickets_max_estimated_odds_100"
+        ),
+        "conditional_reversed_place_pair_normal_odds": (
+            "exact_two_same_winner_reversed_second_third_"
+            "max_estimated_odds_100"
+        ),
     }
     pair_comparisons = {
         "baseline_exact_two": "full_baseline",
@@ -1822,6 +1836,14 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
         "conditional_exact_two": "baseline_exact_two",
         "conditional_reversed_place_pair": (
             "baseline_reversed_place_pair"
+        ),
+        "baseline_exact_two_normal_odds": "baseline_exact_two",
+        "baseline_reversed_place_pair_normal_odds": (
+            "baseline_reversed_place_pair"
+        ),
+        "conditional_exact_two_normal_odds": "conditional_exact_two",
+        "conditional_reversed_place_pair_normal_odds": (
+            "conditional_reversed_place_pair"
         ),
     }
     pair_payload = {

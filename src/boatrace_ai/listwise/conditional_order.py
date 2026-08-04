@@ -631,6 +631,16 @@ def evaluate_direct_pair_diagnostics(
         filter_exact_two_allocations,
         require_reversed_place_pair=True,
     )
+    exact_two_normal_odds_filter = functools.partial(
+        filter_exact_two_allocations,
+        require_reversed_place_pair=False,
+        maximum_estimated_odds=100.0,
+    )
+    reversed_pair_normal_odds_filter = functools.partial(
+        filter_exact_two_allocations,
+        require_reversed_place_pair=True,
+        maximum_estimated_odds=100.0,
+    )
     pair_bankrolls = {
         "baseline_exact_two": simulate_direct_bankroll(
             baseline_probabilities,
@@ -668,12 +678,64 @@ def evaluate_direct_pair_diagnostics(
                 "exact_two_same_winner_reversed_second_third"
             ),
         ),
+        "baseline_exact_two_normal_odds": simulate_direct_bankroll(
+            baseline_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=exact_two_normal_odds_filter,
+            allocation_filter_name=(
+                "exact_two_allocated_tickets_max_estimated_odds_100"
+            ),
+        ),
+        "baseline_reversed_place_pair_normal_odds": simulate_direct_bankroll(
+            baseline_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=reversed_pair_normal_odds_filter,
+            allocation_filter_name=(
+                "exact_two_same_winner_reversed_second_third_"
+                "max_estimated_odds_100"
+            ),
+        ),
+        "conditional_exact_two_normal_odds": simulate_direct_bankroll(
+            candidate_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=exact_two_normal_odds_filter,
+            allocation_filter_name=(
+                "exact_two_allocated_tickets_max_estimated_odds_100"
+            ),
+        ),
+        "conditional_reversed_place_pair_normal_odds": (
+            simulate_direct_bankroll(
+                candidate_probabilities,
+                race_keys=race_keys,
+                payouts=payouts,
+                training_races=training_races,
+                allocation_filter=reversed_pair_normal_odds_filter,
+                allocation_filter_name=(
+                    "exact_two_same_winner_reversed_second_third_"
+                    "max_estimated_odds_100"
+                ),
+            )
+        ),
     }
     comparison_keys = {
         "baseline_exact_two": "full_baseline",
         "baseline_reversed_place_pair": "full_baseline",
         "conditional_exact_two": "baseline_exact_two",
         "conditional_reversed_place_pair": "baseline_reversed_place_pair",
+        "baseline_exact_two_normal_odds": "baseline_exact_two",
+        "baseline_reversed_place_pair_normal_odds": (
+            "baseline_reversed_place_pair"
+        ),
+        "conditional_exact_two_normal_odds": "conditional_exact_two",
+        "conditional_reversed_place_pair_normal_odds": (
+            "conditional_reversed_place_pair"
+        ),
     }
     result = {}
     for key, pair_bankroll in pair_bankrolls.items():

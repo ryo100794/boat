@@ -21,17 +21,21 @@ from boatrace_ai.listwise.direct_bankroll import (
 
 def test_exact_two_allocation_filter_can_require_reversed_place_pair() -> None:
     allocations = [
-        {"race_id": "swap", "combination": "1-2-3"},
-        {"race_id": "swap", "combination": "1-3-2"},
-        {"race_id": "other", "combination": "2-1-3"},
-        {"race_id": "other", "combination": "2-3-4"},
-        {"race_id": "single", "combination": "3-1-2"},
+        {"race_id": "swap", "combination": "1-2-3", "estimated_odds": 50.0},
+        {"race_id": "swap", "combination": "1-3-2", "estimated_odds": 80.0},
+        {"race_id": "other", "combination": "2-1-3", "estimated_odds": 90.0},
+        {"race_id": "other", "combination": "2-3-4", "estimated_odds": 150.0},
+        {"race_id": "single", "combination": "3-1-2", "estimated_odds": 20.0},
     ]
 
     exact_two = filter_exact_two_allocations(allocations)
     reversed_pair = filter_exact_two_allocations(
         allocations,
         require_reversed_place_pair=True,
+    )
+    normal_odds_pair = filter_exact_two_allocations(
+        allocations,
+        maximum_estimated_odds=100.0,
     )
 
     assert [row["race_id"] for row in exact_two] == [
@@ -40,6 +44,14 @@ def test_exact_two_allocation_filter_can_require_reversed_place_pair() -> None:
     assert [row["combination"] for row in reversed_pair] == [
         "1-2-3", "1-3-2",
     ]
+    assert [row["race_id"] for row in normal_odds_pair] == [
+        "swap", "swap",
+    ]
+    with pytest.raises(ValueError, match="maximum_estimated_odds"):
+        filter_exact_two_allocations(
+            allocations,
+            maximum_estimated_odds=1.0,
+        )
 
 
 def test_daily_bankroll_bootstrap_reports_absolute_and_paired_confidence() -> None:

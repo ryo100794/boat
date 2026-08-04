@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, MutableMapping
+import math
 from typing import Any
 
 import numpy as np
@@ -330,14 +331,28 @@ def filter_exact_two_allocations(
     allocations: list[dict[str, Any]],
     *,
     require_reversed_place_pair: bool = False,
+    maximum_estimated_odds: float | None = None,
 ) -> list[dict[str, Any]]:
     """Keep races allocated exactly two tickets, optionally a 2/3 swap."""
+    if maximum_estimated_odds is not None and (
+        not math.isfinite(float(maximum_estimated_odds))
+        or float(maximum_estimated_odds) <= 1.0
+    ):
+        raise ValueError(
+            "maximum_estimated_odds must be finite and greater than 1.0"
+        )
     by_race: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in allocations:
         by_race[str(row["race_id"])].append(row)
     eligible_races = set()
     for race_id, rows in by_race.items():
         if len(rows) != 2:
+            continue
+        if maximum_estimated_odds is not None and any(
+            float(row.get("estimated_odds") or float("inf"))
+            > maximum_estimated_odds
+            for row in rows
+        ):
             continue
         if not require_reversed_place_pair:
             eligible_races.add(race_id)

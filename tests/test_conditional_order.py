@@ -76,6 +76,10 @@ def test_direct_pair_diagnostics_execute_all_four_research_paths() -> None:
         "baseline_reversed_place_pair",
         "conditional_exact_two",
         "conditional_reversed_place_pair",
+        "baseline_exact_two_normal_odds",
+        "baseline_reversed_place_pair_normal_odds",
+        "conditional_exact_two_normal_odds",
+        "conditional_reversed_place_pair_normal_odds",
     }
     for diagnostic in result.values():
         assert diagnostic["promotion_eligible"] is False
