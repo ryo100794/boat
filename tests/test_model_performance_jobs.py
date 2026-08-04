@@ -99,6 +99,9 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "registeredSummary" in MODEL_REPORT_HTML
     assert "winner_log_loss" in MODEL_REPORT_HTML
     assert "V_buy" in MODEL_REPORT_HTML
+    assert "purchaseValueCalibrationRows" in MODEL_REPORT_HTML
+    assert "purchase_value_realization_deciles" in MODEL_REPORT_HTML
+    assert "daily_block_roi_lower_95" in MODEL_REPORT_HTML
     assert "安全余裕" in MODEL_REPORT_HTML
     assert "ROI LCB95" in MODEL_REPORT_HTML
     assert "正式ROI" in MODEL_REPORT_HTML

@@ -3360,6 +3360,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "joint_calibration_roi": _float_or_none(
                     metrics.get("joint_calibration_roi")
                 ),
+                "purchase_value_realization_candidate_portfolios": metrics.get(
+                    "purchase_value_realization_candidate_portfolios"
+                ),
+                "purchase_value_realization_mismatched_portfolios": metrics.get(
+                    "purchase_value_realization_mismatched_portfolios"
+                ),
+                "purchase_value_realization_monotone": metrics.get(
+                    "purchase_value_realization_monotone"
+                ),
+                "purchase_value_realization_deciles": metrics.get(
+                    "purchase_value_realization_deciles"
+                ),
                 "joint_purchase_value_minimum": _float_or_none(
                     metrics.get("joint_purchase_value_minimum")
                 ),
@@ -4053,6 +4065,22 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "joint_calibration_roi": _float_or_none(
                     candidate_metrics.get("joint_calibration_roi")
+                ),
+                "purchase_value_realization_candidate_portfolios": (
+                    candidate_metrics.get(
+                        "purchase_value_realization_candidate_portfolios"
+                    )
+                ),
+                "purchase_value_realization_mismatched_portfolios": (
+                    candidate_metrics.get(
+                        "purchase_value_realization_mismatched_portfolios"
+                    )
+                ),
+                "purchase_value_realization_monotone": candidate_metrics.get(
+                    "purchase_value_realization_monotone"
+                ),
+                "purchase_value_realization_deciles": candidate_metrics.get(
+                    "purchase_value_realization_deciles"
                 ),
                 "joint_purchase_value_minimum": _float_or_none(
                     candidate_metrics.get("joint_purchase_value_minimum")
