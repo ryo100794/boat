@@ -22,6 +22,10 @@ from boatrace_ai.evaluation_queue import (
     PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY,
     PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
     PROSPECTIVE_SAFETY_110_REGISTERED_AFTER,
+    PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
+    PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
+    PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256,
+    PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -373,6 +377,8 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
     model = root / PROSPECTIVE_LIGHTGBM_MODEL_INPUT
     model.parent.mkdir(parents=True)
     model.write_bytes(b"fixed-lightgbm-artifact")
+    strict_lcb_model = root / PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT
+    strict_lcb_model.write_bytes(b"fixed-job-12315-artifact")
     production_audit = (
         root / "data/models/evaluation_queue/job-00012051.json"
     )
@@ -389,6 +395,33 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
         now=datetime(2026, 8, 5, 18, 1, tzinfo=timezone.utc),
         app_root=root,
     )
+
+    strict_lcb_candidate = next(
+        row for row in calls
+        if row["model_key"] == PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY
+    )
+    strict_lcb_params = strict_lcb_candidate["parameters"]
+    assert strict_lcb_params["model_input"] == (
+        PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT
+    )
+    assert strict_lcb_params["expected_model_sha256"] == (
+        PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256
+    )
+    assert strict_lcb_params["trend_point_registered_after"] == (
+        PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER
+    )
+    assert strict_lcb_params["trend_point_odds_safety_factor"] == 1.0
+    assert strict_lcb_params["prospective_candidate"]["source_model_job_id"] == 12315
+    assert strict_lcb_params["prospective_candidate"][
+        "source_evaluation_job_id"
+    ] == 12618
+    assert strict_lcb_params["prospective_candidate"]["policy"] == (
+        "trend_point_strict_prior_empirical_roi_lcb95"
+    )
+    assert strict_lcb_params["prospective_candidate"][
+        "real_betting_enabled"
+    ] is False
+    assert strict_lcb_candidate["priority"] == 45
 
     candidate = next(
         row for row in calls

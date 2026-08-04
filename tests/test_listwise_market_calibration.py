@@ -1173,6 +1173,10 @@ def test_trend_point_required_ticket_count_is_explicit() -> None:
     assert result["trend_point_market_offset_kelly_walk_forward"][
         "registered_odds_safety_factor"
     ] == 1.10
+    empirical = result["trend_point_empirical_lcb_walk_forward"]
+    assert empirical["status"] == "unsupported_requested_ticket_constraints"
+    assert empirical["promotion_gate"]["requested_policy_supported"] is False
+    assert empirical["promotion_eligible"] is False
     assert result["trend_point_reversed_place_pair_diagnostic"]["policy"][
         "require_reversed_place_pair"
     ] is True

@@ -5008,9 +5008,18 @@ def walk_forward_evaluate(
             trend_point_prospective["promotion_gate"]["pass"]
         ),
     })
+    trend_empirical_policy_supported = bool(
+        trend_point_required_ticket_count is None
+        and not trend_point_require_reversed_place_pair
+        and trend_point_maximum_forecast_odds is None
+    )
     trend_point_empirical_lcb = evaluate_trend_empirical_lcb_walk_forward(
         trend_point_market_races,
-        evaluation_dates=trend_point_evaluation_dates,
+        evaluation_dates=(
+            trend_point_evaluation_dates
+            if trend_empirical_policy_supported
+            else []
+        ),
         odds_safety_factor=trend_point_odds_safety_factor,
         daily_budget_yen=daily_budget_yen,
     )
@@ -5020,11 +5029,19 @@ def walk_forward_evaluate(
             trend_point_odds_safety_factor
         ),
         "status": (
-            trend_point_empirical_lcb["status"]
+            "unsupported_requested_ticket_constraints"
+            if not trend_empirical_policy_supported
+            else trend_point_empirical_lcb["status"]
             if trend_point_evaluation_dates
             else "waiting_for_first_unseen_day"
         ),
     })
+    trend_point_empirical_lcb["promotion_gate"][
+        "requested_policy_supported"
+    ] = trend_empirical_policy_supported
+    if not trend_empirical_policy_supported:
+        trend_point_empirical_lcb["promotion_gate"]["pass"] = False
+        trend_point_empirical_lcb["promotion_eligible"] = False
     trend_point_safety_sweep = None
     if trend_point_odds_safety_sweep:
         def compact_safety_result(value: Mapping[str, Any]) -> dict[str, Any]:

@@ -46,6 +46,15 @@ PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY = (
 PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY = (
     "production_trend_point_safety_110_job_12012"
 )
+PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY = (
+    "prospective_strict_lcb_job_12315"
+)
+PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT = (
+    "data/models/evaluation_queue/job-00012315.joblib"
+)
+PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256 = (
+    "7578865c93b5ed720e69ad36a6447af2ba6c12701fbb832c7a55c3873c41a241"
+)
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
@@ -57,6 +66,7 @@ PRODUCTION_TREND_POINT_STRATEGY = (
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_SAFETY_110_REGISTERED_AFTER = "2026-08-04"
+PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
     "prospective_lightgbm_two_ticket_job_2707"
 )
@@ -7725,6 +7735,24 @@ def seed_periodic_jobs(
     expected_model_sha256 = _production_trend_point_model_sha256(app_root)
     candidate_specs = (
         {
+            "model_key": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
+            "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
+            "source_model_job_id": 12_315,
+            "source_evaluation_job_id": 12_618,
+            "expected_model_sha256": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256
+            ),
+            "policy": "trend_point_strict_prior_empirical_roi_lcb95",
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
+            "registered_after": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER
+            ),
+            "priority": 45,
+        },
+        {
             "model_key": PRODUCTION_TREND_POINT_MODEL_KEY,
             "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
             "source_model_job_id": 12_012,
@@ -7853,6 +7881,14 @@ def seed_periodic_jobs(
             if (
                 prospective_through <= registered_after
                 or candidate_sha256 is None
+                or (
+                    spec["model_key"]
+                    == PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY
+                    and (
+                        app_root is None
+                        or not (app_root / model_input).is_file()
+                    )
+                )
                 or (
                     spec["model_input"] == PROSPECTIVE_LIGHTGBM_MODEL_INPUT
                     and (
