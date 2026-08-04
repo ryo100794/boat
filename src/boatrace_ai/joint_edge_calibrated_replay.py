@@ -11,6 +11,7 @@ import joblib
 
 from .joint_bankroll_evaluation import (
     PURCHASE_UNIT_YEN,
+    _day_block_roi_interval,
     _instant,
     _realized_receipt,
     _release_matured_receipts,
@@ -180,6 +181,154 @@ def _decision_time(
     return _instant(value, "evaluation_time_t")
 
 
+def _calibrated_value_realization(
+    days: Sequence[Mapping[str, Any]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Compare calibrated value and settlement on the identical portfolio."""
+    rows: list[dict[str, Any]] = []
+    excluded_mismatched = 0
+    excluded_non_independent = 0
+    for day in days:
+        race_date = str(day.get("race_date") or "")
+        for race in day.get("races") or []:
+            if not race.get("base_joint_gate_feasible"):
+                continue
+            if race.get("raw_value_source") != (
+                "independent_validation_portfolio_lower_quantile"
+            ):
+                excluded_non_independent += 1
+                continue
+            predicted_roi = race.get("calibrated_gross_return")
+            conservative_roi = race.get("calibrated_gross_return_lcb95")
+            stake_yen = int(race.get("counterfactual_stake_yen") or 0)
+            return_yen = int(race.get("counterfactual_return_yen") or 0)
+            if predicted_roi is None or conservative_roi is None or stake_yen <= 0:
+                continue
+            if not race.get("counterfactual_matches_base_portfolio"):
+                excluded_mismatched += 1
+                continue
+            rows.append({
+                "race_id": str(race.get("race_id") or ""),
+                "race_date": race_date,
+                "purchase_value": float(conservative_roi) - 1.0,
+                "predicted_roi": float(predicted_roi),
+                "conservative_predicted_roi": float(conservative_roi),
+                "stake_yen": stake_yen,
+                "return_yen": return_yen,
+            })
+    rows.sort(key=lambda row: (
+        row["purchase_value"], row["race_date"], row["race_id"]
+    ))
+    bins = []
+    bin_count = min(10, len(rows))
+    for index in range(bin_count):
+        start = index * len(rows) // bin_count
+        end = (index + 1) * len(rows) // bin_count
+        selected = rows[start:end]
+        stake_yen = sum(row["stake_yen"] for row in selected)
+        return_yen = sum(row["return_yen"] for row in selected)
+        by_day: dict[str, dict[str, Any]] = {}
+        for row in selected:
+            daily = by_day.setdefault(row["race_date"], {
+                "race_date": row["race_date"],
+                "stake_yen": 0,
+                "return_yen": 0,
+            })
+            daily["stake_yen"] += row["stake_yen"]
+            daily["return_yen"] += row["return_yen"]
+        confidence = _day_block_roi_interval(
+            list(by_day.values()),
+            samples=samples,
+            seed=seed + 9_200_000 + index,
+        )
+        bins.append({
+            "decile": index + 1,
+            "candidate_portfolios": len(selected),
+            "evaluation_days": len(by_day),
+            "minimum_purchase_value": min(
+                row["purchase_value"] for row in selected
+            ),
+            "maximum_purchase_value": max(
+                row["purchase_value"] for row in selected
+            ),
+            "mean_purchase_value": sum(
+                row["purchase_value"] * row["stake_yen"]
+                for row in selected
+            ) / stake_yen,
+            "predicted_roi": sum(
+                row["predicted_roi"] * row["stake_yen"]
+                for row in selected
+            ) / stake_yen,
+            "conservative_predicted_roi": sum(
+                row["conservative_predicted_roi"] * row["stake_yen"]
+                for row in selected
+            ) / stake_yen,
+            "stake_yen": stake_yen,
+            "return_yen": return_yen,
+            "profit_yen": return_yen - stake_yen,
+            "realized_roi": return_yen / stake_yen,
+            "daily_block_roi_lower_95": confidence["roi_lower"],
+            "daily_block_roi_upper_95": confidence["roi_upper"],
+            "bootstrap_samples": confidence["samples"],
+        })
+    realized = [float(row["realized_roi"]) for row in bins]
+    manifest = [[
+        row["race_id"], row["race_date"], row["purchase_value"],
+        row["predicted_roi"], row["stake_yen"], row["return_yen"],
+    ] for row in rows]
+    return {
+        "version": "strict_prior_calibrated_value_realization_deciles_v1",
+        "population": (
+            "calibration_ready_structurally_feasible_independent_validation_"
+            "portfolios"
+        ),
+        "ranking_value_definition": "calibrated_gross_return_lcb95_minus_one",
+        "predicted_roi_definition": "stake_weighted_calibrated_gross_return",
+        "conservative_predicted_roi_definition": (
+            "stake_weighted_calibrated_gross_return_lcb95"
+        ),
+        "realized_roi_definition": (
+            "identical_base_portfolio_integer_settlement_return_divided_by_stake"
+        ),
+        "strict_prior_calibration_only": True,
+        "independent_validation_value_only": bool(
+            rows and excluded_non_independent == 0
+        ),
+        "identical_realized_portfolio_only": bool(
+            rows and excluded_mismatched == 0
+        ),
+        "candidate_manifest_sha256": _canonical_sha256(manifest),
+        "candidate_portfolios": len(rows),
+        "excluded_mismatched_portfolios": excluded_mismatched,
+        "excluded_non_independent_portfolios": excluded_non_independent,
+        "quantile_bins": len(bins),
+        "monotone_realized_roi": bool(
+            realized
+            and all(left <= right for left, right in zip(realized, realized[1:]))
+        ),
+        "deciles": bins,
+    }
+
+
+def _purchase_gate_outcome(
+    *,
+    mature_observation_window: bool,
+    observed_purchased_portfolios: int,
+    safety_invariants_passed: bool,
+    promotion_evidence_passed: bool,
+) -> str:
+    if not mature_observation_window:
+        return "accumulating_strict_prior_calibration"
+    if observed_purchased_portfolios == 0 and safety_invariants_passed:
+        return "safe_abstention_no_demonstrated_price_advantage"
+    if promotion_evidence_passed:
+        return "promotion_evidence_passed"
+    return "formal_purchase_evidence_rejected"
+
+
 def run_joint_edge_calibrated_replay(
     base_artifact: Path,
     *,
@@ -294,7 +443,26 @@ def run_joint_edge_calibrated_replay(
             elif float(calibrated_lcb) <= 1.0 + calibration_margin:
                 reason = "calibration_lcb_not_above_margin"
 
-            proposed_bets = race.get("best_search_bets_yen") or {}
+            raw_proposed_bets = race.get("best_search_bets_yen") or {}
+            proposed_bets = {
+                str(ticket): int(stake)
+                for ticket, stake in raw_proposed_bets.items()
+            } if isinstance(raw_proposed_bets, Mapping) else {}
+            counterfactual_stake = sum(proposed_bets.values())
+            counterfactual_return = _realized_receipt(
+                proposed_bets,
+                actual_combination=str(race.get("actual_combination") or ""),
+                actual_payout_yen=int(race.get("actual_payout_yen") or 0),
+            )
+            recorded_stake = int(race.get("best_search_stake_yen") or 0)
+            recorded_return = int(
+                race.get("best_search_hypothetical_return_yen") or 0
+            )
+            counterfactual_matches = bool(
+                counterfactual_stake > 0
+                and counterfactual_stake == recorded_stake
+                and counterfactual_return == recorded_return
+            )
             bets = (
                 _fit_bets_to_cash(proposed_bets, balance)
                 if authorized else {}
@@ -337,12 +505,24 @@ def run_joint_edge_calibrated_replay(
                 ),
                 "calibrated_gross_return": prediction.get("empirical_ev"),
                 "calibrated_gross_return_lcb95": calibrated_lcb,
+                "formal_purchase_value": (
+                    float(calibrated_lcb) - 1.0
+                    if calibrated_lcb is not None else None
+                ),
                 "calibration_support": prediction.get("support"),
                 "calibration_support_days": prediction.get("support_days"),
                 "calibration_trained_through_date": (
                     calibrator.trained_through_date
                 ),
                 "base_joint_gate_feasible": structural_feasible,
+                "counterfactual_stake_yen": counterfactual_stake,
+                "counterfactual_return_yen": counterfactual_return,
+                "counterfactual_profit_yen": (
+                    counterfactual_return - counterfactual_stake
+                ),
+                "counterfactual_matches_base_portfolio": (
+                    counterfactual_matches
+                ),
                 "purchase_authorized": authorized,
                 "rejection_reason": reason,
                 "bets_yen": bets,
@@ -371,6 +551,9 @@ def run_joint_edge_calibrated_replay(
         })
 
     confidence = build_block_bootstrap_evidence(
+        replay_days, samples=bootstrap_samples, seed=seed
+    )
+    value_realization = _calibrated_value_realization(
         replay_days, samples=bootstrap_samples, seed=seed
     )
     total_stake = sum(day["stake_yen"] for day in replay_days)
@@ -424,6 +607,52 @@ def run_joint_edge_calibrated_replay(
             for record in training_records
         })
     }
+    base_protocol = payload.get("evaluation_protocol")
+    base_protocol = base_protocol if isinstance(base_protocol, dict) else {}
+    joint_distribution = base_protocol.get("training_and_joint_distribution")
+    joint_distribution = (
+        joint_distribution if isinstance(joint_distribution, dict) else {}
+    )
+    ready_boundaries = [
+        {
+            "evaluation_date": str(fold.get("evaluation_date") or ""),
+            "trained_through_date": str(
+                fold.get("trained_through_date") or ""
+            ),
+        }
+        for fold in calibration_folds
+        if fold.get("ready")
+    ]
+    strict_prior_violations = [
+        row for row in ready_boundaries
+        if not row["trained_through_date"]
+        or row["trained_through_date"] >= row["evaluation_date"]
+    ]
+    independence_audit = {
+        "version": "strict_prior_calibrated_value_independence_audit_v1",
+        "calibration_folds": len(calibration_folds),
+        "calibration_ready_folds": len(ready_boundaries),
+        "strict_prior_fold_violations": len(strict_prior_violations),
+        "strict_prior_training_for_every_ready_fold": bool(
+            ready_boundaries and not strict_prior_violations
+        ),
+        "fold_boundary_manifest_sha256": _canonical_sha256(ready_boundaries),
+        "search_validation_draw_sets_disjoint": (
+            joint_distribution.get("search_validation_draw_sets_disjoint")
+        ),
+        "value_population_manifest_sha256": value_realization[
+            "candidate_manifest_sha256"
+        ],
+        "value_population_candidate_portfolios": value_realization[
+            "candidate_portfolios"
+        ],
+        "value_population_independent_validation_only": value_realization[
+            "independent_validation_value_only"
+        ],
+        "value_population_identical_realized_portfolios_only": (
+            value_realization["identical_realized_portfolio_only"]
+        ),
+    }
     formal_gate = {
         "independent_validation_value_only": bool(
             purchased
@@ -432,6 +661,16 @@ def run_joint_edge_calibrated_replay(
                 == "independent_validation_portfolio_lower_quantile"
                 for race in purchased
             )
+        ),
+        "strict_prior_calibration_folds": independence_audit[
+            "strict_prior_training_for_every_ready_fold"
+        ],
+        "independent_search_validation_draw_sets": bool(
+            independence_audit["search_validation_draw_sets_disjoint"]
+        ),
+        "identical_value_realization_population": bool(
+            value_realization["candidate_portfolios"]
+            and value_realization["identical_realized_portfolio_only"]
         ),
         "minimum_30_calibration_ready_days": ready_days >= 30,
         "minimum_1000_ready_races": ready_races >= 1_000,
@@ -452,15 +691,71 @@ def run_joint_edge_calibrated_replay(
             and min(lcb_values) > 1.0 + calibration_margin
         ),
     }
-    base_protocol = payload.get("evaluation_protocol")
-    base_protocol = base_protocol if isinstance(base_protocol, dict) else {}
+    pre_ready_purchases = sum(
+        int(race.get("stake_yen") or 0) > 0
+        for day in replay_days if not day.get("calibration_ready")
+        for race in day.get("races") or []
+    )
+    below_threshold_purchases = sum(
+        int(race.get("stake_yen") or 0) > 0
+        and (
+            race.get("calibrated_gross_return_lcb95") is None
+            or float(race["calibrated_gross_return_lcb95"])
+            <= 1.0 + calibration_margin
+        )
+        for day in replay_days
+        for race in day.get("races") or []
+    )
+    non_independent_value_purchases = sum(
+        int(race.get("stake_yen") or 0) > 0
+        and race.get("raw_value_source") != (
+            "independent_validation_portfolio_lower_quantile"
+        )
+        for day in replay_days
+        for race in day.get("races") or []
+    )
+    safety_invariants_passed = not any((
+        pre_ready_purchases,
+        below_threshold_purchases,
+        non_independent_value_purchases,
+        strict_prior_violations,
+    ))
+    mature_observation_window = ready_days >= 30 and ready_races >= 1_000
+    purchase_gate_outcome = _purchase_gate_outcome(
+        mature_observation_window=mature_observation_window,
+        observed_purchased_portfolios=len(purchased),
+        safety_invariants_passed=safety_invariants_passed,
+        promotion_evidence_passed=all(formal_gate.values()),
+    )
+    purchase_gate_audit = {
+        "version": "strict_prior_purchase_gate_operational_audit_v1",
+        "outcome": purchase_gate_outcome,
+        "safety_invariants_passed": safety_invariants_passed,
+        "mature_observation_window": mature_observation_window,
+        "safe_abstention": purchase_gate_outcome == (
+            "safe_abstention_no_demonstrated_price_advantage"
+        ),
+        "pre_calibration_ready_purchases": pre_ready_purchases,
+        "below_calibrated_lcb_threshold_purchases": (
+            below_threshold_purchases
+        ),
+        "non_independent_value_purchases": non_independent_value_purchases,
+        "observed_purchased_portfolios": len(purchased),
+        "interpretation": (
+            "zero_purchases_is_safe_abstention_not_gate_failure"
+        ),
+    }
     protocol = {
         "version": "joint_edge_calibrated_replay_protocol_v3",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
         "evaluation_time_t": base_protocol.get("evaluation_time_t"),
+        "odds_snapshot_age": base_protocol.get("odds_snapshot_age"),
         "population": base_protocol.get("population"),
+        "training_and_joint_distribution": joint_distribution,
+        "purchase_rule": base_protocol.get("purchase_rule"),
+        "settlement": base_protocol.get("settlement"),
         "calibration": {
             "version": CALIBRATION_VERSION,
             "margin": calibration_margin,
@@ -495,7 +790,7 @@ def run_joint_edge_calibrated_replay(
         "status": (
             "promotion_candidate"
             if all(formal_gate.values())
-            else "provisional_learned_edge_calibration"
+            else purchase_gate_outcome
         ),
         "promotion_eligible": all(formal_gate.values()),
         "deployment_eligible": False,
@@ -517,6 +812,7 @@ def run_joint_edge_calibrated_replay(
         "calibration_training_records": len(training_records),
         "calibration_input_sources": calibration_input_sources,
         "calibration_folds": calibration_folds,
+        "calibration_independence_audit": independence_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,
@@ -531,6 +827,8 @@ def run_joint_edge_calibrated_replay(
                 "calibrated_lcb_above_margin"
             ],
         },
+        "purchase_value_realization_calibration": value_realization,
+        "purchase_gate_operational_audit": purchase_gate_audit,
         "promotion_gate": formal_gate,
         "promotion_gate_passed": sum(formal_gate.values()),
         "promotion_gate_total": len(formal_gate),

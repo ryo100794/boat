@@ -298,6 +298,13 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "evaluation_snapshot_age_seconds_mean": 12.5,
             "evaluation_snapshot_age_seconds_max": 31.0,
             "bootstrap_condition_id": "abc123",
+            "calibration_strict_prior_all_ready_folds": True,
+            "calibration_search_validation_draw_sets_disjoint": True,
+            "calibration_value_population_identical_only": True,
+            "purchase_gate_operational_outcome": (
+                "safe_abstention_no_demonstrated_price_advantage"
+            ),
+            "purchase_gate_safety_invariants_passed": True,
         }],
     })
 
@@ -329,6 +336,18 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     )[1].split("</script>", 1)[0]
     payload = json.loads(encoded)
     assert payload["rows"][0]["job_id"] == 12001
+    assert payload["rows"][0][
+        "calibration_strict_prior_all_ready_folds"
+    ] is True
+    assert payload["rows"][0][
+        "calibration_search_validation_draw_sets_disjoint"
+    ] is True
+    assert payload["rows"][0][
+        "calibration_value_population_identical_only"
+    ] is True
+    assert payload["rows"][0]["purchase_gate_operational_outcome"] == (
+        "safe_abstention_no_demonstrated_price_advantage"
+    )
     assert payload["joint_rows"][0]["joint_covariance_mean"] == -0.03125
     assert payload["models"][0]["name"] == (
         "joint_bankroll_strict_walk_forward_v4"

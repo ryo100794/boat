@@ -9,6 +9,7 @@ from boatrace_ai.evaluation_queue import build_command, summarize_result
 
 from boatrace_ai.joint_edge_calibrated_replay import (
     _fit_bets_to_cash,
+    _purchase_gate_outcome,
     run_joint_edge_calibrated_replay,
 )
 
@@ -44,6 +45,20 @@ def _base_artifact(path: Path, *, day3_payout: int = 200) -> Path:
     payload = {
         "model": "joint_bankroll_strict_walk_forward_v5",
         "evaluation_protocol_id": "base-protocol",
+        "evaluation_protocol": {
+            "evaluation_time_t": {
+                "definition": "purchase_decision_timestamp",
+                "source_field": "decision_at_else_odds_deadline_at",
+            },
+            "odds_snapshot_age": {"definition": "decision_minus_snapshot"},
+            "population": {"wager_types": ["trifecta"]},
+            "training_and_joint_distribution": {
+                "search_outer_draws": 20,
+                "validation_outer_draws": 100,
+                "search_validation_draw_sets_disjoint": True,
+            },
+            "purchase_rule": {"inner_tail_fraction": 0.1},
+        },
         "configuration": {"buy_margin": 0.0},
         "daily": daily,
     }
@@ -99,6 +114,30 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert profitable["calibration_input_sources"] == {
         "independent_validation_portfolio_lower_quantile": 4
     }
+    independence = profitable["calibration_independence_audit"]
+    assert independence["strict_prior_fold_violations"] == 0
+    assert independence["strict_prior_training_for_every_ready_fold"] is True
+    assert independence["search_validation_draw_sets_disjoint"] is True
+    assert independence["value_population_independent_validation_only"] is True
+    assert independence["value_population_identical_realized_portfolios_only"] is True
+    calibration = profitable["purchase_value_realization_calibration"]
+    assert calibration["version"] == (
+        "strict_prior_calibrated_value_realization_deciles_v1"
+    )
+    assert calibration["candidate_portfolios"] == 2
+    assert calibration["excluded_mismatched_portfolios"] == 0
+    assert calibration["independent_validation_value_only"] is True
+    assert calibration["identical_realized_portfolio_only"] is True
+    assert len(calibration["candidate_manifest_sha256"]) == 64
+    assert all(
+        row["predicted_roi"] == 2.0
+        and row["conservative_predicted_roi"] == 2.0
+        and row["realized_roi"] == 2.0
+        for row in calibration["deciles"]
+    )
+    assert profitable["evaluation_protocol"][
+        "training_and_joint_distribution"
+    ]["search_validation_draw_sets_disjoint"] is True
     assert "minimum_30_calibration_ready_days" in (
         profitable["promotion_gate_failed"]
     )
@@ -164,6 +203,28 @@ def test_replay_no_bets_until_calibration_support_is_ready(
     assert result["evaluation_protocol"]["calibration"]["sample_weight"] == (
         "candidate_portfolio_stake_yen"
     )
+    gate = result["purchase_gate_operational_audit"]
+    assert gate["safety_invariants_passed"] is True
+    assert gate["pre_calibration_ready_purchases"] == 0
+    assert gate["below_calibrated_lcb_threshold_purchases"] == 0
+    assert gate["non_independent_value_purchases"] == 0
+    assert gate["outcome"] == "accumulating_strict_prior_calibration"
+
+
+def test_mature_zero_purchase_window_is_safe_abstention_not_gate_failure() -> None:
+    assert _purchase_gate_outcome(
+        mature_observation_window=True,
+        observed_purchased_portfolios=0,
+        safety_invariants_passed=True,
+        promotion_evidence_passed=False,
+    ) == "safe_abstention_no_demonstrated_price_advantage"
+
+    assert _purchase_gate_outcome(
+        mature_observation_window=True,
+        observed_purchased_portfolios=0,
+        safety_invariants_passed=False,
+        promotion_evidence_passed=False,
+    ) == "formal_purchase_evidence_rejected"
 
 
 def test_cash_downscale_preserves_integer_units_and_ticket_proportions() -> None:
@@ -273,6 +334,30 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "selected_portfolios": 4,
             "all_above_safety_margin": True,
         },
+        "calibration_independence_audit": {
+            "strict_prior_fold_violations": 0,
+            "strict_prior_training_for_every_ready_fold": True,
+            "search_validation_draw_sets_disjoint": True,
+            "value_population_manifest_sha256": "abc123",
+            "value_population_independent_validation_only": True,
+            "value_population_identical_realized_portfolios_only": True,
+        },
+        "purchase_gate_operational_audit": {
+            "outcome": "safe_abstention_no_demonstrated_price_advantage",
+            "safety_invariants_passed": True,
+            "mature_observation_window": True,
+            "safe_abstention": True,
+            "pre_calibration_ready_purchases": 0,
+            "below_calibrated_lcb_threshold_purchases": 0,
+            "non_independent_value_purchases": 0,
+        },
+        "purchase_value_realization_calibration": {
+            "version": "strict_prior_calibrated_value_realization_deciles_v1",
+            "candidate_portfolios": 400,
+            "excluded_mismatched_portfolios": 0,
+            "monotone_realized_roi": True,
+            "deciles": [{"decile": 1, "candidate_portfolios": 40}],
+        },
         "bankroll_confidence": {
             "formal_gate_passed": True,
             "condition_id": "resampling",
@@ -292,5 +377,24 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary["joint_purchase_value_minimum"] == 1.03
     assert summary["joint_purchase_value_gate_passed"] is True
     assert summary["formal_roi_gate_passed"] is True
+    assert summary["calibration_strict_prior_fold_violations"] == 0
+    assert summary["calibration_strict_prior_all_ready_folds"] is True
+    assert summary["calibration_search_validation_draw_sets_disjoint"] is True
+    assert summary["calibration_value_population_manifest_sha256"] == "abc123"
+    assert summary["calibration_value_population_independent_only"] is True
+    assert summary["calibration_value_population_identical_only"] is True
+    assert summary["purchase_gate_operational_outcome"] == (
+        "safe_abstention_no_demonstrated_price_advantage"
+    )
+    assert summary["purchase_gate_safety_invariants_passed"] is True
+    assert summary["purchase_gate_mature_observation_window"] is True
+    assert summary["purchase_gate_safe_abstention"] is True
+    assert summary["purchase_gate_pre_ready_purchases"] == 0
+    assert summary["purchase_gate_below_lcb_purchases"] == 0
+    assert summary["purchase_gate_non_independent_purchases"] == 0
+    assert summary["purchase_value_realization_candidate_portfolios"] == 400
+    assert summary["purchase_value_realization_deciles"] == [
+        {"decile": 1, "candidate_portfolios": 40}
+    ]
     assert summary["bootstrap_condition_id"] == "resampling"
     assert summary["day_venue_roi_lower_95"] == 0.98

@@ -3859,6 +3859,23 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         )
         purchase_rule = protocol.get("purchase_rule")
         purchase_rule = purchase_rule if isinstance(purchase_rule, dict) else {}
+        value_calibration = payload.get(
+            "purchase_value_realization_calibration"
+        )
+        value_calibration = (
+            value_calibration if isinstance(value_calibration, dict) else {}
+        )
+        independence_audit = payload.get("calibration_independence_audit")
+        independence_audit = (
+            independence_audit if isinstance(independence_audit, dict) else {}
+        )
+        purchase_gate_audit = payload.get(
+            "purchase_gate_operational_audit"
+        )
+        purchase_gate_audit = (
+            purchase_gate_audit
+            if isinstance(purchase_gate_audit, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -3890,6 +3907,71 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_ready_days": payload.get("calibration_ready_days"),
             "calibration_ready_races": payload.get("calibration_ready_races"),
+            "calibration_strict_prior_fold_violations": (
+                independence_audit.get("strict_prior_fold_violations")
+            ),
+            "calibration_strict_prior_all_ready_folds": (
+                independence_audit.get(
+                    "strict_prior_training_for_every_ready_fold"
+                )
+            ),
+            "calibration_search_validation_draw_sets_disjoint": (
+                independence_audit.get(
+                    "search_validation_draw_sets_disjoint"
+                )
+            ),
+            "calibration_value_population_manifest_sha256": (
+                independence_audit.get(
+                    "value_population_manifest_sha256"
+                )
+            ),
+            "calibration_value_population_independent_only": (
+                independence_audit.get(
+                    "value_population_independent_validation_only"
+                )
+            ),
+            "calibration_value_population_identical_only": (
+                independence_audit.get(
+                    "value_population_identical_realized_portfolios_only"
+                )
+            ),
+            "purchase_gate_operational_outcome": purchase_gate_audit.get(
+                "outcome"
+            ),
+            "purchase_gate_safety_invariants_passed": (
+                purchase_gate_audit.get("safety_invariants_passed")
+            ),
+            "purchase_gate_mature_observation_window": (
+                purchase_gate_audit.get("mature_observation_window")
+            ),
+            "purchase_gate_safe_abstention": purchase_gate_audit.get(
+                "safe_abstention"
+            ),
+            "purchase_gate_pre_ready_purchases": purchase_gate_audit.get(
+                "pre_calibration_ready_purchases"
+            ),
+            "purchase_gate_below_lcb_purchases": purchase_gate_audit.get(
+                "below_calibrated_lcb_threshold_purchases"
+            ),
+            "purchase_gate_non_independent_purchases": (
+                purchase_gate_audit.get("non_independent_value_purchases")
+            ),
+            "purchase_value_realization_calibration": value_calibration,
+            "purchase_value_realization_version": value_calibration.get(
+                "version"
+            ),
+            "purchase_value_realization_candidate_portfolios": (
+                value_calibration.get("candidate_portfolios")
+            ),
+            "purchase_value_realization_mismatched_portfolios": (
+                value_calibration.get("excluded_mismatched_portfolios")
+            ),
+            "purchase_value_realization_monotone": value_calibration.get(
+                "monotone_realized_roi"
+            ),
+            "purchase_value_realization_deciles": value_calibration.get(
+                "deciles"
+            ),
             "joint_purchase_value_minimum": formal_value.get("minimum"),
             "joint_purchase_safety_margin": formal_value.get("safety_margin"),
             "joint_purchase_value_selected_portfolios": formal_value.get(

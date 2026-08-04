@@ -3372,6 +3372,45 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "purchase_value_realization_deciles": metrics.get(
                     "purchase_value_realization_deciles"
                 ),
+                "calibration_strict_prior_fold_violations": metrics.get(
+                    "calibration_strict_prior_fold_violations"
+                ),
+                "calibration_strict_prior_all_ready_folds": metrics.get(
+                    "calibration_strict_prior_all_ready_folds"
+                ),
+                "calibration_search_validation_draw_sets_disjoint": metrics.get(
+                    "calibration_search_validation_draw_sets_disjoint"
+                ),
+                "calibration_value_population_manifest_sha256": metrics.get(
+                    "calibration_value_population_manifest_sha256"
+                ),
+                "calibration_value_population_independent_only": metrics.get(
+                    "calibration_value_population_independent_only"
+                ),
+                "calibration_value_population_identical_only": metrics.get(
+                    "calibration_value_population_identical_only"
+                ),
+                "purchase_gate_operational_outcome": metrics.get(
+                    "purchase_gate_operational_outcome"
+                ),
+                "purchase_gate_safety_invariants_passed": metrics.get(
+                    "purchase_gate_safety_invariants_passed"
+                ),
+                "purchase_gate_mature_observation_window": metrics.get(
+                    "purchase_gate_mature_observation_window"
+                ),
+                "purchase_gate_safe_abstention": metrics.get(
+                    "purchase_gate_safe_abstention"
+                ),
+                "purchase_gate_pre_ready_purchases": metrics.get(
+                    "purchase_gate_pre_ready_purchases"
+                ),
+                "purchase_gate_below_lcb_purchases": metrics.get(
+                    "purchase_gate_below_lcb_purchases"
+                ),
+                "purchase_gate_non_independent_purchases": metrics.get(
+                    "purchase_gate_non_independent_purchases"
+                ),
                 "joint_purchase_value_minimum": _float_or_none(
                     metrics.get("joint_purchase_value_minimum")
                 ),
@@ -4081,6 +4120,63 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "purchase_value_realization_deciles": candidate_metrics.get(
                     "purchase_value_realization_deciles"
+                ),
+                "calibration_strict_prior_fold_violations": (
+                    candidate_metrics.get(
+                        "calibration_strict_prior_fold_violations"
+                    )
+                ),
+                "calibration_strict_prior_all_ready_folds": (
+                    candidate_metrics.get(
+                        "calibration_strict_prior_all_ready_folds"
+                    )
+                ),
+                "calibration_search_validation_draw_sets_disjoint": (
+                    candidate_metrics.get(
+                        "calibration_search_validation_draw_sets_disjoint"
+                    )
+                ),
+                "calibration_value_population_manifest_sha256": (
+                    candidate_metrics.get(
+                        "calibration_value_population_manifest_sha256"
+                    )
+                ),
+                "calibration_value_population_independent_only": (
+                    candidate_metrics.get(
+                        "calibration_value_population_independent_only"
+                    )
+                ),
+                "calibration_value_population_identical_only": (
+                    candidate_metrics.get(
+                        "calibration_value_population_identical_only"
+                    )
+                ),
+                "purchase_gate_operational_outcome": candidate_metrics.get(
+                    "purchase_gate_operational_outcome"
+                ),
+                "purchase_gate_safety_invariants_passed": (
+                    candidate_metrics.get(
+                        "purchase_gate_safety_invariants_passed"
+                    )
+                ),
+                "purchase_gate_mature_observation_window": (
+                    candidate_metrics.get(
+                        "purchase_gate_mature_observation_window"
+                    )
+                ),
+                "purchase_gate_safe_abstention": candidate_metrics.get(
+                    "purchase_gate_safe_abstention"
+                ),
+                "purchase_gate_pre_ready_purchases": candidate_metrics.get(
+                    "purchase_gate_pre_ready_purchases"
+                ),
+                "purchase_gate_below_lcb_purchases": candidate_metrics.get(
+                    "purchase_gate_below_lcb_purchases"
+                ),
+                "purchase_gate_non_independent_purchases": (
+                    candidate_metrics.get(
+                        "purchase_gate_non_independent_purchases"
+                    )
                 ),
                 "joint_purchase_value_minimum": _float_or_none(
                     candidate_metrics.get("joint_purchase_value_minimum")
@@ -8356,6 +8452,23 @@ def model_performance_audit_snapshot(
                 "evaluation_snapshot_age_seconds_max",
                 "evaluation_venues", "evaluation_wager_types",
                 "evaluation_popularity_bands_at_t", "bootstrap_condition_id",
+                "calibration_strict_prior_fold_violations",
+                "calibration_strict_prior_all_ready_folds",
+                "calibration_search_validation_draw_sets_disjoint",
+                "calibration_value_population_manifest_sha256",
+                "calibration_value_population_independent_only",
+                "calibration_value_population_identical_only",
+                "purchase_gate_operational_outcome",
+                "purchase_gate_safety_invariants_passed",
+                "purchase_gate_mature_observation_window",
+                "purchase_gate_safe_abstention",
+                "purchase_gate_pre_ready_purchases",
+                "purchase_gate_below_lcb_purchases",
+                "purchase_gate_non_independent_purchases",
+                "purchase_value_realization_candidate_portfolios",
+                "purchase_value_realization_mismatched_portfolios",
+                "purchase_value_realization_monotone",
+                "purchase_value_realization_deciles",
             )
         }
         if (
