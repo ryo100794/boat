@@ -6,6 +6,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "stacked_market_residual_v42",
+        "stacked_market_residual_v42",
+        "metrics",
+        "artifact",
+    ),
+    (
         "nonlinear_market_offset_context_search_v41",
         "nonlinear_market_offset_context_search_v41",
         "metrics",
@@ -143,6 +149,10 @@ def apply_archive_residual_summary(
         "selected_shrinkage",
         "selected_context_variant",
         "selected_context_features",
+        "selected_stack",
+        "selected_weights",
+        "base_training_through",
+        "stack_validation_from",
         "inner_fit_through",
         "inner_validation_from",
     ):
@@ -153,6 +163,7 @@ def apply_archive_residual_summary(
         for key in (
             "feature_dimension",
             "context_features",
+            "artifact_sha256",
             "feature_variant",
             "architecture",
             "structure_variant",
@@ -312,7 +323,9 @@ def apply_archive_residual_summary(
                 if calibration.get(key) is not None
             }
     summary["residual_purchase_policies"] = compact_policies
-    nested = temporal.get("nested_nonlinear_value_calibration_v40")
+    nested = temporal.get("nested_stacked_value_calibration_v43")
+    if not isinstance(nested, Mapping):
+        nested = temporal.get("nested_nonlinear_value_calibration_v40")
     if isinstance(nested, Mapping):
         nested_probability = nested.get("evaluation_probability_metrics")
         nested_probability = (

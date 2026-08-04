@@ -67,10 +67,17 @@ from .nested_nonlinear_value_v40 import (
 from .nonlinear_context_search_v41 import (
     fit_temporal_nonlinear_context_search,
 )
+from .stacked_market_residual_v42 import (
+    fit_temporal_stacked_market_residual,
+    stacked_probabilities,
+)
+from .nested_stacked_value_v43 import (
+    evaluate_nested_stacked_value_v43,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 15
+EVALUATION_VERSION = 16
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -657,7 +664,68 @@ def temporal_residual_diagnostic(
         "untouched outer-split research only; context breadth is selected by "
         "inner log loss and never by outer ROI"
     )
+    if len({str(race["race_date"]) for race in calibration}) >= 10:
+        stacked_market_residual = fit_temporal_stacked_market_residual(
+            calibration,
+            evaluation,
+        )
+    else:
+        stacked_market_residual = {
+            "model": "stacked_market_residual_v42",
+            "status": "insufficient_calibration_days",
+            "calibration_days": len(
+                {str(race["race_date"]) for race in calibration}
+            ),
+            "required_calibration_days": 10,
+        }
+    stacked_purchase_diagnostics = []
+    if "artifact" in stacked_market_residual:
+        stacked_evaluation = [
+            {
+                **race,
+                "model_probabilities": stacked_probabilities(
+                    race, stacked_market_residual["artifact"]
+                ),
+            }
+            for race in evaluation
+        ]
+        for policy in TEMPORAL_RESIDUAL_POLICIES:
+            simulation = simulate_chronological_flat_policy(
+                stacked_evaluation,
+                calibrator={"model_weight": 1.0, "temperature": 1.0},
+                policy=policy,
+                probability_blender=blend_probabilities,
+                initial_bankroll_yen=daily_budget_yen,
+            )
+            bootstrap = (
+                bootstrap_daily_roi(simulation["daily"])
+                if simulation["daily"]
+                else {
+                    "days": 0,
+                    "roi": None,
+                    "roi_ci95_lower": None,
+                    "probability_roi_above_one": None,
+                }
+            )
+            stacked_purchase_diagnostics.append({
+                "role": "inner_log_loss_selected_stack",
+                "policy": dict(policy),
+                "simulation": simulation,
+                "bootstrap": bootstrap,
+            })
+    stacked_market_residual["purchase_diagnostics"] = (
+        stacked_purchase_diagnostics
+    )
+    stacked_market_residual["purchase_diagnostic_role"] = (
+        "untouched outer-split research only; stack membership and weights are "
+        "selected exclusively on prior-day validation"
+    )
     nested_nonlinear_value = evaluate_nested_nonlinear_value_v40(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
+    nested_stacked_value = evaluate_nested_stacked_value_v43(
         calibration,
         evaluation,
         daily_budget_yen=daily_budget_yen,
@@ -690,6 +758,8 @@ def temporal_residual_diagnostic(
         "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
         "nested_nonlinear_value_calibration_v40": nested_nonlinear_value,
         "nonlinear_market_offset_context_search_v41": nonlinear_context_search,
+        "stacked_market_residual_v42": stacked_market_residual,
+        "nested_stacked_value_calibration_v43": nested_stacked_value,
     }
 
 

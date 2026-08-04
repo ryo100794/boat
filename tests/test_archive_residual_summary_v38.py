@@ -184,3 +184,76 @@ def test_v41_summary_exposes_inner_selected_context_contract() -> None:
         "class_rank",
         "national_win_rate",
     ]
+
+
+def test_v42_and_v43_are_public_summary_heads() -> None:
+    payload = {
+        "model": "archive_closing_market_oracle_v1",
+        "temporal_residual_diagnostic": {
+            "calibration_from": "2026-05-10",
+            "calibration_through": "2026-06-30",
+            "evaluation_from": "2026-07-01",
+            "evaluation_through": "2026-07-19",
+            "stacked_market_residual_v42": {
+                "market_is_exact_nested_null": True,
+                "outer_period_used_for_selection": False,
+                "base_training_through": "2026-06-19",
+                "stack_validation_from": "2026-06-20",
+                "selected_stack": "market50_linear50",
+                "selected_weights": {
+                    "market": 0.5,
+                    "linear": 0.5,
+                    "nonlinear": 0.0,
+                },
+                "artifact": {"artifact_sha256": "c" * 64},
+                "metrics": {
+                    "evaluated_races": 2744,
+                    "trifecta_log_loss": 3.67,
+                    "market_trifecta_log_loss": 3.70,
+                    "log_loss_delta_vs_market": -0.03,
+                    "trifecta_top5_hit_rate": 0.38,
+                    "market_trifecta_top5_hit_rate": 0.37,
+                },
+                "purchase_diagnostics": [],
+            },
+            "nested_stacked_value_calibration_v43": {
+                "model": "nested_stacked_value_calibration_v43",
+                "status": "completed",
+                "model_training_days": 22,
+                "value_calibration_days": 30,
+                "calibration_ledger_candidates": 20660,
+                "evaluation_ledger_candidates": 13720,
+                "evaluation_probability_metrics": {
+                    "evaluated_races": 2744,
+                    "trifecta_log_loss": 3.68,
+                    "market_trifecta_log_loss": 3.70,
+                    "log_loss_delta_vs_market": -0.02,
+                },
+                "empirical_ev_calibration": {
+                    "ready": True,
+                    "ready_reasons": [],
+                    "bins": [],
+                },
+                "bankroll": {
+                    "tickets": 0,
+                    "stake_yen": 0,
+                    "return_yen": 0,
+                    "profit_yen": 0,
+                    "roi": None,
+                    "roi_display": "N/A",
+                },
+                "promotion_eligible": False,
+            },
+        },
+    }
+
+    summary = summarize_result(payload)
+
+    assert summary["model"] == "stacked_market_residual_v42"
+    assert summary["residual_selected_stack"] == "market50_linear50"
+    assert summary["residual_selected_weights"]["linear"] == 0.5
+    assert summary["residual_artifact_sha256"] == "c" * 64
+    assert summary["nested_value_model"] == (
+        "nested_stacked_value_calibration_v43"
+    )
+    assert summary["nested_value_evaluation_candidates"] == 13720
