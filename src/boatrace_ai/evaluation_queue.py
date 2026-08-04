@@ -5196,6 +5196,61 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         summary["payout_feature_promotion_eligible"] = (
             payout_walk_forward.get("promotion_eligible")
         )
+    expected_return = payload.get("expected_return_calibration")
+    if isinstance(expected_return, dict):
+        bankroll = expected_return.get("bankroll")
+        if isinstance(bankroll, dict):
+            for key in (
+                "roi", "profit_yen", "stake_yen", "return_yen",
+                "max_drawdown_yen", "selected_tickets", "races_bet",
+                "hit_tickets", "winning_days", "losing_days",
+            ):
+                summary[f"expected_return_candidate_{key}"] = bankroll.get(key)
+            tail = bankroll.get("tail_portfolio_diagnostics")
+            if isinstance(tail, dict):
+                summary["expected_return_tail_portfolio_diagnostics"] = tail
+            policy_selection = bankroll.get("policy_selection")
+            if isinstance(policy_selection, dict):
+                summary["expected_return_selection_source"] = (
+                    policy_selection.get("source")
+                )
+                summary["expected_return_selected_ev_threshold"] = (
+                    policy_selection.get("selected_ev_threshold")
+                )
+        confidence = expected_return.get("bankroll_confidence")
+        if isinstance(confidence, dict):
+            for key, value in confidence.items():
+                if not isinstance(value, (dict, list)):
+                    summary[f"expected_return_{key}"] = value
+        gate = expected_return.get("diagnostic_gate")
+        if isinstance(gate, dict):
+            for key, value in gate.items():
+                if not isinstance(value, (dict, list)):
+                    summary[f"expected_return_gate_{key}"] = value
+        summary["expected_return_promotion_eligible"] = (
+            expected_return.get("promotion_eligible")
+        )
+    fixed_return = payload.get("expected_return_fixed_threshold")
+    if isinstance(fixed_return, dict):
+        fixed_bankroll = fixed_return.get("bankroll")
+        if isinstance(fixed_bankroll, dict):
+            for key in (
+                "roi", "profit_yen", "stake_yen", "return_yen",
+                "selected_tickets", "races_bet", "hit_tickets",
+            ):
+                summary[f"expected_return_fixed_{key}"] = (
+                    fixed_bankroll.get(key)
+                )
+            tail = fixed_bankroll.get("tail_portfolio_diagnostics")
+            if isinstance(tail, dict):
+                summary["expected_return_fixed_tail_portfolio_diagnostics"] = (
+                    tail
+                )
+        confidence = fixed_return.get("bankroll_confidence")
+        if isinstance(confidence, dict):
+            for key, value in confidence.items():
+                if not isinstance(value, (dict, list)):
+                    summary[f"expected_return_fixed_{key}"] = value
     payout_comparison = payload.get("payout_feature_comparison")
     if isinstance(payout_comparison, dict):
         candidate = payout_comparison.get("candidate_bankroll")

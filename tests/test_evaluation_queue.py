@@ -2572,6 +2572,67 @@ def test_conditional_payout_tail_summary_respects_explicit_non_promotion() -> No
     )
 
 
+def test_result_summary_exposes_expected_return_holdout_metrics() -> None:
+    tail = {
+        "odds_field": "estimated_odds_at_purchase",
+        "purchased_tickets": 30,
+        "normal": {"tickets": 20, "roi": 1.04},
+        "tail": {"tickets": 10, "roi": 0.72},
+    }
+    summary = summarize_result({
+        "expected_return_calibration": {
+            "promotion_eligible": False,
+            "bankroll": {
+                "roi": 1.01,
+                "profit_yen": 1_000,
+                "stake_yen": 100_000,
+                "return_yen": 101_000,
+                "max_drawdown_yen": 12_000,
+                "selected_tickets": 30,
+                "races_bet": 24,
+                "hit_tickets": 8,
+                "winning_days": 18,
+                "losing_days": 12,
+                "tail_portfolio_diagnostics": tail,
+                "policy_selection": {
+                    "source": "pre_evaluation_temporal_selection",
+                    "selected_ev_threshold": 1.3,
+                },
+            },
+            "bankroll_confidence": {
+                "roi_ci95_lower": 0.97,
+                "probability_roi_above_one": 0.61,
+            },
+            "diagnostic_gate": {"pass": False, "roi_pass": True},
+        },
+        "expected_return_fixed_threshold": {
+            "bankroll": {
+                "roi": 0.96,
+                "profit_yen": -4_000,
+                "stake_yen": 100_000,
+                "return_yen": 96_000,
+                "selected_tickets": 40,
+                "races_bet": 31,
+                "hit_tickets": 9,
+                "tail_portfolio_diagnostics": tail,
+            },
+            "bankroll_confidence": {"roi_ci95_lower": 0.91},
+        },
+    })
+
+    assert summary["expected_return_candidate_roi"] == 1.01
+    assert summary["expected_return_candidate_selected_tickets"] == 30
+    assert summary["expected_return_roi_ci95_lower"] == 0.97
+    assert summary["expected_return_probability_roi_above_one"] == 0.61
+    assert summary["expected_return_gate_pass"] is False
+    assert summary["expected_return_promotion_eligible"] is False
+    assert summary["expected_return_selected_ev_threshold"] == 1.3
+    assert summary["expected_return_tail_portfolio_diagnostics"] == tail
+    assert summary["expected_return_fixed_roi"] == 0.96
+    assert summary["expected_return_fixed_roi_ci95_lower"] == 0.91
+    assert summary["expected_return_fixed_tail_portfolio_diagnostics"] == tail
+
+
 def test_daily_market_seed_uses_fixed_completed_sources(tmp_path, monkeypatch) -> None:
     model_dir = tmp_path / "data" / "models" / "evaluation_queue"
     model_dir.mkdir(parents=True)
