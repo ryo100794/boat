@@ -27,6 +27,7 @@ from .direct_bankroll import (
     bootstrap_daily_bankroll,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
+    validate_conditional_payout_inference_state,
 )
 from .return_bankroll import (
     simulate_expected_return_calibrated_bankroll,
@@ -41,35 +42,12 @@ from .stagewise_mlp import COMBINATION_LANES, actual_combination_indices
 MODEL_NAME = "pastlog_conditional_order"
 EPSILON = 1e-15
 DEFAULT_REGULARIZATIONS = (0.0001, 0.001, 0.01, 0.1, 1.0)
-CONDITIONAL_PAYOUT_STATE_KEYS = frozenset(
-    {
-        "state_schema",
-        "state_role",
-        "trained_through",
-        "holdout_replay_state",
-        "payout_regressor",
-        "payout_statistics",
-        "tail_calibrator",
-        "policy",
-    }
-)
-
-
 def _attach_conditional_payout_state(
     artifact: dict[str, Any],
     state: dict[str, Any],
     gate: dict[str, Any],
 ) -> dict[str, Any]:
-    missing = CONDITIONAL_PAYOUT_STATE_KEYS - set(state)
-    if missing:
-        raise ValueError(
-            "conditional payout deployment state is incomplete: "
-            + ", ".join(sorted(missing))
-        )
-    if state["state_role"] != "next_day_inference_after_evaluation":
-        raise ValueError("conditional payout state is not a next-day inference state")
-    if state["holdout_replay_state"] is not False:
-        raise ValueError("post-evaluation state must not be marked for holdout replay")
+    validate_conditional_payout_inference_state(state)
     return {
         **artifact,
         "conditional_payout_state": state,

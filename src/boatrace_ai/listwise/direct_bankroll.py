@@ -24,6 +24,7 @@ from .payout_estimator import (
     FEATURE_COUNT as PAYOUT_FEATURE_COUNT,
     FEATURE_SCHEMA as PAYOUT_FEATURE_SCHEMA,
     ConditionalPayoutStatistics,
+    ConditionalPayoutRegressor,
     ConditionalPayoutTailCalibrator,
     fit_conditional_payout_statistics,
     predict_conditional_odds,
@@ -39,9 +40,113 @@ COMBINATION_INDEX = {
 }
 PAYOUT_TAIL_SCHEMA = "conditional_payout_tail_probability_bins_v1"
 CONDITIONAL_PAYOUT_STATE_SCHEMA = "conditional_payout_next_day_inference_v1"
+CONDITIONAL_PAYOUT_STATE_KEYS = frozenset(
+    {
+        "state_schema",
+        "state_role",
+        "trained_through",
+        "valid_for_dates_after",
+        "contains_evaluation_outcomes",
+        "holdout_replay_state",
+        "payout_feature_schema",
+        "payout_feature_count",
+        "payout_tail_schema",
+        "combination_labels",
+        "market_reference",
+        "payout_regressor",
+        "payout_statistics",
+        "tail_calibrator",
+        "policy",
+    }
+)
 MIN_DAILY_EXPOSURE_CANDIDATES = (0.0, 0.1, 0.2, 0.4)
 POLICY_SELECTION_DAYS = 60
 SELECTION_BOOTSTRAP_SAMPLES = 2_000
+
+
+def validate_conditional_payout_inference_state(
+    state: dict[str, Any],
+) -> None:
+    missing = CONDITIONAL_PAYOUT_STATE_KEYS - set(state)
+    if missing:
+        raise ValueError(
+            "conditional payout inference state is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    if state["state_schema"] != CONDITIONAL_PAYOUT_STATE_SCHEMA:
+        raise ValueError("conditional payout inference state schema is invalid")
+    if state["state_role"] != "next_day_inference_after_evaluation":
+        raise ValueError("conditional payout state is not for next-day inference")
+    if state["contains_evaluation_outcomes"] is not True:
+        raise ValueError("conditional payout state must include completed evaluation")
+    if state["holdout_replay_state"] is not False:
+        raise ValueError("conditional payout state must not replay its holdout")
+    if state["valid_for_dates_after"] != state["trained_through"]:
+        raise ValueError("conditional payout state validity boundary is invalid")
+    if state["payout_feature_schema"] != PAYOUT_FEATURE_SCHEMA:
+        raise ValueError("conditional payout feature schema is invalid")
+    if state["payout_feature_count"] != PAYOUT_FEATURE_COUNT:
+        raise ValueError("conditional payout feature count is invalid")
+    if state["payout_tail_schema"] != PAYOUT_TAIL_SCHEMA:
+        raise ValueError("conditional payout tail schema is invalid")
+    try:
+        combination_labels = tuple(state["combination_labels"])
+    except TypeError as exc:
+        raise ValueError("conditional payout combinations are invalid") from exc
+    if combination_labels != COMBINATION_LABELS:
+        raise ValueError("conditional payout combinations are invalid")
+    if not isinstance(state["payout_regressor"], ConditionalPayoutRegressor):
+        raise ValueError("conditional payout regressor is invalid")
+    if not isinstance(state["payout_statistics"], ConditionalPayoutStatistics):
+        raise ValueError("conditional payout statistics are invalid")
+    if not isinstance(state["tail_calibrator"], ConditionalPayoutTailCalibrator):
+        raise ValueError("conditional payout tail calibrator is invalid")
+    policy = state["policy"]
+    if not isinstance(policy, dict):
+        raise ValueError("conditional payout policy is invalid")
+    try:
+        mean_correction = float(policy["mean_correction_factor"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "conditional payout mean correction factor is invalid"
+        ) from exc
+    if not np.isfinite(mean_correction) or not 0.0 <= mean_correction <= 1.0:
+        raise ValueError("conditional payout mean correction factor is invalid")
+
+
+def predict_conditional_odds_from_state(
+    state: dict[str, Any],
+    market_reference_probabilities: np.ndarray,
+    race_keys: list[tuple[str, str, str, int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict conservative odds and tail eligibility for strictly future races."""
+    validate_conditional_payout_inference_state(state)
+    market = np.asarray(market_reference_probabilities, dtype=np.float64)
+    expected_shape = (len(race_keys), len(COMBINATION_LABELS))
+    if market.shape != expected_shape:
+        raise ValueError("market probabilities and race keys must align")
+    boundary = str(state["valid_for_dates_after"])
+    if any(str(race_key[1]) <= boundary for race_key in race_keys):
+        raise ValueError(
+            "conditional payout next-day state cannot score its training period"
+        )
+    combinations = list(COMBINATION_LABELS) * len(race_keys)
+    repeated_keys = [
+        race_key for race_key in race_keys for _ in COMBINATION_LABELS
+    ]
+    raw_odds = predict_conditional_odds(
+        state["payout_regressor"],
+        market.reshape(-1),
+        combinations,
+        repeated_keys,
+        mean_correction_factor=float(
+            state["policy"]["mean_correction_factor"]
+        ),
+    )
+    calibrated, eligible = state["tail_calibrator"].calibrate_with_eligibility(
+        market.reshape(-1), raw_odds
+    )
+    return calibrated.reshape(expected_shape), eligible.reshape(expected_shape)
 
 
 def _finite_quantile(values: np.ndarray) -> tuple[float, float]:

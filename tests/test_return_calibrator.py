@@ -345,6 +345,16 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration(
             next_market,
             [("replay", "2026-07-02", "01", 1)],
         )
+    with pytest.raises(ValueError, match="cannot score its training period"):
+        predict_expected_returns_from_state(
+            restored,
+            np.repeat(next_candidate, 2, axis=0),
+            np.repeat(next_market, 2, axis=0),
+            [
+                ("future", "2026-07-03", "01", 1),
+                ("hidden-replay", "2026-07-02", "01", 2),
+            ],
+        )
 
 
 def test_expected_return_bankroll_rejects_temporal_leakage() -> None:

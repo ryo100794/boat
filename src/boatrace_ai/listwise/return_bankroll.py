@@ -73,6 +73,8 @@ def validate_expected_return_inference_state(
         raise ValueError("expected return state must include completed evaluation")
     if state["holdout_replay_state"] is not False:
         raise ValueError("expected return state must not replay its holdout")
+    if state["valid_for_dates_after"] != state["trained_through"]:
+        raise ValueError("expected return state validity boundary is invalid")
     if not isinstance(state["return_calibrator"], ExpectedReturnCalibrator):
         raise ValueError("expected return state calibrator is invalid")
     if not isinstance(
@@ -92,7 +94,10 @@ def predict_expected_returns_from_state(
     batch_races: int = 500,
 ) -> np.ndarray:
     validate_expected_return_inference_state(state)
-    if race_keys and str(race_keys[0][1]) <= str(state["valid_for_dates_after"]):
+    if any(
+        str(race_key[1]) <= str(state["valid_for_dates_after"])
+        for race_key in race_keys
+    ):
         raise ValueError(
             "expected return next-day state cannot score its training period"
         )

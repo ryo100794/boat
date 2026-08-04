@@ -11,6 +11,7 @@ from boatrace_ai.listwise.direct_bankroll import (
     _select_conditional_payout_policy,
     bootstrap_daily_bankroll,
     direct_candidates,
+    predict_conditional_odds_from_state,
     simulate_conditional_payout_walk_forward,
     simulate_direct_bankroll,
     standard_direct_policy,
@@ -1101,6 +1102,31 @@ def test_conditional_payout_next_day_state_joblib_roundtrip(tmp_path) -> None:
         atol=0.0,
     )
     np.testing.assert_array_equal(eligible_after, eligible_before)
+    predicted_before, predicted_eligible_before = (
+        predict_conditional_odds_from_state(
+            state, next_market[None, :], [next_key]
+        )
+    )
+    predicted_after, predicted_eligible_after = (
+        predict_conditional_odds_from_state(
+            restored_state, next_market[None, :], [next_key]
+        )
+    )
+    np.testing.assert_allclose(
+        predicted_before, calibrated_before[None, :], rtol=0.0, atol=0.0
+    )
+    np.testing.assert_allclose(
+        predicted_after, predicted_before, rtol=0.0, atol=0.0
+    )
+    np.testing.assert_array_equal(
+        predicted_eligible_after, predicted_eligible_before
+    )
+    with pytest.raises(ValueError, match="cannot score its training period"):
+        predict_conditional_odds_from_state(
+            restored_state,
+            next_market[None, :],
+            [("holdout", "2026-07-02", "03", 3)],
+        )
     assert raw_after.shape == (120,)
     assert np.count_nonzero(eligible_after) > 0
     assert restored_state["policy"] == state["policy"]
