@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import boatrace_ai.joint_policy_ga as joint_policy_ga
 from boatrace_ai.genetic_search import GeneticSearchSettings
 from boatrace_ai.joint_market_value import JointMarketScenario
 from boatrace_ai.joint_policy_ga import (
@@ -102,13 +103,26 @@ def test_insufficient_outer_draws_selects_no_bet() -> None:
     assert result["best_search_candidate"]["bets_yen"] == {}
 
 
-def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None:
+def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet(
+    monkeypatch,
+) -> None:
     def losing_payoffs(scenario, bets):
         multipliers = {"A": 1, "B": 1, "C": 1}
         return {
             ticket: {ticket: amount * multipliers[ticket]}
             for ticket, amount in bets.items()
         }
+
+    def forbidden_growth(*args, **kwargs):
+        raise AssertionError(
+            "growth must not be evaluated after the value gate rejects"
+        )
+
+    monkeypatch.setattr(
+        joint_policy_ga,
+        "evaluate_joint_bankroll_growth",
+        forbidden_growth,
+    )
 
     result = optimize_joint_portfolio(
         _draws(20),
@@ -141,7 +155,16 @@ def test_rejected_vectors_keep_a_constraint_gradient_but_select_no_bet() -> None
     ]
     assert rejected
     assert all(row["metrics"]["search_feasible"] is False for row in rejected)
+    assert all(
+        row["metrics"]["growth_evaluation_skipped"] is True
+        and row["metrics"]["bankroll_growth"] is None
+        for row in rejected
+    )
     assert all(row["fitness"] > 0.0 for row in rejected)
+    assert result["growth_evaluations"] == 0
+    assert result["growth_evaluations_skipped"] == (
+        result["unique_candidate_evaluations"]
+    )
     assert len({
         row["metrics"]["constraint_violation"] for row in rejected
     }) > 1

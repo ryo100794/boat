@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import joblib
+import pytest
 
 from boatrace_ai.evaluation_queue import build_command, summarize_result
 
@@ -174,13 +175,18 @@ def test_independent_validation_gate_is_required_after_calibration_ready(
     assert rejected["rejection_reason"] == "base_joint_gate_not_feasible"
 
 
-def test_calibration_excludes_candidates_unsettled_at_fold_decision(
+@pytest.mark.parametrize("settlement_time", [
+    "2026-07-03T10:00:00+09:00",
+    "2026-07-03T11:00:00+09:00",
+])
+def test_calibration_excludes_candidates_not_strictly_settled_before_decision(
     tmp_path: Path,
+    settlement_time: str,
 ) -> None:
     artifact = _base_artifact(tmp_path / "unsettled.json")
     payload = json.loads(artifact.read_text(encoding="utf-8"))
     payload["daily"][1]["races"][0]["settlement_available_at"] = (
-        "2026-07-03T11:00:00+09:00"
+        settlement_time
     )
     artifact.write_text(json.dumps(payload), encoding="utf-8")
 

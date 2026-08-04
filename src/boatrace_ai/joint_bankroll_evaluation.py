@@ -33,7 +33,7 @@ from .terminal_probability_oof import (
 
 
 EVALUATION_VERSION = (
-    "joint_bankroll_strict_walk_forward_v8_fixed_scale_outer_bootstrap"
+    "joint_bankroll_strict_walk_forward_v9_value_gate_growth_pruning"
 )
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
@@ -218,6 +218,11 @@ def _evaluation_protocol(
         },
         "optimizer": {
             "kind": "genetic_integer_stake_vector",
+            "value_gate_prunes_growth_evaluation": True,
+            "pruning_rule": (
+                "skip_growth_only_when_portfolio_purchase_gate_is_false"
+            ),
+            "statistical_draw_counts_unchanged_by_pruning": True,
             "population_size": configuration["population_size"],
             "generations": configuration["generations"],
             "seed": configuration["seed"],
@@ -1452,6 +1457,15 @@ def run_joint_bankroll_evaluation(
                 "purchase_authorized": bool(search["purchase_authorized"]),
                 "feasible_candidates_found": int(
                     search.get("feasible_candidates_found") or 0
+                ),
+                "optimizer_unique_candidate_evaluations": int(
+                    search.get("unique_candidate_evaluations") or 0
+                ),
+                "optimizer_growth_evaluations": int(
+                    search.get("growth_evaluations") or 0
+                ),
+                "optimizer_growth_evaluations_skipped": int(
+                    search.get("growth_evaluations_skipped") or 0
                 ),
                 "search_outer_sample_count_r": int(
                     search.get("search_parameter_draws") or 0

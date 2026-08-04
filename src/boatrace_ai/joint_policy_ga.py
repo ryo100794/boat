@@ -247,12 +247,17 @@ def optimize_joint_portfolio(
                 "search_fitness": 0.0,
                 "search_feasible": False,
                 "constraint_violation": None,
+                "edge_excess": None,
+                "growth_excess": None,
+                "growth_evaluation_skipped": True,
+                "growth_evaluation_skip_reason": "no_bet_vector",
                 "portfolio": {
                     "lower_quantile": 0.0,
                     "purchase_gate_evaluable": True,
                     "passes_purchase_gate": False,
                     "purchase_gate_reasons": ["no_bet_vector"],
                 },
+                "bankroll_growth": None,
             }
         result = evaluate_joint_market_value(
             parameter_draws,
@@ -273,6 +278,38 @@ def optimize_joint_portfolio(
             include_marginal_contributions=False,
             include_ticket_diagnostics=False,
         )
+        portfolio = dict(result["portfolio"])
+        edge_excess = float(portfolio["lower_quantile"]) - policy.buy_margin
+        if not portfolio["passes_purchase_gate"]:
+            search_evaluable = bool(
+                portfolio["purchase_gate_evaluable"]
+            )
+            constraint_violation = (
+                max(0.0, -edge_excess)
+                if search_evaluable else None
+            )
+            search_fitness = (
+                1.0 / (1.0 + float(constraint_violation))
+                if constraint_violation is not None else -1.0
+            )
+            return {
+                "total_stake_yen": total_stake,
+                "conservative_expected_profit_yen": (
+                    edge_excess * total_stake
+                    if search_evaluable else None
+                ),
+                "search_fitness": search_fitness,
+                "search_feasible": False,
+                "constraint_violation": constraint_violation,
+                "edge_excess": edge_excess,
+                "growth_excess": None,
+                "growth_evaluation_skipped": True,
+                "growth_evaluation_skip_reason": (
+                    "portfolio_purchase_value_gate_not_passed"
+                ),
+                "portfolio": portfolio,
+                "bankroll_growth": None,
+            }
         growth = evaluate_joint_bankroll_growth(
             parameter_draws,
             bets_yen=vector,
@@ -290,7 +327,6 @@ def optimize_joint_portfolio(
                 policy.minimum_inner_tail_effective_samples
             ),
         )
-        portfolio = dict(result["portfolio"])
         growth_summary = dict(growth["growth"])
         conservative_profit = (
             (float(portfolio["lower_quantile"]) - policy.buy_margin)
@@ -302,7 +338,6 @@ def optimize_joint_portfolio(
             portfolio["purchase_gate_evaluable"]
             and growth_summary["purchase_gate_evaluable"]
         )
-        edge_excess = float(portfolio["lower_quantile"]) - policy.buy_margin
         growth_excess = float(growth_summary["lower_quantile"])
         search_feasible = bool(
             search_evaluable
@@ -333,6 +368,8 @@ def optimize_joint_portfolio(
             "constraint_violation": constraint_violation,
             "edge_excess": edge_excess,
             "growth_excess": growth_excess,
+            "growth_evaluation_skipped": False,
+            "growth_evaluation_skip_reason": None,
             "portfolio": portfolio,
             "bankroll_growth": growth,
         }
@@ -379,6 +416,14 @@ def optimize_joint_portfolio(
             if not any(row.candidate.stake_units)
         )
     best_search_candidate = ranked[0]
+    growth_evaluations = sum(
+        row.metrics.get("growth_evaluation_skipped") is False
+        for row in ranked
+    )
+    growth_evaluations_skipped = sum(
+        row.metrics.get("growth_evaluation_skipped") is True
+        for row in ranked
+    )
     selected_bets = bets(selected.candidate)
     detailed_value = None
     if selected_bets:
@@ -428,7 +473,9 @@ def optimize_joint_portfolio(
         and selected.fitness > 0.0
     )
     return {
-        "version": "joint_portfolio_policy_ga_v3_independent_validation",
+        "version": (
+            "joint_portfolio_policy_ga_v4_value_gate_growth_pruning"
+        ),
         "role": "diagnostic_only_never_submits_wagers",
         "parameter_draws": len(parameter_draws),
         "search_parameter_draws": len(parameter_draws),
@@ -442,6 +489,9 @@ def optimize_joint_portfolio(
         "search_budget_yen": budget_yen,
         "purchase_authorized": purchase_authorized,
         "feasible_candidates_found": len(feasible),
+        "unique_candidate_evaluations": len(ranked),
+        "growth_evaluations": growth_evaluations,
+        "growth_evaluations_skipped": growth_evaluations_skipped,
         "best_search_candidate": {
             **serialize(best_search_candidate.candidate),
             "fitness": best_search_candidate.fitness,
