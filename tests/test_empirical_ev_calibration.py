@@ -150,6 +150,39 @@ def test_sample_weight_estimates_total_return_over_total_exposure() -> None:
     assert artifact.as_dict()["weighting"] == "optional_sample_weight_default_1"
 
 
+def test_local_isotonic_block_support_uses_day_cluster_ess() -> None:
+    records = [
+        _record(0, 1.01, 2.0, weight=100.0),
+        _record(0, 1.03, 2.0, weight=100.0),
+        _record(1, 1.03, 2.0, weight=100.0),
+    ]
+    artifact = fit_empirical_ev_calibration(
+        records,
+        bootstrap_samples=100,
+        min_days=1,
+        min_tickets=1,
+        min_candidate_days=1,
+        min_local_candidates=3,
+        min_local_candidate_days=2,
+        min_local_ess=2.0,
+    )
+
+    prediction = artifact.predict(1.02)
+
+    assert artifact.isotonic_block_count == 1
+    assert prediction["local_block_candidates"] == 3
+    assert prediction["local_block_candidate_days"] == 2
+    assert prediction["local_block_ess"] == pytest.approx(1.8)
+    assert prediction["local_block_raw_ev_min"] == pytest.approx(1.01)
+    assert prediction["local_block_raw_ev_max"] == pytest.approx(1.03)
+    assert prediction["input_in_local_block_range"] is True
+    assert prediction["local_support_ready"] is False
+    assert prediction["local_support_reasons"] == [
+        "insufficient_local_day_cluster_ess"
+    ]
+    assert prediction["purchase_lcb95_available"] is False
+
+
 def test_single_extreme_payout_does_not_raise_daily_cluster_lcb() -> None:
     records = []
     for day in range(30):

@@ -35,8 +35,17 @@ class EmpiricalEVBin:
     support_days: int
     positive_return_days: int
     return_hhi: float | None
+    isotonic_block_id: int | None
+    local_block_candidates: int
+    local_block_candidate_days: int
+    local_block_ess: float
+    local_block_exposure_weight: float
+    local_block_raw_ev_min: float | None
+    local_block_raw_ev_max: float | None
+    local_support_ready: bool
+    local_support_reasons: tuple[str, ...]
 
-    def as_dict(self) -> dict[str, int | float | None]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "bin_index": self.index,
             "lower": self.lower,
@@ -48,6 +57,17 @@ class EmpiricalEVBin:
             "support_days": self.support_days,
             "positive_return_days": self.positive_return_days,
             "return_hhi": self.return_hhi,
+            "isotonic_block_id": self.isotonic_block_id,
+            "local_block_candidates": self.local_block_candidates,
+            "local_block_candidate_days": self.local_block_candidate_days,
+            "local_block_ess": self.local_block_ess,
+            "local_block_exposure_weight": (
+                self.local_block_exposure_weight
+            ),
+            "local_block_raw_ev_min": self.local_block_raw_ev_min,
+            "local_block_raw_ev_max": self.local_block_raw_ev_max,
+            "local_support_ready": self.local_support_ready,
+            "local_support_reasons": list(self.local_support_reasons),
         }
 
 
@@ -67,6 +87,10 @@ class EmpiricalEVCalibrationArtifact:
     min_days: int
     min_tickets: int
     min_candidate_days: int
+    min_local_candidates: int
+    min_local_candidate_days: int
+    min_local_ess: float
+    isotonic_block_count: int
     bootstrap_samples: int
     seed: int
     shape_constraint: str = "isotonic"
@@ -77,13 +101,20 @@ class EmpiricalEVCalibrationArtifact:
         raw_ev: float,
         probability_rank: int | None = None,
         forecast_odds: float | None = None,
-    ) -> dict[str, int | float | bool | None]:
+    ) -> dict[str, object]:
         # Context is accepted so global and contextual artifacts share one policy API.
         del probability_rank, forecast_odds
         value = _finite_float(raw_ev, "raw_ev")
         index = _bin_index(value, tuple(bin_.upper for bin_ in self.bins))
-        prediction: dict[str, int | float | bool | None] = {
-            **self.bins[index].as_dict(),
+        bin_ = self.bins[index]
+        input_in_local_block_range = bool(
+            bin_.local_block_raw_ev_min is not None
+            and bin_.local_block_raw_ev_max is not None
+            and bin_.local_block_raw_ev_min <= value
+            <= bin_.local_block_raw_ev_max
+        )
+        prediction: dict[str, object] = {
+            **bin_.as_dict(),
             "training_raw_ev_min": self.training_raw_ev_min,
             "training_raw_ev_max": self.training_raw_ev_max,
             "input_in_training_range": bool(
@@ -91,6 +122,12 @@ class EmpiricalEVCalibrationArtifact:
                 and self.training_raw_ev_max is not None
                 and self.training_raw_ev_min <= value
                 <= self.training_raw_ev_max
+            ),
+            "input_in_local_block_range": input_in_local_block_range,
+            "purchase_lcb95_available": bool(
+                bin_.local_support_ready
+                and input_in_local_block_range
+                and bin_.empirical_ev_lcb95 is not None
             ),
         }
         return prediction
@@ -111,6 +148,10 @@ class EmpiricalEVCalibrationArtifact:
             "min_days": self.min_days,
             "min_tickets": self.min_tickets,
             "min_candidate_days": self.min_candidate_days,
+            "min_local_candidates": self.min_local_candidates,
+            "min_local_candidate_days": self.min_local_candidate_days,
+            "min_local_ess": self.min_local_ess,
+            "isotonic_block_count": self.isotonic_block_count,
             "bootstrap_samples": self.bootstrap_samples,
             "seed": self.seed,
             "lcb_tail_probability": LCB_TAIL_PROBABILITY,
@@ -306,6 +347,24 @@ def _fit_bins(
     raise ValueError("shape_constraint must be isotonic or bandwise")
 
 
+def _contiguous_calibration_block_ids(
+    fitted: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    block_ids = np.full(len(fitted), -1, dtype=np.int64)
+    block_id = -1
+    previous: float | None = None
+    for index, raw_value in enumerate(fitted):
+        value = float(raw_value)
+        if not isfinite(value):
+            previous = None
+            continue
+        if previous is None or value != previous:
+            block_id += 1
+        block_ids[index] = block_id
+        previous = value
+    return block_ids, block_id + 1
+
+
 def _bootstrap_lcb(
     day_sums: np.ndarray,
     day_counts: np.ndarray,
@@ -348,6 +407,9 @@ def fit_empirical_ev_calibration(
     min_days: int = 30,
     min_tickets: int = 300,
     min_candidate_days: int = 20,
+    min_local_candidates: int = 50,
+    min_local_candidate_days: int = 20,
+    min_local_ess: float = 10.0,
     candidate_min_raw_ev: float = 1.0,
     shape_constraint: str = "isotonic",
     quantile_method: str = "linear",
@@ -368,6 +430,11 @@ def fit_empirical_ev_calibration(
         raise ValueError("bootstrap_samples must be at least 100")
     if min_days < 1 or min_tickets < 1 or min_candidate_days < 1:
         raise ValueError("ready gate thresholds must be positive")
+    if min_local_candidates < 1 or min_local_candidate_days < 1:
+        raise ValueError("local support count thresholds must be positive")
+    local_ess_threshold = _finite_float(min_local_ess, "min_local_ess")
+    if local_ess_threshold <= 0.0:
+        raise ValueError("min_local_ess must be positive")
     candidate_threshold = _finite_float(candidate_min_raw_ev, "candidate_min_raw_ev")
     if candidate_threshold < 0.0:
         raise ValueError("candidate_min_raw_ev must not be negative")
@@ -385,10 +452,12 @@ def fit_empirical_ev_calibration(
     )
     day_counts = np.zeros((len(dates), bin_count), dtype=np.int64)
     candidate_dates: set[str] = set()
+    row_bin_indices: list[int] = []
 
     upper_edges = edges[1:]
     for row in rows:
         bin_index = _bin_index(row.raw_ev, upper_edges)
+        row_bin_indices.append(bin_index)
         day_index = date_index[row.race_date]
         weighted_return = row.gross_return * row.sample_weight
         _add_finite(sums, bin_index, weighted_return)
@@ -423,6 +492,54 @@ def fit_empirical_ev_calibration(
         else np.full(bin_count, np.nan, dtype=np.float64)
     )
     lcb = np.minimum(point, lcb)
+    block_ids, isotonic_block_count = _contiguous_calibration_block_ids(
+        point
+    )
+    block_metadata: dict[int, dict[str, object]] = {}
+    for block_id in range(isotonic_block_count):
+        block_rows = [
+            row
+            for row, bin_index in zip(rows, row_bin_indices, strict=True)
+            if int(block_ids[bin_index]) == block_id
+        ]
+        day_exposures: dict[str, float] = {}
+        for row in block_rows:
+            day_exposures[row.race_date] = (
+                day_exposures.get(row.race_date, 0.0)
+                + row.sample_weight
+            )
+        total_local_exposure = sum(day_exposures.values())
+        squared_day_exposure = sum(
+            value * value for value in day_exposures.values()
+        )
+        local_ess = (
+            total_local_exposure * total_local_exposure
+            / squared_day_exposure
+            if squared_day_exposure > 0.0 else 0.0
+        )
+        local_reasons: list[str] = []
+        if len(block_rows) < min_local_candidates:
+            local_reasons.append("insufficient_local_candidates")
+        if len(day_exposures) < min_local_candidate_days:
+            local_reasons.append("insufficient_local_candidate_days")
+        if local_ess < local_ess_threshold:
+            local_reasons.append("insufficient_local_day_cluster_ess")
+        block_metadata[block_id] = {
+            "candidates": len(block_rows),
+            "candidate_days": len(day_exposures),
+            "ess": float(local_ess),
+            "exposure_weight": float(total_local_exposure),
+            "raw_ev_min": (
+                min(row.raw_ev for row in block_rows)
+                if block_rows else None
+            ),
+            "raw_ev_max": (
+                max(row.raw_ev for row in block_rows)
+                if block_rows else None
+            ),
+            "support_ready": not local_reasons,
+            "support_reasons": tuple(local_reasons),
+        }
 
     reasons: list[str] = []
     if len(dates) < min_days:
@@ -434,6 +551,21 @@ def fit_empirical_ev_calibration(
 
     bins: list[EmpiricalEVBin] = []
     for index in range(bin_count):
+        block_id = int(block_ids[index])
+        local = block_metadata.get(block_id, {
+            "candidates": 0,
+            "candidate_days": 0,
+            "ess": 0.0,
+            "exposure_weight": 0.0,
+            "raw_ev_min": None,
+            "raw_ev_max": None,
+            "support_ready": False,
+            "support_reasons": (
+                "insufficient_local_candidates",
+                "insufficient_local_candidate_days",
+                "insufficient_local_day_cluster_ess",
+            ),
+        })
         bins.append(
             EmpiricalEVBin(
                 index=index,
@@ -452,6 +584,17 @@ def fit_empirical_ev_calibration(
                     if sums[index] > 0.0
                     else None
                 ),
+                isotonic_block_id=block_id if block_id >= 0 else None,
+                local_block_candidates=int(local["candidates"]),
+                local_block_candidate_days=int(local["candidate_days"]),
+                local_block_ess=float(local["ess"]),
+                local_block_exposure_weight=float(
+                    local["exposure_weight"]
+                ),
+                local_block_raw_ev_min=local["raw_ev_min"],
+                local_block_raw_ev_max=local["raw_ev_max"],
+                local_support_ready=bool(local["support_ready"]),
+                local_support_reasons=tuple(local["support_reasons"]),
             )
         )
 
@@ -474,6 +617,10 @@ def fit_empirical_ev_calibration(
         min_days=min_days,
         min_tickets=min_tickets,
         min_candidate_days=min_candidate_days,
+        min_local_candidates=min_local_candidates,
+        min_local_candidate_days=min_local_candidate_days,
+        min_local_ess=local_ess_threshold,
+        isotonic_block_count=isotonic_block_count,
         bootstrap_samples=bootstrap_samples,
         seed=int(seed),
         shape_constraint=shape_constraint,

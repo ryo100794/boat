@@ -72,17 +72,21 @@ def _base_artifact(path: Path, *, day3_payout: int = 200) -> Path:
     return path
 
 
-def _run(path: Path) -> dict:
-    return run_joint_edge_calibrated_replay(
-        path,
-        initial_daily_bankroll_yen=1_000,
-        calibration_bootstrap_samples=100,
-        calibration_min_training_days=2,
-        calibration_min_portfolios=2,
-        calibration_min_candidate_days=2,
-        bootstrap_samples=100,
-        seed=17,
-    )
+def _run(path: Path, **overrides: object) -> dict:
+    options: dict[str, object] = {
+        "initial_daily_bankroll_yen": 1_000,
+        "calibration_bootstrap_samples": 100,
+        "calibration_min_training_days": 2,
+        "calibration_min_portfolios": 2,
+        "calibration_min_candidate_days": 2,
+        "calibration_min_local_candidates": 1,
+        "calibration_min_local_candidate_days": 1,
+        "calibration_min_local_ess": 1.0,
+        "bootstrap_samples": 100,
+        "seed": 17,
+    }
+    options.update(overrides)
+    return run_joint_edge_calibrated_replay(path, **options)
 
 
 def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
@@ -204,6 +208,19 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert update_audit["missing_decision_calibrator_bindings"] == 0
     assert update_audit["instance_artifact_collisions"] == 0
     assert update_audit["instance_ledger_collisions"] == 0
+    assert update_audit["decision_hashes_present"] is True
+    assert update_audit["decision_hash_bundle_violations"] == 0
+    for day in profitable["daily"]:
+        for race in day["races"]:
+            for key in (
+                "model_sha256",
+                "calibrator_sha256",
+                "calibration_ledger_sha256",
+                "threshold_sha256",
+                "settlement_engine_sha256",
+                "decision_hash_bundle_sha256",
+            ):
+                assert len(race[key]) == 64
     range_audit = profitable["calibration_input_range_audit"]
     assert range_audit["out_of_range_candidates"] == 0
     assert range_audit["out_of_range_purchase_violations"] == 0
@@ -558,6 +575,21 @@ def test_replay_no_bets_until_calibration_support_is_ready(
     assert gate["outcome"] == "accumulating_strict_prior_calibration"
 
 
+def test_zero_stake_during_warmup_reports_roi_not_applicable(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        _base_artifact(tmp_path / "warmup-roi-na.json"),
+        calibration_min_training_days=30,
+    )
+
+    bankroll = result["primary_bankroll"]
+    assert bankroll["stake_yen"] == 0
+    assert bankroll["roi"] is None
+    assert bankroll["roi_status"] == "not_applicable"
+    assert bankroll["roi_not_applicable_reason"] == "warmup_no_purchase"
+
+
 def test_lcb_equal_to_threshold_is_rejected_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -581,6 +613,42 @@ def test_lcb_equal_to_threshold_is_rejected_fail_closed(
     )
     assert result["calibration_lcb_audit"][
         "strict_lcb_purchase_threshold_enforced"
+    ] is True
+
+
+def test_global_warmup_does_not_bypass_local_support_gate(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        _base_artifact(tmp_path / "local-support.json"),
+        calibration_min_local_candidates=50,
+        calibration_min_local_candidate_days=20,
+        calibration_min_local_ess=10.0,
+    )
+    first_ready = result["daily"][2]["races"][0]
+
+    assert first_ready["calibration_ready"] is True
+    assert first_ready["local_block_candidates"] == 2
+    assert first_ready["local_block_candidate_days"] == 2
+    assert first_ready["local_block_ess"] == pytest.approx(2.0)
+    assert first_ready["local_support_ready"] is False
+    assert first_ready["calibrated_gross_return_lcb95"] is None
+    assert first_ready["diagnostic_unqualified_bootstrap_lcb95"] > 1.0
+    assert first_ready["purchase_authorized"] is False
+    assert first_ready["stake_yen"] == 0
+    assert first_ready["rejection_reason"] == (
+        "calibration_local_support_insufficient"
+    )
+    assert result["primary_bankroll"]["roi"] is None
+    assert result["primary_bankroll"]["roi_status"] == "not_applicable"
+    assert result["primary_bankroll"]["roi_not_applicable_reason"] == (
+        "no_candidate_passed_purchase_gate"
+    )
+    local_audit = result["calibration_local_support_audit"]
+    assert local_audit["insufficient_local_support_candidates"] == 2
+    assert local_audit["local_support_purchase_violations"] == 0
+    assert local_audit[
+        "all_local_range_and_support_failures_rejected"
     ] is True
 
 
@@ -704,11 +772,20 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
     assert command[
         command.index("--calibration-min-candidate-days") + 1
     ] == "20"
+    assert command[
+        command.index("--calibration-min-local-candidates") + 1
+    ] == "50"
+    assert command[
+        command.index("--calibration-min-local-candidate-days") + 1
+    ] == "20"
+    assert command[
+        command.index("--calibration-min-local-ess") + 1
+    ] == "10.0"
 
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v11",
+        "model": "joint_edge_calibrated_replay_v12",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -731,12 +808,46 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
         "evaluated_races": 713,
         "calibration_ready_days": 2,
         "calibration_ready_races": 280,
+        "latest_calibration_decision": {
+            "warmup_days": 30,
+            "required_days": 30,
+            "prior_candidates": 400,
+            "required_candidates": 300,
+            "prior_candidate_days": 25,
+            "required_candidate_days": 20,
+            "calibration_cutoff_time": "2026-07-05T10:00:00+09:00",
+            "max_training_settlement_time": (
+                "2026-07-04T16:00:00+09:00"
+            ),
+            "strict_prior_check": True,
+            "isotonic_block_count": 4,
+            "local_block_candidates": 80,
+            "local_block_candidate_days": 22,
+            "local_block_ess": 15.5,
+            "local_block_raw_ev_min": 1.1,
+            "local_block_raw_ev_max": 1.3,
+            "raw_V_buy": 0.2,
+            "calibrated_ROI": 1.1,
+            "calibrated_ROI_LCB95": 1.02,
+            "buy_threshold": 1.0,
+            "approved": True,
+            "denied": False,
+            "denial_reason": None,
+            "calibrator_hash": "calibrator",
+            "calibration_ledger_hash": "ledger",
+            "model_sha256": "model",
+            "threshold_sha256": "threshold",
+            "settlement_engine_sha256": "settlement",
+            "decision_hash_bundle_sha256": "bundle",
+        },
         "primary_bankroll": {
             "stake_yen": 1_000,
             "return_yen": 1_200,
             "profit_yen": 200,
             "roi": 1.2,
             "daily_cluster_bootstrap_roi_lower_95": 1.01,
+            "roi_status": "defined",
+            "roi_not_applicable_reason": None,
         },
         "formal_purchase_value": {
             "minimum": 1.03,
@@ -832,12 +943,24 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "instance_artifact_collisions": 0,
             "instance_ledger_collisions": 0,
             "every_decision_bound_to_full_prior_ledger_artifact": True,
+            "decision_hashes_present": True,
+            "decision_hash_bundle_violations": 0,
+            "decision_event_binding_violations": 0,
+            "fixed_component_hash_violations": 0,
+            "duplicate_decision_event_bindings": 0,
         },
         "calibration_input_range_audit": {
             "ready_candidates_with_raw_input": 280,
             "out_of_range_candidates": 3,
             "out_of_range_purchase_violations": 0,
             "all_out_of_range_inputs_rejected": True,
+        },
+        "calibration_local_support_audit": {
+            "minimum_local_candidates": 50,
+            "minimum_local_candidate_days": 20,
+            "minimum_local_day_cluster_ess": 10.0,
+            "local_support_purchase_violations": 0,
+            "all_local_range_and_support_failures_rejected": True,
         },
         "calibration_lcb_audit": {
             "tail_probability": 0.05,
@@ -957,6 +1080,28 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     ] == 3
     assert summary["calibration_input_range_purchase_violations"] == 0
     assert summary["calibration_input_range_all_rejected"] is True
+    assert summary["warmup_days"] == 30
+    assert summary["required_days"] == 30
+    assert summary["prior_candidates"] == 400
+    assert summary["isotonic_block_count"] == 4
+    assert summary["local_block_candidates"] == 80
+    assert summary["local_block_candidate_days"] == 22
+    assert summary["local_block_ess"] == pytest.approx(15.5)
+    assert summary["raw_V_buy"] == pytest.approx(0.2)
+    assert summary["calibrated_ROI_LCB95"] == pytest.approx(1.02)
+    assert summary["approved"] is True
+    assert summary["calibrator_hash"] == "calibrator"
+    assert summary["calibration_ledger_hash"] == "ledger"
+    assert summary["roi_status"] == "defined"
+    assert summary["calibration_local_support_purchase_violations"] == 0
+    assert summary[
+        "calibration_local_support_all_failures_rejected"
+    ] is True
+    assert summary["calibrator_decision_hashes_present"] is True
+    assert summary["calibrator_decision_hash_bundle_violations"] == 0
+    assert summary["calibrator_decision_event_binding_violations"] == 0
+    assert summary["calibrator_fixed_component_hash_violations"] == 0
+    assert summary["calibrator_duplicate_decision_event_bindings"] == 0
     assert summary["calibration_lcb_confidence_level"] == pytest.approx(0.95)
     assert summary["calibration_lcb_cluster_unit"] == "race_date"
     assert summary["calibration_lcb_invalid_candidate_bounds"] == 0

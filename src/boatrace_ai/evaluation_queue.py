@@ -2650,7 +2650,10 @@ def build_command(
             "base_artifact", "scored_cache", "initial_daily_bankroll_yen",
             "calibration_margin", "calibration_bootstrap_samples",
             "calibration_min_training_days", "calibration_min_portfolios",
-            "calibration_min_candidate_days", "bootstrap_samples", "seed",
+            "calibration_min_candidate_days",
+            "calibration_min_local_candidates",
+            "calibration_min_local_candidate_days",
+            "calibration_min_local_ess", "bootstrap_samples", "seed",
             "timeout_seconds",
         }
         unsupported = set(params) - allowed
@@ -2713,6 +2716,15 @@ def build_command(
         calibration_candidate_days = _integer(
             params, "calibration_min_candidate_days", 20, 2, 365
         )
+        calibration_local_candidates = _integer(
+            params, "calibration_min_local_candidates", 50, 2, 1_000_000
+        )
+        calibration_local_candidate_days = _integer(
+            params, "calibration_min_local_candidate_days", 20, 2, 365
+        )
+        calibration_local_ess = _number(
+            params, "calibration_min_local_ess", 10.0, 0.1, 365.0
+        )
         bootstrap = _integer(
             params, "bootstrap_samples", 2_000, 100, 100_000
         )
@@ -2729,6 +2741,12 @@ def build_command(
             "--calibration-min-portfolios", str(calibration_portfolios),
             "--calibration-min-candidate-days",
             str(calibration_candidate_days),
+            "--calibration-min-local-candidates",
+            str(calibration_local_candidates),
+            "--calibration-min-local-candidate-days",
+            str(calibration_local_candidate_days),
+            "--calibration-min-local-ess",
+            str(calibration_local_ess),
             "--bootstrap-samples", str(bootstrap),
             "--seed", str(seed),
         ]
@@ -3907,6 +3925,13 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         input_range_audit = (
             input_range_audit if isinstance(input_range_audit, dict) else {}
         )
+        local_support_audit = payload.get(
+            "calibration_local_support_audit"
+        )
+        local_support_audit = (
+            local_support_audit
+            if isinstance(local_support_audit, dict) else {}
+        )
         lcb_audit = payload.get("calibration_lcb_audit")
         lcb_audit = lcb_audit if isinstance(lcb_audit, dict) else {}
         reproducibility_audit = payload.get(
@@ -3915,6 +3940,14 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         reproducibility_audit = (
             reproducibility_audit
             if isinstance(reproducibility_audit, dict) else {}
+        )
+        latest_decision = payload.get("latest_calibration_decision")
+        latest_decision = (
+            latest_decision if isinstance(latest_decision, dict) else {}
+        )
+        primary_bankroll = payload.get("primary_bankroll")
+        primary_bankroll = (
+            primary_bankroll if isinstance(primary_bankroll, dict) else {}
         )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -4153,6 +4186,29 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                     "every_decision_bound_to_full_prior_ledger_artifact"
                 )
             ),
+            "calibrator_decision_hashes_present": (
+                calibrator_update_audit.get("decision_hashes_present")
+            ),
+            "calibrator_decision_hash_bundle_violations": (
+                calibrator_update_audit.get(
+                    "decision_hash_bundle_violations"
+                )
+            ),
+            "calibrator_decision_event_binding_violations": (
+                calibrator_update_audit.get(
+                    "decision_event_binding_violations"
+                )
+            ),
+            "calibrator_fixed_component_hash_violations": (
+                calibrator_update_audit.get(
+                    "fixed_component_hash_violations"
+                )
+            ),
+            "calibrator_duplicate_decision_event_bindings": (
+                calibrator_update_audit.get(
+                    "duplicate_decision_event_bindings"
+                )
+            ),
             "calibration_input_range_ready_candidates": (
                 input_range_audit.get("ready_candidates_with_raw_input")
             ),
@@ -4164,6 +4220,93 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_input_range_all_rejected": input_range_audit.get(
                 "all_out_of_range_inputs_rejected"
+            ),
+            "calibration_local_minimum_candidates": (
+                local_support_audit.get("minimum_local_candidates")
+            ),
+            "calibration_local_minimum_candidate_days": (
+                local_support_audit.get(
+                    "minimum_local_candidate_days"
+                )
+            ),
+            "calibration_local_minimum_day_cluster_ess": (
+                local_support_audit.get(
+                    "minimum_local_day_cluster_ess"
+                )
+            ),
+            "calibration_local_support_purchase_violations": (
+                local_support_audit.get(
+                    "local_support_purchase_violations"
+                )
+            ),
+            "calibration_local_support_all_failures_rejected": (
+                local_support_audit.get(
+                    "all_local_range_and_support_failures_rejected"
+                )
+            ),
+            "warmup_days": latest_decision.get("warmup_days"),
+            "required_days": latest_decision.get("required_days"),
+            "prior_candidates": latest_decision.get("prior_candidates"),
+            "required_candidates": latest_decision.get(
+                "required_candidates"
+            ),
+            "prior_candidate_days": latest_decision.get(
+                "prior_candidate_days"
+            ),
+            "required_candidate_days": latest_decision.get(
+                "required_candidate_days"
+            ),
+            "calibration_cutoff_time": latest_decision.get(
+                "calibration_cutoff_time"
+            ),
+            "max_training_settlement_time": latest_decision.get(
+                "max_training_settlement_time"
+            ),
+            "strict_prior_check": latest_decision.get(
+                "strict_prior_check"
+            ),
+            "isotonic_block_count": latest_decision.get(
+                "isotonic_block_count"
+            ),
+            "local_block_candidates": latest_decision.get(
+                "local_block_candidates"
+            ),
+            "local_block_candidate_days": latest_decision.get(
+                "local_block_candidate_days"
+            ),
+            "local_block_ess": latest_decision.get("local_block_ess"),
+            "local_block_raw_ev_min": latest_decision.get(
+                "local_block_raw_ev_min"
+            ),
+            "local_block_raw_ev_max": latest_decision.get(
+                "local_block_raw_ev_max"
+            ),
+            "raw_V_buy": latest_decision.get("raw_V_buy"),
+            "calibrated_ROI": latest_decision.get("calibrated_ROI"),
+            "calibrated_ROI_LCB95": latest_decision.get(
+                "calibrated_ROI_LCB95"
+            ),
+            "buy_threshold": latest_decision.get("buy_threshold"),
+            "approved": latest_decision.get("approved"),
+            "denied": latest_decision.get("denied"),
+            "denial_reason": latest_decision.get("denial_reason"),
+            "calibrator_hash": latest_decision.get("calibrator_hash"),
+            "calibration_ledger_hash": latest_decision.get(
+                "calibration_ledger_hash"
+            ),
+            "decision_model_sha256": latest_decision.get("model_sha256"),
+            "decision_threshold_sha256": latest_decision.get(
+                "threshold_sha256"
+            ),
+            "decision_settlement_engine_sha256": latest_decision.get(
+                "settlement_engine_sha256"
+            ),
+            "decision_hash_bundle_sha256": latest_decision.get(
+                "decision_hash_bundle_sha256"
+            ),
+            "roi_status": primary_bankroll.get("roi_status"),
+            "roi_not_applicable_reason": primary_bankroll.get(
+                "roi_not_applicable_reason"
             ),
             "calibration_lcb_tail_probability": lcb_audit.get(
                 "tail_probability"

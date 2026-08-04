@@ -23,10 +23,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v11"
+MODEL_VERSION = "joint_edge_calibrated_replay_v12"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v11_day_cluster_reproducible"
+    "stake_weighted_isotonic_lcb_v12_local_support_decision_hashes"
 )
 PRIMARY_RAW_VALUE_SOURCE = (
     "pregate_best_search_independent_validation_"
@@ -93,6 +93,33 @@ def _load_decision_times(path: Path | None) -> dict[str, str]:
         for row in races
         if isinstance(row, Mapping) and row.get("race_id")
     }
+
+
+def _calibration_ledger_sha256(
+    records: Sequence[Mapping[str, object]],
+) -> str:
+    rows = sorted(
+        ({
+            "race_id": str(record.get("race_id") or ""),
+            "race_date": str(record.get("race_date") or ""),
+            "settlement_available_at": str(
+                record.get("settlement_available_at") or ""
+            ),
+            "raw_estimated_ev": record.get("raw_estimated_ev"),
+            "gross_return_per_yen": record.get(
+                "gross_return_per_yen"
+            ),
+            "sample_weight": record.get("sample_weight"),
+            "raw_value_source": str(
+                record.get("raw_value_source") or ""
+            ),
+            "structural_feasible": bool(
+                record.get("structural_feasible")
+            ),
+        } for record in records),
+        key=lambda row: row["race_id"],
+    )
+    return _canonical_sha256(_finite_audit_value(rows))
 
 
 def _candidate_record(
@@ -396,6 +423,9 @@ def run_joint_edge_calibrated_replay(
     calibration_min_training_days: int = 30,
     calibration_min_portfolios: int = 300,
     calibration_min_candidate_days: int = 20,
+    calibration_min_local_candidates: int = 50,
+    calibration_min_local_candidate_days: int = 20,
+    calibration_min_local_ess: float = 10.0,
     bootstrap_samples: int = 2_000,
     seed: int = 43_041,
 ) -> dict[str, Any]:
@@ -442,6 +472,13 @@ def run_joint_edge_calibrated_replay(
         "calibration_min_training_days": calibration_min_training_days,
         "calibration_min_portfolios": calibration_min_portfolios,
         "calibration_min_candidate_days": calibration_min_candidate_days,
+        "calibration_min_local_candidates": (
+            calibration_min_local_candidates
+        ),
+        "calibration_min_local_candidate_days": (
+            calibration_min_local_candidate_days
+        ),
+        "calibration_min_local_ess": calibration_min_local_ess,
         "bankroll_bootstrap_samples": bootstrap_samples,
         "seed": seed,
         "shape_constraint": "isotonic",
@@ -460,6 +497,52 @@ def run_joint_edge_calibrated_replay(
     replay_configuration_sha256 = _canonical_sha256(
         replay_configuration
     )
+    model_decision_sha256 = _canonical_sha256({
+        "base_artifact_sha256": base_artifact_sha256,
+        "base_model": payload.get("model"),
+        "base_evaluation_protocol_id": payload.get(
+            "evaluation_protocol_id"
+        ),
+        "replay_implementation_sha256": implementation_source_sha256[
+            "joint_edge_calibrated_replay"
+        ],
+    })
+    threshold_definition = {
+        "base_buy_margin": buy_margin,
+        "calibration_margin": calibration_margin,
+        "calibration_warmup": {
+            "days": calibration_min_training_days,
+            "candidates": calibration_min_portfolios,
+            "candidate_days": calibration_min_candidate_days,
+        },
+        "local_support": {
+            "candidates": calibration_min_local_candidates,
+            "candidate_days": calibration_min_local_candidate_days,
+            "day_cluster_ess": calibration_min_local_ess,
+        },
+        "purchase_condition": (
+            "in_global_and_local_observed_range_and_local_support_ready_"
+            "and_lcb95_strictly_greater_than_one_plus_margin"
+        ),
+    }
+    threshold_definition_sha256 = _canonical_sha256(
+        threshold_definition
+    )
+    inherited_protocol = payload.get("evaluation_protocol")
+    inherited_protocol = (
+        inherited_protocol if isinstance(inherited_protocol, dict) else {}
+    )
+    settlement_engine_sha256 = _canonical_sha256({
+        "implementation_source_sha256": implementation_source_sha256[
+            "joint_bankroll_evaluation"
+        ],
+        "settlement_protocol": inherited_protocol.get("settlement"),
+        "purchase_unit_yen": PURCHASE_UNIT_YEN,
+        "receipt_rule": (
+            "recorded_actual_combination_and_payout_released_only_after_"
+            "settlement_available_at"
+        ),
+    })
 
     training_records: list[dict[str, object]] = []
     pending_training_records: list[dict[str, object]] = []
@@ -477,7 +560,7 @@ def run_joint_edge_calibrated_replay(
     calibrator_cache: dict[str, Any] = {}
     calibrator_update_events: list[dict[str, object]] = []
     previous_calibration_instance_id: str | None = None
-    previous_training_race_manifest_sha256: str | None = None
+    previous_training_ledger_sha256: str | None = None
 
     def calibrator_at_decision(
         *,
@@ -487,7 +570,7 @@ def run_joint_edge_calibrated_replay(
     ) -> dict[str, Any]:
         nonlocal pending_training_records
         nonlocal previous_calibration_instance_id
-        nonlocal previous_training_race_manifest_sha256
+        nonlocal previous_training_ledger_sha256
 
         matured_training_records = [
             record for record in pending_training_records
@@ -540,28 +623,37 @@ def run_joint_edge_calibrated_replay(
         training_race_manifest_sha256 = _canonical_sha256(
             sorted(eligible_training_race_ids)
         )
+        training_ledger_sha256 = _calibration_ledger_sha256(
+            eligible_training_records
+        )
         calibration_fit_seed = (
-            seed + int(training_race_manifest_sha256[:16], 16)
+            seed + int(training_ledger_sha256[:16], 16)
         ) % (2**32 - 1)
         calibration_instance_id = _canonical_sha256({
             "calibration_version": CALIBRATION_VERSION,
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "training_ledger_sha256": training_ledger_sha256,
             "bootstrap_samples": calibration_bootstrap_samples,
             "fit_seed": calibration_fit_seed,
             "margin": calibration_margin,
             "min_training_days": calibration_min_training_days,
             "min_portfolios": calibration_min_portfolios,
             "min_candidate_days": calibration_min_candidate_days,
+            "min_local_candidates": calibration_min_local_candidates,
+            "min_local_candidate_days": (
+                calibration_min_local_candidate_days
+            ),
+            "min_local_ess": calibration_min_local_ess,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
         })
         calibrator_cache_hit = calibration_instance_id in calibrator_cache
         teacher_population_changed = bool(
-            previous_training_race_manifest_sha256 is None
-            or previous_training_race_manifest_sha256
-            != training_race_manifest_sha256
+            previous_training_ledger_sha256 is None
+            or previous_training_ledger_sha256
+            != training_ledger_sha256
         )
         calibrator_instance_changed = bool(
             previous_calibration_instance_id is None
@@ -591,6 +683,11 @@ def run_joint_edge_calibrated_replay(
                 min_days=calibration_min_training_days,
                 min_tickets=calibration_min_portfolios,
                 min_candidate_days=calibration_min_candidate_days,
+                min_local_candidates=calibration_min_local_candidates,
+                min_local_candidate_days=(
+                    calibration_min_local_candidate_days
+                ),
+                min_local_ess=calibration_min_local_ess,
                 candidate_min_raw_ev=1.0 + buy_margin,
                 shape_constraint="isotonic",
                 quantile_method="inverted_cdf",
@@ -606,6 +703,7 @@ def run_joint_edge_calibrated_replay(
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "training_ledger_sha256": training_ledger_sha256,
             "calibration_instance_id": calibration_instance_id,
             "calibrator_artifact_sha256": calibrator_artifact_sha256,
             "teacher_population_changed": teacher_population_changed,
@@ -646,6 +744,7 @@ def run_joint_edge_calibrated_replay(
             "eligible_training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "eligible_training_ledger_sha256": training_ledger_sha256,
             "latest_training_settlement_available_at": (
                 latest_training_settlement
             ),
@@ -657,9 +756,7 @@ def run_joint_edge_calibrated_replay(
         }
         calibration_folds.append(fold)
         previous_calibration_instance_id = calibration_instance_id
-        previous_training_race_manifest_sha256 = (
-            training_race_manifest_sha256
-        )
+        previous_training_ledger_sha256 = training_ledger_sha256
         return {
             "calibrator": calibrator,
             "fold": fold,
@@ -672,6 +769,7 @@ def run_joint_edge_calibrated_replay(
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "training_ledger_sha256": training_ledger_sha256,
             "calibration_instance_id": calibration_instance_id,
             "calibrator_artifact_sha256": calibrator_artifact_sha256,
         }
@@ -755,28 +853,37 @@ def run_joint_edge_calibrated_replay(
         training_race_manifest_sha256 = _canonical_sha256(
             sorted(eligible_training_race_ids)
         )
+        training_ledger_sha256 = _calibration_ledger_sha256(
+            eligible_training_records
+        )
         calibration_fit_seed = (
-            seed + int(training_race_manifest_sha256[:16], 16)
+            seed + int(training_ledger_sha256[:16], 16)
         ) % (2**32 - 1)
         calibration_instance_id = _canonical_sha256({
             "calibration_version": CALIBRATION_VERSION,
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "training_ledger_sha256": training_ledger_sha256,
             "bootstrap_samples": calibration_bootstrap_samples,
             "fit_seed": calibration_fit_seed,
             "margin": calibration_margin,
             "min_training_days": calibration_min_training_days,
             "min_portfolios": calibration_min_portfolios,
             "min_candidate_days": calibration_min_candidate_days,
+            "min_local_candidates": calibration_min_local_candidates,
+            "min_local_candidate_days": (
+                calibration_min_local_candidate_days
+            ),
+            "min_local_ess": calibration_min_local_ess,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
         })
         calibrator_cache_hit = calibration_instance_id in calibrator_cache
         teacher_population_changed = bool(
-            previous_training_race_manifest_sha256 is None
-            or previous_training_race_manifest_sha256
-            != training_race_manifest_sha256
+            previous_training_ledger_sha256 is None
+            or previous_training_ledger_sha256
+            != training_ledger_sha256
         )
         calibrator_instance_changed = bool(
             previous_calibration_instance_id is None
@@ -806,6 +913,11 @@ def run_joint_edge_calibrated_replay(
                 min_days=calibration_min_training_days,
                 min_tickets=calibration_min_portfolios,
                 min_candidate_days=calibration_min_candidate_days,
+                min_local_candidates=calibration_min_local_candidates,
+                min_local_candidate_days=(
+                    calibration_min_local_candidate_days
+                ),
+                min_local_ess=calibration_min_local_ess,
                 candidate_min_raw_ev=1.0 + buy_margin,
                 shape_constraint="isotonic",
                 quantile_method="inverted_cdf",
@@ -823,6 +935,7 @@ def run_joint_edge_calibrated_replay(
             "training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "training_ledger_sha256": training_ledger_sha256,
             "calibration_instance_id": calibration_instance_id,
             "calibrator_artifact_sha256": (
                 calibrator_artifact_sha256
@@ -874,6 +987,7 @@ def run_joint_edge_calibrated_replay(
             "eligible_training_race_manifest_sha256": (
                 training_race_manifest_sha256
             ),
+            "eligible_training_ledger_sha256": training_ledger_sha256,
             "latest_training_settlement_available_at": (
                 latest_training_settlement
             ),
@@ -884,9 +998,7 @@ def run_joint_edge_calibrated_replay(
             **calibrator.as_dict(),
         })
         previous_calibration_instance_id = calibration_instance_id
-        previous_training_race_manifest_sha256 = (
-            training_race_manifest_sha256
-        )
+        previous_training_ledger_sha256 = training_ledger_sha256
         balance = initial_daily_bankroll_yen
         peak = balance
         maximum_drawdown_yen = 0
@@ -938,6 +1050,9 @@ def run_joint_edge_calibrated_replay(
                 training_race_manifest_sha256 = state[
                     "training_race_manifest_sha256"
                 ]
+                training_ledger_sha256 = state[
+                    "training_ledger_sha256"
+                ]
             day_folds.append(fold)
             if calibrator.ready:
                 day_has_ready = True
@@ -977,9 +1092,26 @@ def run_joint_edge_calibrated_replay(
                 calibrator.predict(raw_gross)
                 if calibrator.ready and raw_gross is not None else {}
             )
-            calibrated_lcb = prediction.get("empirical_ev_lcb95")
+            unqualified_bootstrap_lcb = prediction.get(
+                "empirical_ev_lcb95"
+            )
             input_in_training_range = bool(
                 prediction.get("input_in_training_range")
+            )
+            input_in_local_block_range = bool(
+                prediction.get("input_in_local_block_range")
+            )
+            local_support_ready = bool(
+                prediction.get("local_support_ready")
+            )
+            calibrated_lcb = (
+                unqualified_bootstrap_lcb
+                if (
+                    input_in_training_range
+                    and input_in_local_block_range
+                    and local_support_ready
+                )
+                else None
             )
             structural_feasible = bool(
                 record is not None and record["structural_feasible"]
@@ -988,6 +1120,8 @@ def run_joint_edge_calibrated_replay(
                 calibrator.ready
                 and structural_feasible
                 and input_in_training_range
+                and input_in_local_block_range
+                and local_support_ready
                 and calibrated_lcb is not None
                 and float(calibrated_lcb) > 1.0 + calibration_margin
             )
@@ -998,6 +1132,10 @@ def run_joint_edge_calibrated_replay(
                 reason = "base_joint_gate_not_feasible"
             elif not input_in_training_range:
                 reason = "calibration_input_out_of_training_range"
+            elif not input_in_local_block_range:
+                reason = "calibration_input_out_of_local_block_range"
+            elif not local_support_ready:
+                reason = "calibration_local_support_insufficient"
             elif calibrated_lcb is None:
                 reason = "calibration_lcb_missing"
             elif float(calibrated_lcb) <= 1.0 + calibration_margin:
@@ -1035,6 +1173,17 @@ def run_joint_edge_calibrated_replay(
             if reason is not None:
                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
 
+            decision_hash_bundle = {
+                "model_sha256": model_decision_sha256,
+                "calibrator_sha256": calibrator_artifact_sha256,
+                "calibration_ledger_sha256": training_ledger_sha256,
+                "threshold_sha256": threshold_definition_sha256,
+                "settlement_engine_sha256": settlement_engine_sha256,
+            }
+            decision_hash_bundle_sha256 = _canonical_sha256(
+                decision_hash_bundle
+            )
+
             stake = sum(bets.values())
             receipt = _realized_receipt(
                 bets,
@@ -1060,11 +1209,19 @@ def run_joint_edge_calibrated_replay(
                 "race_id": race.get("race_id"),
                 "evaluation_time_t": purchase_at.isoformat(),
                 "raw_portfolio_gross_return_estimate": raw_gross,
+                "raw_V_buy": (
+                    raw_gross - 1.0 if raw_gross is not None else None
+                ),
                 "raw_value_source": (
                     record.get("raw_value_source") if record else None
                 ),
                 "calibrated_gross_return": prediction.get("empirical_ev"),
                 "calibrated_gross_return_lcb95": calibrated_lcb,
+                "diagnostic_unqualified_bootstrap_lcb95": (
+                    unqualified_bootstrap_lcb
+                ),
+                "calibrated_ROI": prediction.get("empirical_ev"),
+                "calibrated_ROI_LCB95": calibrated_lcb,
                 "calibration_lcb_tail_probability": (
                     calibrator.as_dict()["lcb_tail_probability"]
                 ),
@@ -1086,6 +1243,37 @@ def run_joint_edge_calibrated_replay(
                 ),
                 "calibration_support": prediction.get("support"),
                 "calibration_support_days": prediction.get("support_days"),
+                "isotonic_block_count": calibrator.isotonic_block_count,
+                "isotonic_block_id": prediction.get(
+                    "isotonic_block_id"
+                ),
+                "local_block_candidates": prediction.get(
+                    "local_block_candidates"
+                ),
+                "local_block_candidate_days": prediction.get(
+                    "local_block_candidate_days"
+                ),
+                "local_block_ess": prediction.get("local_block_ess"),
+                "local_block_raw_ev_min": prediction.get(
+                    "local_block_raw_ev_min"
+                ),
+                "local_block_raw_ev_max": prediction.get(
+                    "local_block_raw_ev_max"
+                ),
+                "local_support_ready": local_support_ready,
+                "local_support_reasons": prediction.get(
+                    "local_support_reasons"
+                ),
+                "calibration_input_in_local_block_range": (
+                    input_in_local_block_range
+                ),
+                "local_required_candidates": (
+                    calibrator.min_local_candidates
+                ),
+                "local_required_candidate_days": (
+                    calibrator.min_local_candidate_days
+                ),
+                "local_required_ess": calibrator.min_local_ess,
                 "calibration_training_raw_input_min": prediction.get(
                     "training_raw_ev_min"
                 ),
@@ -1099,6 +1287,15 @@ def run_joint_edge_calibrated_replay(
                     calibrator.trained_through_date
                 ),
                 "calibration_ready": calibrator.ready,
+                "warmup_days": calibrator.training_days,
+                "required_days": calibrator.min_days,
+                "prior_candidates": calibrator.tickets,
+                "required_candidates": calibrator.min_tickets,
+                "prior_candidate_days": calibrator.candidate_days,
+                "required_candidate_days": (
+                    calibrator.min_candidate_days
+                ),
+                "buy_threshold": 1.0 + calibration_margin,
                 "calibration_instance_id": calibration_instance_id,
                 "calibrator_artifact_sha256": (
                     calibrator_artifact_sha256
@@ -1109,11 +1306,19 @@ def run_joint_edge_calibrated_replay(
                 "calibration_information_cutoff": (
                     calibration_asof.isoformat()
                 ),
+                "calibration_cutoff_time": calibration_asof.isoformat(),
                 "calibration_latest_training_settlement_available_at": (
+                    latest_training_settlement
+                ),
+                "max_training_settlement_time": (
                     latest_training_settlement
                 ),
                 "calibration_latest_settlement_strictly_before_"
                 "evaluation_time_t": bool(
+                    latest_training_settlement_instant is None
+                    or latest_training_settlement_instant < purchase_at
+                ),
+                "strict_prior_check": bool(
                     latest_training_settlement_instant is None
                     or latest_training_settlement_instant < purchase_at
                 ),
@@ -1126,6 +1331,16 @@ def run_joint_edge_calibrated_replay(
                 "calibration_training_race_manifest_sha256": (
                     training_race_manifest_sha256
                 ),
+                "model_sha256": model_decision_sha256,
+                "calibrator_sha256": calibrator_artifact_sha256,
+                "calibrator_hash": calibrator_artifact_sha256,
+                "calibration_ledger_sha256": training_ledger_sha256,
+                "calibration_ledger_hash": training_ledger_sha256,
+                "threshold_sha256": threshold_definition_sha256,
+                "settlement_engine_sha256": settlement_engine_sha256,
+                "decision_hash_bundle_sha256": (
+                    decision_hash_bundle_sha256
+                ),
                 "base_joint_gate_feasible": structural_feasible,
                 "counterfactual_stake_yen": counterfactual_stake,
                 "counterfactual_ticket_count": len(proposed_bets),
@@ -1137,7 +1352,10 @@ def run_joint_edge_calibrated_replay(
                     counterfactual_matches
                 ),
                 "purchase_authorized": authorized,
+                "approved": authorized,
+                "denied": not authorized,
                 "rejection_reason": reason,
+                "denial_reason": reason,
                 "bets_yen": bets,
                 "stake_yen": stake,
                 "return_yen": receipt,
@@ -1210,6 +1428,14 @@ def run_joint_edge_calibrated_replay(
             "return_yen": return_yen,
             "profit_yen": return_yen - stake_yen,
             "roi": return_yen / stake_yen if stake_yen else None,
+            "roi_status": "defined" if stake_yen else "not_applicable",
+            "roi_not_applicable_reason": (
+                None if stake_yen else (
+                    "warmup_no_purchase"
+                    if not day_has_ready
+                    else "no_candidate_passed_purchase_gate"
+                )
+            ),
             "hits": hits,
             "max_drawdown_yen": maximum_drawdown_yen,
             "evaluated_races": len(source_races),
@@ -1411,6 +1637,14 @@ def run_joint_edge_calibrated_replay(
         "return_yen": total_return,
         "profit_yen": total_return - total_stake,
         "roi": total_return / total_stake if total_stake else None,
+        "roi_status": "defined" if total_stake else "not_applicable",
+        "roi_not_applicable_reason": (
+            None if total_stake else (
+                "warmup_no_purchase"
+                if ready_races == 0
+                else "no_candidate_passed_purchase_gate"
+            )
+        ),
         "tickets": sum(len(race["bets_yen"]) for race in purchased),
         "selected_races": len(purchased),
         "hit_races": sum(race["return_yen"] > 0 for race in purchased),
@@ -1526,6 +1760,9 @@ def run_joint_edge_calibrated_replay(
             "training_race_manifest_sha256": str(
                 race.get("calibration_training_race_manifest_sha256") or ""
             ),
+            "calibration_ledger_sha256": str(
+                race.get("calibration_ledger_sha256") or ""
+            ),
         }
         for day in replay_days
         for race in day.get("races") or []
@@ -1626,14 +1863,25 @@ def run_joint_edge_calibrated_replay(
             "evaluation_time_t": str(
                 race.get("evaluation_time_t") or ""
             ),
-            "training_race_manifest_sha256": str(
-                race.get("calibration_training_race_manifest_sha256") or ""
-            ),
-            "calibration_instance_id": str(
+                "training_race_manifest_sha256": str(
+                    race.get("calibration_training_race_manifest_sha256") or ""
+                ),
+                "calibration_ledger_sha256": str(
+                    race.get("calibration_ledger_sha256") or ""
+                ),
+                "calibration_instance_id": str(
                 race.get("calibration_instance_id") or ""
             ),
             "calibrator_artifact_sha256": str(
                 race.get("calibrator_artifact_sha256") or ""
+            ),
+            "model_sha256": str(race.get("model_sha256") or ""),
+            "threshold_sha256": str(race.get("threshold_sha256") or ""),
+            "settlement_engine_sha256": str(
+                race.get("settlement_engine_sha256") or ""
+            ),
+            "decision_hash_bundle_sha256": str(
+                race.get("decision_hash_bundle_sha256") or ""
             ),
         }
         for day in replay_days
@@ -1651,7 +1899,7 @@ def run_joint_edge_calibrated_replay(
             row["calibrator_artifact_sha256"]
         )
         instance_ledger_sets.setdefault(instance_id, set()).add(
-            row["training_race_manifest_sha256"]
+            row["calibration_ledger_sha256"]
         )
     instance_artifact_collisions = {
         key: sorted(values)
@@ -1663,8 +1911,57 @@ def run_joint_edge_calibrated_replay(
         for key, values in instance_ledger_sets.items()
         if key and len(values) != 1
     }
+    decision_hash_bundle_violations = [
+        row for row in calibrator_decision_rows
+        if row["decision_hash_bundle_sha256"] != _canonical_sha256({
+            "model_sha256": row["model_sha256"],
+            "calibrator_sha256": row["calibrator_artifact_sha256"],
+            "calibration_ledger_sha256": row[
+                "calibration_ledger_sha256"
+            ],
+            "threshold_sha256": row["threshold_sha256"],
+            "settlement_engine_sha256": row[
+                "settlement_engine_sha256"
+            ],
+        })
+    ]
+    event_binding_rows: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for event in calibrator_update_events:
+        key = (
+            str(event.get("race_id") or ""),
+            str(event.get("evaluation_time_t") or ""),
+        )
+        event_binding_rows.setdefault(key, []).append(event)
+    duplicate_event_bindings = {
+        key: rows for key, rows in event_binding_rows.items()
+        if len(rows) != 1
+    }
+    decision_event_binding_violations = []
+    fixed_component_hash_violations = []
+    for row in calibrator_decision_rows:
+        key = (row["race_id"], row["evaluation_time_t"])
+        events = event_binding_rows.get(key) or []
+        if (
+            len(events) != 1
+            or row["calibration_instance_id"]
+            != str(events[0].get("calibration_instance_id") or "")
+            or row["calibrator_artifact_sha256"]
+            != str(events[0].get("calibrator_artifact_sha256") or "")
+            or row["calibration_ledger_sha256"]
+            != str(events[0].get("training_ledger_sha256") or "")
+            or row["training_race_manifest_sha256"]
+            != str(events[0].get("training_race_manifest_sha256") or "")
+        ):
+            decision_event_binding_violations.append(row)
+        if (
+            row["model_sha256"] != model_decision_sha256
+            or row["threshold_sha256"] != threshold_definition_sha256
+            or row["settlement_engine_sha256"]
+            != settlement_engine_sha256
+        ):
+            fixed_component_hash_violations.append(row)
     calibrator_update_audit = {
-        "version": "strict_prior_calibrator_update_audit_v1",
+        "version": "strict_prior_calibrator_update_audit_v2",
         "folds": len(calibrator_update_events),
         "initializations": int(bool(calibrator_update_events)),
         "updates_after_initialization": sum(
@@ -1712,11 +2009,34 @@ def run_joint_edge_calibrated_replay(
             instance_artifact_collisions
         ),
         "instance_ledger_collisions": len(instance_ledger_collisions),
+        "decision_hash_bundle_violations": len(
+            decision_hash_bundle_violations
+        ),
+        "duplicate_decision_event_bindings": len(
+            duplicate_event_bindings
+        ),
+        "decision_event_binding_violations": len(
+            decision_event_binding_violations
+        ),
+        "fixed_component_hash_violations": len(
+            fixed_component_hash_violations
+        ),
+        "decision_hashes_present": bool(
+            calibrator_decision_rows
+            and not missing_decision_calibrator_bindings
+        ),
+        "model_sha256": model_decision_sha256,
+        "threshold_sha256": threshold_definition_sha256,
+        "settlement_engine_sha256": settlement_engine_sha256,
         "every_decision_bound_to_full_prior_ledger_artifact": bool(
             calibrator_decision_rows
             and not missing_decision_calibrator_bindings
             and not instance_artifact_collisions
             and not instance_ledger_collisions
+            and not decision_hash_bundle_violations
+            and not duplicate_event_bindings
+            and not decision_event_binding_violations
+            and not fixed_component_hash_violations
         ),
         "reconstruction_mode": (
             "full_refit_from_complete_eligible_prior_ledger_when_manifest_"
@@ -1767,9 +2087,78 @@ def run_joint_edge_calibrated_replay(
             for race in range_evaluable_candidates
         ]),
     }
+    local_evaluable_candidates = [
+        race for race in range_evaluable_candidates
+        if race.get("calibration_input_in_training_range")
+    ]
+    local_range_rejections = [
+        race for race in local_evaluable_candidates
+        if not race.get("calibration_input_in_local_block_range")
+    ]
+    local_support_rejections = [
+        race for race in local_evaluable_candidates
+        if race.get("calibration_input_in_local_block_range")
+        and not race.get("local_support_ready")
+    ]
+    local_support_purchase_violations = [
+        race for race in local_evaluable_candidates
+        if (
+            not race.get("calibration_input_in_local_block_range")
+            or not race.get("local_support_ready")
+        )
+        and (
+            int(race.get("stake_yen") or 0) > 0
+            or race.get("purchase_authorized")
+            or race.get("bets_yen")
+        )
+    ]
+    calibration_local_support_audit = {
+        "version": "isotonic_local_support_gate_v1",
+        "minimum_local_candidates": calibration_min_local_candidates,
+        "minimum_local_candidate_days": (
+            calibration_min_local_candidate_days
+        ),
+        "minimum_local_day_cluster_ess": calibration_min_local_ess,
+        "ess_definition": (
+            "square_of_total_block_exposure_divided_by_sum_of_squared_"
+            "race_date_block_exposures"
+        ),
+        "ready_in_global_range_candidates": len(
+            local_evaluable_candidates
+        ),
+        "outside_observed_local_block_range": len(
+            local_range_rejections
+        ),
+        "insufficient_local_support_candidates": len(
+            local_support_rejections
+        ),
+        "local_support_purchase_violations": len(
+            local_support_purchase_violations
+        ),
+        "all_local_range_and_support_failures_rejected": (
+            not local_support_purchase_violations
+        ),
+        "candidate_manifest_sha256": _canonical_sha256([
+            [
+                race.get("race_id"),
+                race.get("isotonic_block_id"),
+                race.get("local_block_candidates"),
+                race.get("local_block_candidate_days"),
+                race.get("local_block_ess"),
+                race.get("local_block_raw_ev_min"),
+                race.get("local_block_raw_ev_max"),
+                race.get("local_support_ready"),
+                race.get("calibration_input_in_local_block_range"),
+                race.get("rejection_reason"),
+            ]
+            for race in local_evaluable_candidates
+        ]),
+    }
     lcb_evaluable_candidates = [
         race for race in range_evaluable_candidates
         if race.get("calibration_input_in_training_range")
+        and race.get("calibration_input_in_local_block_range")
+        and race.get("local_support_ready")
     ]
     lcb_invalid_candidates = [
         race for race in lcb_evaluable_candidates
@@ -1833,7 +2222,9 @@ def run_joint_edge_calibrated_replay(
         ),
         "quantile_method": "inverted_cdf",
         "bootstrap_samples_per_fit": calibration_bootstrap_samples,
-        "ready_in_range_candidates": len(lcb_evaluable_candidates),
+        "ready_in_range_locally_supported_candidates": len(
+            lcb_evaluable_candidates
+        ),
         "invalid_or_above_point_candidate_bounds": len(
             lcb_invalid_candidates
         ),
@@ -1871,6 +2262,7 @@ def run_joint_edge_calibrated_replay(
     }
     reproducibility_instance_rows = sorted({
         (
+            str(row.get("training_ledger_sha256") or ""),
             str(row.get("training_race_manifest_sha256") or ""),
             int(row.get("fit_seed") or 0),
             str(row.get("calibration_instance_id") or ""),
@@ -1890,7 +2282,7 @@ def run_joint_edge_calibrated_replay(
     }
     incomplete_reproducibility_instances = [
         row for row in reproducibility_instance_rows
-        if not row[0] or not row[2] or not row[3]
+        if not row[0] or not row[1] or not row[3] or not row[4]
     ]
     reproducibility_decision_outputs = [
         {
@@ -1901,6 +2293,9 @@ def run_joint_edge_calibrated_replay(
             ),
             "calibrator_artifact_sha256": race.get(
                 "calibrator_artifact_sha256"
+            ),
+            "decision_hash_bundle_sha256": race.get(
+                "decision_hash_bundle_sha256"
             ),
             "raw_portfolio_gross_return_estimate": race.get(
                 "raw_portfolio_gross_return_estimate"
@@ -1948,8 +2343,8 @@ def run_joint_edge_calibrated_replay(
         "implementation_source_sha256": implementation_source_sha256,
         "implementation_sha256": implementation_sha256,
         "seed_rule": (
-            "fit_seed_equals_base_seed_plus_first_64_bits_of_teacher_"
-            "manifest_sha256_modulo_2_pow_32_minus_1"
+            "fit_seed_equals_base_seed_plus_first_64_bits_of_complete_"
+            "calibration_ledger_sha256_modulo_2_pow_32_minus_1"
         ),
         "quantile_method": "inverted_cdf",
         "deterministic_calibrator_instances": len(
@@ -2017,8 +2412,23 @@ def run_joint_edge_calibrated_replay(
                 "every_decision_bound_to_full_prior_ledger_artifact"
             ]
         ),
+        "all_decision_component_hashes_persisted": bool(
+            calibrator_update_audit["decision_hashes_present"]
+            and not calibrator_update_audit[
+                "decision_hash_bundle_violations"
+            ]
+            and not calibrator_update_audit[
+                "decision_event_binding_violations"
+            ]
+            and not calibrator_update_audit[
+                "fixed_component_hash_violations"
+            ]
+        ),
         "out_of_range_inputs_rejected": calibration_input_range_audit[
             "all_out_of_range_inputs_rejected"
+        ],
+        "local_isotonic_support_enforced": calibration_local_support_audit[
+            "all_local_range_and_support_failures_rejected"
         ],
         "one_sided_lcb95_valid_and_enforced": bool(
             calibration_lcb_audit[
@@ -2134,7 +2544,12 @@ def run_joint_edge_calibrated_replay(
         missing_decision_calibrator_bindings,
         instance_artifact_collisions,
         instance_ledger_collisions,
+        decision_hash_bundle_violations,
+        duplicate_event_bindings,
+        decision_event_binding_violations,
+        fixed_component_hash_violations,
         out_of_range_purchases,
+        local_support_purchase_violations,
         lcb_definition_fold_violations,
         lcb_purchase_violations,
         not reproducibility_manifest_complete,
@@ -2181,6 +2596,12 @@ def run_joint_edge_calibrated_replay(
         "one_sided_lcb95_valid_and_enforced": formal_gate[
             "one_sided_lcb95_valid_and_enforced"
         ],
+        "local_isotonic_support_enforced": formal_gate[
+            "local_isotonic_support_enforced"
+        ],
+        "local_support_purchase_violations": len(
+            local_support_purchase_violations
+        ),
         "day_cluster_dependence_reflected": formal_gate[
             "day_cluster_dependence_reflected"
         ],
@@ -2205,7 +2626,7 @@ def run_joint_edge_calibrated_replay(
         "no_purchases_before_ready": strict_zero_stake_before_warmup,
     })
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v11",
+        "version": "joint_edge_calibrated_replay_protocol_v12",
         "model": MODEL_VERSION,
         "base_artifact_sha256": base_artifact_sha256,
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -2222,6 +2643,15 @@ def run_joint_edge_calibrated_replay(
             "min_training_days": calibration_min_training_days,
             "min_portfolios": calibration_min_portfolios,
             "min_candidate_days": calibration_min_candidate_days,
+            "min_local_candidates": calibration_min_local_candidates,
+            "min_local_candidate_days": (
+                calibration_min_local_candidate_days
+            ),
+            "min_local_day_cluster_ess": calibration_min_local_ess,
+            "local_ess_definition": (
+                "square_of_total_block_exposure_divided_by_sum_of_"
+                "squared_race_date_block_exposures"
+            ),
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
             "lcb_tail_probability": 0.05,
@@ -2273,15 +2703,20 @@ def run_joint_edge_calibrated_replay(
             ),
             "update_rule": (
                 "at_each_race_decision_fit_or_switch_calibrator_only_when_"
-                "eligible_teacher_race_manifest_changes_otherwise_reuse_"
+                "eligible_complete_calibration_ledger_changes_otherwise_reuse_"
                 "identical_instance"
             ),
             "bootstrap_seed_rule": (
-                "deterministic_from_base_seed_and_teacher_race_manifest"
+                "deterministic_from_base_seed_and_complete_ledger_sha256"
             ),
             "out_of_range_input_rule": (
                 "reject_purchase_when_raw_gross_return_is_outside_"
                 "strict_prior_training_raw_min_max"
+            ),
+            "local_support_rule": (
+                "reject_when_outside_observed_isotonic_block_range_or_"
+                "local_candidates_days_or_day_cluster_ess_are_below_"
+                "predeclared_thresholds"
             ),
             "learning_population": learning_population_audit,
             "sample_weight": "candidate_portfolio_stake_yen",
@@ -2311,6 +2746,16 @@ def run_joint_edge_calibrated_replay(
                 "deterministic_output_fingerprint"
             ),
         },
+        "decision_component_hashes": {
+            "model_sha256": model_decision_sha256,
+            "threshold_sha256": threshold_definition_sha256,
+            "threshold_definition": threshold_definition,
+            "settlement_engine_sha256": settlement_engine_sha256,
+            "per_decision_dynamic_hashes": [
+                "calibrator_sha256",
+                "calibration_ledger_sha256",
+            ],
+        },
         "resampling_condition_id": confidence["condition_id"],
         "seed": seed,
     }
@@ -2338,6 +2783,10 @@ def run_joint_edge_calibrated_replay(
         "calibration_ready_days": ready_days,
         "calibration_ready_races": ready_races,
         "calibrated_candidates": calibrated_candidates,
+        "latest_calibration_decision": (
+            replay_days[-1]["races"][-1]
+            if replay_days and replay_days[-1].get("races") else None
+        ),
         "calibration_training_records": len(all_candidate_records),
         "calibration_teacher_admitted_records": len(training_records),
         "calibration_pending_unsettled_records": len(
@@ -2353,6 +2802,9 @@ def run_joint_edge_calibrated_replay(
         "calibration_warmup_audit": warmup_audit,
         "calibrator_update_audit": calibrator_update_audit,
         "calibration_input_range_audit": calibration_input_range_audit,
+        "calibration_local_support_audit": (
+            calibration_local_support_audit
+        ),
         "calibration_lcb_audit": calibration_lcb_audit,
         "replay_reproducibility_audit": replay_reproducibility_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
@@ -2400,6 +2852,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-min-training-days", type=int, default=30)
     parser.add_argument("--calibration-min-portfolios", type=int, default=300)
     parser.add_argument("--calibration-min-candidate-days", type=int, default=20)
+    parser.add_argument(
+        "--calibration-min-local-candidates", type=int, default=50
+    )
+    parser.add_argument(
+        "--calibration-min-local-candidate-days", type=int, default=20
+    )
+    parser.add_argument(
+        "--calibration-min-local-ess", type=float, default=10.0
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=2_000)
     parser.add_argument("--seed", type=int, default=43_041)
     return parser
