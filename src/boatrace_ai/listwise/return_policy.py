@@ -96,6 +96,7 @@ def select_policy_threshold(
     minimum_roi: float,
     minimum_hits: int = 0,
     minimum_winning_days: int = 0,
+    minimum_probability_roi_above_one: float = 0.95,
 ) -> tuple[float, str]:
     eligible = [
         row
@@ -108,6 +109,9 @@ def select_policy_threshold(
         and float(row.get("effective_hit_count") or 0.0) >= minimum_hits
         and float(row.get("selection_roi_ci95_lower", row["roi"]))
         >= minimum_roi
+        and float(
+            row.get("selection_probability_roi_above_one") or 0.0
+        ) >= minimum_probability_roi_above_one
         and int(row["profit_yen"]) > 0
     ]
     if not eligible:

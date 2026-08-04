@@ -430,6 +430,7 @@ def simulate_expected_return_calibrated_bankroll(
     minimum_selection_roi: float = 1.05,
     minimum_selection_hits: int = 10,
     minimum_selection_winning_days: int = 8,
+    minimum_selection_probability_roi_above_one: float = 0.95,
     state_output: MutableMapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_nondecreasing_race_dates(race_keys, name="race_keys")
@@ -543,6 +544,9 @@ def simulate_expected_return_calibrated_bankroll(
             minimum_roi=minimum_selection_roi,
             minimum_hits=minimum_selection_hits,
             minimum_winning_days=minimum_selection_winning_days,
+            minimum_probability_roi_above_one=(
+                minimum_selection_probability_roi_above_one
+            ),
         )
         selection_period = {
             "fit_from": str(calibration_race_keys[0][1]),
@@ -705,6 +709,9 @@ def simulate_expected_return_calibrated_bankroll(
         "minimum_roi": float(minimum_selection_roi),
         "minimum_hits": int(minimum_selection_hits),
         "minimum_winning_days": int(minimum_selection_winning_days),
+        "minimum_probability_roi_above_one": float(
+            minimum_selection_probability_roi_above_one
+        ),
         "period": selection_period,
         "combination_calibration": selection_combination_calibration,
         "threshold_diagnostics": policy_diagnostics,

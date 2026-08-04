@@ -49,6 +49,7 @@ def test_threshold_selection_uses_only_profitable_supported_rows() -> None:
         fallback=1.20,
         minimum_tickets=2,
         minimum_roi=1.05,
+        minimum_probability_roi_above_one=0.0,
     )
     assert threshold == 1.20
     assert source == "pre_evaluation_risk_adjusted_temporal_selection"
@@ -121,6 +122,7 @@ def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
                 "roi_without_largest_hit": 1.4,
                 "effective_hit_count": 16.0,
                 "selection_roi_ci95_lower": 0.7,
+                "selection_probability_roi_above_one": 0.99,
                 "profit_yen": 8_000,
             },
             {
@@ -132,6 +134,7 @@ def test_threshold_selection_requires_bootstrap_roi_lower_bound() -> None:
                 "roi_without_largest_hit": 1.1,
                 "effective_hit_count": 12.0,
                 "selection_roi_ci95_lower": 1.06,
+                "selection_probability_roi_above_one": 0.96,
                 "profit_yen": 2_000,
             },
         ],
@@ -157,8 +160,36 @@ def test_threshold_selection_rejects_concentrated_returns() -> None:
             "roi": 1.4,
             "roi_without_largest_hit": 1.01,
             "selection_roi_ci95_lower": 1.10,
+            "selection_probability_roi_above_one": 0.98,
             "profit_yen": 4_000,
         }],
+        fallback=1.20,
+        minimum_tickets=100,
+        minimum_roi=1.05,
+        minimum_hits=10,
+        minimum_winning_days=8,
+    )
+
+    assert threshold == 1.20
+    assert source == "fallback_fixed_threshold"
+
+
+def test_threshold_selection_requires_roi_probability() -> None:
+    row = {
+        "ev_threshold": 1.10,
+        "tickets": 180,
+        "hits": 18,
+        "effective_hit_count": 12.0,
+        "winning_days": 12,
+        "roi": 1.4,
+        "roi_without_largest_hit": 1.2,
+        "selection_roi_ci95_lower": 1.10,
+        "selection_probability_roi_above_one": 0.949999,
+        "profit_yen": 4_000,
+    }
+
+    threshold, source = select_policy_threshold(
+        [row],
         fallback=1.20,
         minimum_tickets=100,
         minimum_roi=1.05,
