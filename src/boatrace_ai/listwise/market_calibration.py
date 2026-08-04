@@ -3596,6 +3596,7 @@ def walk_forward_evaluate(
     trend_point_odds_safety_sweep: bool = False,
     trend_point_required_ticket_count: int | None = None,
     trend_point_require_reversed_place_pair: bool = False,
+    trend_point_maximum_forecast_odds: float | None = None,
     prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -3626,6 +3627,17 @@ def walk_forward_evaluate(
         raise ValueError(
             "trend_point_require_reversed_place_pair requires "
             "trend_point_required_ticket_count=2"
+        )
+    if (
+        trend_point_maximum_forecast_odds is not None
+        and (
+            isinstance(trend_point_maximum_forecast_odds, bool)
+            or not math.isfinite(float(trend_point_maximum_forecast_odds))
+            or float(trend_point_maximum_forecast_odds) <= 1.0
+        )
+    ):
+        raise ValueError(
+            "trend_point_maximum_forecast_odds must be finite and greater than 1.0"
         )
     if not isinstance(prequential_conditional_order, bool):
         raise ValueError("prequential_conditional_order must be a boolean")
@@ -4725,6 +4737,7 @@ def walk_forward_evaluate(
         require_reversed_place_pair=(
             trend_point_require_reversed_place_pair
         ),
+        maximum_forecast_odds=trend_point_maximum_forecast_odds,
     )
     trend_point_diagnostic.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4743,6 +4756,7 @@ def walk_forward_evaluate(
                 evaluation_dates=evaluation_date_set,
                 required_ticket_count=2,
                 require_reversed_place_pair=True,
+                maximum_forecast_odds=trend_point_maximum_forecast_odds,
             )
         )
         trend_point_reversed_place_pair_diagnostic.update({
@@ -4769,6 +4783,7 @@ def walk_forward_evaluate(
         require_reversed_place_pair=(
             trend_point_require_reversed_place_pair
         ),
+        maximum_forecast_odds=trend_point_maximum_forecast_odds,
     )
     trend_point_prospective.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4815,6 +4830,7 @@ def walk_forward_evaluate(
                     require_reversed_place_pair=(
                         trend_point_require_reversed_place_pair
                     ),
+                    maximum_forecast_odds=trend_point_maximum_forecast_odds,
                 )
             )
             prior_registered = (
@@ -4829,6 +4845,7 @@ def walk_forward_evaluate(
                     require_reversed_place_pair=(
                         trend_point_require_reversed_place_pair
                     ),
+                    maximum_forecast_odds=trend_point_maximum_forecast_odds,
                 )
             )
             sweep_rows.append({
@@ -7336,6 +7353,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     parser.add_argument(
+        "--trend-point-maximum-forecast-odds",
+        type=float,
+    )
+    parser.add_argument(
         "--prequential-conditional-order",
         action="store_true",
     )
@@ -7521,6 +7542,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         trend_point_require_reversed_place_pair=(
             args.trend_point_require_reversed_place_pair
+        ),
+        trend_point_maximum_forecast_odds=(
+            args.trend_point_maximum_forecast_odds
         ),
         prequential_conditional_order=args.prequential_conditional_order,
     )

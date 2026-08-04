@@ -271,14 +271,41 @@ def test_reversed_place_pair_requires_same_winner_and_swapped_places() -> None:
 
     matching = evaluate(reversed_places)
     rejected = evaluate(non_reversed)
+    above_forecast_odds_limit = challenger.evaluate_market_kelly_challenger(
+        [dict(
+            _race("2026-07-20", "limited", actual=first, payout=250),
+            model_probabilities={
+                key: (0.45 if key in {first, reversed_places} else 0.1 / 118.0)
+                for key in COMBINATIONS
+            },
+            market_probabilities={
+                key: (0.45 if key in {first, reversed_places} else 0.1 / 118.0)
+                for key in COMBINATIONS
+            },
+            odds={
+                key: (2.5 if key in {first, reversed_places} else 1.0)
+                for key in COMBINATIONS
+            },
+        )],
+        required_ticket_count=2,
+        require_reversed_place_pair=True,
+        maximum_forecast_odds=2.4,
+    )
 
     assert matching["tickets"] == 2
     assert matching["policy"]["require_reversed_place_pair"] is True
     assert rejected["tickets"] == 0
+    assert above_forecast_odds_limit["tickets"] == 0
+    assert above_forecast_odds_limit["policy"]["maximum_forecast_odds"] == 2.4
     with pytest.raises(ValueError, match="requires required_ticket_count=2"):
         challenger.evaluate_market_kelly_challenger(
             [_race("2026-07-20", "bad")],
             require_reversed_place_pair=True,
+        )
+    with pytest.raises(ValueError, match="maximum_forecast_odds"):
+        challenger.evaluate_market_kelly_challenger(
+            [_race("2026-07-20", "bad")],
+            maximum_forecast_odds=1.0,
         )
 
 

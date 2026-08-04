@@ -12,6 +12,7 @@ import pytest
 from boatrace_ai.evaluation_queue import (
     PRODUCTION_TREND_POINT_MODEL_INPUT,
     PRODUCTION_TREND_POINT_MODEL_KEY,
+    PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY,
     PRODUCTION_TREND_POINT_REGISTERED_AFTER,
     PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
     PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
@@ -368,6 +369,16 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
     model = root / PROSPECTIVE_LIGHTGBM_MODEL_INPUT
     model.parent.mkdir(parents=True)
     model.write_bytes(b"fixed-lightgbm-artifact")
+    production_audit = (
+        root / "data/models/evaluation_queue/job-00012051.json"
+    )
+    production_audit.write_text(
+        json.dumps({
+            "source_model": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_sha256": "a" * 64,
+        }),
+        encoding="utf-8",
+    )
 
     seed_periodic_jobs(
         _IdleQueue(),
@@ -400,6 +411,19 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
         "require_reversed_place_pair"
     ] is True
     assert reversed_candidate["priority"] == 40
+    normal_reversed_candidate = next(
+        row for row in calls
+        if row["model_key"]
+        == PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY
+    )
+    normal_params = normal_reversed_candidate["parameters"]
+    assert normal_params["trend_point_maximum_forecast_odds"] == 100.0
+    assert normal_params["trend_point_required_ticket_count"] == 2
+    assert normal_params["trend_point_require_reversed_place_pair"] is True
+    assert normal_params["prospective_candidate"][
+        "maximum_forecast_odds"
+    ] == 100.0
+    assert normal_reversed_candidate["priority"] == 39
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:

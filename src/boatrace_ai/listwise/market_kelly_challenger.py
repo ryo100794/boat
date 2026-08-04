@@ -37,6 +37,7 @@ def evaluate_market_kelly_challenger(
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
+    maximum_forecast_odds: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -57,6 +58,7 @@ def evaluate_market_kelly_challenger(
         odds_safety_factor=odds_safety_factor,
         required_ticket_count=required_ticket_count,
         require_reversed_place_pair=require_reversed_place_pair,
+        maximum_forecast_odds=maximum_forecast_odds,
     )
 
 
@@ -68,6 +70,7 @@ def evaluate_attached_market_kelly_challenger(
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
+    maximum_forecast_odds: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate already prequentially calibrated races without refitting."""
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
@@ -78,6 +81,9 @@ def evaluate_attached_market_kelly_challenger(
         raise ValueError(
             "require_reversed_place_pair requires required_ticket_count=2"
         )
+    maximum_forecast_odds = _maximum_forecast_odds(
+        maximum_forecast_odds
+    )
 
     calibrated_races = [dict(race) for race in calibrated_races]
     requested_dates = (
@@ -95,6 +101,7 @@ def evaluate_attached_market_kelly_challenger(
         odds_safety_factor=odds_safety_factor,
         required_ticket_count=required_ticket_count,
         require_reversed_place_pair=require_reversed_place_pair,
+        maximum_forecast_odds=maximum_forecast_odds,
     )
     evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
@@ -132,6 +139,7 @@ def evaluate_attached_market_kelly_challenger(
             "odds_safety_factor": odds_safety_factor,
             "required_ticket_count": required_ticket_count,
             "require_reversed_place_pair": require_reversed_place_pair,
+            "maximum_forecast_odds": maximum_forecast_odds,
         },
         "evaluation_days": len(daily),
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
@@ -523,11 +531,15 @@ def _simulate_daily(
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
+    maximum_forecast_odds: float | None = None,
 ) -> list[dict[str, Any]]:
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
     required_ticket_count = _required_ticket_count(required_ticket_count)
     if not isinstance(require_reversed_place_pair, bool):
         raise ValueError("require_reversed_place_pair must be a boolean")
+    maximum_forecast_odds = _maximum_forecast_odds(
+        maximum_forecast_odds
+    )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         grouped[_iso_day(race.get("race_date"), "race_date")].append(race)
@@ -565,8 +577,17 @@ def _simulate_daily(
                     selection=selection,
                     probability=probabilities[selection],
                     final_odds=(
-                        _positive_float(odds[selection], "decision odds")
-                        / odds_safety_factor
+                        (
+                            _positive_float(odds[selection], "decision odds")
+                            / odds_safety_factor
+                        )
+                        if (
+                            maximum_forecast_odds is None
+                            or _positive_float(
+                                odds[selection], "decision odds"
+                            ) <= maximum_forecast_odds
+                        )
+                        else 1.0
                     ),
                 )
                 for selection in sorted(probabilities)
@@ -834,6 +855,21 @@ def _odds_safety_factor(value: Any) -> float:
     if not math.isfinite(factor) or factor < 1.0:
         raise ValueError("odds_safety_factor must be finite and at least 1.0")
     return factor
+
+
+def _maximum_forecast_odds(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            "maximum_forecast_odds must be finite and greater than 1.0"
+        )
+    maximum = float(value)
+    if not math.isfinite(maximum) or maximum <= 1.0:
+        raise ValueError(
+            "maximum_forecast_odds must be finite and greater than 1.0"
+        )
+    return maximum
 
 
 def _required_ticket_count(value: Any) -> int | None:

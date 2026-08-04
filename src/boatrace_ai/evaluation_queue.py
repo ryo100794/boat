@@ -40,6 +40,9 @@ PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY = (
 PRODUCTION_TREND_POINT_REVERSED_PAIR_MODEL_KEY = (
     "production_trend_point_reversed_pair_job_12012"
 )
+PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY = (
+    "production_trend_point_normal_reversed_pair_job_12012"
+)
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
@@ -49,6 +52,7 @@ PRODUCTION_TREND_POINT_STRATEGY = (
     "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
 )
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER = "2026-08-04"
+PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
     "prospective_lightgbm_two_ticket_job_2707"
 )
@@ -2205,6 +2209,7 @@ def build_command(
             "trend_point_odds_safety_sweep",
             "trend_point_required_ticket_count",
             "trend_point_require_reversed_place_pair",
+            "trend_point_maximum_forecast_odds",
             "prequential_conditional_order",
             "research_only_reused_holdout",
             "minimum_research_clean_days",
@@ -2408,6 +2413,18 @@ def build_command(
             command.append(
                 "--trend-point-require-reversed-place-pair"
             )
+        if params.get("trend_point_maximum_forecast_odds") is not None:
+            maximum_forecast_odds = _number(
+                params,
+                "trend_point_maximum_forecast_odds",
+                100.0,
+                1.000001,
+                1_000_000.0,
+            )
+            command.extend([
+                "--trend-point-maximum-forecast-odds",
+                str(maximum_forecast_odds),
+            ])
         conditional_order = params.get(
             "prequential_conditional_order", False
         )
@@ -7005,6 +7022,7 @@ def seed_periodic_jobs(
             "policy": "trend_point_market_offset_discrete_multinomial_kelly",
             "required_ticket_count": None,
             "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
             "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
             "priority": 44,
         },
@@ -7020,6 +7038,7 @@ def seed_periodic_jobs(
             ),
             "required_ticket_count": 2,
             "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
             "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
             "priority": 43,
         },
@@ -7035,6 +7054,7 @@ def seed_periodic_jobs(
             ),
             "required_ticket_count": 2,
             "require_reversed_place_pair": True,
+            "maximum_forecast_odds": None,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 42,
         },
@@ -7050,6 +7070,7 @@ def seed_periodic_jobs(
             ),
             "required_ticket_count": 2,
             "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 41,
         },
@@ -7065,8 +7086,25 @@ def seed_periodic_jobs(
             ),
             "required_ticket_count": 2,
             "require_reversed_place_pair": True,
+            "maximum_forecast_odds": None,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 40,
+        },
+        {
+            "model_key": PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY,
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_job_id": 12_012,
+            "source_evaluation_job_id": PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
+            "expected_model_sha256": expected_model_sha256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "reversed_place_pair_max_forecast_odds_100"
+            ),
+            "required_ticket_count": 2,
+            "require_reversed_place_pair": True,
+            "maximum_forecast_odds": 100.0,
+            "registered_after": PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER,
+            "priority": 39,
         },
     )
     if jst_now.hour >= 3:
@@ -7123,6 +7161,14 @@ def seed_periodic_jobs(
                 parameters["prospective_candidate"][
                     "require_reversed_place_pair"
                 ] = True
+            maximum_forecast_odds = spec["maximum_forecast_odds"]
+            if maximum_forecast_odds is not None:
+                parameters["trend_point_maximum_forecast_odds"] = (
+                    maximum_forecast_odds
+                )
+                parameters["prospective_candidate"][
+                    "maximum_forecast_odds"
+                ] = maximum_forecast_odds
             key = dedupe_key(
                 "market_residual_walk_forward",
                 str(spec["model_key"]),

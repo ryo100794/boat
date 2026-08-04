@@ -4458,6 +4458,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "trend_point_odds_safety_sweep": True,
                 "trend_point_required_ticket_count": 2,
                 "trend_point_require_reversed_place_pair": True,
+                "trend_point_maximum_forecast_odds": 100.0,
                 "prequential_conditional_order": True,
                 "research_only_reused_holdout": True,
             },
@@ -4501,6 +4502,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         command.index("--trend-point-required-ticket-count") + 1
     ] == "2"
     assert "--trend-point-require-reversed-place-pair" in command
+    assert command[
+        command.index("--trend-point-maximum-forecast-odds") + 1
+    ] == "100.0"
     assert "--prequential-conditional-order" in command
     assert "--research-only-reused-holdout" in command
     assert command[command.index("--minimum-research-clean-days") + 1] == "300"
