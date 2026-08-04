@@ -5,10 +5,12 @@ from datetime import datetime
 import hashlib
 import json
 from math import isfinite
+import platform
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import joblib
+import numpy as np
 
 from .joint_bankroll_evaluation import (
     PURCHASE_UNIT_YEN,
@@ -21,10 +23,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v10"
+MODEL_VERSION = "joint_edge_calibrated_replay_v11"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v10_one_sided_lcb_audit"
+    "stake_weighted_isotonic_lcb_v11_day_cluster_reproducible"
 )
 PRIMARY_RAW_VALUE_SOURCE = (
     "pregate_best_search_independent_validation_"
@@ -412,6 +414,52 @@ def run_joint_edge_calibrated_replay(
         candidate = Path(str(payload["scored_cache"]))
         cache_path = candidate if candidate.is_file() else None
     decision_times = _load_decision_times(cache_path)
+    base_artifact_sha256 = _sha256_file(base_artifact)
+    scored_cache_sha256 = (
+        _sha256_file(cache_path)
+        if cache_path is not None and cache_path.is_file() else None
+    )
+    implementation_source_sha256 = {
+        "joint_edge_calibrated_replay": _sha256_file(Path(__file__)),
+        "empirical_ev_calibration": _sha256_file(Path(
+            fit_empirical_ev_calibration.__code__.co_filename
+        )),
+        "joint_bankroll_evaluation": _sha256_file(Path(
+            build_block_bootstrap_evidence.__code__.co_filename
+        )),
+    }
+    implementation_sha256 = _canonical_sha256(
+        implementation_source_sha256
+    )
+    replay_configuration = {
+        "model_version": MODEL_VERSION,
+        "calibration_version": CALIBRATION_VERSION,
+        "initial_daily_bankroll_yen": initial_daily_bankroll_yen,
+        "purchase_unit_yen": PURCHASE_UNIT_YEN,
+        "buy_margin": buy_margin,
+        "calibration_margin": calibration_margin,
+        "calibration_bootstrap_samples": calibration_bootstrap_samples,
+        "calibration_min_training_days": calibration_min_training_days,
+        "calibration_min_portfolios": calibration_min_portfolios,
+        "calibration_min_candidate_days": calibration_min_candidate_days,
+        "bankroll_bootstrap_samples": bootstrap_samples,
+        "seed": seed,
+        "shape_constraint": "isotonic",
+        "quantile_method": "inverted_cdf",
+        "lcb_tail_probability": 0.05,
+        "bootstrap_cluster_unit": "race_date",
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "joblib": joblib.__version__,
+            "operating_system": platform.system(),
+            "kernel_release": platform.release(),
+            "machine": platform.machine(),
+        },
+    }
+    replay_configuration_sha256 = _canonical_sha256(
+        replay_configuration
+    )
 
     training_records: list[dict[str, object]] = []
     pending_training_records: list[dict[str, object]] = []
@@ -1762,6 +1810,8 @@ def run_joint_edge_calibrated_replay(
                 "nonparametric_race_date_cluster_percentile_bootstrap"
             )
             or fold.get("bootstrap_cluster_unit") != "race_date"
+            or not fold.get("within_day_candidates_resampled_together")
+            or fold.get("ticket_level_independence_assumed") is not False
             or fold.get("quantile_method") != "inverted_cdf"
             or not fold.get("lcb_capped_at_point_estimate")
         )
@@ -1775,6 +1825,12 @@ def run_joint_edge_calibrated_replay(
             "nonparametric_race_date_cluster_percentile_bootstrap"
         ),
         "cluster_unit": "race_date",
+        "within_day_candidates_resampled_together": True,
+        "ticket_level_independence_assumed": False,
+        "dependence_structure": (
+            "all_candidate_returns_and_exposures_on_one_race_date_are_"
+            "resampled_as_one_joint_vector"
+        ),
         "quantile_method": "inverted_cdf",
         "bootstrap_samples_per_fit": calibration_bootstrap_samples,
         "ready_in_range_candidates": len(lcb_evaluable_candidates),
@@ -1812,6 +1868,112 @@ def run_joint_edge_calibrated_replay(
             ]
             for race in lcb_evaluable_candidates
         ]),
+    }
+    reproducibility_instance_rows = sorted({
+        (
+            str(row.get("training_race_manifest_sha256") or ""),
+            int(row.get("fit_seed") or 0),
+            str(row.get("calibration_instance_id") or ""),
+            str(row.get("calibrator_artifact_sha256") or ""),
+        )
+        for row in calibrator_update_events
+    })
+    instance_seed_sets: dict[str, set[int]] = {}
+    for row in calibrator_update_events:
+        instance_seed_sets.setdefault(
+            str(row.get("calibration_instance_id") or ""), set()
+        ).add(int(row.get("fit_seed") or 0))
+    instance_seed_collisions = {
+        key: sorted(values)
+        for key, values in instance_seed_sets.items()
+        if key and len(values) != 1
+    }
+    incomplete_reproducibility_instances = [
+        row for row in reproducibility_instance_rows
+        if not row[0] or not row[2] or not row[3]
+    ]
+    reproducibility_decision_outputs = [
+        {
+            "race_id": race.get("race_id"),
+            "evaluation_time_t": race.get("evaluation_time_t"),
+            "calibration_instance_id": race.get(
+                "calibration_instance_id"
+            ),
+            "calibrator_artifact_sha256": race.get(
+                "calibrator_artifact_sha256"
+            ),
+            "raw_portfolio_gross_return_estimate": race.get(
+                "raw_portfolio_gross_return_estimate"
+            ),
+            "calibrated_gross_return_lcb95": race.get(
+                "calibrated_gross_return_lcb95"
+            ),
+            "purchase_authorized": race.get("purchase_authorized"),
+            "rejection_reason": race.get("rejection_reason"),
+            "bets_yen": race.get("bets_yen"),
+            "stake_yen": race.get("stake_yen"),
+            "return_yen": race.get("return_yen"),
+        }
+        for day in replay_days
+        for race in day.get("races") or []
+    ]
+    rerun_input_fingerprint = _canonical_sha256({
+        "base_artifact_sha256": base_artifact_sha256,
+        "scored_cache_sha256": scored_cache_sha256,
+        "replay_configuration_sha256": replay_configuration_sha256,
+        "implementation_sha256": implementation_sha256,
+    })
+    deterministic_output_fingerprint = _canonical_sha256({
+        "calibrator_instances": reproducibility_instance_rows,
+        "decision_outputs": reproducibility_decision_outputs,
+        "primary_bankroll": bankroll,
+        "bankroll_confidence": confidence,
+        "value_realization": value_realization,
+    })
+    reproducibility_manifest_complete = bool(
+        reproducibility_instance_rows
+        and reproducibility_decision_outputs
+        and not incomplete_reproducibility_instances
+        and not instance_seed_collisions
+        and not instance_artifact_collisions
+        and not instance_ledger_collisions
+        and not missing_decision_calibrator_bindings
+    )
+    replay_reproducibility_audit = {
+        "version": "deterministic_replay_manifest_v1",
+        "base_artifact_sha256": base_artifact_sha256,
+        "scored_cache_sha256": scored_cache_sha256,
+        "configuration": replay_configuration,
+        "configuration_sha256": replay_configuration_sha256,
+        "implementation_source_sha256": implementation_source_sha256,
+        "implementation_sha256": implementation_sha256,
+        "seed_rule": (
+            "fit_seed_equals_base_seed_plus_first_64_bits_of_teacher_"
+            "manifest_sha256_modulo_2_pow_32_minus_1"
+        ),
+        "quantile_method": "inverted_cdf",
+        "deterministic_calibrator_instances": len(
+            reproducibility_instance_rows
+        ),
+        "instance_seed_collisions": len(instance_seed_collisions),
+        "incomplete_calibrator_instances": len(
+            incomplete_reproducibility_instances
+        ),
+        "rerun_input_fingerprint_sha256": rerun_input_fingerprint,
+        "deterministic_output_fingerprint_sha256": (
+            deterministic_output_fingerprint
+        ),
+        "reproducibility_contract": (
+            "independent_rerun_with_identical_input_fingerprint_must_"
+            "produce_identical_output_fingerprint"
+        ),
+        "manifest_complete": reproducibility_manifest_complete,
+        "calibrator_instance_manifest_sha256": _canonical_sha256(
+            reproducibility_instance_rows
+        ),
+        "decision_output_manifest_sha256": _canonical_sha256(
+            reproducibility_decision_outputs
+        ),
     }
     formal_gate = {
         "independent_validation_value_only": bool(
@@ -1868,6 +2030,18 @@ def run_joint_edge_calibrated_replay(
             and calibration_lcb_audit[
                 "strict_lcb_purchase_threshold_enforced"
             ]
+        ),
+        "day_cluster_dependence_reflected": bool(
+            calibration_lcb_audit["cluster_unit"] == "race_date"
+            and calibration_lcb_audit[
+                "within_day_candidates_resampled_together"
+            ]
+            and not calibration_lcb_audit[
+                "ticket_level_independence_assumed"
+            ]
+        ),
+        "deterministic_replay_manifest_complete": (
+            replay_reproducibility_audit["manifest_complete"]
         ),
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
@@ -1963,6 +2137,7 @@ def run_joint_edge_calibrated_replay(
         out_of_range_purchases,
         lcb_definition_fold_violations,
         lcb_purchase_violations,
+        not reproducibility_manifest_complete,
         not strict_zero_stake_before_warmup,
         not learning_population_audit[
             "all_pregate_candidates_registered"
@@ -2006,6 +2181,12 @@ def run_joint_edge_calibrated_replay(
         "one_sided_lcb95_valid_and_enforced": formal_gate[
             "one_sided_lcb95_valid_and_enforced"
         ],
+        "day_cluster_dependence_reflected": formal_gate[
+            "day_cluster_dependence_reflected"
+        ],
+        "deterministic_replay_manifest_complete": (
+            reproducibility_manifest_complete
+        ),
         "non_independent_value_purchases": non_independent_value_purchases,
         "observed_purchased_portfolios": len(purchased),
         "interpretation": (
@@ -2024,9 +2205,9 @@ def run_joint_edge_calibrated_replay(
         "no_purchases_before_ready": strict_zero_stake_before_warmup,
     })
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v10",
+        "version": "joint_edge_calibrated_replay_protocol_v11",
         "model": MODEL_VERSION,
-        "base_artifact_sha256": _sha256_file(base_artifact),
+        "base_artifact_sha256": base_artifact_sha256,
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
         "evaluation_time_t": base_protocol.get("evaluation_time_t"),
         "odds_snapshot_age": base_protocol.get("odds_snapshot_age"),
@@ -2050,6 +2231,8 @@ def run_joint_edge_calibrated_replay(
                 "nonparametric_race_date_cluster_percentile_bootstrap"
             ),
             "bootstrap_cluster_unit": "race_date",
+            "within_day_candidates_resampled_together": True,
+            "ticket_level_independence_assumed": False,
             "bootstrap_resample_cluster_count": (
                 "all_strict_prior_training_calendar_days"
             ),
@@ -2117,6 +2300,17 @@ def run_joint_edge_calibrated_replay(
             "profit_reuse": "after_recorded_settlement_available_at",
             "cash_shortfall": "proportional_integer_unit_downscale",
         },
+        "reproducibility": {
+            "rerun_input_fingerprint_sha256": rerun_input_fingerprint,
+            "configuration_sha256": replay_configuration_sha256,
+            "implementation_sha256": implementation_sha256,
+            "base_artifact_sha256": base_artifact_sha256,
+            "scored_cache_sha256": scored_cache_sha256,
+            "contract": (
+                "identical_input_fingerprint_requires_identical_"
+                "deterministic_output_fingerprint"
+            ),
+        },
         "resampling_condition_id": confidence["condition_id"],
         "seed": seed,
     }
@@ -2160,6 +2354,7 @@ def run_joint_edge_calibrated_replay(
         "calibrator_update_audit": calibrator_update_audit,
         "calibration_input_range_audit": calibration_input_range_audit,
         "calibration_lcb_audit": calibration_lcb_audit,
+        "replay_reproducibility_audit": replay_reproducibility_audit,
         "rejection_reasons": dict(sorted(rejected_reasons.items())),
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,

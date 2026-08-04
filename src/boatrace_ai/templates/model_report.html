@@ -717,11 +717,16 @@ function renderPurchaseValueCalibration(jobs){
       &&Number(latest.calibration_lcb_definition_fold_violations||0)===0;
     const lcbLevel=latest.calibration_lcb_confidence_level;
     const lcbCluster=latest.calibration_lcb_cluster_unit||"unknown";
+    const dayDependence=latest.calibration_lcb_within_day_resampled_together===true
+      &&latest.calibration_lcb_ticket_independence_assumed===false;
+    const reproducible=latest.replay_reproducibility_manifest_complete===true
+      &&Boolean(latest.replay_rerun_input_fingerprint_sha256)
+      &&Boolean(latest.replay_deterministic_output_fingerprint_sha256);
     const separateDraws=latest.calibration_search_validation_draw_sets_disjoint===true;
     const identical=latest.calibration_value_population_identical_only===true;
     const gateOutcome=latest.purchase_gate_operational_outcome||"unknown";
     const targetUnit=latest.calibration_target_unit||"unknown-unit";
-    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / candidate-settled-before-t ${settled?"PASS":"FAIL"} (${fmt(settledCandidates)}) / same-race-excluded ${sameRace?"PASS":"FAIL"} / one-calibrator-per-race ${sameCalibrator?"PASS":"FAIL"} / settled-result-batch ${settledBatch?"PASS":"FAIL"} / all-pregate ${allPregate?"PASS":"FAIL"} (${fmt(learningN)}) / warmup-AND-zero-yen ${warmup?"PASS":"FAIL"} / update-on-teacher-change ${updateOnly?"PASS":"FAIL"} / ledger-artifact-binding ${rebuilt?"PASS":"FAIL"} / out-of-range-reject ${rangeGuard?"PASS":"FAIL"} / one-sided-LCB ${lcbGuard?"PASS":"FAIL"} (${fmt(lcbLevel)}, ${lcbCluster}) / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / target ${targetUnit} / gate ${gateOutcome}`;
+    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / candidate-settled-before-t ${settled?"PASS":"FAIL"} (${fmt(settledCandidates)}) / same-race-excluded ${sameRace?"PASS":"FAIL"} / one-calibrator-per-race ${sameCalibrator?"PASS":"FAIL"} / settled-result-batch ${settledBatch?"PASS":"FAIL"} / all-pregate ${allPregate?"PASS":"FAIL"} (${fmt(learningN)}) / warmup-AND-zero-yen ${warmup?"PASS":"FAIL"} / update-on-teacher-change ${updateOnly?"PASS":"FAIL"} / ledger-artifact-binding ${rebuilt?"PASS":"FAIL"} / out-of-range-reject ${rangeGuard?"PASS":"FAIL"} / one-sided-LCB ${lcbGuard?"PASS":"FAIL"} (${fmt(lcbLevel)}, ${lcbCluster}) / day-cluster-dependence ${dayDependence?"PASS":"FAIL"} / deterministic-replay ${reproducible?"PASS":"FAIL"} / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / target ${targetUnit} / gate ${gateOutcome}`;
   }
 }
 function renderCandidates(rows){

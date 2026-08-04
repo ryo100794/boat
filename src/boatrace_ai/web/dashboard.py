@@ -3501,6 +3501,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_lcb_strict_threshold_enforced": metrics.get(
                     "calibration_lcb_strict_threshold_enforced"
                 ),
+                "calibration_lcb_within_day_resampled_together": metrics.get(
+                    "calibration_lcb_within_day_resampled_together"
+                ),
+                "calibration_lcb_ticket_independence_assumed": metrics.get(
+                    "calibration_lcb_ticket_independence_assumed"
+                ),
+                "replay_reproducibility_manifest_complete": metrics.get(
+                    "replay_reproducibility_manifest_complete"
+                ),
+                "replay_rerun_input_fingerprint_sha256": metrics.get(
+                    "replay_rerun_input_fingerprint_sha256"
+                ),
+                "replay_deterministic_output_fingerprint_sha256": metrics.get(
+                    "replay_deterministic_output_fingerprint_sha256"
+                ),
                 "calibration_learning_population_unique_races": metrics.get(
                     "calibration_learning_population_unique_races"
                 ),
@@ -4444,6 +4459,31 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_lcb_strict_threshold_enforced": (
                     candidate_metrics.get(
                         "calibration_lcb_strict_threshold_enforced"
+                    )
+                ),
+                "calibration_lcb_within_day_resampled_together": (
+                    candidate_metrics.get(
+                        "calibration_lcb_within_day_resampled_together"
+                    )
+                ),
+                "calibration_lcb_ticket_independence_assumed": (
+                    candidate_metrics.get(
+                        "calibration_lcb_ticket_independence_assumed"
+                    )
+                ),
+                "replay_reproducibility_manifest_complete": (
+                    candidate_metrics.get(
+                        "replay_reproducibility_manifest_complete"
+                    )
+                ),
+                "replay_rerun_input_fingerprint_sha256": (
+                    candidate_metrics.get(
+                        "replay_rerun_input_fingerprint_sha256"
+                    )
+                ),
+                "replay_deterministic_output_fingerprint_sha256": (
+                    candidate_metrics.get(
+                        "replay_deterministic_output_fingerprint_sha256"
                     )
                 ),
                 "calibration_learning_population_unique_races": (
@@ -8838,6 +8878,15 @@ def model_performance_audit_snapshot(
                 "calibration_lcb_definition_fold_violations",
                 "calibration_lcb_purchase_violations",
                 "calibration_lcb_strict_threshold_enforced",
+                "calibration_lcb_within_day_resampled_together",
+                "calibration_lcb_ticket_independence_assumed",
+                "replay_reproducibility_manifest_complete",
+                "replay_rerun_input_fingerprint_sha256",
+                "replay_deterministic_output_fingerprint_sha256",
+                "replay_configuration_sha256",
+                "replay_implementation_sha256",
+                "replay_reproducibility_instance_seed_collisions",
+                "replay_reproducibility_incomplete_instances",
                 "calibration_target_unit",
                 "calibration_raw_input_unit",
                 "calibration_purchase_condition",

@@ -212,12 +212,22 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert lcb_audit["confidence_level"] == pytest.approx(0.95)
     assert lcb_audit["sidedness"] == "one_sided_lower"
     assert lcb_audit["cluster_unit"] == "race_date"
+    assert lcb_audit["within_day_candidates_resampled_together"] is True
+    assert lcb_audit["ticket_level_independence_assumed"] is False
     assert lcb_audit["definition_fold_violations"] == 0
     assert lcb_audit["invalid_or_above_point_candidate_bounds"] == 0
     assert lcb_audit[
         "missing_nonfinite_or_below_threshold_purchase_violations"
     ] == 0
     assert lcb_audit["strict_lcb_purchase_threshold_enforced"] is True
+    reproducibility = profitable["replay_reproducibility_audit"]
+    assert reproducibility["manifest_complete"] is True
+    assert reproducibility["instance_seed_collisions"] == 0
+    assert reproducibility["incomplete_calibrator_instances"] == 0
+    assert len(reproducibility["rerun_input_fingerprint_sha256"]) == 64
+    assert len(
+        reproducibility["deterministic_output_fingerprint_sha256"]
+    ) == 64
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -574,6 +584,26 @@ def test_lcb_equal_to_threshold_is_rejected_fail_closed(
     ] is True
 
 
+def test_identical_inputs_reproduce_identical_full_replay(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "reproducible.json")
+
+    first = _run(artifact)
+    second = _run(artifact)
+
+    assert first == second
+    first_audit = first["replay_reproducibility_audit"]
+    second_audit = second["replay_reproducibility_audit"]
+    assert first_audit["rerun_input_fingerprint_sha256"] == (
+        second_audit["rerun_input_fingerprint_sha256"]
+    )
+    assert first_audit["deterministic_output_fingerprint_sha256"] == (
+        second_audit["deterministic_output_fingerprint_sha256"]
+    )
+    assert first_audit["manifest_complete"] is True
+
+
 def test_mature_zero_purchase_window_is_safe_abstention_not_gate_failure() -> None:
     assert _purchase_gate_outcome(
         mature_observation_window=True,
@@ -678,7 +708,7 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v10",
+        "model": "joint_edge_calibrated_replay_v11",
         "evaluation_protocol_id": "calibrated-protocol",
         "evaluation_protocol": {
             "calibration": {
@@ -813,6 +843,8 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "tail_probability": 0.05,
             "confidence_level": 0.95,
             "cluster_unit": "race_date",
+            "within_day_candidates_resampled_together": True,
+            "ticket_level_independence_assumed": False,
             "quantile_method": "inverted_cdf",
             "invalid_or_above_point_candidate_bounds": 0,
             "definition_fold_violations": 0,
@@ -820,6 +852,17 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "all_evaluable_bounds_finite_and_not_above_point": True,
             "one_sided_95_definition_consistent_for_every_fold": True,
             "strict_lcb_purchase_threshold_enforced": True,
+        },
+        "replay_reproducibility_audit": {
+            "manifest_complete": True,
+            "rerun_input_fingerprint_sha256": "input-fingerprint",
+            "deterministic_output_fingerprint_sha256": (
+                "output-fingerprint"
+            ),
+            "configuration_sha256": "configuration",
+            "implementation_sha256": "implementation",
+            "instance_seed_collisions": 0,
+            "incomplete_calibrator_instances": 0,
         },
         "purchase_value_realization_calibration": {
             "version": "strict_prior_calibrated_value_realization_deciles_v1",
@@ -920,6 +963,17 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary["calibration_lcb_definition_fold_violations"] == 0
     assert summary["calibration_lcb_purchase_violations"] == 0
     assert summary["calibration_lcb_strict_threshold_enforced"] is True
+    assert summary[
+        "calibration_lcb_within_day_resampled_together"
+    ] is True
+    assert summary["calibration_lcb_ticket_independence_assumed"] is False
+    assert summary["replay_reproducibility_manifest_complete"] is True
+    assert summary["replay_rerun_input_fingerprint_sha256"] == (
+        "input-fingerprint"
+    )
+    assert summary[
+        "replay_deterministic_output_fingerprint_sha256"
+    ] == "output-fingerprint"
     assert summary["calibration_target_unit"] == (
         "gross_return_per_staked_yen_including_returned_principal"
     )

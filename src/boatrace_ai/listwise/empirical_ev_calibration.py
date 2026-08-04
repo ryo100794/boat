@@ -121,6 +121,11 @@ class EmpiricalEVCalibrationArtifact:
             ),
             "bootstrap_cluster_unit": "race_date",
             "bootstrap_resample_cluster_count": self.training_days,
+            "within_day_candidates_resampled_together": True,
+            "ticket_level_independence_assumed": False,
+            "bootstrap_observation": (
+                "complete_race_date_vector_of_bin_returns_and_exposures"
+            ),
             "lcb_capped_at_point_estimate": True,
             "shape_constraint": self.shape_constraint,
             "quantile_method": self.quantile_method,

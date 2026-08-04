@@ -3909,6 +3909,13 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         )
         lcb_audit = payload.get("calibration_lcb_audit")
         lcb_audit = lcb_audit if isinstance(lcb_audit, dict) else {}
+        reproducibility_audit = payload.get(
+            "replay_reproducibility_audit"
+        )
+        reproducibility_audit = (
+            reproducibility_audit
+            if isinstance(reproducibility_audit, dict) else {}
+        )
         summary.update({
             "evaluation_protocol_id": payload.get("evaluation_protocol_id"),
             "evaluation_protocol_version": protocol.get("version"),
@@ -4165,6 +4172,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "confidence_level"
             ),
             "calibration_lcb_cluster_unit": lcb_audit.get("cluster_unit"),
+            "calibration_lcb_within_day_resampled_together": lcb_audit.get(
+                "within_day_candidates_resampled_together"
+            ),
+            "calibration_lcb_ticket_independence_assumed": lcb_audit.get(
+                "ticket_level_independence_assumed"
+            ),
             "calibration_lcb_quantile_method": lcb_audit.get(
                 "quantile_method"
             ),
@@ -4185,6 +4198,33 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "calibration_lcb_strict_threshold_enforced": lcb_audit.get(
                 "strict_lcb_purchase_threshold_enforced"
+            ),
+            "replay_reproducibility_manifest_complete": (
+                reproducibility_audit.get("manifest_complete")
+            ),
+            "replay_rerun_input_fingerprint_sha256": (
+                reproducibility_audit.get(
+                    "rerun_input_fingerprint_sha256"
+                )
+            ),
+            "replay_deterministic_output_fingerprint_sha256": (
+                reproducibility_audit.get(
+                    "deterministic_output_fingerprint_sha256"
+                )
+            ),
+            "replay_configuration_sha256": reproducibility_audit.get(
+                "configuration_sha256"
+            ),
+            "replay_implementation_sha256": reproducibility_audit.get(
+                "implementation_sha256"
+            ),
+            "replay_reproducibility_instance_seed_collisions": (
+                reproducibility_audit.get("instance_seed_collisions")
+            ),
+            "replay_reproducibility_incomplete_instances": (
+                reproducibility_audit.get(
+                    "incomplete_calibrator_instances"
+                )
             ),
             "calibration_target_unit": calibration_protocol.get(
                 "target_unit"

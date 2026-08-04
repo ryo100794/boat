@@ -125,6 +125,8 @@ def test_predict_reports_fixed_bin_bounds_and_support() -> None:
     assert audit["lcb_sidedness"] == "one_sided_lower"
     assert audit["bootstrap_cluster_unit"] == "race_date"
     assert audit["bootstrap_resample_cluster_count"] == 1
+    assert audit["within_day_candidates_resampled_together"] is True
+    assert audit["ticket_level_independence_assumed"] is False
     assert audit["lcb_capped_at_point_estimate"] is True
 
 
