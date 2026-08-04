@@ -47,3 +47,31 @@ def test_discovery_requires_market_deployment_contract(tmp_path: Path) -> None:
     _write(tmp_path / "job-00000003.json", source_model_sha256="")
 
     assert discover_market_evaluation_candidates(tmp_path) == []
+
+
+def test_same_model_distinct_fixed_policies_are_not_deduplicated(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path / "job-00000001.json",
+        trend_point_market_offset_kelly_walk_forward={
+            "policy": {
+                "required_ticket_count": 2,
+                "require_reversed_place_pair": False,
+            }
+        },
+    )
+    _write(
+        tmp_path / "job-00000002.json",
+        trend_point_market_offset_kelly_walk_forward={
+            "policy": {
+                "required_ticket_count": 2,
+                "require_reversed_place_pair": True,
+            }
+        },
+    )
+
+    assert discover_market_evaluation_candidates(tmp_path) == [
+        str(tmp_path / "job-00000002.json"),
+        str(tmp_path / "job-00000001.json"),
+    ]

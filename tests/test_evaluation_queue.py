@@ -3180,7 +3180,7 @@ class _PeriodicScheduleConnection:
     def execute(self, statement, parameters=()):
         sql = " ".join(statement.split())
         assert "dedupe_key = ?" in sql
-        key, _task_type = parameters
+        key, _task_type, _model_key = parameters
         return _QueryResult({"count": int(key in self.keys)})
 
 

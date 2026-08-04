@@ -37,6 +37,9 @@ PRODUCTION_TREND_POINT_MODEL_KEY = "production_trend_point_job_12012"
 PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY = (
     "production_trend_point_two_ticket_job_12012"
 )
+PRODUCTION_TREND_POINT_REVERSED_PAIR_MODEL_KEY = (
+    "production_trend_point_reversed_pair_job_12012"
+)
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
@@ -45,6 +48,20 @@ PRODUCTION_TREND_POINT_EVALUATION_FROM = "2026-07-20"
 PRODUCTION_TREND_POINT_STRATEGY = (
     "odds_path_observed_closing_return_schedule_quota_triple_head_v21"
 )
+PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER = "2026-08-04"
+PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
+    "prospective_lightgbm_two_ticket_job_2707"
+)
+PROSPECTIVE_LIGHTGBM_REVERSED_PAIR_MODEL_KEY = (
+    "prospective_lightgbm_reversed_pair_job_2707"
+)
+PROSPECTIVE_LIGHTGBM_MODEL_INPUT = (
+    "data/models/evaluation_queue/job-00002707.joblib"
+)
+PROSPECTIVE_LIGHTGBM_MODEL_SHA256 = (
+    "73f9fabd476f00173af3d54a4e658418a6f164935053abb52c438935c8f2b97e"
+)
+PROSPECTIVE_LIGHTGBM_SOURCE_MODEL_JOB_ID = 2_707
 DEFAULT_DSN = "host=127.0.0.1 port=5432 dbname=boatrace user=boatrace_app"
 STANDARDIZED_SELECTED_CACHE_DIR = Path(
     "/workspace/boat/data/models/standardized_365d_v2/selected_cache"
@@ -6901,15 +6918,22 @@ def seed_periodic_jobs(
     now = now or datetime.now(timezone.utc)
     inserted: list[int] = []
 
-    def already_scheduled(task_type: str, key: str) -> bool:
+    def already_scheduled(
+        task_type: str,
+        key: str,
+        model_key: str,
+    ) -> bool:
         row = conn.execute(
             """
             SELECT COUNT(*) AS count
             FROM model_evaluation_jobs
             WHERE dedupe_key = ?
-               OR (task_type = ? AND status IN ('queued','running'))
+               OR (
+                 task_type = ? AND model_key = ?
+                 AND status IN ('queued','running')
+               )
             """,
-            (key, task_type),
+            (key, task_type, model_key),
         ).fetchone()
         return bool(row and int(row["count"]))
 
@@ -6934,7 +6958,7 @@ def seed_periodic_jobs(
                 now.astimezone(JST).date() - timedelta(days=14)
             ).isoformat()
         key = dedupe_key(task_type, model_key, parameters)
-        if already_scheduled(task_type, key):
+        if already_scheduled(task_type, key, model_key):
             continue
         job_id = enqueue_job(
             conn,
@@ -6947,60 +6971,124 @@ def seed_periodic_jobs(
         if job_id is not None:
             inserted.append(job_id)
     jst_now = now.astimezone(JST)
-    registered_after = datetime.fromisoformat(
-        PRODUCTION_TREND_POINT_REGISTERED_AFTER
-    ).date()
     prospective_through = jst_now.date() - timedelta(days=1)
     expected_model_sha256 = _production_trend_point_model_sha256(app_root)
-    if (
-        prospective_through > registered_after
-        and jst_now.hour >= 3
-        and expected_model_sha256 is not None
-    ):
-        candidate_specs = (
-            (
-                PRODUCTION_TREND_POINT_MODEL_KEY,
-                "trend_point_market_offset_discrete_multinomial_kelly",
-                None,
-                44,
+    candidate_specs = (
+        {
+            "model_key": PRODUCTION_TREND_POINT_MODEL_KEY,
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_job_id": 12_012,
+            "source_evaluation_job_id": PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
+            "expected_model_sha256": expected_model_sha256,
+            "policy": "trend_point_market_offset_discrete_multinomial_kelly",
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+            "priority": 44,
+        },
+        {
+            "model_key": PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_job_id": 12_012,
+            "source_evaluation_job_id": PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
+            "expected_model_sha256": expected_model_sha256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "exact_two_ticket"
             ),
-            (
-                PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
-                (
-                    "trend_point_market_offset_discrete_multinomial_kelly_"
-                    "exact_two_ticket"
-                ),
-                2,
-                43,
+            "required_ticket_count": 2,
+            "require_reversed_place_pair": False,
+            "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+            "priority": 43,
+        },
+        {
+            "model_key": PRODUCTION_TREND_POINT_REVERSED_PAIR_MODEL_KEY,
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_job_id": 12_012,
+            "source_evaluation_job_id": PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
+            "expected_model_sha256": expected_model_sha256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "reversed_place_pair"
             ),
-        )
-        for model_key, policy, required_ticket_count, priority in candidate_specs:
+            "required_ticket_count": 2,
+            "require_reversed_place_pair": True,
+            "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
+            "priority": 42,
+        },
+        {
+            "model_key": PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY,
+            "model_input": PROSPECTIVE_LIGHTGBM_MODEL_INPUT,
+            "source_model_job_id": PROSPECTIVE_LIGHTGBM_SOURCE_MODEL_JOB_ID,
+            "source_evaluation_job_id": PROSPECTIVE_LIGHTGBM_SOURCE_MODEL_JOB_ID,
+            "expected_model_sha256": PROSPECTIVE_LIGHTGBM_MODEL_SHA256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "exact_two_ticket"
+            ),
+            "required_ticket_count": 2,
+            "require_reversed_place_pair": False,
+            "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
+            "priority": 41,
+        },
+        {
+            "model_key": PROSPECTIVE_LIGHTGBM_REVERSED_PAIR_MODEL_KEY,
+            "model_input": PROSPECTIVE_LIGHTGBM_MODEL_INPUT,
+            "source_model_job_id": PROSPECTIVE_LIGHTGBM_SOURCE_MODEL_JOB_ID,
+            "source_evaluation_job_id": PROSPECTIVE_LIGHTGBM_SOURCE_MODEL_JOB_ID,
+            "expected_model_sha256": PROSPECTIVE_LIGHTGBM_MODEL_SHA256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "reversed_place_pair"
+            ),
+            "required_ticket_count": 2,
+            "require_reversed_place_pair": True,
+            "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
+            "priority": 40,
+        },
+    )
+    if jst_now.hour >= 3:
+        for spec in candidate_specs:
+            registered_after = datetime.fromisoformat(
+                str(spec["registered_after"])
+            ).date()
+            model_input = str(spec["model_input"])
+            candidate_sha256 = spec["expected_model_sha256"]
+            if (
+                prospective_through <= registered_after
+                or candidate_sha256 is None
+                or (
+                    spec["model_input"] == PROSPECTIVE_LIGHTGBM_MODEL_INPUT
+                    and (
+                        app_root is None
+                        or not (app_root / model_input).is_file()
+                    )
+                )
+            ):
+                continue
             parameters = {
-                "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+                "model_input": model_input,
                 "from_date": PRODUCTION_TREND_POINT_EVALUATION_FROM,
                 "through_date": prospective_through.isoformat(),
                 "daily_budget_yen": 10_000,
                 "calibrator_strategy": PRODUCTION_TREND_POINT_STRATEGY,
                 "min_calibration_days": 2,
                 "minimum_day_coverage": 1.0,
-                "trend_point_registered_after": (
-                    PRODUCTION_TREND_POINT_REGISTERED_AFTER
-                ),
-                "expected_model_sha256": expected_model_sha256,
+                "trend_point_registered_after": str(spec["registered_after"]),
+                "expected_model_sha256": candidate_sha256,
                 "timeout_seconds": 7_200,
                 "prospective_candidate": {
-                    "source_model_job_id": 12_012,
-                    "source_evaluation_job_id": (
-                        PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
-                    ),
-                    "expected_model_sha256": expected_model_sha256,
-                    "policy": policy,
-                    "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+                    "source_model_job_id": spec["source_model_job_id"],
+                    "source_evaluation_job_id": spec["source_evaluation_job_id"],
+                    "expected_model_sha256": candidate_sha256,
+                    "policy": spec["policy"],
+                    "registered_after": spec["registered_after"],
                     "evidence_dates": "strictly_after_registered_after",
                     "selection_data_is_diagnostic_only": True,
                     "real_betting_enabled": False,
                 },
             }
+            required_ticket_count = spec["required_ticket_count"]
             if required_ticket_count is not None:
                 parameters["trend_point_required_ticket_count"] = (
                     required_ticket_count
@@ -7008,18 +7096,27 @@ def seed_periodic_jobs(
                 parameters["prospective_candidate"][
                     "required_ticket_count"
                 ] = required_ticket_count
+            if spec["require_reversed_place_pair"]:
+                parameters["trend_point_require_reversed_place_pair"] = True
+                parameters["prospective_candidate"][
+                    "require_reversed_place_pair"
+                ] = True
             key = dedupe_key(
                 "market_residual_walk_forward",
-                model_key,
+                str(spec["model_key"]),
                 parameters,
             )
-            if not already_scheduled("market_residual_walk_forward", key):
+            if not already_scheduled(
+                "market_residual_walk_forward",
+                key,
+                str(spec["model_key"]),
+            ):
                 job_id = enqueue_job(
                     conn,
                     task_type="market_residual_walk_forward",
-                    model_key=model_key,
+                    model_key=str(spec["model_key"]),
                     parameters=parameters,
-                    priority=priority,
+                    priority=int(spec["priority"]),
                     max_attempts=3,
                 )
                 if job_id is not None:
@@ -7035,7 +7132,11 @@ def seed_periodic_jobs(
                 "evaluation-cache-auto",
                 parameters,
             )
-            if not already_scheduled("gdrive_model_cache_archive", key):
+            if not already_scheduled(
+                "gdrive_model_cache_archive",
+                key,
+                "evaluation-cache-auto",
+            ):
                 job_id = enqueue_job(
                     conn,
                     task_type="gdrive_model_cache_archive",

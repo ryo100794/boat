@@ -12,7 +12,8 @@ from ..listwise.market_calibration import write_json_atomic
 MINIMUM_DAYS = 30
 MINIMUM_RACES = 1_000
 MINIMUM_TICKETS = 200
-MINIMUM_EFFECTIVE_HITS = 8.0
+MINIMUM_EFFECTIVE_HITS = 20.0
+MAXIMUM_LARGEST_HIT_RETURN_SHARE = 0.15
 MINIMUM_CONFIDENCE = 0.95
 
 
@@ -21,7 +22,11 @@ def prospective_promotion_payload(
     *,
     bootstrap_samples: int = 5_000,
 ) -> dict[str, Any] | None:
-    track = source.get("prospective_normalized_ev_walk_forward")
+    track_name = "trend_point_market_offset_kelly_walk_forward"
+    track = source.get(track_name)
+    if not isinstance(track, dict):
+        track_name = "prospective_normalized_ev_walk_forward"
+        track = source.get(track_name)
     if not isinstance(track, dict) or not isinstance(track.get("policy"), dict):
         return None
     daily = list(track.get("daily") or [])
@@ -41,7 +46,20 @@ def prospective_promotion_payload(
     roi = return_yen / stake_yen if stake_yen else 0.0
     effective_hits = float(track.get("effective_hit_count") or 0.0)
     roi_without_largest = float(track.get("roi_without_largest_hit") or 0.0)
+    raw_largest_hit_return_share = track.get("largest_hit_return_share")
+    largest_hit_return_share = (
+        float(raw_largest_hit_return_share)
+        if raw_largest_hit_return_share is not None
+        else None
+    )
+    track_gate = track.get("promotion_gate")
+    track_gate = track_gate if isinstance(track_gate, dict) else {}
     source_gate = source.get("promotion_gate") or {}
+    source_formal_gate_pass = (
+        track_gate.get("pass") is True
+        if track_name == "trend_point_market_offset_kelly_walk_forward"
+        else True
+    )
 
     sample_size_pass = bool(
         days >= MINIMUM_DAYS
@@ -59,13 +77,31 @@ def prospective_promotion_payload(
         "minimum_evaluation_days": MINIMUM_DAYS,
         "minimum_tickets": MINIMUM_TICKETS,
         "minimum_effective_hits": MINIMUM_EFFECTIVE_HITS,
+        "maximum_largest_hit_return_share": MAXIMUM_LARGEST_HIT_RETURN_SHARE,
         "sample_size_pass": sample_size_pass,
         "positive_profit_pass": profit_yen > 0 and stake_yen > 0,
         "roi_pass": roi > 1.0,
         "fold_stability_pass": stability_pass,
-        "calibration_pass": source_gate.get("calibration_pass") is True,
-        "market_confidence_pass": source_gate.get("market_confidence_pass") is True,
-        "no_lookahead_pass": source_gate.get("no_lookahead_pass") is True,
+        "largest_hit_return_share_pass": (
+            largest_hit_return_share is not None
+            and largest_hit_return_share <= MAXIMUM_LARGEST_HIT_RETURN_SHARE
+        ),
+        "source_formal_gate_pass": source_formal_gate_pass,
+        "calibration_pass": (
+            source_gate.get("calibration_pass") is True
+            if track_name == "prospective_normalized_ev_walk_forward"
+            else source_formal_gate_pass
+        ),
+        "market_confidence_pass": (
+            source_gate.get("market_confidence_pass") is True
+            if track_name == "prospective_normalized_ev_walk_forward"
+            else source_formal_gate_pass
+        ),
+        "no_lookahead_pass": (
+            source_gate.get("no_lookahead_pass") is True
+            if track_name == "prospective_normalized_ev_walk_forward"
+            else track_gate.get("no_lookahead_pass") is True
+        ),
     }
     gate["pass"] = all(
         value for key, value in gate.items() if key.endswith("_pass") and key != "pass"
@@ -88,6 +124,7 @@ def prospective_promotion_payload(
         "evaluation_races": races,
         "tickets": tickets,
         "effective_hit_count": effective_hits,
+        "largest_hit_return_share": largest_hit_return_share,
         "roi": roi,
         "roi_without_largest_hit": roi_without_largest,
         "confidence": confidence,
@@ -114,6 +151,9 @@ def prospective_promotion_payload(
             "return_yen": return_yen,
             "profit_yen": profit_yen,
             "roi": roi,
+            "roi_without_largest_hit": roi_without_largest,
+            "largest_hit_return_share": largest_hit_return_share,
+            "effective_hit_count": effective_hits,
             "max_drawdown_yen": max_drawdown,
             "daily": daily,
             "deployment_configuration": deployment,
@@ -121,6 +161,7 @@ def prospective_promotion_payload(
             "promotion_eligible": bool(gate["pass"]),
             "prospective_promotion_confidence": confidence,
             "prospective_source_result": source.get("result_path"),
+            "prospective_source_track": track_name,
         }
     )
     return result

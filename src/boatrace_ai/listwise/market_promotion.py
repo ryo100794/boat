@@ -94,6 +94,35 @@ def validate_candidate(path: str | Path) -> dict[str, Any]:
     roi = _finite_number(data.get("roi"))
     if roi is None or roi <= 1.0:
         errors.append("evaluated ROI does not exceed one")
+    roi_without_largest_hit = _finite_number(
+        data.get("roi_without_largest_hit")
+    )
+    if roi_without_largest_hit is None or roi_without_largest_hit <= 1.0:
+        errors.append("largest-hit-excluded ROI does not exceed one")
+    effective_hit_count = _finite_number(data.get("effective_hit_count"))
+    if effective_hit_count is None or effective_hit_count < 20.0:
+        errors.append("effective hit count is below 20")
+    largest_hit_return_share = _finite_number(
+        data.get("largest_hit_return_share")
+    )
+    if (
+        largest_hit_return_share is None
+        or largest_hit_return_share > 0.15
+    ):
+        errors.append("largest hit return share exceeds 0.15")
+    confidence = data.get("prospective_promotion_confidence")
+    confidence = confidence if isinstance(confidence, dict) else {}
+    bootstrap_roi_lower = _finite_number(confidence.get("roi_ci95_lower"))
+    probability_roi_above_one = _finite_number(
+        confidence.get("probability_roi_above_one")
+    )
+    if bootstrap_roi_lower is None or bootstrap_roi_lower <= 1.0:
+        errors.append("daily bootstrap ROI lower bound does not exceed one")
+    if (
+        probability_roi_above_one is None
+        or probability_roi_above_one < 0.95
+    ):
+        errors.append("bootstrap probability of ROI above one is below 0.95")
 
     source_path = _resolved_path(data.get("source_model"))
     expected_source_hash = str(data.get("source_model_sha256") or "")
@@ -152,6 +181,11 @@ def validate_candidate(path: str | Path) -> dict[str, Any]:
             "evaluation_days": evaluation_days,
             "profit_yen": int(data.get("profit_yen") or 0),
             "roi": roi,
+            "roi_without_largest_hit": roi_without_largest_hit,
+            "effective_hit_count": effective_hit_count,
+            "largest_hit_return_share": largest_hit_return_share,
+            "bootstrap_roi_ci95_lower": bootstrap_roi_lower,
+            "probability_roi_above_one": probability_roi_above_one,
             "calibrated_trifecta_log_loss": log_loss,
             "trifecta_top5_hit_rate": _finite_number(
                 metrics.get("calibrated_trifecta_top5_hit_rate")
@@ -161,11 +195,16 @@ def validate_candidate(path: str | Path) -> dict[str, Any]:
     }
 
 
-def _selection_key(candidate: dict[str, Any]) -> tuple[float, float, float, str]:
+def _selection_key(
+    candidate: dict[str, Any],
+) -> tuple[float, float, float, float, float, float, str]:
     metrics = candidate["metrics"]
     return (
-        float(metrics["profit_yen"]),
+        float(metrics["bootstrap_roi_ci95_lower"]),
+        float(metrics["roi_without_largest_hit"]),
+        float(metrics["probability_roi_above_one"]),
         float(metrics["roi"]),
+        float(metrics["profit_yen"]),
         -float(metrics["calibrated_trifecta_log_loss"]),
         str(candidate["candidate_id"]),
     )

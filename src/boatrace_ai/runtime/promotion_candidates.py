@@ -23,7 +23,7 @@ def discover_market_evaluation_candidates(
         reverse=True,
     )
     selected: list[str] = []
-    seen_sources: set[tuple[str, str]] = set()
+    seen_sources: set[tuple[str, str, str]] = set()
     for path in paths:
         try:
             payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -41,7 +41,17 @@ def discover_market_evaluation_candidates(
         source_hash = str(payload.get("source_model_sha256") or "")
         if not source or not source_hash:
             continue
-        identity = (source, source_hash)
+        track = payload.get("trend_point_market_offset_kelly_walk_forward")
+        if not isinstance(track, dict):
+            track = payload.get("prospective_normalized_ev_walk_forward")
+        policy = track.get("policy") if isinstance(track, dict) else None
+        policy_identity = json.dumps(
+            policy if isinstance(policy, dict) else {},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        identity = (source, source_hash, policy_identity)
         if identity in seen_sources:
             continue
         seen_sources.add(identity)

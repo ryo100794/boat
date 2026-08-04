@@ -13,7 +13,13 @@ from boatrace_ai.listwise.market_promotion import (
 )
 
 
-def _candidate(tmp_path: Path, name: str, *, profit_yen: int = 20_000) -> Path:
+def _candidate(
+    tmp_path: Path,
+    name: str,
+    *,
+    profit_yen: int = 20_000,
+    bootstrap_lower: float | None = None,
+) -> Path:
     source = tmp_path / f"{name}.joblib"
     source.write_bytes(f"model:{name}".encode())
     path = tmp_path / f"{name}.json"
@@ -37,6 +43,19 @@ def _candidate(tmp_path: Path, name: str, *, profit_yen: int = 20_000) -> Path:
         "return_yen": 100_000 + profit_yen,
         "profit_yen": profit_yen,
         "roi": (100_000 + profit_yen) / 100_000,
+        "roi_without_largest_hit": (
+            (100_000 + profit_yen) / 100_000 - 0.05
+        ),
+        "effective_hit_count": 25.0,
+        "largest_hit_return_share": 0.1,
+        "prospective_promotion_confidence": {
+            "roi_ci95_lower": (
+                bootstrap_lower
+                if bootstrap_lower is not None
+                else (100_000 + profit_yen) / 100_000 - 0.1
+            ),
+            "probability_roi_above_one": 0.99,
+        },
         "probability_metrics": {
             "calibrated_trifecta_log_loss": 3.75,
             "calibrated_trifecta_top5_hit_rate": 0.34,
@@ -72,6 +91,30 @@ def test_promotes_best_verified_candidate_atomically(tmp_path: Path) -> None:
     assert manifest["selected_candidate_id"] == "stronger"
     assert manifest["valid_from_date"] == "2026-08-22"
     assert manifest["evaluation_sha256"] == file_sha256(stronger)
+
+
+def test_selection_prefers_robust_lower_bound_over_larger_raw_profit(
+    tmp_path: Path,
+) -> None:
+    fragile = _candidate(
+        tmp_path,
+        "fragile-high-profit",
+        profit_yen=30_000,
+        bootstrap_lower=1.01,
+    )
+    robust = _candidate(
+        tmp_path,
+        "robust-lower-profit",
+        profit_yen=15_000,
+        bootstrap_lower=1.08,
+    )
+
+    result = promote_best_candidate(
+        [fragile, robust],
+        output_path=tmp_path / "active.json",
+    )
+
+    assert result["selected_candidate_id"] == "robust-lower-profit"
 
 
 def test_failed_candidate_preserves_existing_manifest(tmp_path: Path) -> None:

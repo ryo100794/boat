@@ -41,7 +41,8 @@ def _source(*, return_yen: int = 36_000, without_largest_roi: float = 1.1):
             "hit_tickets": 20,
             "stake_yen": 30_000,
             "return_yen": return_yen,
-            "effective_hit_count": 12.0,
+            "effective_hit_count": 20.0,
+            "largest_hit_return_share": 0.1,
             "roi_without_largest_hit": without_largest_roi,
             "daily": daily,
         },
@@ -73,6 +74,19 @@ def test_largest_hit_dependence_keeps_policy_shadow_only() -> None:
     assert result["deployment_configuration"]["selected_policy"]["no_bet"] is True
 
 
+def test_largest_hit_return_share_above_formal_limit_blocks_promotion() -> None:
+    source = _source()
+    source["prospective_normalized_ev_walk_forward"][
+        "largest_hit_return_share"
+    ] = 0.150001
+
+    result = prospective_promotion_payload(source, bootstrap_samples=500)
+
+    assert result is not None
+    assert result["promotion_eligible"] is False
+    assert result["promotion_gate"]["largest_hit_return_share_pass"] is False
+
+
 def test_writes_companion_candidate_only_when_prospective_days_exist(
     tmp_path: Path,
 ) -> None:
@@ -84,3 +98,36 @@ def test_writes_companion_candidate_only_when_prospective_days_exist(
 
     assert written is not None
     assert Path(written).is_file()
+
+
+def test_uses_trend_point_formal_track_and_requires_its_complete_gate() -> None:
+    source = _source()
+    track = source.pop("prospective_normalized_ev_walk_forward")
+    track["promotion_gate"] = {"pass": True, "no_lookahead_pass": True}
+    source["trend_point_market_offset_kelly_walk_forward"] = track
+
+    eligible = prospective_promotion_payload(source, bootstrap_samples=500)
+
+    assert eligible is not None
+    assert eligible["promotion_eligible"] is True
+    assert eligible["prospective_source_track"] == (
+        "trend_point_market_offset_kelly_walk_forward"
+    )
+    track["promotion_gate"]["pass"] = False
+    rejected = prospective_promotion_payload(source, bootstrap_samples=500)
+    assert rejected is not None
+    assert rejected["promotion_eligible"] is False
+    assert rejected["promotion_gate"]["source_formal_gate_pass"] is False
+
+
+def test_missing_largest_hit_share_fails_closed() -> None:
+    source = _source()
+    del source["prospective_normalized_ev_walk_forward"][
+        "largest_hit_return_share"
+    ]
+
+    result = prospective_promotion_payload(source, bootstrap_samples=500)
+
+    assert result is not None
+    assert result["promotion_eligible"] is False
+    assert result["promotion_gate"]["largest_hit_return_share_pass"] is False

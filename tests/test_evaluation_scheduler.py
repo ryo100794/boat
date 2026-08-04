@@ -15,6 +15,10 @@ from boatrace_ai.evaluation_queue import (
     PRODUCTION_TREND_POINT_REGISTERED_AFTER,
     PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
     PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
+    PROSPECTIVE_LIGHTGBM_MODEL_INPUT,
+    PROSPECTIVE_LIGHTGBM_MODEL_SHA256,
+    PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY,
+    PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -264,6 +268,36 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
     assert two_ticket["priority"] == 43
 
 
+def test_periodic_scheduler_deduplicates_active_jobs_per_model_key(
+    monkeypatch,
+) -> None:
+    statements = []
+
+    class RecordingQueue(_IdleQueue):
+        def execute(self, statement, params=()):
+            statements.append((statement, params))
+            return super().execute(statement, params)
+
+    monkeypatch.setattr(
+        "boatrace_ai.evaluation_queue.enqueue_job",
+        lambda _conn, **_kwargs: 1,
+    )
+
+    seed_periodic_jobs(
+        RecordingQueue(),
+        now=datetime(2026, 7, 23, 12, 34, tzinfo=timezone.utc),
+    )
+
+    dedupe_queries = [
+        (statement, params)
+        for statement, params in statements
+        if "SELECT COUNT(*) AS count" in statement
+    ]
+    assert dedupe_queries
+    assert all("model_key = ?" in statement for statement, _ in dedupe_queries)
+    assert all(len(params) == 3 for _, params in dedupe_queries)
+
+
 def test_fixed_trend_candidate_command_preserves_registration_boundary(
     tmp_path: Path,
 ) -> None:
@@ -317,6 +351,55 @@ def test_fixed_trend_candidate_command_preserves_registration_boundary(
             python=root / ".venv/bin/python",
             db="postgresql://test",
         )
+
+
+def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return len(calls)
+
+    monkeypatch.setattr("boatrace_ai.evaluation_queue.enqueue_job", fake_enqueue)
+    root = tmp_path / "boat"
+    model = root / PROSPECTIVE_LIGHTGBM_MODEL_INPUT
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixed-lightgbm-artifact")
+
+    seed_periodic_jobs(
+        _IdleQueue(),
+        now=datetime(2026, 8, 5, 18, 1, tzinfo=timezone.utc),
+        app_root=root,
+    )
+
+    candidate = next(
+        row for row in calls
+        if row["model_key"] == PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY
+    )
+    params = candidate["parameters"]
+    assert params["through_date"] == "2026-08-05"
+    assert params["trend_point_registered_after"] == (
+        PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER
+    )
+    assert params["trend_point_required_ticket_count"] == 2
+    assert params["expected_model_sha256"] == PROSPECTIVE_LIGHTGBM_MODEL_SHA256
+    assert params["prospective_candidate"]["source_model_job_id"] == 2_707
+    assert params["prospective_candidate"]["real_betting_enabled"] is False
+    assert candidate["priority"] == 41
+    reversed_candidate = next(
+        row for row in calls
+        if row["model_key"] == "prospective_lightgbm_reversed_pair_job_2707"
+    )
+    assert reversed_candidate["parameters"][
+        "trend_point_require_reversed_place_pair"
+    ] is True
+    assert reversed_candidate["parameters"]["prospective_candidate"][
+        "require_reversed_place_pair"
+    ] is True
+    assert reversed_candidate["priority"] == 40
 
 
 def test_maintenance_commands_are_allowlisted(tmp_path) -> None:
