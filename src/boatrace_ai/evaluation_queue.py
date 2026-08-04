@@ -2187,6 +2187,7 @@ def build_command(
             "trend_point_registered_after",
             "trend_point_odds_safety_sweep",
             "trend_point_required_ticket_count",
+            "trend_point_require_reversed_place_pair",
             "prequential_conditional_order",
             "research_only_reused_holdout",
             "expected_model_sha256",
@@ -2373,6 +2374,22 @@ def build_command(
                 "--trend-point-required-ticket-count",
                 str(required_ticket_count),
             ])
+        require_reversed_place_pair = params.get(
+            "trend_point_require_reversed_place_pair", False
+        )
+        if not isinstance(require_reversed_place_pair, bool):
+            raise ValueError(
+                "trend_point_require_reversed_place_pair must be a boolean"
+            )
+        if require_reversed_place_pair:
+            if params.get("trend_point_required_ticket_count") != 2:
+                raise ValueError(
+                    "trend_point_require_reversed_place_pair requires "
+                    "trend_point_required_ticket_count=2"
+                )
+            command.append(
+                "--trend-point-require-reversed-place-pair"
+            )
         conditional_order = params.get(
             "prequential_conditional_order", False
         )
@@ -4688,6 +4705,38 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             summary["trend_point_prospective_probability_calibration"] = dict(
                 trend_probability
             )
+    for diagnostic_key, prefix in (
+        (
+            "trend_point_market_offset_kelly_diagnostic",
+            "trend_point_retrospective",
+        ),
+        (
+            "trend_point_reversed_place_pair_diagnostic",
+            "trend_point_reversed_pair_retrospective",
+        ),
+    ):
+        diagnostic = payload.get(diagnostic_key)
+        if not isinstance(diagnostic, dict):
+            continue
+        for key in (
+            "evaluation_days", "evaluated_races", "tickets", "hit_tickets",
+            "stake_yen", "return_yen", "profit_yen", "roi",
+            "winning_days", "purchase_days", "profitable_day_fraction",
+            "roi_without_largest_hit", "effective_hit_count",
+            "largest_hit_return_share", "promotion_eligible",
+        ):
+            if key in diagnostic:
+                summary[f"{prefix}_{key}"] = diagnostic[key]
+        if isinstance(diagnostic.get("policy"), dict):
+            summary[f"{prefix}_policy"] = dict(diagnostic["policy"])
+        diagnostic_bootstrap = diagnostic.get("bootstrap")
+        if isinstance(diagnostic_bootstrap, dict):
+            summary[f"{prefix}_daily_cluster_bootstrap_roi_lower_95"] = (
+                diagnostic_bootstrap.get("roi_ci95_lower")
+            )
+            summary[f"{prefix}_probability_roi_above_one"] = (
+                diagnostic_bootstrap.get("probability_roi_above_one")
+            )
     trend_sweep = payload.get("trend_point_odds_safety_sweep")
     if isinstance(trend_sweep, dict):
         sweep_metrics = (
@@ -5576,6 +5625,25 @@ def _validate_job_result_contract(
                 "market residual reused holdout diagnostic must not be "
                 "promotion eligible"
             )
+        if parameters.get("trend_point_required_ticket_count") == 2:
+            reversed_pair = payload.get(
+                "trend_point_reversed_place_pair_diagnostic"
+            )
+            reversed_policy = (
+                reversed_pair.get("policy")
+                if isinstance(reversed_pair, dict)
+                else None
+            )
+            if (
+                not isinstance(reversed_pair, dict)
+                or reversed_pair.get("promotion_eligible") is not False
+                or not isinstance(reversed_policy, dict)
+                or reversed_policy.get("require_reversed_place_pair") is not True
+            ):
+                raise ValueError(
+                    "market residual exact-two research must include a "
+                    "non-promotable reversed-place-pair diagnostic"
+                )
         if str(payload.get("source_model_sha256") or "").lower() != str(
             parameters.get("expected_model_sha256") or ""
         ).lower():

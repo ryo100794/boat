@@ -3595,6 +3595,7 @@ def walk_forward_evaluate(
     trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
     trend_point_odds_safety_sweep: bool = False,
     trend_point_required_ticket_count: int | None = None,
+    trend_point_require_reversed_place_pair: bool = False,
     prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -3613,6 +3614,18 @@ def walk_forward_evaluate(
     ):
         raise ValueError(
             "trend_point_required_ticket_count must be an integer from 1 to 120"
+        )
+    if not isinstance(trend_point_require_reversed_place_pair, bool):
+        raise ValueError(
+            "trend_point_require_reversed_place_pair must be a boolean"
+        )
+    if (
+        trend_point_require_reversed_place_pair
+        and trend_point_required_ticket_count != 2
+    ):
+        raise ValueError(
+            "trend_point_require_reversed_place_pair requires "
+            "trend_point_required_ticket_count=2"
         )
     if not isinstance(prequential_conditional_order, bool):
         raise ValueError("prequential_conditional_order must be a boolean")
@@ -4709,6 +4722,9 @@ def walk_forward_evaluate(
         calibration=trend_point_market_calibration,
         evaluation_dates=evaluation_date_set,
         required_ticket_count=trend_point_required_ticket_count,
+        require_reversed_place_pair=(
+            trend_point_require_reversed_place_pair
+        ),
     )
     trend_point_diagnostic.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4718,6 +4734,28 @@ def walk_forward_evaluate(
         ),
         "promotion_eligible": False,
     })
+    trend_point_reversed_place_pair_diagnostic = None
+    if trend_point_required_ticket_count == 2:
+        trend_point_reversed_place_pair_diagnostic = (
+            evaluate_attached_market_kelly_challenger(
+                trend_point_market_races,
+                calibration=trend_point_market_calibration,
+                evaluation_dates=evaluation_date_set,
+                required_ticket_count=2,
+                require_reversed_place_pair=True,
+            )
+        )
+        trend_point_reversed_place_pair_diagnostic.update({
+            "challenger": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "reversed_place_pair"
+            ),
+            "comparison_role": (
+                "retrospective research diagnostic restricted to two Kelly "
+                "allocations with the same winner and reversed second/third"
+            ),
+            "promotion_eligible": False,
+        })
     trend_point_evaluation_dates = sorted(
         race_date
         for race_date in evaluation_date_set
@@ -4728,6 +4766,9 @@ def walk_forward_evaluate(
         calibration=trend_point_market_calibration,
         evaluation_dates=trend_point_evaluation_dates,
         required_ticket_count=trend_point_required_ticket_count,
+        require_reversed_place_pair=(
+            trend_point_require_reversed_place_pair
+        ),
     )
     trend_point_prospective.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4771,6 +4812,9 @@ def walk_forward_evaluate(
                     evaluation_dates=evaluation_date_set,
                     odds_safety_factor=factor,
                     required_ticket_count=trend_point_required_ticket_count,
+                    require_reversed_place_pair=(
+                        trend_point_require_reversed_place_pair
+                    ),
                 )
             )
             prior_registered = (
@@ -4782,6 +4826,9 @@ def walk_forward_evaluate(
                     evaluation_dates=trend_point_evaluation_dates,
                     odds_safety_factor=factor,
                     required_ticket_count=trend_point_required_ticket_count,
+                    require_reversed_place_pair=(
+                        trend_point_require_reversed_place_pair
+                    ),
                 )
             )
             sweep_rows.append({
@@ -5324,6 +5371,9 @@ def walk_forward_evaluate(
             conformal_lower_prospective
         ),
         "trend_point_market_offset_kelly_diagnostic": trend_point_diagnostic,
+        "trend_point_reversed_place_pair_diagnostic": (
+            trend_point_reversed_place_pair_diagnostic
+        ),
         "trend_point_market_offset_kelly_walk_forward": trend_point_prospective,
         "trend_point_odds_safety_sweep": trend_point_safety_sweep,
         "prequential_conditional_order": conditional_order_report,
@@ -7253,6 +7303,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
     )
     parser.add_argument(
+        "--trend-point-require-reversed-place-pair",
+        action="store_true",
+    )
+    parser.add_argument(
         "--prequential-conditional-order",
         action="store_true",
     )
@@ -7414,6 +7468,9 @@ def main(argv: list[str] | None = None) -> int:
         trend_point_odds_safety_sweep=args.trend_point_odds_safety_sweep,
         trend_point_required_ticket_count=(
             args.trend_point_required_ticket_count
+        ),
+        trend_point_require_reversed_place_pair=(
+            args.trend_point_require_reversed_place_pair
         ),
         prequential_conditional_order=args.prequential_conditional_order,
     )

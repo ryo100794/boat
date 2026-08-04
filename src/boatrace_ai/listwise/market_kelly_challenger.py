@@ -36,6 +36,7 @@ def evaluate_market_kelly_challenger(
     select_regularization: bool = False,
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
+    require_reversed_place_pair: bool = False,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -55,6 +56,7 @@ def evaluate_market_kelly_challenger(
         evaluation_dates=evaluation_dates,
         odds_safety_factor=odds_safety_factor,
         required_ticket_count=required_ticket_count,
+        require_reversed_place_pair=require_reversed_place_pair,
     )
 
 
@@ -65,10 +67,17 @@ def evaluate_attached_market_kelly_challenger(
     evaluation_dates: Iterable[str] | None = None,
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
+    require_reversed_place_pair: bool = False,
 ) -> dict[str, Any]:
     """Evaluate already prequentially calibrated races without refitting."""
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
     required_ticket_count = _required_ticket_count(required_ticket_count)
+    if not isinstance(require_reversed_place_pair, bool):
+        raise ValueError("require_reversed_place_pair must be a boolean")
+    if require_reversed_place_pair and required_ticket_count != 2:
+        raise ValueError(
+            "require_reversed_place_pair requires required_ticket_count=2"
+        )
 
     calibrated_races = [dict(race) for race in calibrated_races]
     requested_dates = (
@@ -85,6 +94,7 @@ def evaluate_attached_market_kelly_challenger(
         evaluation_races,
         odds_safety_factor=odds_safety_factor,
         required_ticket_count=required_ticket_count,
+        require_reversed_place_pair=require_reversed_place_pair,
     )
     evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
@@ -121,6 +131,7 @@ def evaluate_attached_market_kelly_challenger(
             "profit_reinvested_within_day": True,
             "odds_safety_factor": odds_safety_factor,
             "required_ticket_count": required_ticket_count,
+            "require_reversed_place_pair": require_reversed_place_pair,
         },
         "evaluation_days": len(daily),
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
@@ -504,9 +515,12 @@ def _simulate_daily(
     *,
     odds_safety_factor: float = 1.0,
     required_ticket_count: int | None = None,
+    require_reversed_place_pair: bool = False,
 ) -> list[dict[str, Any]]:
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
     required_ticket_count = _required_ticket_count(required_ticket_count)
+    if not isinstance(require_reversed_place_pair, bool):
+        raise ValueError("require_reversed_place_pair must be a boolean")
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         grouped[_iso_day(race.get("race_date"), "race_date")].append(race)
@@ -563,6 +577,11 @@ def _simulate_daily(
             if (
                 required_ticket_count is not None
                 and len(purchased) != required_ticket_count
+            ):
+                purchased = ()
+            if (
+                require_reversed_place_pair
+                and not _is_reversed_place_pair(purchased)
             ):
                 purchased = ()
             stake = sum(row.stake_yen for row in purchased)
@@ -818,6 +837,23 @@ def _required_ticket_count(value: Any) -> int | None:
     if not 1 <= value <= EXPECTED_COMBINATIONS:
         raise ValueError("required_ticket_count must be an integer from 1 to 120")
     return value
+
+
+def _is_reversed_place_pair(purchased: Any) -> bool:
+    if len(purchased) != 2:
+        return False
+    try:
+        first = tuple(int(value) for value in purchased[0].selection.split("-"))
+        second = tuple(int(value) for value in purchased[1].selection.split("-"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        len(first) == 3
+        and len(second) == 3
+        and first[0] == second[0]
+        and first[1] == second[2]
+        and first[2] == second[1]
+    )
 
 
 def _iso_day(value: Any, name: str) -> str:

@@ -1147,6 +1147,7 @@ def test_trend_point_required_ticket_count_is_explicit() -> None:
         min_calibration_days=2,
         evaluation_dates=["2026-07-22"],
         trend_point_required_ticket_count=2,
+        trend_point_require_reversed_place_pair=True,
     )
 
     assert result["trend_point_market_offset_kelly_diagnostic"]["policy"][
@@ -1155,10 +1156,27 @@ def test_trend_point_required_ticket_count_is_explicit() -> None:
     assert result["trend_point_market_offset_kelly_walk_forward"]["policy"][
         "required_ticket_count"
     ] == 2
+    assert result["trend_point_market_offset_kelly_diagnostic"]["policy"][
+        "require_reversed_place_pair"
+    ] is True
+    assert result["trend_point_reversed_place_pair_diagnostic"]["policy"][
+        "require_reversed_place_pair"
+    ] is True
+    assert (
+        result["trend_point_reversed_place_pair_diagnostic"][
+            "promotion_eligible"
+        ]
+        is False
+    )
     with pytest.raises(ValueError, match="trend_point_required_ticket_count"):
         walk_forward_evaluate(
             races,
             trend_point_required_ticket_count=0,
+        )
+    with pytest.raises(ValueError, match="requires.*ticket_count=2"):
+        walk_forward_evaluate(
+            races,
+            trend_point_require_reversed_place_pair=True,
         )
 
 

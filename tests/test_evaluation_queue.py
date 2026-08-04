@@ -4363,6 +4363,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "closing_odds_min_training_races": 250,
                 "trend_point_odds_safety_sweep": True,
                 "trend_point_required_ticket_count": 2,
+                "trend_point_require_reversed_place_pair": True,
                 "prequential_conditional_order": True,
                 "research_only_reused_holdout": True,
             },
@@ -4405,6 +4406,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[
         command.index("--trend-point-required-ticket-count") + 1
     ] == "2"
+    assert "--trend-point-require-reversed-place-pair" in command
     assert "--prequential-conditional-order" in command
     assert "--research-only-reused-holdout" in command
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
@@ -4418,6 +4420,7 @@ def test_market_residual_reused_holdout_result_contract() -> None:
             "from_date": "2025-07-26",
             "through_date": "2026-08-02",
             "expected_model_sha256": "a" * 64,
+            "trend_point_required_ticket_count": 2,
             "research_only_reused_holdout": True,
         },
     )
@@ -4428,6 +4431,10 @@ def test_market_residual_reused_holdout_result_contract() -> None:
         "reused_holdout_research_only": True,
         "trend_point_market_offset_kelly_diagnostic": {
             "promotion_eligible": False,
+        },
+        "trend_point_reversed_place_pair_diagnostic": {
+            "promotion_eligible": False,
+            "policy": {"require_reversed_place_pair": True},
         },
     }
 
@@ -4447,6 +4454,14 @@ def test_market_residual_reused_holdout_result_contract() -> None:
         evaluation_queue._validate_job_result_contract(
             job,
             invalid_diagnostic,
+        )
+    with pytest.raises(ValueError, match="reversed-place-pair"):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {
+                **payload,
+                "trend_point_reversed_place_pair_diagnostic": None,
+            },
         )
 
 

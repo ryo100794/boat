@@ -247,6 +247,41 @@ def test_required_ticket_count_executes_only_matching_allocations() -> None:
         )
 
 
+def test_reversed_place_pair_requires_same_winner_and_swapped_places() -> None:
+    first = "1-2-3"
+    reversed_places = "1-3-2"
+    non_reversed = "1-2-4"
+
+    def evaluate(second: str) -> dict[str, object]:
+        probabilities = {key: 0.1 / 118.0 for key in COMBINATIONS}
+        probabilities[first] = 0.45
+        probabilities[second] = 0.45
+        race = _race("2026-07-20", second, actual=first, payout=250)
+        race["model_probabilities"] = dict(probabilities)
+        race["market_probabilities"] = dict(probabilities)
+        race["odds"] = {
+            key: 2.5 if key in {first, second} else 1.0
+            for key in COMBINATIONS
+        }
+        return challenger.evaluate_market_kelly_challenger(
+            [race],
+            required_ticket_count=2,
+            require_reversed_place_pair=True,
+        )
+
+    matching = evaluate(reversed_places)
+    rejected = evaluate(non_reversed)
+
+    assert matching["tickets"] == 2
+    assert matching["policy"]["require_reversed_place_pair"] is True
+    assert rejected["tickets"] == 0
+    with pytest.raises(ValueError, match="requires required_ticket_count=2"):
+        challenger.evaluate_market_kelly_challenger(
+            [_race("2026-07-20", "bad")],
+            require_reversed_place_pair=True,
+        )
+
+
 def test_actual_return_uses_actual_stake_and_payout_per_100_yen() -> None:
     race = _race(
         "2026-07-20",
