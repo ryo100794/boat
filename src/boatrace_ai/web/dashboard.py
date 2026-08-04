@@ -1386,6 +1386,19 @@ def model_performance_report(db_path: Path, query: dict[str, list[str]]) -> dict
                 app_root=db_path.parent.parent,
             )
         ),
+        "production_trend_point_two_ticket_prospective_evidence": (
+            _production_trend_point_prospective_evidence(
+                evaluation_jobs,
+                app_root=db_path.parent.parent,
+                model_key=(
+                    "production_trend_point_two_ticket_job_12012"
+                ),
+                evidence_kind=(
+                    "fixed_model_trend_point_exact_two_ticket_"
+                    "fully_unseen_prospective"
+                ),
+            )
+        ),
         "remote_generated_at": remote_evaluations.get("generated_at"),
         "standardized_evaluation": _standardized_v2_public_status(
             standardized,
@@ -1434,8 +1447,11 @@ def _production_trend_point_prospective_evidence(
     *,
     app_root: Path | None = None,
     now: datetime | None = None,
+    model_key: str = "production_trend_point_job_12012",
+    evidence_kind: str = (
+        "fixed_model_trend_point_fully_unseen_prospective"
+    ),
 ) -> dict[str, Any]:
-    model_key = "production_trend_point_job_12012"
     readiness = production_trend_point_readiness(
         app_root or PROJECT_ROOT,
         now=now,
@@ -1450,9 +1466,7 @@ def _production_trend_point_prospective_evidence(
             status = "overdue_missing_evaluation_job"
         return {
             "schema_version": 1,
-            "evidence_kind": (
-                "fixed_model_trend_point_fully_unseen_prospective"
-            ),
+            "evidence_kind": evidence_kind,
             "model_key": model_key,
             "status": status,
             "registered_after": "2026-08-03",
@@ -1496,7 +1510,7 @@ def _production_trend_point_prospective_evidence(
     )
     return {
         "schema_version": 1,
-        "evidence_kind": "fixed_model_trend_point_fully_unseen_prospective",
+        "evidence_kind": evidence_kind,
         "model_key": model_key,
         "status": latest.get("status"),
         "readiness_status": readiness["status"],
@@ -1518,6 +1532,10 @@ def _production_trend_point_prospective_evidence(
             "selection_data_is_diagnostic_only"
         ),
         "real_betting_enabled": registration.get("real_betting_enabled"),
+        "required_ticket_count": (
+            parameters.get("trend_point_required_ticket_count")
+            or registration.get("required_ticket_count")
+        ),
         "model_identity": {
             "expected_model_sha256": resolved_expected_sha256,
             "observed_model_sha256": resolved_observed_sha256,

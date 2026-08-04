@@ -125,6 +125,56 @@ def test_production_trend_point_evidence_uses_latest_fixed_job() -> None:
     assert evidence["promotion_gate"] == {"pass": False}
 
 
+def test_two_ticket_prospective_evidence_is_separate_from_primary() -> None:
+    expected_sha256 = "b" * 64
+    primary = {
+        "db_job_id": 13001,
+        "model_key": "production_trend_point_job_12012",
+        "status": "完了",
+    }
+    two_ticket = {
+        "db_job_id": 13002,
+        "model_key": "production_trend_point_two_ticket_job_12012",
+        "status": "完了",
+        "parameters": {
+            "through_date": "2026-08-05",
+            "trend_point_registered_after": "2026-08-03",
+            "trend_point_required_ticket_count": 2,
+            "expected_model_sha256": expected_sha256,
+            "prospective_candidate": {
+                "source_model_job_id": 12012,
+                "source_evaluation_job_id": 12051,
+                "required_ticket_count": 2,
+                "selection_data_is_diagnostic_only": True,
+                "real_betting_enabled": False,
+            },
+        },
+        "source_model_sha256": expected_sha256,
+        "trend_point_prospective_evaluation_days": 2,
+        "trend_point_prospective_evaluated_races": 288,
+        "trend_point_prospective_tickets": 24,
+        "trend_point_prospective_roi": 1.35,
+    }
+
+    evidence = _production_trend_point_prospective_evidence(
+        [primary, two_ticket],
+        model_key="production_trend_point_two_ticket_job_12012",
+        evidence_kind=(
+            "fixed_model_trend_point_exact_two_ticket_"
+            "fully_unseen_prospective"
+        ),
+    )
+
+    assert evidence["latest_job_id"] == 13002
+    assert evidence["required_ticket_count"] == 2
+    assert evidence["tickets"] == 24
+    assert evidence["roi"] == 1.35
+    assert evidence["evidence_kind"] == (
+        "fixed_model_trend_point_exact_two_ticket_"
+        "fully_unseen_prospective"
+    )
+
+
 def test_repository_deployment_status_exposes_only_verification_fields(
     tmp_path,
 ) -> None:
