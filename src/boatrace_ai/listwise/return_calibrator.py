@@ -10,7 +10,7 @@ FEATURE_COUNT = 58
 MIN_EXPECTED_RETURN = 1e-4
 MAX_EXPECTED_RETURN = 20.0
 COMBINATION_BOOTSTRAP_SAMPLES = 2_000
-COMBINATION_FACTOR_FLOOR = 0.25
+COMBINATION_FACTOR_FLOOR = 0.0
 COMBINATION_FACTOR_CAP = 2.0
 
 
@@ -166,8 +166,8 @@ def calibrate_combination_returns(
         raise ValueError("predicted returns and combination factors must align")
     if not np.all(np.isfinite(predicted)) or np.any(predicted <= 0.0):
         raise ValueError("predicted returns must be finite and positive")
-    if not np.all(np.isfinite(factors)) or np.any(factors <= 0.0):
-        raise ValueError("combination factors must be finite and positive")
+    if not np.all(np.isfinite(factors)) or np.any(factors < 0.0):
+        raise ValueError("combination factors must be finite and non-negative")
     return np.clip(
         predicted * factors[None, :],
         MIN_EXPECTED_RETURN,

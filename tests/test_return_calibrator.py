@@ -19,6 +19,7 @@ from boatrace_ai.listwise.return_bankroll import (
 
 from boatrace_ai.listwise.return_calibrator import (
     FEATURE_COUNT,
+    MIN_EXPECTED_RETURN,
     calibrate_combination_returns,
     expected_return_features,
     expected_return_poisson_loss,
@@ -79,8 +80,8 @@ def test_combination_calibration_uses_conservative_daily_lower_bound() -> None:
     assert calibrator.training_races == 20
     assert calibrator.training_days == 20
     assert calibrator.bootstrap_samples == 500
-    assert calibrator.factors.tolist() == [2.0, 0.25]
-    assert adjusted.tolist() == [[1.0, 0.125]]
+    assert calibrator.factors.tolist() == [2.0, 0.0]
+    assert adjusted.tolist() == [[1.0, MIN_EXPECTED_RETURN]]
 
 
 def test_combination_calibration_is_deterministic_and_ignores_future_rows() -> None:
