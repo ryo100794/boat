@@ -97,6 +97,44 @@ def test_bootstrap_rejects_current_or_future_teacher() -> None:
         )
 
 
+def test_residual_scales_are_selected_once_then_fixed_across_outer_draws() -> None:
+    draws = bootstrap_joint_parameter_models(
+        [_observation(index) for index in range(6)],
+        decision_date="2026-07-09",
+        draws=3,
+        seed=61,
+        expected_outcomes=OUTCOMES,
+        fit_options={
+            "rank": 1,
+            "learn_residual_scales": True,
+            "residual_scale_candidates": (0.0, 1.0),
+            "shock_scale_candidates": (1.0,),
+            "scale_selection_scenarios": 1,
+        },
+    )
+
+    scales = {
+        (
+            draw.model.probability_mean_residual_scale,
+            draw.model.market_mean_residual_scale,
+            draw.model.shared_shock_scale,
+        )
+        for draw in draws
+    }
+    assert len(scales) == 1
+    for draw in draws:
+        application = draw.model.residual_scale_selection[
+            "bootstrap_application"
+        ]
+        assert application["selection_training_through"] == "2026-07-07"
+        assert application["selection_training_races"] == 6
+        assert application["selection_seed"] == 61
+        assert application["application"] == (
+            "selected_once_on_all_strictly_prior_observations_then_"
+            "fixed_across_outer_day_bootstrap_refits"
+        )
+
+
 def test_refitted_models_generate_one_inner_path_set_per_outer_draw() -> None:
     draws = bootstrap_joint_parameter_models(
         [_observation(index) for index in range(6)],

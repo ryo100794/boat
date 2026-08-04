@@ -104,6 +104,36 @@ def bootstrap_joint_parameter_models(
             "fit_options cannot override controlled fields: "
             + ", ".join(sorted(forbidden))
         )
+    shared_scale_model = None
+    draw_fit_options = dict(options)
+    if bool(options.get("learn_residual_scales")):
+        shared_scale_model = fit_conditional_joint_scenario_model(
+            observations,
+            expected_outcomes=expected_outcomes,
+            scale_selection_seed=seed,
+            **options,
+        )
+        draw_fit_options["learn_residual_scales"] = False
+    shared_scale_metadata = (
+        {
+            "probability_mean_residual_scale": (
+                shared_scale_model.probability_mean_residual_scale
+            ),
+            "market_mean_residual_scale": (
+                shared_scale_model.market_mean_residual_scale
+            ),
+            "shared_shock_scale": shared_scale_model.shared_shock_scale,
+            "selection_training_from": shared_scale_model.training_from,
+            "selection_training_through": shared_scale_model.training_through,
+            "selection_training_races": shared_scale_model.training_races,
+            "selection_seed": seed,
+            "application": (
+                "selected_once_on_all_strictly_prior_observations_then_"
+                "fixed_across_outer_day_bootstrap_refits"
+            ),
+        }
+        if shared_scale_model is not None else None
+    )
     rng = random.Random(seed)
     result = []
     for draw_index in range(draws):
@@ -121,15 +151,35 @@ def bootstrap_joint_parameter_models(
             sampled_rows,
             expected_outcomes=expected_outcomes,
             scale_selection_seed=seed + draw_index,
-            **options,
+            **draw_fit_options,
         )
+        if shared_scale_model is not None:
+            model = replace(
+                model,
+                probability_mean_residual_scale=(
+                    shared_scale_model.probability_mean_residual_scale
+                ),
+                market_mean_residual_scale=(
+                    shared_scale_model.market_mean_residual_scale
+                ),
+                shared_shock_scale=shared_scale_model.shared_shock_scale,
+                residual_scale_selection={
+                    **dict(shared_scale_model.residual_scale_selection),
+                    "bootstrap_application": shared_scale_metadata,
+                },
+            )
+        manifest_fit_options = dict(draw_fit_options)
+        if shared_scale_metadata is not None:
+            manifest_fit_options["preselected_residual_scales"] = (
+                shared_scale_metadata
+            )
         manifest = _manifest(
             draw_index=draw_index,
             decision_date=cutoff,
             sampled_days=sampled_days,
             observations=sampled_rows,
             expected_outcomes=expected_outcomes,
-            fit_options=options,
+            fit_options=manifest_fit_options,
             scale_selection_seed=seed + draw_index,
         )
         result.append(JointParameterDraw(

@@ -32,7 +32,9 @@ from .terminal_probability_oof import (
 )
 
 
-EVALUATION_VERSION = "joint_bankroll_strict_walk_forward_v7_independent_validation"
+EVALUATION_VERSION = (
+    "joint_bankroll_strict_walk_forward_v8_fixed_scale_outer_bootstrap"
+)
 EPSILON = 1e-15
 PURCHASE_UNIT_YEN = 100
 MINIMUM_OUTER_TAIL_OBSERVATIONS = 5
@@ -183,6 +185,16 @@ def _evaluation_protocol(
             "search_validation_draw_sets_disjoint": bool(configuration.get(
                 "search_validation_draw_sets_disjoint", False
             )),
+            "residual_scale_selection_scope": (
+                "once_per_evaluation_date_on_all_strictly_prior_"
+                "observations_fixed_across_outer_day_bootstrap_refits"
+                if configuration.get("learn_residual_scales")
+                else "fixed_full_residual"
+            ),
+            "outer_parameter_uncertainty": (
+                "complete_day_bootstrap_refit_with_preselected_"
+                "residual_scale_hyperparameters"
+            ),
         },
         "purchase_rule": {
             "decision_rule": "V_buy_greater_than_buy_margin",
