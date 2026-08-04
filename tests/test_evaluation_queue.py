@@ -4364,6 +4364,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "trend_point_odds_safety_sweep": True,
                 "trend_point_required_ticket_count": 2,
                 "prequential_conditional_order": True,
+                "research_only_reused_holdout": True,
             },
         ),
         app_root=root,
@@ -4405,7 +4406,48 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         command.index("--trend-point-required-ticket-count") + 1
     ] == "2"
     assert "--prequential-conditional-order" in command
+    assert "--research-only-reused-holdout" in command
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
+
+
+def test_market_residual_reused_holdout_result_contract() -> None:
+    job = _job(
+        "market_residual_walk_forward",
+        {
+            "model_input": "data/models/evaluation_queue/job-00012012.joblib",
+            "from_date": "2025-07-26",
+            "through_date": "2026-08-02",
+            "expected_model_sha256": "a" * 64,
+            "research_only_reused_holdout": True,
+        },
+    )
+    payload = {
+        "source_model_sha256": "a" * 64,
+        "from_date": "2025-07-26",
+        "through_date": "2026-08-02",
+        "reused_holdout_research_only": True,
+        "trend_point_market_offset_kelly_diagnostic": {
+            "promotion_eligible": False,
+        },
+    }
+
+    evaluation_queue._validate_job_result_contract(job, payload)
+    with pytest.raises(ValueError, match="must be research-only"):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            {**payload, "reused_holdout_research_only": False},
+        )
+    invalid_diagnostic = {
+        **payload,
+        "trend_point_market_offset_kelly_diagnostic": {
+            "promotion_eligible": True,
+        },
+    }
+    with pytest.raises(ValueError, match="must not be promotion eligible"):
+        evaluation_queue._validate_job_result_contract(
+            job,
+            invalid_diagnostic,
+        )
 
 
 def test_market_residual_walk_forward_builds_fixed_model_blend_command(

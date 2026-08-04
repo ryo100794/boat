@@ -2188,6 +2188,7 @@ def build_command(
             "trend_point_odds_safety_sweep",
             "trend_point_required_ticket_count",
             "prequential_conditional_order",
+            "research_only_reused_holdout",
             "expected_model_sha256",
             "prospective_candidate",
         }
@@ -2381,6 +2382,15 @@ def build_command(
             )
         if conditional_order:
             command.append("--prequential-conditional-order")
+        research_only_reused_holdout = params.get(
+            "research_only_reused_holdout", False
+        )
+        if not isinstance(research_only_reused_holdout, bool):
+            raise ValueError(
+                "research_only_reused_holdout must be a boolean"
+            )
+        if research_only_reused_holdout:
+            command.append("--research-only-reused-holdout")
         if v25_probability_artifact is not None:
             command.extend([
                 "--v25-probability-artifact",
@@ -5542,11 +5552,44 @@ def _valid_tail_portfolio_contract(value: Any) -> bool:
 def _validate_job_result_contract(
     job: dict[str, Any], payload: dict[str, Any]
 ) -> None:
-    if str(job.get("task_type") or "") != "fixed_model_conditional_order":
-        return
+    task_type = str(job.get("task_type") or "")
     parameters = job.get("parameters")
     if isinstance(parameters, str):
         parameters = json.loads(parameters)
+    if (
+        task_type == "market_residual_walk_forward"
+        and isinstance(parameters, dict)
+        and parameters.get("research_only_reused_holdout") is True
+    ):
+        if payload.get("reused_holdout_research_only") is not True:
+            raise ValueError(
+                "market residual reused holdout result must be research-only"
+            )
+        diagnostic = payload.get(
+            "trend_point_market_offset_kelly_diagnostic"
+        )
+        if (
+            not isinstance(diagnostic, dict)
+            or diagnostic.get("promotion_eligible") is not False
+        ):
+            raise ValueError(
+                "market residual reused holdout diagnostic must not be "
+                "promotion eligible"
+            )
+        if str(payload.get("source_model_sha256") or "").lower() != str(
+            parameters.get("expected_model_sha256") or ""
+        ).lower():
+            raise ValueError(
+                "market residual reused holdout source model SHA mismatch"
+            )
+        for key in ("from_date", "through_date"):
+            if str(payload.get(key) or "") != str(parameters.get(key) or ""):
+                raise ValueError(
+                    f"market residual reused holdout result {key} mismatch"
+                )
+        return
+    if task_type != "fixed_model_conditional_order":
+        return
     if not isinstance(parameters, dict):
         raise ValueError(
             "fixed model conditional order job parameters are invalid"

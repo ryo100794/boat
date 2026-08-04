@@ -6700,6 +6700,17 @@ def registered_evaluation_dates(
     return sorted({str(date) for date in clean_dates if str(date) >= valid_from})
 
 
+def evaluation_dates_for_role(
+    clean_dates: Iterable[str],
+    *,
+    research_only_reused_holdout: bool = False,
+) -> list[str]:
+    dates = sorted({str(value) for value in clean_dates})
+    if research_only_reused_holdout:
+        return dates
+    return registered_evaluation_dates(dates)
+
+
 def filter_clean_market_days(
     races: list[dict[str, Any]],
     *,
@@ -7245,6 +7256,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--prequential-conditional-order",
         action="store_true",
     )
+    parser.add_argument(
+        "--research-only-reused-holdout",
+        action="store_true",
+        help=(
+            "evaluate every clean day as retrospective research while "
+            "keeping the result ineligible for promotion"
+        ),
+    )
     parser.add_argument("--minimum-day-coverage", type=float, default=1.0)
     return parser
 
@@ -7348,6 +7367,10 @@ def main(argv: list[str] | None = None) -> int:
         minimum_day_coverage=args.minimum_day_coverage,
     )
     formal_dates = registered_evaluation_dates(coverage_gate["clean_dates"])
+    evaluation_dates = evaluation_dates_for_role(
+        coverage_gate["clean_dates"],
+        research_only_reused_holdout=args.research_only_reused_holdout,
+    )
     formal_races = [
         race for race in clean_races if str(race["race_date"]) in formal_dates
     ]
@@ -7382,7 +7405,7 @@ def main(argv: list[str] | None = None) -> int:
         daily_budget_yen=args.daily_budget_yen,
         min_calibration_days=args.min_calibration_days,
         calibrator_strategy=args.calibrator_strategy,
-        evaluation_dates=formal_dates,
+        evaluation_dates=evaluation_dates,
         v12_closing_fallback_policy=args.v12_closing_fallback_policy,
         v25_probability_artifact=v25_probability_artifact,
         closing_odds_min_training_days=args.closing_odds_min_training_days,
@@ -7441,6 +7464,9 @@ def main(argv: list[str] | None = None) -> int:
             "through_date": args.through_date,
             "dataset": dataset,
             "evaluation_version": MARKET_EVALUATION_VERSION,
+            "reused_holdout_research_only": bool(
+                args.research_only_reused_holdout
+            ),
             "closing_odds_training_gate": {
                 "minimum_days": args.closing_odds_min_training_days,
                 "minimum_races": args.closing_odds_min_training_races,

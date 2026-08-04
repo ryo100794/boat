@@ -15,6 +15,7 @@ from boatrace_ai.listwise.market_calibration import (
     blend_scored_model_probabilities,
     blend_probabilities,
     build_parser,
+    evaluation_dates_for_role,
     filter_clean_market_days,
     fixed_benchmark_population,
     fit_deployment_configuration,
@@ -1242,6 +1243,19 @@ def test_provisional_evaluation_starts_with_first_four_clean_days() -> None:
     ) == ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25"]
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         registered_evaluation_dates(["2026-07-24"], valid_from="bad")
+
+
+def test_reused_holdout_research_uses_all_clean_dates() -> None:
+    clean_dates = ["2025-07-26", "2026-07-24", "2026-08-04"]
+
+    assert evaluation_dates_for_role(clean_dates) == [
+        "2026-07-24",
+        "2026-08-04",
+    ]
+    assert evaluation_dates_for_role(
+        clean_dates,
+        research_only_reused_holdout=True,
+    ) == clean_dates
 
 
 def test_clean_day_gate_validates_coverage_threshold() -> None:
