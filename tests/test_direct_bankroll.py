@@ -206,6 +206,8 @@ def test_conditional_payout_policy_selection_uses_pre_evaluation_days() -> None:
     } == {0.0, 0.1, 0.2, 0.4}
     assert diagnostics[0]["tickets"] >= 10
     assert diagnostics[0]["roi"] > 1.0
+    assert diagnostics[0]["roi_without_largest_hit"] > 1.0
+    assert diagnostics[0]["effective_hit_count"] >= 5.0
     assert diagnostics[0]["tail_eligible_candidates"] == 36
     assert diagnostics[0]["tail_ineligible_candidates"] == 7_164
     daily = diagnostics[0]["tail_eligibility_daily"]
@@ -659,6 +661,59 @@ def test_conditional_policy_requires_selection_confidence_boundaries(
     assert selected[8] == (
         0.4 if expected_source == "pre_evaluation_adaptive_selection" else 0.0
     )
+
+
+def test_conditional_policy_rejects_concentrated_selection_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _selection_diagnostic(
+        roi=1.4,
+        profit_yen=4_000,
+        exposure=0.4,
+        tickets=200,
+    )
+    candidate.update(
+        hits=10,
+        winning_days=8,
+        roi_without_largest_hit=1.10,
+        effective_hit_count=9.99,
+        selection_roi_ci95_lower=1.05,
+        selection_probability_roi_above_one=0.98,
+    )
+    monkeypatch.setattr(
+        direct_bankroll,
+        "_selection_walk_forward_for_ridge",
+        lambda *_args, **_kwargs: (
+            [candidate],
+            direct_bankroll.ConditionalPayoutStatistics.empty(),
+            direct_bankroll.ConditionalPayoutTailCalibrator.empty(),
+        ),
+    )
+    race_keys = [
+        (f"cal-{day}", f"2026-06-{day:02d}", "01", 1)
+        for day in range(1, 5)
+    ]
+    probabilities = np.full((4, 120), 1.0 / 120.0)
+
+    selected = direct_bankroll._select_conditional_payout_policy_state(
+        probabilities,
+        probabilities,
+        race_keys,
+        {},
+        selection_days=2,
+        base_policy=standard_direct_policy(),
+        fallback_ridge=10.0,
+        ridge_candidates=(10.0,),
+        correction_candidates=(0.0,),
+        threshold_candidates=(1.2,),
+        minimum_tickets=100,
+        minimum_hits=10,
+        minimum_winning_days=8,
+        minimum_roi=1.05,
+    )
+
+    assert selected[3] == "selection_gate_no_bet"
+    assert selected[8] == 0.0
 
 
 def test_conditional_policy_selects_mean_correction_from_pre_evaluation_data(

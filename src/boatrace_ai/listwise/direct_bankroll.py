@@ -568,6 +568,17 @@ def _selection_walk_forward_for_ridge(
         totals = run["totals"]
         stake_yen = int(totals["stake_yen"])
         return_yen = int(totals["return_yen"])
+        largest_hit_return_yen = max(
+            (
+                int(row.get("largest_hit_return_yen") or 0)
+                for row in run["daily"]
+            ),
+            default=0,
+        )
+        hit_return_square_sum = sum(
+            float(row.get("hit_return_square_sum_yen2") or 0.0)
+            for row in run["daily"]
+        )
         selection_confidence = bootstrap_daily_bankroll(
             run["daily"],
             samples=SELECTION_BOOTSTRAP_SAMPLES,
@@ -586,6 +597,15 @@ def _selection_walk_forward_for_ridge(
                 "return_yen": return_yen,
                 "profit_yen": return_yen - stake_yen,
                 "roi": return_yen / stake_yen if stake_yen else 0.0,
+                "roi_without_largest_hit": (
+                    (return_yen - largest_hit_return_yen) / stake_yen
+                    if stake_yen else 0.0
+                ),
+                "effective_hit_count": (
+                    return_yen * return_yen / hit_return_square_sum
+                    if return_yen > 0 and hit_return_square_sum > 0
+                    else 0.0
+                ),
                 "selection_roi_ci95_lower": float(
                     selection_confidence["roi_ci95_lower"]
                 ),
@@ -749,6 +769,8 @@ def _select_conditional_payout_policy_state(
         and int(row["hits"]) >= minimum_hits
         and int(row["winning_days"]) >= minimum_winning_days
         and float(row["roi"]) >= minimum_roi
+        and float(row.get("roi_without_largest_hit") or 0.0) >= minimum_roi
+        and float(row.get("effective_hit_count") or 0.0) >= minimum_hits
         and float(row.get("selection_roi_ci95_lower", float("-inf")))
         > minimum_roi_ci95_lower
         and float(
