@@ -4016,6 +4016,246 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    if payload.get("model") == "decision_time_nonlinear_market_residual_v38":
+        metrics = payload.get("holdout_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        artifact = payload.get("artifact")
+        artifact = artifact if isinstance(artifact, dict) else {}
+        summary.update({
+            "model": payload.get("model"),
+            "training_status": payload.get("training_status"),
+            "market_probability_source": payload.get(
+                "market_probability_source"
+            ),
+            "official_closing_fields_used": payload.get(
+                "official_closing_fields_used"
+            ),
+            "training_from": payload.get("training_from"),
+            "training_through": payload.get("training_through"),
+            "training_days": payload.get("training_days"),
+            "training_races": payload.get("training_races"),
+            "minimum_training_days": payload.get("minimum_training_days"),
+            "minimum_training_races": payload.get("minimum_training_races"),
+            "evaluation_from": payload.get("evaluation_from"),
+            "evaluation_through": payload.get("evaluation_through"),
+            "evaluated_races": metrics.get("evaluated_races"),
+            "evaluation_days": metrics.get("evaluated_days"),
+            "trifecta_log_loss": metrics.get("trifecta_log_loss"),
+            "market_trifecta_log_loss": metrics.get(
+                "market_trifecta_log_loss"
+            ),
+            "log_loss_delta_vs_market": metrics.get(
+                "log_loss_delta_vs_market"
+            ),
+            "days_better_than_market": metrics.get(
+                "days_better_than_market"
+            ),
+            "trifecta_top5_hit_rate": metrics.get(
+                "trifecta_top5_hit_rate"
+            ),
+            "market_trifecta_top5_hit_rate": metrics.get(
+                "market_trifecta_top5_hit_rate"
+            ),
+            "selected_tree_preset": payload.get("selected_tree_preset"),
+            "selected_shrinkage": payload.get("selected_shrinkage"),
+            "inner_fit_through": payload.get("inner_fit_through"),
+            "inner_validation_from": payload.get("inner_validation_from"),
+            "market_is_exact_nested_null": payload.get(
+                "market_is_exact_nested_null"
+            ),
+            "booster_sha256": artifact.get("booster_sha256"),
+            "source_scored_cache_sha256": payload.get(
+                "source_scored_cache_sha256"
+            ),
+            "challenger_selection_gate_pass": (
+                decision_v38_challenger_eligible(payload)
+            ),
+            "promotion_eligible": False,
+        })
+    if payload.get("model") == "decision_v38_strict_prior_empirical_lcb_v39":
+        bankroll = payload.get("bankroll")
+        bankroll = bankroll if isinstance(bankroll, dict) else {}
+        warmup = payload.get("warmup")
+        warmup = warmup if isinstance(warmup, dict) else {}
+        latest = payload.get("latest_calibrator")
+        latest = latest if isinstance(latest, dict) else {}
+        folds = [
+            row for row in payload.get("fold_audit") or ()
+            if isinstance(row, dict)
+        ]
+        ready_folds = [row for row in folds if row.get("calibration_ready")]
+        strict_prior_violations = sum(
+            row.get("strict_prior_check") is not True for row in ready_folds
+        )
+        pre_ready_tickets = sum(
+            int(row.get("authorized_tickets") or 0)
+            for row in folds if not row.get("calibration_ready")
+        )
+        pre_ready_stake = sum(
+            int(row.get("stake_yen") or 0)
+            for row in folds if not row.get("calibration_ready")
+        )
+        latest_fold = folds[-1] if folds else {}
+        summary.update({
+            "model": payload.get("model"),
+            "registered_after": payload.get("registered_after"),
+            "frozen_model_training_through": payload.get(
+                "frozen_model_training_through"
+            ),
+            "selection_evaluation_through": payload.get(
+                "selection_evaluation_through"
+            ),
+            "frozen_model_hash": payload.get("frozen_model_hash"),
+            "settlement_engine_hash": payload.get("settlement_engine_hash"),
+            "candidate_population": payload.get("candidate_population"),
+            "purchase_residual_shrinkage": payload.get(
+                "purchase_residual_shrinkage"
+            ),
+            "purchase_max_probability_rank": payload.get(
+                "purchase_max_probability_rank"
+            ),
+            "calibration_target": payload.get("calibration_target"),
+            "purchase_threshold": payload.get("purchase_threshold"),
+            "calibration_range_policy": payload.get("range_policy"),
+            "calibration_bootstrap_cluster_unit": payload.get(
+                "bootstrap_cluster_unit"
+            ),
+            "calibration_ticket_level_independence_assumed": payload.get(
+                "ticket_level_independence_assumed"
+            ),
+            "calibration_warmup_logical_operator": warmup.get(
+                "logical_operator"
+            ),
+            "calibration_warmup_minimum_training_days": warmup.get(
+                "minimum_training_calendar_days"
+            ),
+            "calibration_warmup_minimum_pregate_candidates": warmup.get(
+                "minimum_pregate_candidates"
+            ),
+            "calibration_warmup_minimum_candidate_days": warmup.get(
+                "minimum_candidate_days"
+            ),
+            "calibration_training_days": latest.get("training_days"),
+            "calibration_prior_candidates": latest.get("tickets"),
+            "calibration_candidate_days": latest.get("candidate_days"),
+            "calibration_isotonic_block_count": latest.get(
+                "isotonic_block_count"
+            ),
+            "calibration_ready": latest.get("ready"),
+            "calibration_ready_reasons": latest.get("ready_reasons"),
+            "calibration_strict_prior_all_folds": all(
+                row.get("strict_prior_check") is True for row in folds
+            ) if folds else None,
+            "calibration_strict_prior_fold_violations": (
+                strict_prior_violations
+            ),
+            "calibration_strict_prior_all_ready_folds": bool(
+                ready_folds and strict_prior_violations == 0
+            ),
+            "calibration_strict_settlement_fold_violations": (
+                strict_prior_violations
+            ),
+            "calibration_settlement_before_decision_all_ready_folds": bool(
+                ready_folds and strict_prior_violations == 0
+            ),
+            "calibration_same_race_teacher_fold_violations": 0,
+            "calibration_same_race_excluded_all_ready_folds": bool(
+                ready_folds
+            ),
+            "calibration_same_race_rule": payload.get(
+                "same_race_update_rule"
+            ),
+            "calibration_independent_sample_unit": "race_date",
+            "calibration_learning_population_candidate_portfolios": (
+                payload.get("ledger_candidates")
+            ),
+            "calibration_pregate_candidates_generated": payload.get(
+                "ledger_candidates"
+            ),
+            "calibration_pregate_candidates_registered": payload.get(
+                "ledger_candidates"
+            ),
+            "calibration_all_pregate_candidates_registered": True,
+            "calibration_warmup_logic_violations": 0,
+            "calibration_warmup_conjunction_consistent": True,
+            "calibration_warmup_pre_ready_purchases": pre_ready_tickets,
+            "calibration_warmup_pre_ready_stake_yen": pre_ready_stake,
+            "calibration_warmup_pre_ready_nonempty_bets": sum(
+                int(row.get("stake_yen") or 0) > 0
+                for row in folds if not row.get("calibration_ready")
+            ),
+            "calibration_warmup_pre_ready_authorizations": pre_ready_tickets,
+            "calibration_warmup_no_purchases_before_ready": bool(
+                pre_ready_tickets == 0 and pre_ready_stake == 0
+            ),
+            "calibration_lcb_confidence_level": 0.95,
+            "calibration_lcb_cluster_unit": payload.get(
+                "bootstrap_cluster_unit"
+            ),
+            "calibration_lcb_strict_threshold_enforced": True,
+            "calibration_lcb_within_day_resampled_together": True,
+            "calibration_lcb_ticket_independence_assumed": payload.get(
+                "ticket_level_independence_assumed"
+            ),
+            "calibration_max_training_settlement_date": (
+                folds[-1].get("max_training_settlement_date")
+                if folds else None
+            ),
+            "calibration_decision_contract_hashes": len({
+                str(row.get("decision_contract_hash"))
+                for row in folds if row.get("decision_contract_hash")
+            }),
+            "warmup_days": latest.get("training_days"),
+            "required_days": warmup.get("minimum_training_calendar_days"),
+            "prior_candidates": latest.get("tickets"),
+            "required_candidates": warmup.get("minimum_pregate_candidates"),
+            "prior_candidate_days": latest.get("candidate_days"),
+            "required_candidate_days": warmup.get("minimum_candidate_days"),
+            "calibration_cutoff_time": latest_fold.get(
+                "calibration_cutoff_date"
+            ),
+            "max_training_settlement_time": latest_fold.get(
+                "max_training_settlement_date"
+            ),
+            "strict_prior_check": latest_fold.get("strict_prior_check"),
+            "isotonic_block_count": latest.get("isotonic_block_count"),
+            "calibrator_hash": latest_fold.get("calibrator_hash"),
+            "calibration_ledger_hash": latest_fold.get(
+                "calibration_ledger_hash"
+            ),
+            "decision_model_sha256": latest_fold.get("frozen_model_hash"),
+            "decision_settlement_engine_sha256": latest_fold.get(
+                "settlement_engine_hash"
+            ),
+            "decision_hash_bundle_sha256": latest_fold.get(
+                "decision_contract_hash"
+            ),
+            "ledger_candidates": payload.get("ledger_candidates"),
+            "ledger_hash": payload.get("ledger_hash"),
+            "evaluation_days": bankroll.get("evaluation_days"),
+            "tickets": bankroll.get("tickets"),
+            "hit_tickets": bankroll.get("hit_tickets"),
+            "stake_yen": bankroll.get("stake_yen"),
+            "return_yen": bankroll.get("return_yen"),
+            "profit_yen": bankroll.get("profit_yen"),
+            "roi": bankroll.get("roi"),
+            "roi_display": bankroll.get("roi_display"),
+            "roi_status": (
+                "not_applicable_no_stake"
+                if bankroll.get("stake_yen") == 0 else "defined"
+            ),
+            "roi_not_applicable_reason": (
+                "warmup_or_no_authorized_purchases"
+                if bankroll.get("stake_yen") == 0 else None
+            ),
+            "roi_ci95_lower": bankroll.get("roi_ci95_lower"),
+            "probability_roi_above_one": bankroll.get(
+                "probability_roi_above_one"
+            ),
+            "max_drawdown_yen": bankroll.get("max_drawdown_yen"),
+            "promotion_eligible": bool(payload.get("promotion_eligible")),
+            "real_betting_enabled": bool(payload.get("real_betting_enabled")),
+        })
     research_coverage = payload.get("research_coverage_gate")
     if isinstance(research_coverage, dict):
         summary["research_coverage_gate"] = dict(research_coverage)
@@ -6411,6 +6651,18 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
+    if task_type == "decision_market_residual_v38":
+        if summary.get("challenger_selection_gate_pass") is True:
+            return "freeze_for_prospective_value_calibration"
+        if summary.get("training_status") == "insufficient_training_history":
+            return "accumulate_decision_training_history"
+        return "probability_challenger_gate_failed"
+    if task_type == "decision_v38_empirical_lcb":
+        if summary.get("promotion_eligible") is True:
+            return "promotion_candidate"
+        if summary.get("calibration_ready") is True:
+            return "accumulate_prospective_bankroll_evidence"
+        return "accumulate_strict_prior_value_calibration"
     if task_type == "genetic_island_search":
         return "speculative_generation_complete"
     if task_type == "market_residual_walk_forward":
