@@ -7871,6 +7871,8 @@ def seed_periodic_jobs(
                     "real_betting_enabled": False,
                 },
             }
+            if spec["model_key"] == PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY:
+                parameters["trend_point_odds_safety_sweep"] = True
             required_ticket_count = spec["required_ticket_count"]
             if required_ticket_count is not None:
                 parameters["trend_point_required_ticket_count"] = (

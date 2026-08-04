@@ -422,12 +422,14 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
     )
     normal_params = normal_reversed_candidate["parameters"]
     assert normal_params["trend_point_maximum_forecast_odds"] == 100.0
+    assert "trend_point_odds_safety_sweep" not in normal_params
     safety_candidate = next(
         row for row in calls
         if row["model_key"] == PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY
     )
     safety_params = safety_candidate["parameters"]
     assert safety_params["trend_point_odds_safety_factor"] == 1.10
+    assert safety_params["trend_point_odds_safety_sweep"] is True
     assert safety_params["trend_point_registered_after"] == (
         PROSPECTIVE_SAFETY_110_REGISTERED_AFTER
     )
