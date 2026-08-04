@@ -1152,7 +1152,10 @@ def simulate_conditional_payout_walk_forward(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
     )
-    hit_return_square_sum = float(totals["hit_return_square_sum_yen2"])
+    hit_return_square_sum = sum(
+        float(row.get("hit_return_square_sum_yen2") or 0.0)
+        for row in daily
+    )
     effective_hit_count = (
         return_yen * return_yen / hit_return_square_sum
         if return_yen > 0 and hit_return_square_sum > 0
@@ -1399,7 +1402,10 @@ def simulate_direct_bankroll(
         (int(row.get("largest_hit_return_yen") or 0) for row in daily),
         default=0,
     )
-    hit_return_square_sum = float(totals["hit_return_square_sum_yen2"])
+    hit_return_square_sum = sum(
+        float(row.get("hit_return_square_sum_yen2") or 0.0)
+        for row in daily
+    )
     effective_hit_count = (
         return_yen * return_yen / hit_return_square_sum
         if return_yen > 0 and hit_return_square_sum > 0
