@@ -866,6 +866,10 @@ def test_exposure_selection_uses_only_pre_evaluation_period() -> None:
     assert low["policy_selection"]["source"] == (
         "pre_evaluation_adaptive_selection"
     )
+    assert low["policy_selection"]["minimum_roi_without_largest_hit"] == 1.05
+    assert low["policy_selection"]["minimum_effective_hit_count"] == 5.0
+    assert low["policy_selection"]["required_roi_ci95_lower"] == 1.05
+    assert low["policy_selection"]["minimum_probability_roi_above_one"] == 0.95
     assert low["policy_selection"]["period"]["selection_through"] == (
         "2026-06-20"
     )

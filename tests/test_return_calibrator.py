@@ -307,6 +307,9 @@ def test_expected_return_bankroll_uses_pre_evaluation_calibration(
     assert result["policy"]["expected_return_training_samples"] == 24_000
     assert result["policy"]["ev_threshold"] == 0.9
     assert result["policy_selection"]["source"] == "fallback_fixed_threshold"
+    assert result["policy_selection"]["minimum_roi_without_largest_hit"] == 1.05
+    assert result["policy_selection"]["minimum_effective_hit_count"] == 10.0
+    assert result["policy_selection"]["minimum_probability_roi_above_one"] == 0.95
     assert result["return_calibrator"]["iterations"] <= 30
     assert np.isfinite(result["return_calibrator"]["gradient_norm"])
     combination = result["return_calibrator"]["combination_calibration"]

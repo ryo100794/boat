@@ -707,7 +707,9 @@ def simulate_expected_return_calibrated_bankroll(
         "selection_days": int(policy_selection_days),
         "minimum_tickets": int(minimum_selection_tickets),
         "minimum_roi": float(minimum_selection_roi),
+        "minimum_roi_without_largest_hit": float(minimum_selection_roi),
         "minimum_hits": int(minimum_selection_hits),
+        "minimum_effective_hit_count": float(minimum_selection_hits),
         "minimum_winning_days": int(minimum_selection_winning_days),
         "minimum_probability_roi_above_one": float(
             minimum_selection_probability_roi_above_one
