@@ -3593,6 +3593,7 @@ def walk_forward_evaluate(
     closing_odds_min_training_days: int = MIN_CLOSING_ODDS_TRAINING_DAYS,
     closing_odds_min_training_races: int = MIN_CLOSING_ODDS_TRAINING_RACES,
     trend_point_registered_after: str = TREND_POINT_KELLY_REGISTERED_AFTER,
+    trend_point_odds_safety_factor: float = 1.0,
     trend_point_odds_safety_sweep: bool = False,
     trend_point_required_ticket_count: int | None = None,
     trend_point_require_reversed_place_pair: bool = False,
@@ -3605,6 +3606,14 @@ def walk_forward_evaluate(
         raise ValueError(
             "trend_point_registered_after must be an ISO date"
         ) from exc
+    if (
+        isinstance(trend_point_odds_safety_factor, bool)
+        or not math.isfinite(float(trend_point_odds_safety_factor))
+        or not 1.0 <= float(trend_point_odds_safety_factor) <= 10.0
+    ):
+        raise ValueError(
+            "trend_point_odds_safety_factor must be finite and in [1, 10]"
+        )
     if (
         trend_point_required_ticket_count is not None
         and (
@@ -4733,6 +4742,7 @@ def walk_forward_evaluate(
         trend_point_market_races,
         calibration=trend_point_market_calibration,
         evaluation_dates=evaluation_date_set,
+        odds_safety_factor=trend_point_odds_safety_factor,
         required_ticket_count=trend_point_required_ticket_count,
         require_reversed_place_pair=(
             trend_point_require_reversed_place_pair
@@ -4754,6 +4764,7 @@ def walk_forward_evaluate(
                 trend_point_market_races,
                 calibration=trend_point_market_calibration,
                 evaluation_dates=evaluation_date_set,
+                odds_safety_factor=trend_point_odds_safety_factor,
                 required_ticket_count=2,
                 require_reversed_place_pair=True,
                 maximum_forecast_odds=trend_point_maximum_forecast_odds,
@@ -4779,6 +4790,7 @@ def walk_forward_evaluate(
         trend_point_market_races,
         calibration=trend_point_market_calibration,
         evaluation_dates=trend_point_evaluation_dates,
+        odds_safety_factor=trend_point_odds_safety_factor,
         required_ticket_count=trend_point_required_ticket_count,
         require_reversed_place_pair=(
             trend_point_require_reversed_place_pair
@@ -4789,9 +4801,12 @@ def walk_forward_evaluate(
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
         "comparison_role": (
             "pure prospective Kelly using a registered trend-model conditional "
-            "median closing-odds forecast"
+            "median closing-odds forecast and fixed odds safety factor"
         ),
         "registered_after": trend_point_registered_after,
+        "registered_odds_safety_factor": float(
+            trend_point_odds_safety_factor
+        ),
         "status": (
             "evaluating"
             if trend_point_evaluation_dates
@@ -7341,6 +7356,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=TREND_POINT_KELLY_REGISTERED_AFTER,
     )
     parser.add_argument(
+        "--trend-point-odds-safety-factor",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
         "--trend-point-odds-safety-sweep",
         action="store_true",
     )
@@ -7536,6 +7556,9 @@ def main(argv: list[str] | None = None) -> int:
         closing_odds_min_training_days=args.closing_odds_min_training_days,
         closing_odds_min_training_races=args.closing_odds_min_training_races,
         trend_point_registered_after=args.trend_point_registered_after,
+        trend_point_odds_safety_factor=(
+            args.trend_point_odds_safety_factor
+        ),
         trend_point_odds_safety_sweep=args.trend_point_odds_safety_sweep,
         trend_point_required_ticket_count=(
             args.trend_point_required_ticket_count

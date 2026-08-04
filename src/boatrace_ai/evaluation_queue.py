@@ -43,6 +43,9 @@ PRODUCTION_TREND_POINT_REVERSED_PAIR_MODEL_KEY = (
 PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY = (
     "production_trend_point_normal_reversed_pair_job_12012"
 )
+PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY = (
+    "production_trend_point_safety_110_job_12012"
+)
 PRODUCTION_TREND_POINT_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012012.joblib"
 )
@@ -53,6 +56,7 @@ PRODUCTION_TREND_POINT_STRATEGY = (
 )
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER = "2026-08-04"
+PROSPECTIVE_SAFETY_110_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
     "prospective_lightgbm_two_ticket_job_2707"
 )
@@ -2206,6 +2210,7 @@ def build_command(
             "closing_odds_min_training_days",
             "closing_odds_min_training_races",
             "trend_point_registered_after",
+            "trend_point_odds_safety_factor",
             "trend_point_odds_safety_sweep",
             "trend_point_required_ticket_count",
             "trend_point_require_reversed_place_pair",
@@ -2378,6 +2383,17 @@ def build_command(
             command.extend([
                 "--trend-point-registered-after", registered_after,
             ])
+        trend_point_odds_safety_factor = _number(
+            params,
+            "trend_point_odds_safety_factor",
+            1.0,
+            1.0,
+            10.0,
+        )
+        command.extend([
+            "--trend-point-odds-safety-factor",
+            str(trend_point_odds_safety_factor),
+        ])
         safety_sweep = params.get("trend_point_odds_safety_sweep", False)
         if not isinstance(safety_sweep, bool):
             raise ValueError(
@@ -7699,6 +7715,7 @@ def seed_periodic_jobs(
             "required_ticket_count": None,
             "require_reversed_place_pair": False,
             "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
             "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
             "priority": 44,
         },
@@ -7715,6 +7732,7 @@ def seed_periodic_jobs(
             "required_ticket_count": 2,
             "require_reversed_place_pair": False,
             "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
             "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
             "priority": 43,
         },
@@ -7731,6 +7749,7 @@ def seed_periodic_jobs(
             "required_ticket_count": 2,
             "require_reversed_place_pair": True,
             "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 42,
         },
@@ -7747,6 +7766,7 @@ def seed_periodic_jobs(
             "required_ticket_count": 2,
             "require_reversed_place_pair": False,
             "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 41,
         },
@@ -7763,6 +7783,7 @@ def seed_periodic_jobs(
             "required_ticket_count": 2,
             "require_reversed_place_pair": True,
             "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.0,
             "registered_after": PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
             "priority": 40,
         },
@@ -7779,8 +7800,28 @@ def seed_periodic_jobs(
             "required_ticket_count": 2,
             "require_reversed_place_pair": True,
             "maximum_forecast_odds": 100.0,
+            "odds_safety_factor": 1.0,
             "registered_after": PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER,
             "priority": 39,
+        },
+        {
+            "model_key": PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY,
+            "model_input": PRODUCTION_TREND_POINT_MODEL_INPUT,
+            "source_model_job_id": 12_012,
+            "source_evaluation_job_id": (
+                PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID
+            ),
+            "expected_model_sha256": expected_model_sha256,
+            "policy": (
+                "trend_point_market_offset_discrete_multinomial_kelly_"
+                "odds_safety_110"
+            ),
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
+            "odds_safety_factor": 1.10,
+            "registered_after": PROSPECTIVE_SAFETY_110_REGISTERED_AFTER,
+            "priority": 38,
         },
     )
     if jst_now.hour >= 3:
@@ -7811,6 +7852,9 @@ def seed_periodic_jobs(
                 "min_calibration_days": 2,
                 "minimum_day_coverage": 1.0,
                 "trend_point_registered_after": str(spec["registered_after"]),
+                "trend_point_odds_safety_factor": float(
+                    spec["odds_safety_factor"]
+                ),
                 "expected_model_sha256": candidate_sha256,
                 "timeout_seconds": 7_200,
                 "prospective_candidate": {
@@ -7819,6 +7863,9 @@ def seed_periodic_jobs(
                     "expected_model_sha256": candidate_sha256,
                     "policy": spec["policy"],
                     "registered_after": spec["registered_after"],
+                    "odds_safety_factor": float(
+                        spec["odds_safety_factor"]
+                    ),
                     "evidence_dates": "strictly_after_registered_after",
                     "selection_data_is_diagnostic_only": True,
                     "real_betting_enabled": False,

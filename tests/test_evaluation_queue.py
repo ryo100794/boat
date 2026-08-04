@@ -4605,6 +4605,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "v25_probability_artifact": "data/models/evaluation_queue/job-00002606.json",
                 "closing_odds_min_training_days": 4,
                 "closing_odds_min_training_races": 250,
+                "trend_point_odds_safety_factor": 1.10,
                 "trend_point_odds_safety_sweep": True,
                 "trend_point_required_ticket_count": 2,
                 "trend_point_require_reversed_place_pair": True,
@@ -4647,6 +4648,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         command.index("--closing-odds-min-training-races") + 1
     ] == "250"
     assert command[command.index("--through-date") + 1] == "2026-07-24"
+    assert command[
+        command.index("--trend-point-odds-safety-factor") + 1
+    ] == "1.1"
     assert "--trend-point-odds-safety-sweep" in command
     assert command[
         command.index("--trend-point-required-ticket-count") + 1

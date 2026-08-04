@@ -14,12 +14,14 @@ from boatrace_ai.evaluation_queue import (
     PRODUCTION_TREND_POINT_MODEL_KEY,
     PRODUCTION_TREND_POINT_NORMAL_REVERSED_PAIR_MODEL_KEY,
     PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+    PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY,
     PRODUCTION_TREND_POINT_SOURCE_EVALUATION_JOB_ID,
     PRODUCTION_TREND_POINT_TWO_TICKET_MODEL_KEY,
     PROSPECTIVE_LIGHTGBM_MODEL_INPUT,
     PROSPECTIVE_LIGHTGBM_MODEL_SHA256,
     PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY,
     PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER,
+    PROSPECTIVE_SAFETY_110_REGISTERED_AFTER,
     ResourceSnapshot,
     SCHEMA,
     build_command,
@@ -240,6 +242,7 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
         "expected_model_sha256": expected_sha256,
         "policy": "trend_point_market_offset_discrete_multinomial_kelly",
         "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+        "odds_safety_factor": 1.0,
         "evidence_dates": "strictly_after_registered_after",
         "selection_data_is_diagnostic_only": True,
         "real_betting_enabled": False,
@@ -262,6 +265,7 @@ def test_periodic_scheduler_registers_fixed_trend_candidate_after_first_unseen_d
         ),
         "required_ticket_count": 2,
         "registered_after": PRODUCTION_TREND_POINT_REGISTERED_AFTER,
+        "odds_safety_factor": 1.0,
         "evidence_dates": "strictly_after_registered_after",
         "selection_data_is_diagnostic_only": True,
         "real_betting_enabled": False,
@@ -418,6 +422,18 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
     )
     normal_params = normal_reversed_candidate["parameters"]
     assert normal_params["trend_point_maximum_forecast_odds"] == 100.0
+    safety_candidate = next(
+        row for row in calls
+        if row["model_key"] == PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY
+    )
+    safety_params = safety_candidate["parameters"]
+    assert safety_params["trend_point_odds_safety_factor"] == 1.10
+    assert safety_params["trend_point_registered_after"] == (
+        PROSPECTIVE_SAFETY_110_REGISTERED_AFTER
+    )
+    assert safety_params["prospective_candidate"]["odds_safety_factor"] == 1.10
+    assert safety_params["prospective_candidate"]["real_betting_enabled"] is False
+    assert safety_candidate["priority"] == 38
     assert normal_params["trend_point_required_ticket_count"] == 2
     assert normal_params["trend_point_require_reversed_place_pair"] is True
     assert normal_params["prospective_candidate"][
