@@ -304,6 +304,40 @@ def test_evaluation_dates_keep_prior_teachers_but_exclude_their_bankroll() -> No
     assert result["promotion_gate"]["pass"] is False
 
 
+def test_evaluation_dates_exclude_prior_fallbacks_from_formal_data_quality() -> None:
+    prior = _race("2026-08-03", "prior-1", favourite="1-2-3")
+    prior["_market_kelly_calibration"] = {
+        "ready": False,
+        "trained_through_date": None,
+    }
+    prospective = _race("2026-08-04", "prospective-1", favourite="1-2-3")
+    prospective["_market_kelly_calibration"] = {
+        "ready": True,
+        "trained_through_date": "2026-08-03",
+    }
+    prospective["_policy_calibrated_probabilities"] = dict(
+        prospective["market_probabilities"]
+    )
+
+    result = challenger.evaluate_attached_market_kelly_challenger(
+        [prior, prospective],
+        calibration={},
+        evaluation_dates=["2026-08-04"],
+    )
+
+    assert result["evaluation_dates"] == ["2026-08-04"]
+    assert result["data_quality"] == {
+        "evaluated_races": 1,
+        "duplicate_race_ids": 0,
+        "market_calibration_fallback_races": 0,
+        "closing_policy_fallback_races": 0,
+        "lookahead_violations": 0,
+        "operational_data_errors": 0,
+        "pass": True,
+    }
+    assert result["promotion_gate"]["operational_data_errors_zero"] is True
+
+
 def test_bootstrap_gate_distinguishes_no_bet_and_profitable_days() -> None:
     no_bet = _race("2026-07-20", "no-bet", favourite=None)
     no_bet["odds"] = {key: 100.0 for key in COMBINATIONS}
