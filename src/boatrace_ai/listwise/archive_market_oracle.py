@@ -57,10 +57,14 @@ from .conditional_ticket_residual_v30 import (
 from .ticket_utility_ranking_v31 import (
     evaluate_temporal_ticket_utility_roles,
 )
+from .nonlinear_market_residual_v38 import (
+    fit_temporal_nonlinear_market_residual,
+    nonlinear_residual_probabilities,
+)
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 11
+EVALUATION_VERSION = 12
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -512,6 +516,71 @@ def temporal_residual_diagnostic(
             else None
         ),
     )
+    nonlinear_purchase_diagnostics = []
+    if len({str(race["race_date"]) for race in calibration}) >= 5:
+        nonlinear_market_residual = fit_temporal_nonlinear_market_residual(
+            calibration,
+            evaluation,
+        )
+        for shrinkage, role in (
+            (
+                float(nonlinear_market_residual["selected_shrinkage"]),
+                "inner_log_loss_selected",
+            ),
+            (1.0, "fixed_full_residual_research_control"),
+        ):
+            nonlinear_evaluation = [
+                {
+                    **race,
+                    "model_probabilities": nonlinear_residual_probabilities(
+                        race,
+                        nonlinear_market_residual["artifact"],
+                        shrinkage=shrinkage,
+                    ),
+                }
+                for race in evaluation
+            ]
+            for policy in TEMPORAL_RESIDUAL_POLICIES:
+                simulation = simulate_chronological_flat_policy(
+                    nonlinear_evaluation,
+                    calibrator={"model_weight": 1.0, "temperature": 1.0},
+                    policy=policy,
+                    probability_blender=blend_probabilities,
+                    initial_bankroll_yen=daily_budget_yen,
+                )
+                bootstrap = (
+                    bootstrap_daily_roi(simulation["daily"])
+                    if simulation["daily"]
+                    else {
+                        "days": 0,
+                        "roi": None,
+                        "roi_ci95_lower": None,
+                        "probability_roi_above_one": None,
+                    }
+                )
+                nonlinear_purchase_diagnostics.append({
+                    "role": role,
+                    "shrinkage": shrinkage,
+                    "policy": dict(policy),
+                    "simulation": simulation,
+                    "bootstrap": bootstrap,
+                })
+    else:
+        nonlinear_market_residual = {
+            "model": "nonlinear_market_offset_residual_v38",
+            "status": "insufficient_calibration_days",
+            "calibration_days": len(
+                {str(race["race_date"]) for race in calibration}
+            ),
+            "required_calibration_days": 5,
+        }
+    nonlinear_market_residual["purchase_diagnostics"] = (
+        nonlinear_purchase_diagnostics
+    )
+    nonlinear_market_residual["purchase_diagnostic_role"] = (
+        "untouched outer-split research only; full residual strength is a "
+        "fixed sensitivity control and cannot be selected from outer ROI"
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -537,6 +606,7 @@ def temporal_residual_diagnostic(
         "payout_weighted_role_model_v29": payout_weighted_roles,
         "conditional_ticket_residual_v30": conditional_ticket_residual,
         "ticket_utility_meta_ranking_v31": ticket_utility_roles,
+        "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
     }
 
 

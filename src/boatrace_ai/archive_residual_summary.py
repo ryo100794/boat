@@ -5,6 +5,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "nonlinear_market_offset_residual_v38",
+        "nonlinear_market_offset_residual_v38",
+        "metrics",
+        "artifact",
+    ),
+    (
         "ticket_utility_meta_ranking_v31",
         "ticket_utility_meta_ranking_v31",
         "probability_metrics",
@@ -182,7 +188,7 @@ def apply_archive_residual_summary(
         bootstrap = row.get("bootstrap")
         if not isinstance(policy, Mapping) or not isinstance(simulation, Mapping):
             continue
-        compact_policies.append({
+        compact_policy = {
             "name": policy.get("name"),
             "tickets": simulation.get("tickets"),
             "races_bet": simulation.get("races_bet"),
@@ -201,7 +207,12 @@ def apply_archive_residual_summary(
                 if isinstance(bootstrap, Mapping)
                 else None
             ),
-        })
+        }
+        if row.get("role") is not None:
+            compact_policy["role"] = row.get("role")
+        if row.get("shrinkage") is not None:
+            compact_policy["shrinkage"] = row.get("shrinkage")
+        compact_policies.append(compact_policy)
     bankroll = selected.get("bankroll")
     if isinstance(bankroll, Mapping):
         for key in (
