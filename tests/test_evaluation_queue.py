@@ -1787,6 +1787,13 @@ def test_fixed_model_conditional_order_result_contract(tmp_path) -> None:
     }
 
     evaluation_queue._validate_job_result_contract(job, payload)
+    research_summary = summarize_result(payload)
+    assert research_summary["reused_holdout_research_only"] is True
+    assert research_summary["promotion_eligible"] is False
+    assert (
+        result_decision("fixed_model_conditional_order", research_summary)
+        == "reject_or_research_only"
+    )
 
     with pytest.raises(ValueError, match="must be research-only"):
         evaluation_queue._validate_job_result_contract(

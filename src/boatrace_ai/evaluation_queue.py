@@ -3645,6 +3645,7 @@ METRIC_KEYS = (
     "closing_q20_target_coverage", "closing_q20_evaluation_races",
     "daily_cluster_bootstrap_roi_lower_95",
     "promotion_eligible", "prediction_deployment_eligible",
+    "reused_holdout_research_only",
     "deployment_model_artifact_saved", "incremental_confidence_pass", "converged",
     "gradient_norm", "elapsed_seconds", "source_files_before", "source_files_after",
     "source_bytes_before", "source_bytes_after", "archived_files_removed",
