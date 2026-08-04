@@ -24,6 +24,8 @@ from boatrace_ai.evaluation_queue import (
     PROSPECTIVE_SAFETY_110_REGISTERED_AFTER,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
+    PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY,
+    PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER,
     PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256,
     PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER,
@@ -393,7 +395,7 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
 
     seed_periodic_jobs(
         _IdleQueue(),
-        now=datetime(2026, 8, 5, 18, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 8, 6, 18, 1, tzinfo=timezone.utc),
         app_root=root,
     )
 
@@ -441,12 +443,34 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
     assert r05_params["prospective_candidate"]["real_betting_enabled"] is False
     assert r05_candidate["priority"] == 46
 
+    context_candidate = next(
+        row for row in calls
+        if row["model_key"]
+        == PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY
+    )
+    context_params = context_candidate["parameters"]
+    assert context_params["trend_point_registered_after"] == (
+        PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER
+    )
+    assert context_params["trend_point_minimum_race_number"] == 5
+    assert context_params["trend_point_closing_context_features"] is True
+    assert context_params["prospective_candidate"][
+        "closing_context_features"
+    ] is True
+    assert context_params["prospective_candidate"]["policy"] == (
+        "trend_point_context_v3_strict_prior_empirical_roi_lcb95_r05_12"
+    )
+    assert context_params["prospective_candidate"][
+        "real_betting_enabled"
+    ] is False
+    assert context_candidate["priority"] == 47
+
     candidate = next(
         row for row in calls
         if row["model_key"] == PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY
     )
     params = candidate["parameters"]
-    assert params["through_date"] == "2026-08-05"
+    assert params["through_date"] == "2026-08-06"
     assert params["trend_point_registered_after"] == (
         PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER
     )

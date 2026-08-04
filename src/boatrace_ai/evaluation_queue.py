@@ -52,6 +52,9 @@ PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY = (
 PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY = (
     "prospective_strict_lcb_r05_12_job_12315"
 )
+PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY = (
+    "prospective_strict_lcb_context_r05_12_job_12315"
+)
 PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012315.joblib"
 )
@@ -70,6 +73,7 @@ PROSPECTIVE_LIGHTGBM_TWO_TICKET_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_NORMAL_ODDS_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_SAFETY_110_REGISTERED_AFTER = "2026-08-04"
 PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER = "2026-08-04"
+PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER = "2026-08-05"
 PROSPECTIVE_LIGHTGBM_TWO_TICKET_MODEL_KEY = (
     "prospective_lightgbm_two_ticket_job_2707"
 )
@@ -2229,6 +2233,7 @@ def build_command(
             "trend_point_require_reversed_place_pair",
             "trend_point_maximum_forecast_odds",
             "trend_point_minimum_race_number",
+            "trend_point_closing_context_features",
             "prequential_conditional_order",
             "research_only_reused_holdout",
             "minimum_research_clean_days",
@@ -2467,6 +2472,15 @@ def build_command(
                 "--trend-point-minimum-race-number",
                 str(minimum_race_number),
             ])
+        closing_context_features = params.get(
+            "trend_point_closing_context_features", False
+        )
+        if not isinstance(closing_context_features, bool):
+            raise ValueError(
+                "trend_point_closing_context_features must be a boolean"
+            )
+        if closing_context_features:
+            command.append("--trend-point-closing-context-features")
         conditional_order = params.get(
             "prequential_conditional_order", False
         )
@@ -5392,6 +5406,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(trend_point, dict):
         for key in (
             "status", "registered_after", "evaluation_days",
+            "registered_closing_context_features",
             "evaluated_races", "tickets", "hit_tickets", "stake_yen",
             "return_yen", "profit_yen", "roi", "winning_days",
             "purchase_days", "profitable_day_fraction",
@@ -5439,6 +5454,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(trend_empirical, dict):
         for key in (
             "status", "registered_after", "evaluation_days",
+            "registered_closing_context_features",
             "evaluated_races", "calibration_ready_folds", "tickets",
             "hit_tickets", "stake_yen", "return_yen", "profit_yen",
             "roi", "profitable_days", "roi_without_largest_hit",
@@ -7751,6 +7767,31 @@ def seed_periodic_jobs(
     expected_model_sha256 = _production_trend_point_model_sha256(app_root)
     candidate_specs = (
         {
+            "model_key": (
+                PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY
+            ),
+            "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
+            "source_model_job_id": 12_315,
+            "source_evaluation_job_id": 12_618,
+            "expected_model_sha256": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256
+            ),
+            "policy": (
+                "trend_point_context_v3_strict_prior_empirical_roi_"
+                "lcb95_r05_12"
+            ),
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
+            "minimum_race_number": 5,
+            "closing_context_features": True,
+            "odds_safety_factor": 1.0,
+            "registered_after": (
+                PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER
+            ),
+            "priority": 47,
+        },
+        {
             "model_key": PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
             "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
             "source_model_job_id": 12_315,
@@ -7920,6 +7961,7 @@ def seed_periodic_jobs(
                     spec["model_key"] in {
                         PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
                         PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
+                        PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY,
                     }
                     and (
                         app_root is None
@@ -7994,6 +8036,14 @@ def seed_periodic_jobs(
                 parameters["prospective_candidate"][
                     "minimum_race_number"
                 ] = minimum_race_number
+            closing_context_features = bool(
+                spec.get("closing_context_features", False)
+            )
+            if closing_context_features:
+                parameters["trend_point_closing_context_features"] = True
+                parameters["prospective_candidate"][
+                    "closing_context_features"
+                ] = True
             key = dedupe_key(
                 "market_residual_walk_forward",
                 str(spec["model_key"]),

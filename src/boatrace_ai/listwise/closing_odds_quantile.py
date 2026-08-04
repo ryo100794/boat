@@ -21,6 +21,15 @@ TREND_FEATURE_NAMES = (
     "log_probability_slope_volatility",
     "log_path_points",
 )
+CONTEXT_TREND_FEATURE_NAMES = TREND_FEATURE_NAMES + (
+    "race_number",
+    "first_lane",
+    "log_model_market_probability_ratio",
+    "log_model_market_probability_ratio_squared",
+    "log_model_market_ratio_x_log_current_odds",
+    "log_model_market_ratio_x_current_odds_rank",
+    "log_model_market_ratio_x_race_number",
+)
 CROSS_CONFORMAL_METHOD = "leave_one_training_day_out_cross_conformal"
 SINGLE_DAY_FALLBACK_METHOD = "in_sample_residual_quantiles_single_training_day"
 ADAPTIVE_CONFORMAL_METHOD = "online_adaptive_conformal_miscoverage_control"
@@ -143,7 +152,11 @@ def _path_trend_features(
 
 
 def _trend_design_matrix(
-    race: dict[str, Any], combinations: list[str], current: np.ndarray
+    race: dict[str, Any],
+    combinations: list[str],
+    current: np.ndarray,
+    *,
+    context_features: bool = False,
 ) -> np.ndarray:
     log_odds = np.log(current)
     ranks = _average_ranks(current) / max(1, len(current) - 1)
@@ -154,7 +167,7 @@ def _trend_design_matrix(
     path_points = math.log1p(float(
         race.get("odds_path_points") or len(race.get("odds_path") or [])
     ))
-    return np.column_stack((
+    base = np.column_stack((
         np.ones(len(combinations), dtype=np.float64),
         log_odds,
         log_odds * log_odds,
@@ -165,10 +178,45 @@ def _trend_design_matrix(
         np.clip(trends[:, 3] * 10.0, 0.0, 3.0),
         np.full(len(combinations), path_points, dtype=np.float64),
     ))
+    if not context_features:
+        return base
+    model_probabilities = race.get("model_probabilities") or {}
+    market_probabilities = race.get("market_probabilities") or {}
+    model_market_ratio = np.asarray([
+        np.clip(
+            math.log(
+                max(1e-12, float(model_probabilities.get(key, 1e-12)))
+                / max(1e-12, float(market_probabilities.get(key, 1e-12)))
+            ),
+            -4.0,
+            4.0,
+        )
+        for key in combinations
+    ])
+    race_number = (
+        float(race.get("rno") or race.get("race_no") or 6.5) - 6.5
+    ) / 5.5
+    first_lane = np.asarray([
+        (int(key.split("-", 1)[0]) - 3.5) / 2.5
+        for key in combinations
+    ])
+    return np.column_stack((
+        base,
+        np.full(len(combinations), race_number, dtype=np.float64),
+        first_lane,
+        model_market_ratio,
+        model_market_ratio * model_market_ratio,
+        model_market_ratio * log_odds,
+        model_market_ratio * ranks,
+        model_market_ratio * race_number,
+    ))
 
 
 def fit_closing_odds_trend_quantile_model(
-    races: list[dict[str, Any]], *, regularization: float = 0.001
+    races: list[dict[str, Any]],
+    *,
+    regularization: float = 0.001,
+    context_features: bool = False,
 ) -> dict[str, Any]:
     if regularization < 0.0 or not math.isfinite(regularization):
         raise ValueError("regularization must be finite and non-negative")
@@ -180,7 +228,12 @@ def fit_closing_odds_trend_quantile_model(
         if paired is None:
             continue
         combinations, current, closing = paired
-        matrices.append(_trend_design_matrix(race, combinations, current))
+        matrices.append(_trend_design_matrix(
+            race,
+            combinations,
+            current,
+            context_features=context_features,
+        ))
         targets.append(np.log(closing))
         race_count += 1
     if not targets:
@@ -206,8 +259,16 @@ def fit_closing_odds_trend_quantile_model(
     residual_quantiles = np.quantile(residuals, QUANTILE_LEVELS)
     predicted_median = location + float(residual_quantiles[1])
     return {
-        "model_type": "ridge_log_location_odds_path_v2",
-        "feature_names": list(TREND_FEATURE_NAMES),
+        "model_type": (
+            "ridge_log_location_odds_path_context_v3"
+            if context_features
+            else "ridge_log_location_odds_path_v2"
+        ),
+        "feature_names": list(
+            CONTEXT_TREND_FEATURE_NAMES
+            if context_features
+            else TREND_FEATURE_NAMES
+        ),
         "feature_mean": feature_mean.tolist(),
         "feature_scale": feature_scale.tolist(),
         "coefficients": coefficients.tolist(),
@@ -236,12 +297,23 @@ def _location_values(
     current: np.ndarray,
     model: dict[str, Any],
 ) -> np.ndarray:
-    if model.get("model_type") != "ridge_log_location_odds_path_v2":
+    model_type = model.get("model_type")
+    if model_type not in {
+        "ridge_log_location_odds_path_v2",
+        "ridge_log_location_odds_path_context_v3",
+    }:
         return (
             float(model["intercept"])
             + float(model["log_odds_coefficient"]) * np.log(current)
         )
-    matrix = _trend_design_matrix(race, combinations, current)
+    matrix = _trend_design_matrix(
+        race,
+        combinations,
+        current,
+        context_features=(
+            model_type == "ridge_log_location_odds_path_context_v3"
+        ),
+    )
     mean = np.asarray(model["feature_mean"], dtype=np.float64)
     scale = np.asarray(model["feature_scale"], dtype=np.float64)
     coefficients = np.asarray(model["coefficients"], dtype=np.float64)
@@ -259,6 +331,7 @@ def _fit_daily_cross_conformal_model(
     regularization: float,
     alpha: float = INITIAL_ADAPTIVE_ALPHA,
     use_trend_features: bool = True,
+    trend_context_features: bool = False,
 ) -> dict[str, Any]:
     """Fit location on all training days and calibrate on daily OOF residuals."""
     training = [race for day in training_dates for race in by_day[day]]
@@ -267,9 +340,10 @@ def _fit_daily_cross_conformal_model(
         if use_trend_features
         else fit_closing_odds_quantile_model
     )
-    model = fitter(
-        training, regularization=regularization
-    )
+    fit_kwargs = {"regularization": regularization}
+    if use_trend_features:
+        fit_kwargs["context_features"] = trend_context_features
+    model = fitter(training, **fit_kwargs)
     if len(training_dates) == 1:
         residuals = _model_residuals(training, model)
         _set_residual_quantiles(model, residuals, alpha=alpha)
@@ -288,9 +362,7 @@ def _fit_daily_cross_conformal_model(
             if day != held_out_date
             for race in by_day[day]
         ]
-        fold_model = fitter(
-            fit_races, regularization=regularization
-        )
+        fold_model = fitter(fit_races, **fit_kwargs)
         for race in by_day[held_out_date]:
             paired = _paired_race(race)
             if paired is None:
@@ -464,6 +536,7 @@ def walk_forward_closing_odds_quantiles(
     adaptive_rate: float = 0.5,
     include_policy_forecasts: bool = False,
     use_trend_features: bool = True,
+    trend_context_features: bool = False,
 ) -> dict[str, Any]:
     if minimum_training_days < 1:
         raise ValueError("minimum_training_days must be positive")
@@ -501,6 +574,7 @@ def walk_forward_closing_odds_quantiles(
             regularization=regularization,
             alpha=alpha,
             use_trend_features=use_trend_features,
+            trend_context_features=trend_context_features,
         )
         metrics = closing_odds_quantile_metrics(holdout, model)
         if include_policy_forecasts:

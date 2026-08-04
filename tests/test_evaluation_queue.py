@@ -2419,6 +2419,7 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
         "trend_point_empirical_lcb_walk_forward": {
             "status": "calibration_not_ready",
             "registered_after": "2026-08-04",
+            "registered_closing_context_features": True,
             "evaluation_days": 1,
             "evaluated_races": 132,
             "calibration_ready_folds": 0,
@@ -2492,6 +2493,9 @@ def test_result_summary_exposes_fixed_trend_point_prospective_evidence() -> None
         "trend_point_prospective_probability_calibration"
     ]["probability_at_most_observed_hits"] == 0.71
     assert summary["trend_point_prospective_promotion_gate"]["pass"] is False
+    assert summary[
+        "trend_empirical_lcb_registered_closing_context_features"
+    ] is True
     safety = summary["trend_point_odds_safety_sweep"]
     assert safety["selection_data_through"] == "2026-08-03"
     assert safety["rows"][0]["odds_safety_factor"] == 1.1
@@ -4635,6 +4639,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "trend_point_require_reversed_place_pair": True,
                 "trend_point_maximum_forecast_odds": 100.0,
                 "trend_point_minimum_race_number": 5,
+                "trend_point_closing_context_features": True,
                 "prequential_conditional_order": True,
                 "research_only_reused_holdout": True,
             },
@@ -4687,6 +4692,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[
         command.index("--trend-point-minimum-race-number") + 1
     ] == "5"
+    assert "--trend-point-closing-context-features" in command
     assert "--prequential-conditional-order" in command
     assert "--research-only-reused-holdout" in command
     assert command[command.index("--minimum-research-clean-days") + 1] == "300"

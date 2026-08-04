@@ -116,7 +116,7 @@ CLOSING_ODDS_SOURCE_PRIORITY = (OFFICIAL_SOURCE_KEY, SOURCE_KEY)
 
 
 MODEL_NAME = "listwise_newton_market_calibrated_v1"
-MARKET_EVALUATION_VERSION = 34
+MARKET_EVALUATION_VERSION = 35
 MARKET_FORMAL_EVALUATION_FROM = "2026-07-22"
 EV_BAND_HYPOTHESIS_REGISTERED_AFTER = "2026-07-25"
 CONSERVATIVE_MARKET_KELLY_REGISTERED_AFTER = "2026-07-28"
@@ -3493,6 +3493,8 @@ def evaluate_closing_odds_quantiles(
 
 def prequential_conformal_lower_odds_policy_inputs(
     races: Iterable[dict[str, Any]],
+    *,
+    trend_context_features: bool = False,
 ) -> dict[str, Any]:
     """Build lower-bound policy prices and their shared forecast report."""
     eligible = verifiable_closing_odds_races(races)
@@ -3510,6 +3512,7 @@ def prequential_conformal_lower_odds_policy_inputs(
         eligible,
         minimum_training_days=1,
         include_policy_forecasts=True,
+        trend_context_features=trend_context_features,
     )
     result["status"] = "evaluated"
     result["teacher"] = "last_preclose_odds_with_verified_source_or_value_change"
@@ -3806,6 +3809,7 @@ def walk_forward_evaluate(
     trend_point_require_reversed_place_pair: bool = False,
     trend_point_maximum_forecast_odds: float | None = None,
     trend_point_minimum_race_number: int = 1,
+    trend_point_closing_context_features: bool = False,
     prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -3863,6 +3867,10 @@ def walk_forward_evaluate(
     ):
         raise ValueError(
             "trend_point_minimum_race_number must be an integer from 1 to 12"
+        )
+    if not isinstance(trend_point_closing_context_features, bool):
+        raise ValueError(
+            "trend_point_closing_context_features must be a boolean"
         )
     if not isinstance(prequential_conditional_order, bool):
         raise ValueError("prequential_conditional_order must be a boolean")
@@ -4026,7 +4034,10 @@ def walk_forward_evaluate(
         min_training_days=closing_odds_min_training_days,
         min_training_races=closing_odds_min_training_races,
     )
-    conformal_lower_inputs = prequential_conformal_lower_odds_policy_inputs(races)
+    conformal_lower_inputs = prequential_conformal_lower_odds_policy_inputs(
+        races,
+        trend_context_features=trend_point_closing_context_features,
+    )
     closing_odds_forecast = {
         key: value
         for key, value in conformal_lower_inputs.items()
@@ -4973,6 +4984,7 @@ def walk_forward_evaluate(
             "conditional median closing-odds forecast"
         ),
         "promotion_eligible": False,
+        "closing_context_features": trend_point_closing_context_features,
     })
     trend_point_reversed_place_pair_diagnostic = None
     if trend_point_required_ticket_count == 2:
@@ -5026,6 +5038,9 @@ def walk_forward_evaluate(
         "registered_odds_safety_factor": float(
             trend_point_odds_safety_factor
         ),
+        "registered_closing_context_features": (
+            trend_point_closing_context_features
+        ),
         "status": (
             "evaluating"
             if trend_point_evaluation_dates
@@ -5055,6 +5070,9 @@ def walk_forward_evaluate(
         "registered_after": trend_point_registered_after,
         "registered_odds_safety_factor": float(
             trend_point_odds_safety_factor
+        ),
+        "registered_closing_context_features": (
+            trend_point_closing_context_features
         ),
         "status": (
             "unsupported_requested_ticket_constraints"
@@ -7639,6 +7657,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
     )
     parser.add_argument(
+        "--trend-point-closing-context-features",
+        action="store_true",
+    )
+    parser.add_argument(
         "--prequential-conditional-order",
         action="store_true",
     )
@@ -7833,6 +7855,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         trend_point_minimum_race_number=(
             args.trend_point_minimum_race_number
+        ),
+        trend_point_closing_context_features=(
+            args.trend_point_closing_context_features
         ),
         prequential_conditional_order=args.prequential_conditional_order,
     )

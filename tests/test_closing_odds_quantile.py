@@ -341,3 +341,51 @@ def test_odds_path_trend_improves_unseen_day_closing_forecast() -> None:
     model = fit_closing_odds_trend_quantile_model(races[:4])
     forecast = forecast_closing_odds_quantiles(races[-1], model)
     assert all(len(values) == 120 for values in forecast.values())
+
+
+def test_context_trend_model_is_explicit_and_backward_compatible() -> None:
+    races = _training_races()
+    for index, race in enumerate(races, start=1):
+        race["rno"] = index
+        race["model_probabilities"] = {
+            key: (index + position + 1.0)
+            for position, key in enumerate(COMBINATIONS)
+        }
+        total = sum(race["model_probabilities"].values())
+        race["model_probabilities"] = {
+            key: value / total
+            for key, value in race["model_probabilities"].items()
+        }
+        race["market_probabilities"] = {
+            key: 1.0 / len(COMBINATIONS) for key in COMBINATIONS
+        }
+
+    legacy = fit_closing_odds_trend_quantile_model(races)
+    context = fit_closing_odds_trend_quantile_model(
+        races,
+        context_features=True,
+    )
+
+    assert legacy["model_type"] == "ridge_log_location_odds_path_v2"
+    assert context["model_type"] == (
+        "ridge_log_location_odds_path_context_v3"
+    )
+    assert len(context["feature_names"]) == len(legacy["feature_names"]) + 7
+    assert all(
+        len(values) == 120
+        for values in forecast_closing_odds_quantiles(races[-1], context).values()
+    )
+    holdout = copy.deepcopy(races[-1])
+    holdout["race_date"] = "2026-07-21"
+    holdout["race_id"] = "context-holdout"
+    walk_forward = walk_forward_closing_odds_quantiles(
+        [*races, holdout],
+        minimum_training_days=1,
+        include_policy_forecasts=True,
+        trend_context_features=True,
+    )
+    assert walk_forward["point_policy_forecasts_by_race_id"][
+        "context-holdout"
+    ]["closing_odds_model_type"] == (
+        "ridge_log_location_odds_path_context_v3"
+    )
