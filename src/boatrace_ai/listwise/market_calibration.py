@@ -1616,6 +1616,7 @@ def _trend_empirical_policy_races(
     *,
     odds_safety_factor: float,
     minimum_race_number: int,
+    maximum_race_number: int = 12,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for race in races:
@@ -1639,7 +1640,7 @@ def _trend_empirical_policy_races(
         item["estimated_final_odds"] = {
             str(key): (
                 float(value) / float(odds_safety_factor)
-                if race_number >= minimum_race_number
+                if minimum_race_number <= race_number <= maximum_race_number
                 else 1.0
             )
             for key, value in odds.items()
@@ -1656,6 +1657,7 @@ def evaluate_trend_empirical_lcb_walk_forward(
     odds_safety_factor: float,
     daily_budget_yen: int,
     minimum_race_number: int = 1,
+    maximum_race_number: int = 12,
     bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
 ) -> dict[str, Any]:
     """Gate trend-point Kelly candidates with strictly-prior realized ROI LCB."""
@@ -1675,10 +1677,21 @@ def evaluate_trend_empirical_lcb_walk_forward(
         or not 1 <= minimum_race_number <= 12
     ):
         raise ValueError("minimum_race_number must be an integer from 1 to 12")
+    if (
+        isinstance(maximum_race_number, bool)
+        or not isinstance(maximum_race_number, int)
+        or not 1 <= maximum_race_number <= 12
+    ):
+        raise ValueError("maximum_race_number must be an integer from 1 to 12")
+    if minimum_race_number > maximum_race_number:
+        raise ValueError(
+            "minimum_race_number must not exceed maximum_race_number"
+        )
     policy_races = _trend_empirical_policy_races(
         races,
         odds_safety_factor=odds_safety_factor,
         minimum_race_number=minimum_race_number,
+        maximum_race_number=maximum_race_number,
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in policy_races:
@@ -1783,6 +1796,7 @@ def evaluate_trend_empirical_lcb_walk_forward(
             "name": "trend_point_strict_prior_empirical_roi_lcb95",
             "odds_safety_factor": float(odds_safety_factor),
             "minimum_race_number": minimum_race_number,
+            "maximum_race_number": maximum_race_number,
             "buy_threshold": 1.0,
             "shape_constraint": "isotonic",
             "zero_bet_until_ready": True,
@@ -3809,6 +3823,7 @@ def walk_forward_evaluate(
     trend_point_require_reversed_place_pair: bool = False,
     trend_point_maximum_forecast_odds: float | None = None,
     trend_point_minimum_race_number: int = 1,
+    trend_point_maximum_race_number: int = 12,
     trend_point_closing_context_features: bool = False,
     prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
@@ -3867,6 +3882,19 @@ def walk_forward_evaluate(
     ):
         raise ValueError(
             "trend_point_minimum_race_number must be an integer from 1 to 12"
+        )
+    if (
+        isinstance(trend_point_maximum_race_number, bool)
+        or not isinstance(trend_point_maximum_race_number, int)
+        or not 1 <= trend_point_maximum_race_number <= 12
+    ):
+        raise ValueError(
+            "trend_point_maximum_race_number must be an integer from 1 to 12"
+        )
+    if trend_point_minimum_race_number > trend_point_maximum_race_number:
+        raise ValueError(
+            "trend_point_minimum_race_number must not exceed "
+            "trend_point_maximum_race_number"
         )
     if not isinstance(trend_point_closing_context_features, bool):
         raise ValueError(
@@ -4976,6 +5004,7 @@ def walk_forward_evaluate(
         ),
         maximum_forecast_odds=trend_point_maximum_forecast_odds,
         minimum_race_number=trend_point_minimum_race_number,
+        maximum_race_number=trend_point_maximum_race_number,
     )
     trend_point_diagnostic.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4998,6 +5027,7 @@ def walk_forward_evaluate(
                 require_reversed_place_pair=True,
                 maximum_forecast_odds=trend_point_maximum_forecast_odds,
                 minimum_race_number=trend_point_minimum_race_number,
+                maximum_race_number=trend_point_maximum_race_number,
             )
         )
         trend_point_reversed_place_pair_diagnostic.update({
@@ -5027,6 +5057,7 @@ def walk_forward_evaluate(
         ),
         maximum_forecast_odds=trend_point_maximum_forecast_odds,
         minimum_race_number=trend_point_minimum_race_number,
+        maximum_race_number=trend_point_maximum_race_number,
     )
     trend_point_prospective.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -5065,6 +5096,7 @@ def walk_forward_evaluate(
         odds_safety_factor=trend_point_odds_safety_factor,
         daily_budget_yen=daily_budget_yen,
         minimum_race_number=trend_point_minimum_race_number,
+        maximum_race_number=trend_point_maximum_race_number,
     )
     trend_point_empirical_lcb.update({
         "registered_after": trend_point_registered_after,
@@ -5119,6 +5151,7 @@ def walk_forward_evaluate(
                     ),
                     maximum_forecast_odds=trend_point_maximum_forecast_odds,
                     minimum_race_number=trend_point_minimum_race_number,
+                    maximum_race_number=trend_point_maximum_race_number,
                 )
             )
             prior_registered = (
@@ -5135,6 +5168,7 @@ def walk_forward_evaluate(
                     ),
                     maximum_forecast_odds=trend_point_maximum_forecast_odds,
                     minimum_race_number=trend_point_minimum_race_number,
+                    maximum_race_number=trend_point_maximum_race_number,
                 )
             )
             sweep_rows.append({
@@ -7657,6 +7691,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
     )
     parser.add_argument(
+        "--trend-point-maximum-race-number",
+        type=int,
+        default=12,
+    )
+    parser.add_argument(
         "--trend-point-closing-context-features",
         action="store_true",
     )
@@ -7855,6 +7894,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         trend_point_minimum_race_number=(
             args.trend_point_minimum_race_number
+        ),
+        trend_point_maximum_race_number=(
+            args.trend_point_maximum_race_number
         ),
         trend_point_closing_context_features=(
             args.trend_point_closing_context_features

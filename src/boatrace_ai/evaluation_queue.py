@@ -55,6 +55,9 @@ PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY = (
 PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY = (
     "prospective_strict_lcb_context_r05_12_job_12315"
 )
+PROSPECTIVE_STRICT_LCB_CONTEXT_R05_08_JOB_12315_MODEL_KEY = (
+    "prospective_strict_lcb_context_r05_08_job_12315"
+)
 PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012315.joblib"
 )
@@ -2233,6 +2236,7 @@ def build_command(
             "trend_point_require_reversed_place_pair",
             "trend_point_maximum_forecast_odds",
             "trend_point_minimum_race_number",
+            "trend_point_maximum_race_number",
             "trend_point_closing_context_features",
             "prequential_conditional_order",
             "research_only_reused_holdout",
@@ -2471,6 +2475,18 @@ def build_command(
             command.extend([
                 "--trend-point-minimum-race-number",
                 str(minimum_race_number),
+            ])
+        if params.get("trend_point_maximum_race_number") is not None:
+            maximum_race_number = _integer(
+                params,
+                "trend_point_maximum_race_number",
+                12,
+                1,
+                12,
+            )
+            command.extend([
+                "--trend-point-maximum-race-number",
+                str(maximum_race_number),
             ])
         closing_context_features = params.get(
             "trend_point_closing_context_features", False
@@ -7768,6 +7784,32 @@ def seed_periodic_jobs(
     candidate_specs = (
         {
             "model_key": (
+                PROSPECTIVE_STRICT_LCB_CONTEXT_R05_08_JOB_12315_MODEL_KEY
+            ),
+            "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
+            "source_model_job_id": 12_315,
+            "source_evaluation_job_id": 12_618,
+            "expected_model_sha256": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256
+            ),
+            "policy": (
+                "trend_point_context_v3_strict_prior_empirical_roi_"
+                "lcb95_r05_08"
+            ),
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
+            "minimum_race_number": 5,
+            "maximum_race_number": 8,
+            "closing_context_features": True,
+            "odds_safety_factor": 1.0,
+            "registered_after": (
+                PROSPECTIVE_STRICT_LCB_CONTEXT_JOB_12315_REGISTERED_AFTER
+            ),
+            "priority": 48,
+        },
+        {
+            "model_key": (
                 PROSPECTIVE_STRICT_LCB_CONTEXT_R05_12_JOB_12315_MODEL_KEY
             ),
             "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
@@ -8036,6 +8078,14 @@ def seed_periodic_jobs(
                 parameters["prospective_candidate"][
                     "minimum_race_number"
                 ] = minimum_race_number
+            maximum_race_number = int(spec.get("maximum_race_number", 12))
+            if maximum_race_number < 12:
+                parameters["trend_point_maximum_race_number"] = (
+                    maximum_race_number
+                )
+                parameters["prospective_candidate"][
+                    "maximum_race_number"
+                ] = maximum_race_number
             closing_context_features = bool(
                 spec.get("closing_context_features", False)
             )

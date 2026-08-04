@@ -4639,6 +4639,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
                 "trend_point_require_reversed_place_pair": True,
                 "trend_point_maximum_forecast_odds": 100.0,
                 "trend_point_minimum_race_number": 5,
+                "trend_point_maximum_race_number": 8,
                 "trend_point_closing_context_features": True,
                 "prequential_conditional_order": True,
                 "research_only_reused_holdout": True,
@@ -4692,6 +4693,9 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     assert command[
         command.index("--trend-point-minimum-race-number") + 1
     ] == "5"
+    assert command[
+        command.index("--trend-point-maximum-race-number") + 1
+    ] == "8"
     assert "--trend-point-closing-context-features" in command
     assert "--prequential-conditional-order" in command
     assert "--research-only-reused-holdout" in command

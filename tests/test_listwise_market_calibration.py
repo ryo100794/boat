@@ -1154,6 +1154,24 @@ def test_trend_empirical_ledger_applies_minimum_race_number_before_candidates() 
     assert max(prepared[1]["estimated_final_odds"].values()) > 1.0
 
 
+def test_trend_empirical_ledger_applies_maximum_race_number_before_candidates() -> None:
+    races = [_race("2026-07-22", 8), _race("2026-07-22", 9)]
+    for race in races:
+        race["_policy_calibrated_probabilities"] = dict(
+            race["model_probabilities"]
+        )
+
+    prepared = market_calibration._trend_empirical_policy_races(
+        races,
+        odds_safety_factor=1.0,
+        minimum_race_number=5,
+        maximum_race_number=8,
+    )
+
+    assert max(prepared[0]["estimated_final_odds"].values()) > 1.0
+    assert set(prepared[1]["estimated_final_odds"].values()) == {1.0}
+
+
 def test_trend_point_required_ticket_count_is_explicit() -> None:
     races = [
         _race("2026-07-20", 1),
