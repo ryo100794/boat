@@ -269,7 +269,7 @@ def test_local_result_does_not_treat_structure_only_as_promotion(tmp_path) -> No
     assert result["promotion_eligible"] is False
 
 
-def test_conditional_payout_gate_requires_exact_365_day_holdout() -> None:
+def test_conditional_payout_gate_requires_at_least_365_day_holdout() -> None:
     performance_gate = {"pass": True, "roi": 1.1}
 
     full_holdout = _conditional_payout_holdout_gate(
@@ -282,6 +282,11 @@ def test_conditional_payout_gate_requires_exact_365_day_holdout() -> None:
         evaluation_from="2025-07-21",
         evaluation_through="2026-07-19",
     )
+    extended_holdout = _conditional_payout_holdout_gate(
+        performance_gate,
+        evaluation_from="2025-07-26",
+        evaluation_through="2026-08-02",
+    )
 
     assert full_holdout["holdout_days"] == 365
     assert full_holdout["performance_pass"] is True
@@ -290,6 +295,9 @@ def test_conditional_payout_gate_requires_exact_365_day_holdout() -> None:
     assert short_holdout["holdout_days"] == 364
     assert short_holdout["holdout_period_pass"] is False
     assert short_holdout["pass"] is False
+    assert extended_holdout["holdout_days"] == 373
+    assert extended_holdout["holdout_period_pass"] is True
+    assert extended_holdout["pass"] is True
 
 
 @pytest.mark.parametrize(

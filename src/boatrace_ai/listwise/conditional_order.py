@@ -87,7 +87,7 @@ def _conditional_payout_holdout_gate(
     result["performance_pass"] = bool(gate["pass"])
     result["required_holdout_days"] = 365
     result["holdout_days"] = holdout_days
-    result["holdout_period_pass"] = holdout_days == 365
+    result["holdout_period_pass"] = holdout_days >= 365
     result["pass"] = bool(
         result["performance_pass"] and result["holdout_period_pass"]
     )
@@ -103,7 +103,7 @@ def _conditional_payout_promotion_status(
     role = (
         "production candidate with persisted next-day inference state"
         if eligible
-        else "next-day inference artifact; 365-day promotion gate not passed"
+        else "next-day inference artifact; minimum 365-day promotion gate not passed"
     )
     return eligible, role
 
