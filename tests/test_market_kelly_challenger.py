@@ -210,6 +210,31 @@ def test_odds_safety_factor_requires_a_larger_forecast_edge() -> None:
         )
 
 
+def test_minimum_race_number_is_a_fixed_candidate_generation_rule() -> None:
+    races = [
+        _race("2026-07-20", "race-4", favourite="1-2-3"),
+        _race("2026-07-20", "race-5", favourite="1-2-3"),
+    ]
+
+    result = challenger.evaluate_market_kelly_challenger(
+        races,
+        minimum_race_number=5,
+    )
+
+    decisions = result["daily"][0]["decisions"]
+    assert result["policy"]["minimum_race_number"] == 5
+    assert decisions[0]["rno"] == 4
+    assert decisions[0]["stake_yen"] == 0
+    assert decisions[0]["allocations"] == []
+    assert decisions[1]["rno"] == 5
+    assert decisions[1]["stake_yen"] == 500
+    with pytest.raises(ValueError, match="minimum_race_number"):
+        challenger.evaluate_market_kelly_challenger(
+            races,
+            minimum_race_number=13,
+        )
+
+
 def test_required_ticket_count_executes_only_matching_allocations() -> None:
     first, second = COMBINATIONS[:2]
     probabilities = {key: 0.1 / 118.0 for key in COMBINATIONS}

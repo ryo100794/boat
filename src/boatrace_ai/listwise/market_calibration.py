@@ -1615,6 +1615,7 @@ def _trend_empirical_policy_races(
     races: Iterable[Mapping[str, Any]],
     *,
     odds_safety_factor: float,
+    minimum_race_number: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for race in races:
@@ -1634,8 +1635,13 @@ def _trend_empirical_policy_races(
         }
         item["model_probabilities"] = normalized
         item["market_probabilities"] = dict(normalized)
+        race_number = int(race.get("rno", race.get("race_no")))
         item["estimated_final_odds"] = {
-            str(key): float(value) / float(odds_safety_factor)
+            str(key): (
+                float(value) / float(odds_safety_factor)
+                if race_number >= minimum_race_number
+                else 1.0
+            )
             for key, value in odds.items()
         }
         item["historical_return_multipliers"] = {}
@@ -1649,6 +1655,7 @@ def evaluate_trend_empirical_lcb_walk_forward(
     evaluation_dates: Iterable[str],
     odds_safety_factor: float,
     daily_budget_yen: int,
+    minimum_race_number: int = 1,
     bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
 ) -> dict[str, Any]:
     """Gate trend-point Kelly candidates with strictly-prior realized ROI LCB."""
@@ -1662,9 +1669,16 @@ def evaluate_trend_empirical_lcb_walk_forward(
         raise ValueError("odds_safety_factor must be finite and in [1, 10]")
     if bootstrap_samples < 100:
         raise ValueError("bootstrap_samples must be at least 100")
+    if (
+        isinstance(minimum_race_number, bool)
+        or not isinstance(minimum_race_number, int)
+        or not 1 <= minimum_race_number <= 12
+    ):
+        raise ValueError("minimum_race_number must be an integer from 1 to 12")
     policy_races = _trend_empirical_policy_races(
         races,
         odds_safety_factor=odds_safety_factor,
+        minimum_race_number=minimum_race_number,
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in policy_races:
@@ -1768,6 +1782,7 @@ def evaluate_trend_empirical_lcb_walk_forward(
         "policy": {
             "name": "trend_point_strict_prior_empirical_roi_lcb95",
             "odds_safety_factor": float(odds_safety_factor),
+            "minimum_race_number": minimum_race_number,
             "buy_threshold": 1.0,
             "shape_constraint": "isotonic",
             "zero_bet_until_ready": True,
@@ -3790,6 +3805,7 @@ def walk_forward_evaluate(
     trend_point_required_ticket_count: int | None = None,
     trend_point_require_reversed_place_pair: bool = False,
     trend_point_maximum_forecast_odds: float | None = None,
+    trend_point_minimum_race_number: int = 1,
     prequential_conditional_order: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -3839,6 +3855,14 @@ def walk_forward_evaluate(
     ):
         raise ValueError(
             "trend_point_maximum_forecast_odds must be finite and greater than 1.0"
+        )
+    if (
+        isinstance(trend_point_minimum_race_number, bool)
+        or not isinstance(trend_point_minimum_race_number, int)
+        or not 1 <= trend_point_minimum_race_number <= 12
+    ):
+        raise ValueError(
+            "trend_point_minimum_race_number must be an integer from 1 to 12"
         )
     if not isinstance(prequential_conditional_order, bool):
         raise ValueError("prequential_conditional_order must be a boolean")
@@ -4940,6 +4964,7 @@ def walk_forward_evaluate(
             trend_point_require_reversed_place_pair
         ),
         maximum_forecast_odds=trend_point_maximum_forecast_odds,
+        minimum_race_number=trend_point_minimum_race_number,
     )
     trend_point_diagnostic.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -4960,6 +4985,7 @@ def walk_forward_evaluate(
                 required_ticket_count=2,
                 require_reversed_place_pair=True,
                 maximum_forecast_odds=trend_point_maximum_forecast_odds,
+                minimum_race_number=trend_point_minimum_race_number,
             )
         )
         trend_point_reversed_place_pair_diagnostic.update({
@@ -4988,6 +5014,7 @@ def walk_forward_evaluate(
             trend_point_require_reversed_place_pair
         ),
         maximum_forecast_odds=trend_point_maximum_forecast_odds,
+        minimum_race_number=trend_point_minimum_race_number,
     )
     trend_point_prospective.update({
         "challenger": "trend_point_market_offset_discrete_multinomial_kelly",
@@ -5022,6 +5049,7 @@ def walk_forward_evaluate(
         ),
         odds_safety_factor=trend_point_odds_safety_factor,
         daily_budget_yen=daily_budget_yen,
+        minimum_race_number=trend_point_minimum_race_number,
     )
     trend_point_empirical_lcb.update({
         "registered_after": trend_point_registered_after,
@@ -5072,6 +5100,7 @@ def walk_forward_evaluate(
                         trend_point_require_reversed_place_pair
                     ),
                     maximum_forecast_odds=trend_point_maximum_forecast_odds,
+                    minimum_race_number=trend_point_minimum_race_number,
                 )
             )
             prior_registered = (
@@ -5087,6 +5116,7 @@ def walk_forward_evaluate(
                         trend_point_require_reversed_place_pair
                     ),
                     maximum_forecast_odds=trend_point_maximum_forecast_odds,
+                    minimum_race_number=trend_point_minimum_race_number,
                 )
             )
             sweep_rows.append({
@@ -7604,6 +7634,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
     )
     parser.add_argument(
+        "--trend-point-minimum-race-number",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
         "--prequential-conditional-order",
         action="store_true",
     )
@@ -7795,6 +7830,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         trend_point_maximum_forecast_odds=(
             args.trend_point_maximum_forecast_odds
+        ),
+        trend_point_minimum_race_number=(
+            args.trend_point_minimum_race_number
         ),
         prequential_conditional_order=args.prequential_conditional_order,
     )

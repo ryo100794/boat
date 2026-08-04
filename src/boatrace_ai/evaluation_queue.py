@@ -49,6 +49,9 @@ PRODUCTION_TREND_POINT_SAFETY_110_MODEL_KEY = (
 PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY = (
     "prospective_strict_lcb_job_12315"
 )
+PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY = (
+    "prospective_strict_lcb_r05_12_job_12315"
+)
 PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT = (
     "data/models/evaluation_queue/job-00012315.joblib"
 )
@@ -2225,6 +2228,7 @@ def build_command(
             "trend_point_required_ticket_count",
             "trend_point_require_reversed_place_pair",
             "trend_point_maximum_forecast_odds",
+            "trend_point_minimum_race_number",
             "prequential_conditional_order",
             "research_only_reused_holdout",
             "minimum_research_clean_days",
@@ -2450,6 +2454,18 @@ def build_command(
             command.extend([
                 "--trend-point-maximum-forecast-odds",
                 str(maximum_forecast_odds),
+            ])
+        if params.get("trend_point_minimum_race_number") is not None:
+            minimum_race_number = _integer(
+                params,
+                "trend_point_minimum_race_number",
+                1,
+                1,
+                12,
+            )
+            command.extend([
+                "--trend-point-minimum-race-number",
+                str(minimum_race_number),
             ])
         conditional_order = params.get(
             "prequential_conditional_order", False
@@ -7735,6 +7751,25 @@ def seed_periodic_jobs(
     expected_model_sha256 = _production_trend_point_model_sha256(app_root)
     candidate_specs = (
         {
+            "model_key": PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
+            "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
+            "source_model_job_id": 12_315,
+            "source_evaluation_job_id": 12_618,
+            "expected_model_sha256": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256
+            ),
+            "policy": "trend_point_strict_prior_empirical_roi_lcb95_r05_12",
+            "required_ticket_count": None,
+            "require_reversed_place_pair": False,
+            "maximum_forecast_odds": None,
+            "minimum_race_number": 5,
+            "odds_safety_factor": 1.0,
+            "registered_after": (
+                PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER
+            ),
+            "priority": 46,
+        },
+        {
             "model_key": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
             "model_input": PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
             "source_model_job_id": 12_315,
@@ -7882,8 +7917,10 @@ def seed_periodic_jobs(
                 prospective_through <= registered_after
                 or candidate_sha256 is None
                 or (
-                    spec["model_key"]
-                    == PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY
+                    spec["model_key"] in {
+                        PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
+                        PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
+                    }
                     and (
                         app_root is None
                         or not (app_root / model_input).is_file()
@@ -7949,6 +7986,14 @@ def seed_periodic_jobs(
                 parameters["prospective_candidate"][
                     "maximum_forecast_odds"
                 ] = maximum_forecast_odds
+            minimum_race_number = int(spec.get("minimum_race_number", 1))
+            if minimum_race_number > 1:
+                parameters["trend_point_minimum_race_number"] = (
+                    minimum_race_number
+                )
+                parameters["prospective_candidate"][
+                    "minimum_race_number"
+                ] = minimum_race_number
             key = dedupe_key(
                 "market_residual_walk_forward",
                 str(spec["model_key"]),

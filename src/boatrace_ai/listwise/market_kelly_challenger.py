@@ -38,6 +38,7 @@ def evaluate_market_kelly_challenger(
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
     maximum_forecast_odds: float | None = None,
+    minimum_race_number: int = 1,
 ) -> dict[str, Any]:
     """Evaluate strict-prior market offsets with exact discrete Kelly stakes.
 
@@ -59,6 +60,7 @@ def evaluate_market_kelly_challenger(
         required_ticket_count=required_ticket_count,
         require_reversed_place_pair=require_reversed_place_pair,
         maximum_forecast_odds=maximum_forecast_odds,
+        minimum_race_number=minimum_race_number,
     )
 
 
@@ -71,6 +73,7 @@ def evaluate_attached_market_kelly_challenger(
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
     maximum_forecast_odds: float | None = None,
+    minimum_race_number: int = 1,
 ) -> dict[str, Any]:
     """Evaluate already prequentially calibrated races without refitting."""
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
@@ -84,6 +87,7 @@ def evaluate_attached_market_kelly_challenger(
     maximum_forecast_odds = _maximum_forecast_odds(
         maximum_forecast_odds
     )
+    minimum_race_number = _minimum_race_number(minimum_race_number)
 
     calibrated_races = [dict(race) for race in calibrated_races]
     requested_dates = (
@@ -102,6 +106,7 @@ def evaluate_attached_market_kelly_challenger(
         required_ticket_count=required_ticket_count,
         require_reversed_place_pair=require_reversed_place_pair,
         maximum_forecast_odds=maximum_forecast_odds,
+        minimum_race_number=minimum_race_number,
     )
     evaluated_races = len(evaluation_races)
     stake_yen = sum(row["stake_yen"] for row in daily)
@@ -140,6 +145,7 @@ def evaluate_attached_market_kelly_challenger(
             "required_ticket_count": required_ticket_count,
             "require_reversed_place_pair": require_reversed_place_pair,
             "maximum_forecast_odds": maximum_forecast_odds,
+            "minimum_race_number": minimum_race_number,
         },
         "evaluation_days": len(daily),
         "evaluation_dates": sorted({row["race_date"] for row in daily}),
@@ -532,6 +538,7 @@ def _simulate_daily(
     required_ticket_count: int | None = None,
     require_reversed_place_pair: bool = False,
     maximum_forecast_odds: float | None = None,
+    minimum_race_number: int = 1,
 ) -> list[dict[str, Any]]:
     odds_safety_factor = _odds_safety_factor(odds_safety_factor)
     required_ticket_count = _required_ticket_count(required_ticket_count)
@@ -540,6 +547,7 @@ def _simulate_daily(
     maximum_forecast_odds = _maximum_forecast_odds(
         maximum_forecast_odds
     )
+    minimum_race_number = _minimum_race_number(minimum_race_number)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
         grouped[_iso_day(race.get("race_date"), "race_date")].append(race)
@@ -602,6 +610,9 @@ def _simulate_daily(
                 daily_staked_yen=staked,
             )
             purchased = allocation.purchased
+            race_number = int(race.get("rno", race.get("race_no")))
+            if race_number < minimum_race_number:
+                purchased = ()
             if (
                 required_ticket_count is not None
                 and len(purchased) != required_ticket_count
@@ -879,6 +890,14 @@ def _required_ticket_count(value: Any) -> int | None:
         raise ValueError("required_ticket_count must be an integer from 1 to 120")
     if not 1 <= value <= EXPECTED_COMBINATIONS:
         raise ValueError("required_ticket_count must be an integer from 1 to 120")
+    return value
+
+
+def _minimum_race_number(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("minimum_race_number must be an integer from 1 to 12")
+    if not 1 <= value <= 12:
+        raise ValueError("minimum_race_number must be an integer from 1 to 12")
     return value
 
 

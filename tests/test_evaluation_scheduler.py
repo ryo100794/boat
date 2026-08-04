@@ -24,6 +24,7 @@ from boatrace_ai.evaluation_queue import (
     PROSPECTIVE_SAFETY_110_REGISTERED_AFTER,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_KEY,
+    PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY,
     PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_SHA256,
     PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER,
     ResourceSnapshot,
@@ -422,6 +423,23 @@ def test_periodic_scheduler_preregisters_lightgbm_exact_two_ladder_candidate(
         "real_betting_enabled"
     ] is False
     assert strict_lcb_candidate["priority"] == 45
+
+    r05_candidate = next(
+        row for row in calls
+        if row["model_key"] == PROSPECTIVE_STRICT_LCB_R05_12_JOB_12315_MODEL_KEY
+    )
+    r05_params = r05_candidate["parameters"]
+    assert r05_params["model_input"] == PROSPECTIVE_STRICT_LCB_JOB_12315_MODEL_INPUT
+    assert r05_params["trend_point_registered_after"] == (
+        PROSPECTIVE_STRICT_LCB_JOB_12315_REGISTERED_AFTER
+    )
+    assert r05_params["trend_point_minimum_race_number"] == 5
+    assert r05_params["prospective_candidate"]["minimum_race_number"] == 5
+    assert r05_params["prospective_candidate"]["policy"] == (
+        "trend_point_strict_prior_empirical_roi_lcb95_r05_12"
+    )
+    assert r05_params["prospective_candidate"]["real_betting_enabled"] is False
+    assert r05_candidate["priority"] == 46
 
     candidate = next(
         row for row in calls

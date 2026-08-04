@@ -1137,6 +1137,23 @@ def test_trend_point_odds_safety_sweep_is_explicit_and_diagnostic_only() -> None
     assert all("daily" not in row["retrospective"] for row in sweep["rows"])
 
 
+def test_trend_empirical_ledger_applies_minimum_race_number_before_candidates() -> None:
+    races = [_race("2026-07-22", 4), _race("2026-07-22", 5)]
+    for race in races:
+        race["_policy_calibrated_probabilities"] = dict(
+            race["model_probabilities"]
+        )
+
+    prepared = market_calibration._trend_empirical_policy_races(
+        races,
+        odds_safety_factor=1.0,
+        minimum_race_number=5,
+    )
+
+    assert set(prepared[0]["estimated_final_odds"].values()) == {1.0}
+    assert max(prepared[1]["estimated_final_odds"].values()) > 1.0
+
+
 def test_trend_point_required_ticket_count_is_explicit() -> None:
     races = [
         _race("2026-07-20", 1),
