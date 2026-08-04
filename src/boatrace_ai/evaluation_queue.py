@@ -3859,6 +3859,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         )
         purchase_rule = protocol.get("purchase_rule")
         purchase_rule = purchase_rule if isinstance(purchase_rule, dict) else {}
+        calibration_protocol = protocol.get("calibration")
+        calibration_protocol = (
+            calibration_protocol
+            if isinstance(calibration_protocol, dict) else {}
+        )
         value_calibration = payload.get(
             "purchase_value_realization_calibration"
         )
@@ -3915,6 +3920,27 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                     "strict_prior_training_for_every_ready_fold"
                 )
             ),
+            "calibration_strict_settlement_fold_violations": (
+                independence_audit.get("strict_settlement_fold_violations")
+            ),
+            "calibration_settlement_before_decision_all_ready_folds": (
+                independence_audit.get(
+                    "settlement_before_decision_for_every_ready_fold"
+                )
+            ),
+            "calibration_settlement_boundary_definition": (
+                independence_audit.get("settlement_boundary_definition")
+            ),
+            "calibration_target_unit": calibration_protocol.get(
+                "target_unit"
+            ),
+            "calibration_raw_input_unit": calibration_protocol.get(
+                "raw_input_unit"
+            ),
+            "calibration_purchase_condition": calibration_protocol.get(
+                "purchase_condition"
+            ),
+            "formal_purchase_value_unit": formal_value.get("value_unit"),
             "calibration_search_validation_draw_sets_disjoint": (
                 independence_audit.get(
                     "search_validation_draw_sets_disjoint"
@@ -6772,7 +6798,7 @@ def enqueue_joint_edge_calibrated_replay(
         conn,
         task_type="joint_edge_calibrated_replay",
         model_key=(
-            f"{job['model_key']}:strict_prior_value_calibrated_v3"
+            f"{job['model_key']}:strict_prior_value_calibrated_v4"
         ),
         parameters={
             "base_artifact": relative,
@@ -6814,6 +6840,9 @@ def reconcile_joint_edge_calibrated_replays(
             FROM model_evaluation_jobs AS child
             WHERE child.parent_job_id = base.job_id
               AND child.task_type = 'joint_edge_calibrated_replay'
+              AND child.model_key = (
+                base.model_key || ':strict_prior_value_calibrated_v4'
+              )
               AND child.status IN ('queued', 'running', 'completed')
           )
         ORDER BY base.completed_at, base.job_id

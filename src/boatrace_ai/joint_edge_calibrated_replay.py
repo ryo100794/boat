@@ -20,10 +20,10 @@ from .joint_bankroll_evaluation import (
 from .listwise.empirical_ev_calibration import fit_empirical_ev_calibration
 
 
-MODEL_VERSION = "joint_edge_calibrated_replay_v3"
+MODEL_VERSION = "joint_edge_calibrated_replay_v4"
 CALIBRATION_VERSION = (
     "strict_prior_independent_validation_"
-    "stake_weighted_isotonic_lcb_v3"
+    "stake_weighted_isotonic_lcb_v4"
 )
 
 
@@ -112,8 +112,13 @@ def _candidate_record(
     realized_return = int(
         race.get("best_search_hypothetical_return_yen") or 0
     )
+    settlement_available_at = _instant(
+        race.get("settlement_available_at"),
+        "settlement_available_at",
+    )
     return {
         "race_date": race_date,
+        "settlement_available_at": settlement_available_at.isoformat(),
         "raw_estimated_ev": raw_gross_return,
         "gross_return_per_yen": realized_return / stake,
         "sample_weight": float(stake),
@@ -368,8 +373,43 @@ def run_joint_edge_calibrated_replay(
 
     for day_index, source_day in enumerate(payload["daily"]):
         race_date = str(source_day.get("race_date") or "")
+        source_races = source_day.get("races") or []
+        day_decision_instants = [
+            _decision_time(race, decision_times) for race in source_races
+        ]
+        calibration_asof = min(
+            day_decision_instants,
+            default=_instant(
+                f"{race_date}T00:00:00+09:00",
+                "calibration_asof",
+            ),
+        )
+        eligible_training_records = [
+            record for record in training_records
+            if _instant(
+                record.get("settlement_available_at"),
+                "training_settlement_available_at",
+            ) < calibration_asof
+        ]
+        excluded_unsettled_records = (
+            len(training_records) - len(eligible_training_records)
+        )
+        latest_training_settlement_instant = max(
+            (
+                _instant(
+                    record.get("settlement_available_at"),
+                    "training_settlement_available_at",
+                )
+                for record in eligible_training_records
+            ),
+            default=None,
+        )
+        latest_training_settlement = (
+            latest_training_settlement_instant.isoformat()
+            if latest_training_settlement_instant is not None else None
+        )
         calibrator = fit_empirical_ev_calibration(
-            training_records,
+            eligible_training_records,
             bootstrap_samples=calibration_bootstrap_samples,
             seed=seed + day_index,
             min_days=calibration_min_training_days,
@@ -381,6 +421,20 @@ def run_joint_edge_calibrated_replay(
         )
         calibration_folds.append({
             "evaluation_date": race_date,
+            "calibration_information_cutoff": calibration_asof.isoformat(),
+            "settlement_eligible_training_records": len(
+                eligible_training_records
+            ),
+            "settlement_excluded_training_records": (
+                excluded_unsettled_records
+            ),
+            "latest_training_settlement_available_at": (
+                latest_training_settlement
+            ),
+            "strict_settlement_before_decision": bool(
+                latest_training_settlement_instant is None
+                or latest_training_settlement_instant < calibration_asof
+            ),
             **calibrator.as_dict(),
         })
         if calibrator.trained_through_date is not None and (
@@ -397,13 +451,11 @@ def run_joint_edge_calibrated_replay(
         pending: list[tuple[datetime, int]] = []
         replay_races = []
         current_training_records = []
-        source_races = source_day.get("races") or []
         if calibrator.ready:
             ready_days += 1
             ready_races += len(source_races)
 
-        for race in source_races:
-            purchase_at = _decision_time(race, decision_times)
+        for race, purchase_at in zip(source_races, day_decision_instants):
             pending, matured = _release_matured_receipts(
                 pending, asof=purchase_at
             )
@@ -536,6 +588,13 @@ def run_joint_edge_calibrated_replay(
         training_records.extend(current_training_records)
         replay_days.append({
             "race_date": race_date,
+            "calibration_information_cutoff": calibration_asof.isoformat(),
+            "settlement_eligible_training_records": len(
+                eligible_training_records
+            ),
+            "settlement_excluded_training_records": (
+                excluded_unsettled_records
+            ),
             "calibration_ready": calibrator.ready,
             "calibration_trained_through_date": calibrator.trained_through_date,
             "opening_bankroll_yen": initial_daily_bankroll_yen,
@@ -619,6 +678,15 @@ def run_joint_edge_calibrated_replay(
             "trained_through_date": str(
                 fold.get("trained_through_date") or ""
             ),
+            "calibration_information_cutoff": str(
+                fold.get("calibration_information_cutoff") or ""
+            ),
+            "latest_training_settlement_available_at": (
+                fold.get("latest_training_settlement_available_at")
+            ),
+            "strict_settlement_before_decision": bool(
+                fold.get("strict_settlement_before_decision")
+            ),
         }
         for fold in calibration_folds
         if fold.get("ready")
@@ -628,6 +696,20 @@ def run_joint_edge_calibrated_replay(
         if not row["trained_through_date"]
         or row["trained_through_date"] >= row["evaluation_date"]
     ]
+    strict_settlement_violations = [
+        row for row in ready_boundaries
+        if not row["strict_settlement_before_decision"]
+        or (
+            row["latest_training_settlement_available_at"] is not None
+            and _instant(
+                row["latest_training_settlement_available_at"],
+                "latest_training_settlement_available_at",
+            ) >= _instant(
+                row["calibration_information_cutoff"],
+                "calibration_information_cutoff",
+            )
+        )
+    ]
     independence_audit = {
         "version": "strict_prior_calibrated_value_independence_audit_v1",
         "calibration_folds": len(calibration_folds),
@@ -635,6 +717,16 @@ def run_joint_edge_calibrated_replay(
         "strict_prior_fold_violations": len(strict_prior_violations),
         "strict_prior_training_for_every_ready_fold": bool(
             ready_boundaries and not strict_prior_violations
+        ),
+        "strict_settlement_fold_violations": len(
+            strict_settlement_violations
+        ),
+        "settlement_before_decision_for_every_ready_fold": bool(
+            ready_boundaries and not strict_settlement_violations
+        ),
+        "settlement_boundary_definition": (
+            "candidate_settlement_available_at_strictly_before_"
+            "earliest_evaluation_time_t_of_fold"
         ),
         "fold_boundary_manifest_sha256": _canonical_sha256(ready_boundaries),
         "search_validation_draw_sets_disjoint": (
@@ -664,6 +756,9 @@ def run_joint_edge_calibrated_replay(
         ),
         "strict_prior_calibration_folds": independence_audit[
             "strict_prior_training_for_every_ready_fold"
+        ],
+        "strict_settlement_before_decision": independence_audit[
+            "settlement_before_decision_for_every_ready_fold"
         ],
         "independent_search_validation_draw_sets": bool(
             independence_audit["search_validation_draw_sets_disjoint"]
@@ -719,6 +814,7 @@ def run_joint_edge_calibrated_replay(
         below_threshold_purchases,
         non_independent_value_purchases,
         strict_prior_violations,
+        strict_settlement_violations,
     ))
     mature_observation_window = ready_days >= 30 and ready_races >= 1_000
     purchase_gate_outcome = _purchase_gate_outcome(
@@ -746,7 +842,7 @@ def run_joint_edge_calibrated_replay(
         ),
     }
     protocol = {
-        "version": "joint_edge_calibrated_replay_protocol_v3",
+        "version": "joint_edge_calibrated_replay_protocol_v4",
         "model": MODEL_VERSION,
         "base_artifact_sha256": _sha256_file(base_artifact),
         "base_evaluation_protocol_id": payload.get("evaluation_protocol_id"),
@@ -769,7 +865,18 @@ def run_joint_edge_calibrated_replay(
                 "stake_weighted_fixed_candidate_"
                 "realized_gross_return_per_yen"
             ),
-            "information_boundary": "strictly_prior_complete_days_only",
+            "target_unit": (
+                "gross_return_per_staked_yen_including_returned_principal"
+            ),
+            "raw_input_unit": "gross_return_multiple_including_principal",
+            "purchase_condition": (
+                "calibrated_gross_return_lcb95_greater_than_"
+                "one_plus_calibration_margin"
+            ),
+            "information_boundary": (
+                "strictly_prior_complete_days_and_settlement_available_at_"
+                "strictly_before_fold_earliest_decision_time"
+            ),
             "sample_weight": "candidate_portfolio_stake_yen",
             "primary_input": (
                 "independent_validation_portfolio_lower_quantile"
@@ -818,6 +925,14 @@ def run_joint_edge_calibrated_replay(
         "bankroll_confidence": confidence,
         "formal_purchase_value": {
             "definition": "strict_prior_empirical_gross_return_isotonic_day_LCB95",
+            "calibration_target": (
+                "gross_return_per_staked_yen_including_returned_principal"
+            ),
+            "value_unit": "net_expected_edge_equals_gross_return_minus_one",
+            "purchase_condition": (
+                "calibrated_gross_return_lcb95_greater_than_"
+                "one_plus_safety_margin"
+            ),
             "safety_margin": calibration_margin,
             "minimum": (
                 min(lcb_values) - 1.0 if lcb_values else None

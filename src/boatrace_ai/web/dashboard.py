@@ -3378,6 +3378,29 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "calibration_strict_prior_all_ready_folds": metrics.get(
                     "calibration_strict_prior_all_ready_folds"
                 ),
+                "calibration_strict_settlement_fold_violations": metrics.get(
+                    "calibration_strict_settlement_fold_violations"
+                ),
+                "calibration_settlement_before_decision_all_ready_folds": (
+                    metrics.get(
+                        "calibration_settlement_before_decision_all_ready_folds"
+                    )
+                ),
+                "calibration_settlement_boundary_definition": metrics.get(
+                    "calibration_settlement_boundary_definition"
+                ),
+                "calibration_target_unit": metrics.get(
+                    "calibration_target_unit"
+                ),
+                "calibration_raw_input_unit": metrics.get(
+                    "calibration_raw_input_unit"
+                ),
+                "calibration_purchase_condition": metrics.get(
+                    "calibration_purchase_condition"
+                ),
+                "formal_purchase_value_unit": metrics.get(
+                    "formal_purchase_value_unit"
+                ),
                 "calibration_search_validation_draw_sets_disjoint": metrics.get(
                     "calibration_search_validation_draw_sets_disjoint"
                 ),
@@ -4130,6 +4153,33 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     candidate_metrics.get(
                         "calibration_strict_prior_all_ready_folds"
                     )
+                ),
+                "calibration_strict_settlement_fold_violations": (
+                    candidate_metrics.get(
+                        "calibration_strict_settlement_fold_violations"
+                    )
+                ),
+                "calibration_settlement_before_decision_all_ready_folds": (
+                    candidate_metrics.get(
+                        "calibration_settlement_before_decision_all_ready_folds"
+                    )
+                ),
+                "calibration_settlement_boundary_definition": (
+                    candidate_metrics.get(
+                        "calibration_settlement_boundary_definition"
+                    )
+                ),
+                "calibration_target_unit": candidate_metrics.get(
+                    "calibration_target_unit"
+                ),
+                "calibration_raw_input_unit": candidate_metrics.get(
+                    "calibration_raw_input_unit"
+                ),
+                "calibration_purchase_condition": candidate_metrics.get(
+                    "calibration_purchase_condition"
+                ),
+                "formal_purchase_value_unit": candidate_metrics.get(
+                    "formal_purchase_value_unit"
                 ),
                 "calibration_search_validation_draw_sets_disjoint": (
                     candidate_metrics.get(
@@ -8454,6 +8504,13 @@ def model_performance_audit_snapshot(
                 "evaluation_popularity_bands_at_t", "bootstrap_condition_id",
                 "calibration_strict_prior_fold_violations",
                 "calibration_strict_prior_all_ready_folds",
+                "calibration_strict_settlement_fold_violations",
+                "calibration_settlement_before_decision_all_ready_folds",
+                "calibration_settlement_boundary_definition",
+                "calibration_target_unit",
+                "calibration_raw_input_unit",
+                "calibration_purchase_condition",
+                "formal_purchase_value_unit",
                 "calibration_search_validation_draw_sets_disjoint",
                 "calibration_value_population_manifest_sha256",
                 "calibration_value_population_independent_only",

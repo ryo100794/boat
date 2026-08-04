@@ -701,10 +701,12 @@ function renderPurchaseValueCalibration(jobs){
   $("purchaseValueCalibrationRows").innerHTML=rows.map(row=>`<tr><td>D${fmt(row.decile)}</td><td>${fmt(row.candidate_portfolios)}</td><td>${fmt(row.evaluation_days)}</td><td>${ratio(row.minimum_purchase_value)} .. ${ratio(row.maximum_purchase_value)}</td><td>${ratio(row.predicted_roi)}</td><td>${ratio(row.realized_roi)}</td><td>${ratio(row.daily_block_roi_lower_95)}</td><td class="${Number(row.profit_yen||0)>=0?"pos":"neg"}">${yen(row.profit_yen)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">V_buyと同一ポートフォリオ実現値の分位校正は次回結合評価から生成</td></tr>';
   if(rows.length){
     const strictPrior=latest.calibration_strict_prior_all_ready_folds===true;
+    const settled=latest.calibration_settlement_before_decision_all_ready_folds===true;
     const separateDraws=latest.calibration_search_validation_draw_sets_disjoint===true;
     const identical=latest.calibration_value_population_identical_only===true;
     const gateOutcome=latest.purchase_gate_operational_outcome||"unknown";
-    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / gate ${gateOutcome}`;
+    const targetUnit=latest.calibration_target_unit||"unknown-unit";
+    $("purchaseValueCalibrationMeta").textContent+=` / strict-prior ${strictPrior?"PASS":"FAIL"} / settled-before-t ${settled?"PASS":"FAIL"} / separate-R ${separateDraws?"PASS":"FAIL"} / identical ${identical?"PASS":"FAIL"} / target ${targetUnit} / gate ${gateOutcome}`;
   }
 }
 function renderCandidates(rows){

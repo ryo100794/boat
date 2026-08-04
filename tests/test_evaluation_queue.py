@@ -4233,7 +4233,7 @@ def test_joint_bankroll_enqueues_strict_prior_value_calibration(
     assert job_id == 101
     assert calls == [{
         "task_type": "joint_edge_calibrated_replay",
-        "model_key": "joint-base:strict_prior_value_calibrated_v3",
+        "model_key": "joint-base:strict_prior_value_calibrated_v4",
         "parameters": {
             "base_artifact": (
                 "data/models/evaluation_queue/job-00000100.json"
@@ -4283,6 +4283,7 @@ def test_reconcile_recovers_joint_calibration_after_worker_reload(
         def execute(self, sql):
             assert "INTERVAL '30 days'" in sql
             assert "joint_edge_calibrated_replay" in sql
+            assert "strict_prior_value_calibrated_v4" in sql
             return Result()
 
     calls = []

@@ -117,6 +117,10 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     independence = profitable["calibration_independence_audit"]
     assert independence["strict_prior_fold_violations"] == 0
     assert independence["strict_prior_training_for_every_ready_fold"] is True
+    assert independence["strict_settlement_fold_violations"] == 0
+    assert independence[
+        "settlement_before_decision_for_every_ready_fold"
+    ] is True
     assert independence["search_validation_draw_sets_disjoint"] is True
     assert independence["value_population_independent_validation_only"] is True
     assert independence["value_population_identical_realized_portfolios_only"] is True
@@ -138,6 +142,17 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert profitable["evaluation_protocol"][
         "training_and_joint_distribution"
     ]["search_validation_draw_sets_disjoint"] is True
+    calibration_protocol = profitable["evaluation_protocol"]["calibration"]
+    assert calibration_protocol["target_unit"] == (
+        "gross_return_per_staked_yen_including_returned_principal"
+    )
+    assert calibration_protocol["purchase_condition"] == (
+        "calibrated_gross_return_lcb95_greater_than_"
+        "one_plus_calibration_margin"
+    )
+    assert profitable["formal_purchase_value"]["value_unit"] == (
+        "net_expected_edge_equals_gross_return_minus_one"
+    )
     assert "minimum_30_calibration_ready_days" in (
         profitable["promotion_gate_failed"]
     )
@@ -157,6 +172,33 @@ def test_independent_validation_gate_is_required_after_calibration_ready(
     assert rejected["base_joint_gate_feasible"] is False
     assert rejected["purchase_authorized"] is False
     assert rejected["rejection_reason"] == "base_joint_gate_not_feasible"
+
+
+def test_calibration_excludes_candidates_unsettled_at_fold_decision(
+    tmp_path: Path,
+) -> None:
+    artifact = _base_artifact(tmp_path / "unsettled.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["daily"][1]["races"][0]["settlement_available_at"] = (
+        "2026-07-03T11:00:00+09:00"
+    )
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(artifact)
+
+    day3 = result["daily"][2]
+    assert day3["calibration_information_cutoff"] == (
+        "2026-07-03T10:00:00+09:00"
+    )
+    assert day3["settlement_eligible_training_records"] == 1
+    assert day3["settlement_excluded_training_records"] == 1
+    assert day3["calibration_ready"] is False
+    assert day3["stake_yen"] == 0
+    assert result["daily"][3]["calibration_ready"] is True
+    assert result["daily"][3]["stake_yen"] == 100
+    assert result["calibration_independence_audit"][
+        "strict_settlement_fold_violations"
+    ] == 0
 
 
 def test_legacy_search_edge_is_explicit_fallback_and_cannot_promote(
@@ -315,8 +357,22 @@ def test_queue_defaults_require_mature_strict_prior_calibration(
 
 def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     summary = summarize_result({
-        "model": "joint_edge_calibrated_replay_v3",
+        "model": "joint_edge_calibrated_replay_v4",
         "evaluation_protocol_id": "calibrated-protocol",
+        "evaluation_protocol": {
+            "calibration": {
+                "target_unit": (
+                    "gross_return_per_staked_yen_including_returned_principal"
+                ),
+                "raw_input_unit": (
+                    "gross_return_multiple_including_principal"
+                ),
+                "purchase_condition": (
+                    "calibrated_gross_return_lcb95_greater_than_"
+                    "one_plus_calibration_margin"
+                ),
+            },
+        },
         "evaluation_days": 5,
         "evaluated_races": 713,
         "calibration_ready_days": 2,
@@ -333,10 +389,19 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
             "safety_margin": 1.0,
             "selected_portfolios": 4,
             "all_above_safety_margin": True,
+            "value_unit": (
+                "net_expected_edge_equals_gross_return_minus_one"
+            ),
         },
         "calibration_independence_audit": {
             "strict_prior_fold_violations": 0,
             "strict_prior_training_for_every_ready_fold": True,
+            "strict_settlement_fold_violations": 0,
+            "settlement_before_decision_for_every_ready_fold": True,
+            "settlement_boundary_definition": (
+                "candidate_settlement_available_at_strictly_before_"
+                "earliest_evaluation_time_t_of_fold"
+            ),
             "search_validation_draw_sets_disjoint": True,
             "value_population_manifest_sha256": "abc123",
             "value_population_independent_validation_only": True,
@@ -379,6 +444,23 @@ def test_calibrated_replay_summary_exposes_formal_value_and_protocol() -> None:
     assert summary["formal_roi_gate_passed"] is True
     assert summary["calibration_strict_prior_fold_violations"] == 0
     assert summary["calibration_strict_prior_all_ready_folds"] is True
+    assert summary["calibration_strict_settlement_fold_violations"] == 0
+    assert summary[
+        "calibration_settlement_before_decision_all_ready_folds"
+    ] is True
+    assert summary["calibration_target_unit"] == (
+        "gross_return_per_staked_yen_including_returned_principal"
+    )
+    assert summary["calibration_raw_input_unit"] == (
+        "gross_return_multiple_including_principal"
+    )
+    assert summary["calibration_purchase_condition"] == (
+        "calibrated_gross_return_lcb95_greater_than_"
+        "one_plus_calibration_margin"
+    )
+    assert summary["formal_purchase_value_unit"] == (
+        "net_expected_edge_equals_gross_return_minus_one"
+    )
     assert summary["calibration_search_validation_draw_sets_disjoint"] is True
     assert summary["calibration_value_population_manifest_sha256"] == "abc123"
     assert summary["calibration_value_population_independent_only"] is True

@@ -299,6 +299,14 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
             "evaluation_snapshot_age_seconds_max": 31.0,
             "bootstrap_condition_id": "abc123",
             "calibration_strict_prior_all_ready_folds": True,
+            "calibration_strict_settlement_fold_violations": 0,
+            "calibration_settlement_before_decision_all_ready_folds": True,
+            "calibration_target_unit": (
+                "gross_return_per_staked_yen_including_returned_principal"
+            ),
+            "formal_purchase_value_unit": (
+                "net_expected_edge_equals_gross_return_minus_one"
+            ),
             "calibration_search_validation_draw_sets_disjoint": True,
             "calibration_value_population_identical_only": True,
             "purchase_gate_operational_outcome": (
@@ -339,6 +347,18 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert payload["rows"][0][
         "calibration_strict_prior_all_ready_folds"
     ] is True
+    assert payload["rows"][0][
+        "calibration_strict_settlement_fold_violations"
+    ] == 0
+    assert payload["rows"][0][
+        "calibration_settlement_before_decision_all_ready_folds"
+    ] is True
+    assert payload["rows"][0]["calibration_target_unit"] == (
+        "gross_return_per_staked_yen_including_returned_principal"
+    )
+    assert payload["rows"][0]["formal_purchase_value_unit"] == (
+        "net_expected_edge_equals_gross_return_minus_one"
+    )
     assert payload["rows"][0][
         "calibration_search_validation_draw_sets_disjoint"
     ] is True
