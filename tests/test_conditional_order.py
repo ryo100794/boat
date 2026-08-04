@@ -9,10 +9,15 @@ from boatrace_ai.listwise.conditional_order import (
     build_parser,
     conditional_probabilities,
     evaluate_probabilities,
+    evaluate_direct_pair_diagnostics,
     evaluate_reversed_place_pair_structure,
     fit_conditional_order,
     identity_model,
     objective_gradient,
+)
+from boatrace_ai.listwise.direct_bankroll import (
+    COMBINATION_LABELS,
+    simulate_direct_bankroll,
 )
 
 
@@ -39,6 +44,48 @@ def test_reversed_place_pair_structure_selects_same_winner_swap() -> None:
     assert metrics["pair_hit_rate_given_winner"] == 1.0
     assert np.isclose(metrics["mean_selected_pair_probability"], 0.5)
     assert metrics["pair_calibration_gap"] == 0.0
+
+
+def test_direct_pair_diagnostics_execute_all_four_research_paths() -> None:
+    probabilities = np.full((1, 120), 1e-12, dtype=np.float64)
+    probabilities[0, COMBINATION_LABELS.index("1-2-3")] = 0.5
+    probabilities[0, COMBINATION_LABELS.index("1-3-2")] = 0.5
+    race_keys = [("test", "2026-07-20", "01", 1)]
+    payouts = {
+        "train": {"combination": "1-2-3", "payout_yen": 2_000},
+        "test": {"combination": "1-3-2", "payout_yen": 2_000},
+    }
+    full_baseline = simulate_direct_bankroll(
+        probabilities,
+        race_keys=race_keys,
+        payouts=payouts,
+        training_races={"train"},
+    )
+
+    result = evaluate_direct_pair_diagnostics(
+        baseline_probabilities=probabilities,
+        candidate_probabilities=probabilities,
+        race_keys=race_keys,
+        payouts=payouts,
+        training_races={"train"},
+        full_baseline_bankroll=full_baseline,
+    )
+
+    assert set(result) == {
+        "baseline_exact_two",
+        "baseline_reversed_place_pair",
+        "conditional_exact_two",
+        "conditional_reversed_place_pair",
+    }
+    for diagnostic in result.values():
+        assert diagnostic["promotion_eligible"] is False
+        assert diagnostic["bankroll"]["evaluated_races"] == 1
+        assert diagnostic["bankroll"]["selected_tickets"] == 2
+        assert diagnostic["diagnostic_gate"][
+            "reused_holdout_research_only"
+        ] is True
+        assert diagnostic["diagnostic_gate"]["holdout_role_pass"] is False
+        assert diagnostic["diagnostic_gate"]["pass"] is False
 from boatrace_ai.listwise.stagewise_mlp import (
     COMBINATION_LANES,
     stagewise_trifecta_probabilities,

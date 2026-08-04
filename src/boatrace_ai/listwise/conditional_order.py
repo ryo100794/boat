@@ -613,6 +613,103 @@ def bankroll_promotion_gate(
     return gate
 
 
+def evaluate_direct_pair_diagnostics(
+    *,
+    baseline_probabilities: np.ndarray,
+    candidate_probabilities: np.ndarray,
+    race_keys: list[tuple[str, str, str, int]],
+    payouts: dict[str, dict[str, Any]],
+    training_races: set[str],
+    full_baseline_bankroll: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare post-allocation exact-two subsets on a reused holdout."""
+    exact_two_filter = functools.partial(
+        filter_exact_two_allocations,
+        require_reversed_place_pair=False,
+    )
+    reversed_pair_filter = functools.partial(
+        filter_exact_two_allocations,
+        require_reversed_place_pair=True,
+    )
+    pair_bankrolls = {
+        "baseline_exact_two": simulate_direct_bankroll(
+            baseline_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=exact_two_filter,
+            allocation_filter_name="exact_two_allocated_tickets",
+        ),
+        "baseline_reversed_place_pair": simulate_direct_bankroll(
+            baseline_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=reversed_pair_filter,
+            allocation_filter_name=(
+                "exact_two_same_winner_reversed_second_third"
+            ),
+        ),
+        "conditional_exact_two": simulate_direct_bankroll(
+            candidate_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=exact_two_filter,
+            allocation_filter_name="exact_two_allocated_tickets",
+        ),
+        "conditional_reversed_place_pair": simulate_direct_bankroll(
+            candidate_probabilities,
+            race_keys=race_keys,
+            payouts=payouts,
+            training_races=training_races,
+            allocation_filter=reversed_pair_filter,
+            allocation_filter_name=(
+                "exact_two_same_winner_reversed_second_third"
+            ),
+        ),
+    }
+    comparison_keys = {
+        "baseline_exact_two": "full_baseline",
+        "baseline_reversed_place_pair": "full_baseline",
+        "conditional_exact_two": "baseline_exact_two",
+        "conditional_reversed_place_pair": "baseline_reversed_place_pair",
+    }
+    result = {}
+    for key, pair_bankroll in pair_bankrolls.items():
+        comparison_key = comparison_keys[key]
+        comparison_bankroll = (
+            full_baseline_bankroll
+            if comparison_key == "full_baseline"
+            else pair_bankrolls[comparison_key]
+        )
+        pair_confidence = bootstrap_daily_bankroll(
+            pair_bankroll["daily"],
+            baseline_daily=comparison_bankroll["daily"],
+        )
+        pair_gate = bankroll_promotion_gate(
+            pair_bankroll,
+            comparison_bankroll,
+            pair_confidence,
+        )
+        pair_gate = _apply_holdout_role_gate(
+            pair_gate,
+            research_only_reused_holdout=True,
+        )
+        result[key] = {
+            "role": (
+                "post-hoc long-holdout structural diagnostic; never "
+                "promotion evidence"
+            ),
+            "promotion_eligible": False,
+            "comparison": comparison_key,
+            "bankroll": pair_bankroll,
+            "bankroll_confidence": pair_confidence,
+            "diagnostic_gate": pair_gate,
+        }
+    return result
+
+
 def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     baseline_model_path = Path(args.baseline_model)
@@ -831,92 +928,14 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(
                 "direct_pair_diagnostics requires research-only reused holdout"
             )
-        exact_two_filter = functools.partial(
-            filter_exact_two_allocations,
-            require_reversed_place_pair=False,
+        direct_pair_diagnostics = evaluate_direct_pair_diagnostics(
+            baseline_probabilities=baseline_probabilities,
+            candidate_probabilities=candidate_probabilities,
+            race_keys=evaluation_keys,
+            payouts=payouts,
+            training_races=training_races,
+            full_baseline_bankroll=baseline_bankroll,
         )
-        reversed_pair_filter = functools.partial(
-            filter_exact_two_allocations,
-            require_reversed_place_pair=True,
-        )
-        pair_bankrolls = {
-            "baseline_exact_two": simulate_direct_bankroll(
-                baseline_probabilities,
-                race_keys=evaluation_keys,
-                payouts=payouts,
-                training_races=training_races,
-                allocation_filter=exact_two_filter,
-                allocation_filter_name="exact_two_allocated_tickets",
-            ),
-            "baseline_reversed_place_pair": simulate_direct_bankroll(
-                baseline_probabilities,
-                race_keys=evaluation_keys,
-                payouts=payouts,
-                training_races=training_races,
-                allocation_filter=reversed_pair_filter,
-                allocation_filter_name=(
-                    "exact_two_same_winner_reversed_second_third"
-                ),
-            ),
-            "conditional_exact_two": simulate_direct_bankroll(
-                candidate_probabilities,
-                race_keys=evaluation_keys,
-                payouts=payouts,
-                training_races=training_races,
-                allocation_filter=exact_two_filter,
-                allocation_filter_name="exact_two_allocated_tickets",
-            ),
-            "conditional_reversed_place_pair": simulate_direct_bankroll(
-                candidate_probabilities,
-                race_keys=evaluation_keys,
-                payouts=payouts,
-                training_races=training_races,
-                allocation_filter=reversed_pair_filter,
-                allocation_filter_name=(
-                    "exact_two_same_winner_reversed_second_third"
-                ),
-            ),
-        }
-        comparison_keys = {
-            "baseline_exact_two": "full_baseline",
-            "baseline_reversed_place_pair": "full_baseline",
-            "conditional_exact_two": "baseline_exact_two",
-            "conditional_reversed_place_pair": (
-                "baseline_reversed_place_pair"
-            ),
-        }
-        direct_pair_diagnostics = {}
-        for key, pair_bankroll in pair_bankrolls.items():
-            comparison_key = comparison_keys[key]
-            comparison_bankroll = (
-                baseline_bankroll
-                if comparison_key == "full_baseline"
-                else pair_bankrolls[comparison_key]
-            )
-            pair_confidence = bootstrap_daily_bankroll(
-                pair_bankroll["daily"],
-                baseline_daily=comparison_bankroll["daily"],
-            )
-            pair_gate = bankroll_promotion_gate(
-                pair_bankroll,
-                comparison_bankroll,
-                pair_confidence,
-            )
-            pair_gate = _apply_holdout_role_gate(
-                pair_gate,
-                research_only_reused_holdout=True,
-            )
-            direct_pair_diagnostics[key] = {
-                "role": (
-                    "post-hoc long-holdout structural diagnostic; never "
-                    "promotion evidence"
-                ),
-                "promotion_eligible": False,
-                "comparison": comparison_key,
-                "bankroll": pair_bankroll,
-                "bankroll_confidence": pair_confidence,
-                "diagnostic_gate": pair_gate,
-            }
     conditional_payout_state: dict[str, Any] = {}
     conditional_payout_bankroll = simulate_conditional_payout_walk_forward(
         candidate_probabilities,
