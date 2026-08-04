@@ -155,6 +155,7 @@ def test_direct_bankroll_uses_fixed_daily_policy_and_settles_returns() -> None:
     assert result["stake_yen"] == 300
     assert result["return_yen"] == 3_000
     assert result["roi"] == 10.0
+    assert result["effective_hit_count"] == 1.0
     attribution = result["ticket_roi_attribution"]
     dimensions = {row["dimension"]: row for row in attribution["dimensions"]}
     assert dimensions["first_lane"]["buckets"][0]["bucket"] == "1"
