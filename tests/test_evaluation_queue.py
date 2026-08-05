@@ -5048,7 +5048,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
         "memory_mb": 8192,
         "disk_mb": 256,
         "idle_cpu": 5.0,
-        "max_parallel": 2,
+        "max_parallel": 1,
     }
     assert command[:3] == [
         str(python),

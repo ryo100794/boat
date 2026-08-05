@@ -133,7 +133,7 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "historical_research_logit": {"category": "evaluation", "memory_mb": 14336, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 4096},
     "genetic_island_search": {"category": "evaluation", "memory_mb": 3072, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 2048},
     "market_curvature": {"category": "evaluation", "memory_mb": 2048, "idle_cpu": 5.0, "max_parallel": 4, "disk_mb": 1024},
-    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 2, "disk_mb": 256},
+    "market_residual_walk_forward": {"category": "evaluation", "memory_mb": 8192, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "joint_scenario_walk_forward": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "joint_bankroll_walk_forward": {"category": "evaluation", "memory_mb": 6144, "idle_cpu": 5.0, "max_parallel": 1, "disk_mb": 256},
     "joint_edge_calibrated_replay": {"category": "evaluation", "memory_mb": 512, "idle_cpu": 0.0, "max_parallel": 2, "disk_mb": 128},
