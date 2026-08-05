@@ -405,3 +405,84 @@ def test_value_alignment_metrics_use_one_ticket_per_race_and_yen_payout(
     assert metrics["roi_excluding_largest_hit"] == 1.5
     assert metrics["trifecta_top5_hit_rate"] == 1.0
     assert metrics["market_trifecta_top5_hit_rate"] == 1.0
+
+
+def test_daily_strict_prior_refit_admits_teachers_only_after_each_day(
+    monkeypatch,
+) -> None:
+    class DailyArtifact:
+        ready = True
+
+        def __init__(self, trained_through_date: str):
+            self.trained_through_date = trained_through_date
+
+        def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
+            return {
+                "purchase_lcb95_available": False,
+                "cell_ready": False,
+            }
+
+        def as_dict(self):
+            return {
+                "ready": True,
+                "ready_reasons": [],
+                "trained_through_date": self.trained_through_date,
+                "training_days": 60,
+                "candidate_days": 60,
+                "tickets": 1_000,
+                "context_ready_cells": 0,
+                "context_cells": 12,
+                "cells": [],
+            }
+
+    fitted_ledger_sizes: list[int] = []
+
+    def fake_fit(ledger, *, prediction_date):
+        fitted_ledger_sizes.append(len(ledger))
+        assert all(row["race_date"] < prediction_date for row in ledger)
+        return DailyArtifact(max(str(row["race_date"]) for row in ledger))
+
+    monkeypatch.setattr(subject, "_fit_mature_contextual_calibrator", fake_fit)
+    probability_calibrator = {"model_weight": 1.0, "temperature": 1.0}
+    initial_race = _race(date(2026, 6, 29), 1)
+    initial_ledger = subject.policy_edge_records(
+        [initial_race],
+        probability_calibrator,
+        subject._identity_probability_blender,
+        max_rank=subject.PURCHASE_MAX_RANK,
+    )
+    evaluation = [
+        _race(date(2026, 7, 1), 2),
+        _race(date(2026, 7, 2), 3),
+    ]
+
+    bankroll, audit, final_payload, final_ledger_hash = (
+        subject._simulate_daily_strict_prior_refit(
+            evaluation,
+            initial_ledger,
+            probability_calibrator,
+            daily_budget_yen=10_000,
+        )
+    )
+
+    assert fitted_ledger_sizes == [2, 4]
+    assert bankroll["evaluation_days"] == 2
+    assert bankroll["evaluated_races"] == 2
+    assert bankroll["tickets"] == 0
+    assert audit["strict_prior_check"] is True
+    assert audit["strict_prior_violation_count"] == 0
+    assert audit["same_day_teachers_excluded"] is True
+    assert audit["same_race_calibrator_hash_count_max"] == 1
+    assert audit["initial_ledger_candidates"] == 2
+    assert audit["evaluation_teachers_admitted"] == 4
+    assert audit["final_ledger_candidates"] == 6
+    assert audit["final_calibration_ledger_hash"] == final_ledger_hash
+    assert final_payload["trained_through_date"] == "2026-07-01"
+    assert len({row["calibrator_hash"] for row in audit["daily_refits"]}) == 2
+    for day in bankroll["daily"]:
+        assert day["strict_prior_check"] is True
+        assert day["same_race_calibrator_hash_count"] == 1
+        assert all(
+            decision["calibrator_hash"] == day["calibrator_hash"]
+            for decision in day["candidate_decision_audit"]
+        )

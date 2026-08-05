@@ -3690,7 +3690,10 @@ def build_command(
         temporal_component = params.get("temporal_component")
         if (
             temporal_component is not None
-            and temporal_component != "mature_stacked_contextual_value"
+            and temporal_component not in {
+                "mature_stacked_contextual_value",
+                "mature_stacked_contextual_value_daily_refit",
+            }
         ):
             raise ValueError("unsupported oracle temporal component")
 
@@ -4061,11 +4064,18 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     temporal = payload.get("temporal_residual_diagnostic")
     if isinstance(temporal, dict) and temporal.get(
         "targeted_temporal_component"
-    ) == "mature_stacked_contextual_value":
+    ) in {
+        "mature_stacked_contextual_value",
+        "mature_stacked_contextual_value_daily_refit",
+    }:
         mature = temporal.get("mature_stacked_contextual_value")
         if isinstance(mature, dict):
             bankroll = mature.get("bankroll")
             bankroll = bankroll if isinstance(bankroll, dict) else {}
+            update_audit = mature.get("calibration_update_audit")
+            update_audit = (
+                update_audit if isinstance(update_audit, dict) else {}
+            )
             summary.update({
                 "model": mature.get("model"),
                 "status": mature.get("status"),
@@ -4086,6 +4096,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "promotion_eligible": mature.get("promotion_eligible"),
                 "statistical_gate_passed": mature.get(
                     "statistical_gate_passed"
+                ),
+                "calibration_update_mode": mature.get(
+                    "calibration_update_mode"
+                ),
+                "calibration_refit_days": update_audit.get("refit_days"),
+                "calibration_update_strict_prior_violation_count": (
+                    update_audit.get("strict_prior_violation_count")
+                ),
+                "calibration_same_day_teachers_excluded": update_audit.get(
+                    "same_day_teachers_excluded"
+                ),
+                "final_calibration_ledger_candidates": mature.get(
+                    "final_calibration_ledger_candidates"
                 ),
                 "strict_prior_artifact_audit": mature.get(
                     "strict_prior_artifact_audit"

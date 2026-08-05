@@ -304,6 +304,11 @@ def _race_candidates(
             "raw_estimated_ev": raw_ev,
             "calibrated_roi": prediction.get("empirical_ev"),
             "calibrated_roi_lcb95": prediction.get("empirical_ev_lcb95"),
+            "decision_time": str(
+                race.get("odds_deadline_at")
+                or race.get("captured_at")
+                or f"{race['race_date']}T00:00:00+09:00"
+            ),
             "buy_threshold": buy_threshold,
             "purchase_gate_approved": False,
             "denial_reason": None,
@@ -471,6 +476,7 @@ def simulate_empirical_lcb_policy(
     purchase_gate_enabled: bool = True,
     purchase_gate_denial_reason: str = "warmup_not_ready",
     max_tickets_per_race: int = MAX_TICKETS_PER_RACE,
+    compute_confidence: bool = True,
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
@@ -552,7 +558,7 @@ def simulate_empirical_lcb_policy(
     return_yen = totals["return_yen"]
     confidence = (
         bootstrap_daily_roi(daily)
-        if daily
+        if daily and compute_confidence
         else {
             "roi_ci95_lower": None,
             "probability_roi_above_one": None,

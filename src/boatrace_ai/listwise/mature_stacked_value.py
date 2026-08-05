@@ -28,6 +28,7 @@ from .stacked_market_residual_v42 import (
 
 
 MODEL_NAME = "mature_stacked_contextual_value_rank20"
+DAILY_REFIT_MODEL_NAME = "mature_stacked_contextual_value_daily_refit_rank20"
 MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_STACK_SELECTION_DAYS = 60
 VALUE_CALIBRATION_DAYS = 60
@@ -530,13 +531,194 @@ def select_value_aligned_stack(
     }
 
 
+def _fit_mature_contextual_calibrator(
+    ledger: list[dict[str, Any]],
+    *,
+    prediction_date: str,
+):
+    return fit_contextual_empirical_ev_calibration(
+        ledger,
+        prediction_date=prediction_date,
+        bootstrap_samples=5_000,
+        min_days=VALUE_CALIBRATION_DAYS,
+        min_tickets=1_000,
+        min_candidate_days=40,
+        candidate_min_raw_ev=0.0,
+        min_rank_days=45,
+        min_rank_tickets=1_000,
+        min_cell_days=30,
+        min_cell_tickets=200,
+        rank_prior_tickets=500.0,
+        cell_prior_tickets=200.0,
+    )
+
+
+def _simulate_daily_strict_prior_refit(
+    evaluation_scored: list[dict[str, Any]],
+    initial_ledger: list[dict[str, Any]],
+    probability_calibrator: Mapping[str, float],
+    *,
+    daily_budget_yen: int,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    """Refit once per day, then admit that day's teachers only after settlement."""
+    races_by_day: dict[str, list[dict[str, Any]]] = {}
+    for race in evaluation_scored:
+        races_by_day.setdefault(str(race["race_date"]), []).append(race)
+
+    ledger = list(initial_ledger)
+    daily: list[dict[str, Any]] = []
+    refit_audit: list[dict[str, Any]] = []
+    totals = {
+        "eligible_tickets": 0,
+        "tickets": 0,
+        "hit_tickets": 0,
+        "stake_yen": 0,
+        "return_yen": 0,
+    }
+    cumulative_profit = peak_profit = max_drawdown = 0
+    strict_prior_violations = 0
+    final_payload: dict[str, Any] = {}
+    all_ready = True
+
+    for race_date in sorted(races_by_day):
+        day_races = races_by_day[race_date]
+        artifact = _fit_mature_contextual_calibrator(
+            ledger,
+            prediction_date=race_date,
+        )
+        final_payload = dict(artifact.as_dict())
+        all_ready = all_ready and bool(artifact.ready)
+        artifact_hash = _canonical_sha256(final_payload)
+        prior_ledger_hash = _ledger_sha256(ledger)
+        max_prior_record = max(
+            ledger,
+            key=lambda row: _parse_timestamp(row["settlement_time"]),
+        )
+        max_prior_settlement_time = str(max_prior_record["settlement_time"])
+        minimum_decision_time = min(
+            str(
+                race.get("odds_deadline_at")
+                or race.get("captured_at")
+                or f"{race_date}T00:00:00+09:00"
+            )
+            for race in day_races
+        )
+        strict_prior = _parse_timestamp(
+            max_prior_settlement_time
+        ) < _parse_timestamp(minimum_decision_time)
+        strict_prior_violations += int(not strict_prior)
+
+        simulation = simulate_empirical_lcb_policy(
+            day_races,
+            probability_calibrator,
+            _identity_probability_blender,
+            artifact,
+            daily_budget_yen,
+            max_rank=PURCHASE_MAX_RANK,
+            max_tickets_per_race=PURCHASE_MAX_TICKETS_PER_RACE,
+            compute_confidence=False,
+        )
+        if len(simulation["daily"]) != 1:
+            raise ValueError("daily strict-prior refit must produce one day")
+        day = dict(simulation["daily"][0])
+        day.update({
+            "calibrator_hash": artifact_hash,
+            "calibration_ledger_hash": prior_ledger_hash,
+            "max_training_settlement_time": max_prior_settlement_time,
+            "minimum_decision_time": minimum_decision_time,
+            "strict_prior_check": strict_prior,
+            "same_race_calibrator_hash_count": 1,
+        })
+        for decision in day.get("candidate_decision_audit") or []:
+            decision.update({
+                "calibrator_hash": artifact_hash,
+                "calibration_ledger_hash": prior_ledger_hash,
+                "max_training_settlement_time": max_prior_settlement_time,
+                "strict_prior_check": strict_prior,
+            })
+        cumulative_profit += int(day["profit_yen"])
+        peak_profit = max(peak_profit, cumulative_profit)
+        max_drawdown = max(max_drawdown, peak_profit - cumulative_profit)
+        day["cumulative_profit_yen"] = cumulative_profit
+        daily.append(day)
+        totals["eligible_tickets"] += int(simulation["eligible_tickets"])
+        for key in ("tickets", "hit_tickets", "stake_yen", "return_yen"):
+            totals[key] += int(simulation[key])
+
+        settled_day_records = policy_edge_records(
+            day_races,
+            probability_calibrator,
+            _identity_probability_blender,
+            max_rank=PURCHASE_MAX_RANK,
+        )
+        ledger.extend(settled_day_records)
+        refit_audit.append({
+            "race_date": race_date,
+            "calibrator_hash": artifact_hash,
+            "calibration_ledger_hash": prior_ledger_hash,
+            "prior_candidates": len(ledger) - len(settled_day_records),
+            "teachers_admitted_after_day": len(settled_day_records),
+            "max_training_settlement_time": max_prior_settlement_time,
+            "minimum_decision_time": minimum_decision_time,
+            "strict_prior_check": strict_prior,
+            "same_day_teachers_excluded": True,
+            "same_race_calibrator_hash_count": 1,
+        })
+
+    stake_yen = totals["stake_yen"]
+    return_yen = totals["return_yen"]
+    final_ledger_hash = _ledger_sha256(ledger)
+    bankroll = {
+        "status": "ready" if all_ready else "calibration_not_ready",
+        "allocation_policy": {
+            "allocation_mode": "kelly_floor",
+            "min_daily_exposure_fraction": 0.0,
+            "max_daily_exposure_fraction": 0.30,
+        },
+        "calibration": final_payload,
+        "calibration_update_mode": "daily_strict_prior_refit",
+        "evaluation_days": len(daily),
+        "evaluated_races": len(evaluation_scored),
+        "eligible_days": sum(
+            int(bool(day["eligible_candidate_audit"])) for day in daily
+        ),
+        "no_bet_days": sum(int(day["tickets"] == 0) for day in daily),
+        **totals,
+        "profit_yen": return_yen - stake_yen,
+        "roi": return_yen / stake_yen if stake_yen else None,
+        "roi_ci95_lower": None,
+        "probability_roi_above_one": None,
+        "max_drawdown_yen": max_drawdown,
+        "daily": daily,
+    }
+    audit = {
+        "update_rule": "refit_before_each_day_then_admit_all_pregate_candidates_after_day_settlement",
+        "refit_days": len(refit_audit),
+        "strict_prior_violation_count": strict_prior_violations,
+        "strict_prior_check": strict_prior_violations == 0,
+        "same_day_teachers_excluded": True,
+        "same_race_calibrator_hash_count_max": 1,
+        "initial_ledger_candidates": len(initial_ledger),
+        "final_ledger_candidates": len(ledger),
+        "evaluation_teachers_admitted": len(ledger) - len(initial_ledger),
+        "final_calibration_ledger_hash": final_ledger_hash,
+        "daily_refits": refit_audit,
+    }
+    return bankroll, audit, final_payload, final_ledger_hash
+
+
 def evaluate_mature_stacked_value(
     calibration: list[dict[str, Any]],
     evaluation: list[dict[str, Any]],
     *,
     daily_budget_yen: int,
     num_threads: int = 4,
+    calibration_update_mode: str = "fixed",
 ) -> dict[str, Any]:
+    if calibration_update_mode not in {"fixed", "daily_strict_prior_refit"}:
+        raise ValueError(
+            "calibration_update_mode must be fixed or daily_strict_prior_refit"
+        )
     dates = sorted({str(race["race_date"]) for race in calibration})
     required_days = (
         MODEL_TRAINING_MINIMUM_DAYS
@@ -646,20 +828,9 @@ def evaluate_mature_stacked_value(
     first_evaluation_date = min(
         str(race["race_date"]) for race in evaluation
     )
-    empirical = fit_contextual_empirical_ev_calibration(
+    empirical = _fit_mature_contextual_calibrator(
         ledger,
         prediction_date=first_evaluation_date,
-        bootstrap_samples=5_000,
-        min_days=VALUE_CALIBRATION_DAYS,
-        min_tickets=1_000,
-        min_candidate_days=40,
-        candidate_min_raw_ev=0.0,
-        min_rank_days=45,
-        min_rank_tickets=1_000,
-        min_cell_days=30,
-        min_cell_tickets=200,
-        rank_prior_tickets=500.0,
-        cell_prior_tickets=200.0,
     )
     empirical_payload = empirical.as_dict()
     strict_prior_audit = _strict_prior_artifact_audit(
@@ -667,15 +838,32 @@ def evaluate_mature_stacked_value(
     )
     calibrator_hash = _canonical_sha256(empirical_payload)
     calibration_ledger_hash = _ledger_sha256(ledger)
-    bankroll = simulate_empirical_lcb_policy(
-        evaluation_scored,
-        calibrator,
-        _identity_probability_blender,
-        empirical,
-        daily_budget_yen,
-        max_rank=PURCHASE_MAX_RANK,
-        max_tickets_per_race=PURCHASE_MAX_TICKETS_PER_RACE,
-    )
+    calibration_update_audit = None
+    final_calibrator_payload = empirical_payload
+    final_calibration_ledger_hash = calibration_ledger_hash
+    if calibration_update_mode == "daily_strict_prior_refit":
+        (
+            bankroll,
+            calibration_update_audit,
+            final_calibrator_payload,
+            final_calibration_ledger_hash,
+        ) = _simulate_daily_strict_prior_refit(
+            evaluation_scored,
+            ledger,
+            calibrator,
+            daily_budget_yen=daily_budget_yen,
+        )
+        calibrator_hash = _canonical_sha256(final_calibrator_payload)
+    else:
+        bankroll = simulate_empirical_lcb_policy(
+            evaluation_scored,
+            calibrator,
+            _identity_probability_blender,
+            empirical,
+            daily_budget_yen,
+            max_rank=PURCHASE_MAX_RANK,
+            max_tickets_per_race=PURCHASE_MAX_TICKETS_PER_RACE,
+        )
     confidence = (
         bootstrap_daily_roi(bankroll["daily"])
         if bankroll.get("stake_yen")
@@ -704,8 +892,27 @@ def evaluate_mature_stacked_value(
             {str(race["race_date"]) for race in evaluation}
         ),
     })
+    effective_strict_prior_violations = (
+        int(calibration_update_audit["strict_prior_violation_count"])
+        if calibration_update_audit is not None
+        else int(strict_prior_audit["strict_prior_violation_count"])
+    )
+    effective_same_race_hash_count = (
+        int(calibration_update_audit["same_race_calibrator_hash_count_max"])
+        if calibration_update_audit is not None
+        else int(strict_prior_audit["same_race_calibrator_hash_count_max"])
+    )
+    final_calibration_ledger_candidates = (
+        int(calibration_update_audit["final_ledger_candidates"])
+        if calibration_update_audit is not None
+        else len(ledger)
+    )
     result = {
-        "model": MODEL_NAME,
+        "model": (
+            DAILY_REFIT_MODEL_NAME
+            if calibration_update_mode == "daily_strict_prior_refit"
+            else MODEL_NAME
+        ),
         "status": "completed",
         "evidence_role": (
             "retrospective_research_only_candidate_universe_search"
@@ -748,6 +955,8 @@ def evaluate_mature_stacked_value(
         "candidate_population": (
             "all_stacked_probability_top20_before_purchase_gate"
         ),
+        "calibration_update_mode": calibration_update_mode,
+        "calibration_update_audit": calibration_update_audit,
         "probability_selection": {
             key: probability.get(key)
             for key in (
@@ -794,21 +1003,23 @@ def evaluate_mature_stacked_value(
             evaluation, artifact
         ),
         "empirical_ev_calibration": empirical_payload,
+        "final_empirical_ev_calibration": final_calibrator_payload,
         "calibration_ledger_candidates": len(ledger),
+        "final_calibration_ledger_candidates": (
+            final_calibration_ledger_candidates
+        ),
         "evaluation_ledger_candidates": len(evaluation_ledger),
         "strict_prior_artifact_audit": strict_prior_audit,
-        "strict_prior_violation_count": strict_prior_audit[
-            "strict_prior_violation_count"
-        ],
-        "same_race_calibrator_hash_count_max": strict_prior_audit[
-            "same_race_calibrator_hash_count_max"
-        ],
+        "strict_prior_violation_count": effective_strict_prior_violations,
+        "same_race_calibrator_hash_count_max": effective_same_race_hash_count,
         "calibrator_hash": calibrator_hash,
-        "calibration_ledger_hash": calibration_ledger_hash,
+        "initial_calibrator_hash": _canonical_sha256(empirical_payload),
+        "initial_calibration_ledger_hash": calibration_ledger_hash,
+        "calibration_ledger_hash": final_calibration_ledger_hash,
         "artifact_lineage": {
             "parent_artifact_hash": artifact.get("artifact_sha256"),
             "calibrator_hash": calibrator_hash,
-            "calibration_ledger_hash": calibration_ledger_hash,
+            "calibration_ledger_hash": final_calibration_ledger_hash,
         },
         "value_decile_audit": value_decile_audit(
             ledger, evaluation_ledger

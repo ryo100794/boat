@@ -84,6 +84,7 @@ MODEL_NAME = "archive_closing_market_oracle_v1"
 EVALUATION_VERSION = 23
 TARGETED_TEMPORAL_COMPONENTS = (
     "mature_stacked_contextual_value",
+    "mature_stacked_contextual_value_daily_refit",
 )
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
@@ -524,11 +525,18 @@ def temporal_residual_diagnostic(
     evaluation = [
         race for race in races if str(race["race_date"]) in evaluation_dates
     ]
-    if temporal_component == "mature_stacked_contextual_value":
+    if temporal_component in TARGETED_TEMPORAL_COMPONENTS:
+        calibration_update_mode = (
+            "daily_strict_prior_refit"
+            if temporal_component
+            == "mature_stacked_contextual_value_daily_refit"
+            else "fixed"
+        )
         mature = evaluate_mature_stacked_value(
             calibration,
             evaluation,
             daily_budget_yen=daily_budget_yen,
+            calibration_update_mode=calibration_update_mode,
         )
         probability_metrics = mature.get("evaluation_probability_metrics")
         probability_metrics = (
@@ -1232,7 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
         "dataset": dataset,
     })
-    if args.temporal_component == "mature_stacked_contextual_value":
+    if args.temporal_component in TARGETED_TEMPORAL_COMPONENTS:
         result = externalize_targeted_mature_evidence(result, args.output)
     write_json_atomic(args.output, result)
     print(json.dumps({key: value for key, value in result.items() if key not in {"diagnostics", "primary"}}, ensure_ascii=False, sort_keys=True))
