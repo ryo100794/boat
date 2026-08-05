@@ -460,6 +460,9 @@ def apply_archive_residual_summary(
             "nested_value_stack_selection_gate_status": nested_stack_gate.get(
                 "status"
             ),
+            "nested_value_stack_selection_policy_id": nested_stack_gate.get(
+                "policy_id"
+            ),
             "nested_value_stack_selection_fallback_reasons": (
                 nested_stack_gate.get("fallback_reasons")
             ),

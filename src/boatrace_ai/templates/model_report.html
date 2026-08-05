@@ -721,8 +721,9 @@ function nestedStackGateEvidence(x){
   if(!x.nested_value_raw_selected_stack&&!x.nested_value_selected_stack) return "";
   const raw=x.nested_value_raw_selected_stack||"-", selected=x.nested_value_selected_stack||"-";
   const status=x.nested_value_stack_selection_gate_status||"未記録";
+  const policy=x.nested_value_stack_selection_policy_id||"policy未記録";
   const reasons=(x.nested_value_stack_selection_fallback_reasons||[]).join(",")||"-";
-  return `確率選択 ${raw}→${selected} / gate ${status} (${reasons})`;
+  return `確率選択 ${raw}→${selected} / ${policy} / gate ${status} (${reasons})`;
 }
 function nestedValueEvidence(x){
   if(!x.nested_value_model) return "";

@@ -313,6 +313,7 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
             "raw_selected_stack": "linear",
             "selected_stack": "market",
             "stack_selection_gate": {
+                "policy_id": "logloss_daily_majority_top5_noninferiority_v1",
                 "status": "fallback_market",
                 "fallback_reasons": ["validation_top5_below_market"],
                 "required_conditions": ["validation_top5_not_below_market"],
@@ -338,6 +339,9 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     assert summary["nested_value_selected_stack"] == "market"
     assert summary["nested_value_stack_selection_gate_status"] == (
         "fallback_market"
+    )
+    assert summary["nested_value_stack_selection_policy_id"] == (
+        "logloss_daily_majority_top5_noninferiority_v1"
     )
     assert summary["nested_value_stack_selection_fallback_reasons"] == [
         "validation_top5_below_market"

@@ -3891,6 +3891,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_stack_selection_gate_status": metrics.get(
                     "nested_value_stack_selection_gate_status"
                 ),
+                "nested_value_stack_selection_policy_id": metrics.get(
+                    "nested_value_stack_selection_policy_id"
+                ),
                 "nested_value_stack_selection_fallback_reasons": metrics.get(
                     "nested_value_stack_selection_fallback_reasons"
                 ),

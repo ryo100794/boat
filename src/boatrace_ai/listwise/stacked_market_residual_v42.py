@@ -21,6 +21,9 @@ from .nonlinear_market_residual_v38 import (
 
 
 MODEL_NAME = "stacked_market_residual_v42"
+STACK_SELECTION_POLICY_ID = (
+    "logloss_daily_majority_top5_noninferiority_v1"
+)
 STACK_CANDIDATES = (
     {"name": "market", "market": 1.0, "linear": 0.0, "nonlinear": 0.0},
     {"name": "market75_linear25", "market": 0.75, "linear": 0.25, "nonlinear": 0.0},
@@ -159,6 +162,7 @@ def _artifact(
     artifact = {
         "model": MODEL_NAME,
         "role": "market_linear_nonlinear_log_probability_stack",
+        "stack_selection_policy_id": STACK_SELECTION_POLICY_ID,
         "selected_stack": str(candidate["name"]),
         "weights": {
             key: float(candidate[key]) for key in ("market", "linear", "nonlinear")
@@ -223,6 +227,7 @@ def _select_conservative_stack(
         else "accepted_nonmarket"
     )
     return raw_selected, selected, {
+        "policy_id": STACK_SELECTION_POLICY_ID,
         "status": status,
         "raw_selected_stack": str(raw_selected["name"]),
         "final_selected_stack": str(selected["name"]),

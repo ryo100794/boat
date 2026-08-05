@@ -73,6 +73,9 @@ def test_stack_weight_uses_separate_prior_block_and_refits(monkeypatch) -> None:
     assert len(calls[0]) == 8
     assert len(calls[1]) == 10
     assert result["artifact"]["artifact_sha256"]
+    assert result["artifact"]["stack_selection_policy_id"] == (
+        "logloss_daily_majority_top5_noninferiority_v1"
+    )
 
 def test_stack_falls_back_to_market_when_top5_degrades() -> None:
     market = {
@@ -104,6 +107,9 @@ def test_stack_falls_back_to_market_when_top5_degrades() -> None:
 
     assert raw["name"] == "linear"
     assert selected["name"] == "market"
+    assert gate["policy_id"] == (
+        "logloss_daily_majority_top5_noninferiority_v1"
+    )
     assert gate["status"] == "fallback_market"
     assert gate["fallback_reasons"] == ["validation_top5_below_market"]
     assert gate["outer_period_used"] is False
