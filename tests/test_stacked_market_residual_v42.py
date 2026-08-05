@@ -48,7 +48,7 @@ def test_stack_weight_uses_separate_prior_block_and_refits(monkeypatch) -> None:
     monkeypatch.setattr(subject, "_fit_components", fake_components)
     monkeypatch.setattr(
         subject,
-        "direct_context_probabilities",
+        "_linear_probabilities",
         lambda race, artifact: {"1-2-3": 0.9, "1-3-2": 0.1},
     )
     monkeypatch.setattr(
@@ -76,6 +76,8 @@ def test_stack_weight_uses_separate_prior_block_and_refits(monkeypatch) -> None:
     assert result["artifact"]["stack_selection_policy_id"] == (
         "material_logloss_daily_majority_top5_noninferiority_v2"
     )
+    assert result["artifact"]["linear_context_variant"] == "all_context_v25"
+    assert result["artifact"]["linear_context_feature_count"] == 20
 
 def test_stack_falls_back_to_market_when_top5_degrades() -> None:
     market = {
@@ -188,3 +190,41 @@ def test_stack_rejects_numerical_noise_as_nonmarket_improvement() -> None:
     assert gate["fallback_reasons"] == [
         "validation_log_loss_improvement_below_material_floor"
     ]
+
+
+def test_component_fit_selects_pruned_linear_context_without_outer_data(
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    def fake_linear(calibration, evaluation, *, variants):
+        observed["linear_calibration"] = calibration
+        observed["linear_evaluation"] = evaluation
+        observed["variants"] = variants
+        return {
+            "artifact": {
+                "model": "pruned_direct_context_market_residual_v27",
+                "feature_variant": "official_history_core",
+                "active_context_feature_count": 11,
+                "regularization": 0.1,
+            }
+        }
+
+    def fake_nonlinear(calibration, evaluation, *, num_threads):
+        observed["nonlinear_calibration"] = calibration
+        observed["nonlinear_evaluation"] = evaluation
+        return {"artifact": {}}
+
+    monkeypatch.setattr(subject, "fit_temporal_pruned_residual", fake_linear)
+    monkeypatch.setattr(
+        subject, "fit_temporal_nonlinear_context_search", fake_nonlinear
+    )
+    races = [_race(date(2026, 1, 1), "1-2-3")]
+    linear, _ = subject._fit_components(races, num_threads=1)
+
+    assert observed["linear_calibration"] is races
+    assert observed["linear_evaluation"] == []
+    assert observed["nonlinear_evaluation"] == []
+    assert "official_history_core" in observed["variants"]
+    assert "all_context" in observed["variants"]
+    assert linear["artifact"]["feature_variant"] == "official_history_core"

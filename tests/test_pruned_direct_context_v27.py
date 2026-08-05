@@ -44,6 +44,14 @@ def _race(day: int, actual: str = "1-2-3") -> dict:
     }
 
 
+def test_official_history_core_excludes_research_correlates() -> None:
+    active = FEATURE_VARIANTS["official_history_core"]
+    assert active
+    assert all(not name.startswith("research_") for name in active)
+    assert "national_win_rate" in active
+    assert "hist_racer_venue_win_rate_s" in active
+
+
 def test_v27_really_reduces_the_fitted_dimension() -> None:
     races = [_race(day) for day in range(1, 9)]
     market_only = fit_pruned_residual(

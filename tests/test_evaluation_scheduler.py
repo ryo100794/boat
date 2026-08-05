@@ -367,6 +367,8 @@ def test_periodic_scheduler_freezes_first_eligible_v38_and_starts_v39(
     artifact.parent.mkdir(parents=True)
     artifact.write_text(json.dumps({
         "training_status": "ready",
+        "training_days": 30,
+        "training_races": 3_000,
         "training_through": "2026-08-18",
         "evaluation_through": "2026-08-25",
         "official_closing_fields_used": False,

@@ -211,7 +211,7 @@ def test_daily_v16_is_queued_ahead_of_v15(tmp_path: Path, monkeypatch) -> None:
     assert calls.index(v16) < calls.index(v15)
     assert evaluation_queue.TASK_PROFILES[
         "market_residual_walk_forward"
-    ]["max_parallel"] == 2
+    ]["max_parallel"] == 1
     assert STRATEGY not in market_calibration.CLEAN_DAY_CALIBRATOR_STRATEGIES
     all_races = [{"race_id": "complete"}, {"race_id": "incomplete"}]
     clean_races = [all_races[0]]

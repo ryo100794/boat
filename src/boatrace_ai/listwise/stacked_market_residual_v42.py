@@ -9,7 +9,11 @@ import numpy as np
 
 from .direct_context_market_residual_v25 import (
     direct_context_probabilities,
-    fit_temporal_direct_context_residual,
+)
+from .pruned_direct_context_v27 import (
+    FEATURE_VARIANTS as PRUNED_FEATURE_VARIANTS,
+    fit_temporal_pruned_residual,
+    pruned_probabilities,
 )
 from .nonlinear_context_search_v41 import (
     fit_temporal_nonlinear_context_search,
@@ -25,6 +29,15 @@ STACK_SELECTION_POLICY_ID = (
     "material_logloss_daily_majority_top5_noninferiority_v2"
 )
 MINIMUM_LOG_LOSS_IMPROVEMENT_PER_RACE = 1e-4
+STACKED_LINEAR_CONTEXT_VARIANTS = {
+    name: PRUNED_FEATURE_VARIANTS[name]
+    for name in (
+        "market_model_only",
+        "independent_core",
+        "official_history_core",
+        "all_context",
+    )
+}
 STACK_CANDIDATES = (
     {"name": "market", "market": 1.0, "linear": 0.0, "nonlinear": 0.0},
     {"name": "market75_linear25", "market": 0.75, "linear": 0.25, "nonlinear": 0.0},
@@ -78,6 +91,17 @@ def _blend(
     return dict(zip(combinations, (float(value) for value in values)))
 
 
+def _linear_probabilities(
+    race: Mapping[str, Any], artifact: Mapping[str, Any]
+) -> dict[str, float]:
+    model = str(artifact.get("model") or "")
+    if model == "pruned_direct_context_market_residual_v27":
+        return pruned_probabilities(dict(race), artifact)
+    if model == "direct_context_market_residual_v25":
+        return direct_context_probabilities(dict(race), artifact)
+    raise ValueError(f"unsupported V42 linear artifact: {model or 'missing'}")
+
+
 def stacked_probabilities(
     race: Mapping[str, Any], artifact: Mapping[str, Any]
 ) -> dict[str, float]:
@@ -85,9 +109,7 @@ def stacked_probabilities(
     if not isinstance(weights, Mapping):
         raise ValueError("V42 artifact weights are missing")
     market = _market_probabilities(race)
-    linear = direct_context_probabilities(
-        dict(race), artifact["linear_artifact"]
-    )
+    linear = _linear_probabilities(race, artifact["linear_artifact"])
     nonlinear = nonlinear_residual_probabilities(
         race,
         artifact["nonlinear_artifact"],
@@ -148,7 +170,11 @@ def stacked_metrics(
 def _fit_components(
     races: list[dict[str, Any]], *, num_threads: int
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    linear = fit_temporal_direct_context_residual(races, [])
+    linear = fit_temporal_pruned_residual(
+        races,
+        [],
+        variants=STACKED_LINEAR_CONTEXT_VARIANTS,
+    )
     nonlinear = fit_temporal_nonlinear_context_search(
         races, [], num_threads=num_threads
     )
@@ -172,6 +198,12 @@ def _artifact(
         "nonlinear_artifact": nonlinear["artifact"],
         "nonlinear_shrinkage": float(nonlinear["selected_shrinkage"]),
         "linear_regularization": float(linear["artifact"]["regularization"]),
+        "linear_context_variant": str(
+            linear["artifact"].get("feature_variant", "all_context_v25")
+        ),
+        "linear_context_feature_count": int(
+            linear["artifact"].get("active_context_feature_count", 20)
+        ),
         "nonlinear_context_variant": nonlinear["selected_context_variant"],
         "nonlinear_tree_preset": nonlinear["selected_tree_preset"],
     }
@@ -305,6 +337,12 @@ def fit_temporal_stacked_market_residual(
         "selected_weights": selected["weights"],
         "component_selection": {
             "linear_regularization": linear["artifact"]["regularization"],
+            "linear_context_variant": linear["artifact"].get(
+                "feature_variant", "all_context_v25"
+            ),
+            "linear_context_feature_count": linear["artifact"].get(
+                "active_context_feature_count", 20
+            ),
             "nonlinear_context_variant": nonlinear["selected_context_variant"],
             "nonlinear_tree_preset": nonlinear["selected_tree_preset"],
             "nonlinear_shrinkage": nonlinear["selected_shrinkage"],

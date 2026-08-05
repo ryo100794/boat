@@ -48,6 +48,19 @@ FEATURE_VARIANTS: dict[str, tuple[str, ...]] = {
         "hist_motor_win_rate_s",
         "hist_boat_win_rate_s",
     ),
+    "official_history_core": (
+        "class_rank",
+        "national_win_rate",
+        "national_2_rate",
+        "local_win_rate",
+        "local_2_rate",
+        "motor_2_rate",
+        "boat_2_rate",
+        "hist_racer_win_rate_s",
+        "hist_racer_venue_win_rate_s",
+        "hist_motor_win_rate_s",
+        "hist_boat_win_rate_s",
+    ),
     "all_context": tuple(CONTEXT_FEATURES),
 }
 
