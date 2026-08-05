@@ -42,6 +42,7 @@ from .model_evaluation_identity import evaluation_identity
 from .model_report_purposes import evaluation_purpose_groups
 from .prediction_summary import attach_latest_prediction_summaries
 from .roadmap_model_status import (
+    archive_oracle_queue_status,
     archive_oracle_audit_status,
     queue_model_roadmap_status,
 )
@@ -9509,7 +9510,7 @@ def _server_operational_audit_section(
     *,
     include_management: bool,
 ) -> str:
-    queue_status = queue_model_roadmap_status(db_path, connector=connect)
+    queue_status = archive_oracle_queue_status(db_path, connector=connect)
     audit = archive_oracle_audit_status(queue_status)
     selected = (
         queue_status.get("running_archive_oracle")

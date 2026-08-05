@@ -20,6 +20,66 @@ def _object(value: Any) -> dict[str, Any]:
     return {}
 
 
+def archive_oracle_queue_status(
+    db_path: Path, *, connector: Any = None
+) -> dict[str, Any]:
+    """Read only the archive jobs needed by the three-page audit header."""
+    try:
+        with (connector or connect)(db_path) as conn:
+            rows = conn.execute(
+                """
+                WITH ranked AS (
+                  SELECT job_id, task_type, model_key, status, parameters,
+                         result_summary, decision, updated_at,
+                         ROW_NUMBER() OVER (
+                           PARTITION BY status ORDER BY job_id DESC
+                         ) AS status_rank
+                  FROM model_evaluation_jobs
+                  WHERE task_type = 'archive_market_oracle'
+                )
+                SELECT job_id, task_type, model_key, status, parameters,
+                       result_summary, decision, updated_at
+                FROM ranked
+                WHERE status_rank = 1
+                ORDER BY job_id DESC
+                """
+            ).fetchall()
+    except Exception:
+        return {}
+
+    jobs = [
+        {
+            "job_id": int(row["job_id"]),
+            "task_type": str(row["task_type"]),
+            "model_key": str(row["model_key"]),
+            "status": str(row["status"]),
+            "parameters": _object(row["parameters"]),
+            "metrics": _object(row["result_summary"]),
+            "decision": row["decision"],
+            "updated_at": str(row["updated_at"]),
+        }
+        for row in rows
+    ]
+    latest = jobs[0] if jobs else None
+    running = next(
+        (row for row in jobs if row["status"] == "running"), None
+    )
+    queued = next(
+        (row for row in jobs if row["status"] == "queued"), None
+    )
+    completed = next(
+        (row for row in jobs if row["status"] == "completed"), None
+    )
+    return {
+        "latest_archive_oracle": latest,
+        "active_archive_oracle": running or queued,
+        "running_archive_oracle": running,
+        "queued_archive_oracle": queued,
+        "latest_completed_archive_oracle": completed,
+        "recent_archive_oracles": jobs,
+    }
+
+
 def queue_model_roadmap_status(
     db_path: Path, *, connector: Any = None
 ) -> dict[str, Any]:

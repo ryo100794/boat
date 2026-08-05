@@ -121,7 +121,7 @@ def test_dashboard_and_roadmap_raw_html_share_server_audit_snapshot(
     }
     monkeypatch.setattr(
         dashboard,
-        "queue_model_roadmap_status",
+        "archive_oracle_queue_status",
         lambda _path, *, connector: queue,
     )
     monkeypatch.setattr(
