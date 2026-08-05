@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from ..bankroll_bootstrap import (
@@ -77,7 +77,10 @@ def _ledger_sha256(records: list[dict[str, Any]]) -> str:
 
 
 def _parse_timestamp(value: Any) -> datetime:
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=9)))
+    return parsed.astimezone(timezone.utc)
 
 
 def _strict_prior_artifact_audit(

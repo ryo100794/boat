@@ -157,8 +157,8 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     assert audit["same_race_overlap_count"] == 0
     assert audit["same_race_calibrator_hash_count_max"] == 1
     assert audit["all_pregate_candidates_registered"] is True
-    assert audit["max_training_settlement_time"].startswith("2026-06-29T23:59:59")
-    assert audit["minimum_evaluation_decision_time"].startswith("2026-06-30T00:00:00")
+    assert audit["max_training_settlement_time"] == "2026-06-29T14:59:59+00:00"
+    assert audit["minimum_evaluation_decision_time"] == "2026-06-29T15:00:00+00:00"
     assert result["strict_prior_violation_count"] == 0
     assert result["same_race_calibrator_hash_count_max"] == 1
     assert len(result["calibrator_hash"]) == 64
@@ -486,3 +486,25 @@ def test_daily_strict_prior_refit_admits_teachers_only_after_each_day(
             decision["calibrator_hash"] == day["calibrator_hash"]
             for decision in day["candidate_decision_audit"]
         )
+
+
+def test_strict_prior_audit_normalizes_naive_jst_and_aware_timestamps() -> None:
+    calibration = [{
+        "race_id": "prior",
+        "settlement_time": "2026-06-29T23:59:59",
+    }]
+    evaluation = [{
+        "race_id": "outer",
+        "decision_time": "2026-06-30T00:00:00+09:00",
+    }]
+
+    audit = subject._strict_prior_artifact_audit(calibration, evaluation)
+
+    assert audit["strict_prior_check"] is True
+    assert audit["strict_prior_violation_count"] == 0
+    assert audit["max_training_settlement_time"] == (
+        "2026-06-29T14:59:59+00:00"
+    )
+    assert audit["minimum_evaluation_decision_time"] == (
+        "2026-06-29T15:00:00+00:00"
+    )
