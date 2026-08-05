@@ -123,6 +123,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
     assert "decisionStackEvidence" in MODEL_REPORT_HTML
+    assert "linear_context_variant" in MODEL_REPORT_HTML
+    assert "nested_value_linear_context_variant" in MODEL_REPORT_HTML
     assert "購入余裕" in MODEL_REPORT_HTML
     assert "minimum_decision_lead_seconds" in MODEL_REPORT_HTML
     assert "required_minimum_decision_lead_seconds" in MODEL_REPORT_HTML
@@ -237,6 +239,11 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "training_races": 4300,
         "selected_stack": "market50_linear50",
         "selected_weights": {"market": 0.5, "linear": 0.5, "nonlinear": 0.0},
+        "linear_context_variant": "official_history_core",
+        "linear_context_feature_count": 11,
+        "linear_regularization": 0.1,
+        "nonlinear_context_variant": "independent_core_10",
+        "nonlinear_tree_preset": "compact",
         "challenger_selection_gate_pass": True,
         "frozen_probability_model": "decision_time_stacked_market_residual_v44",
         "calibration_context_ready_cells": 2,
@@ -275,6 +282,11 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "nested_value_stack_selection_policy_id": (
             "logloss_daily_majority_top5_noninferiority_v1"
         ),
+        "nested_value_linear_context_variant": "official_history_core",
+        "nested_value_linear_context_feature_count": 11,
+        "nested_value_linear_regularization": 0.1,
+        "nested_value_nonlinear_context_variant": "independent_core_10",
+        "nested_value_nonlinear_tree_preset": "compact",
         "nested_value_stack_selection_fallback_reasons": [
             "validation_top5_below_market"
         ],
@@ -475,6 +487,13 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "residual_outer_period_used_for_selection"
     ] is False
     assert status["jobs"][0]["selected_stack"] == "market50_linear50"
+    assert status["jobs"][0]["linear_context_variant"] == (
+        "official_history_core"
+    )
+    assert status["jobs"][0]["linear_context_feature_count"] == 11
+    assert status["jobs"][0]["nonlinear_context_variant"] == (
+        "independent_core_10"
+    )
     assert status["jobs"][0]["official_closing_fields_used"] is False
     assert status["jobs"][0]["decision_time_boundary_all_passed"] is True
     assert status["jobs"][0]["minimum_decision_lead_seconds"] == 300.0
@@ -511,6 +530,13 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     )
     assert status["jobs"][0]["nested_value_stack_selection_policy_id"] == (
         "logloss_daily_majority_top5_noninferiority_v1"
+    )
+    assert status["jobs"][0]["nested_value_linear_context_variant"] == (
+        "official_history_core"
+    )
+    assert status["jobs"][0]["nested_value_linear_context_feature_count"] == 11
+    assert status["jobs"][0]["nested_value_nonlinear_context_variant"] == (
+        "independent_core_10"
     )
     aligned = status["jobs"][0][
         "nested_value_value_aligned_stack_selection"

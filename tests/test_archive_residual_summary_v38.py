@@ -343,6 +343,13 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
         "probability_selection": {
             "raw_selected_stack": "linear",
             "selected_stack": "market",
+            "component_selection": {
+                "linear_context_variant": "official_history_core",
+                "linear_context_feature_count": 11,
+                "linear_regularization": 0.1,
+                "nonlinear_context_variant": "independent_core_10",
+                "nonlinear_tree_preset": "compact",
+            },
             "stack_selection_gate": {
                 "policy_id": "logloss_daily_majority_top5_noninferiority_v1",
                 "status": "fallback_market",
@@ -407,6 +414,13 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     assert summary["nested_value_selected_stack"] == "market"
     assert summary["nested_value_stack_selection_gate_status"] == (
         "fallback_market"
+    )
+    assert summary["nested_value_linear_context_variant"] == (
+        "official_history_core"
+    )
+    assert summary["nested_value_linear_context_feature_count"] == 11
+    assert summary["nested_value_nonlinear_context_variant"] == (
+        "independent_core_10"
     )
     assert summary["nested_value_stack_selection_policy_id"] == (
         "logloss_daily_majority_top5_noninferiority_v1"

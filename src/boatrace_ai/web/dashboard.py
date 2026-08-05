@@ -3561,6 +3561,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "training_races": metrics.get("training_races"),
                 "selected_stack": metrics.get("selected_stack"),
                 "selected_weights": metrics.get("selected_weights"),
+                "linear_context_variant": metrics.get(
+                    "linear_context_variant"
+                ),
+                "linear_context_feature_count": metrics.get(
+                    "linear_context_feature_count"
+                ),
+                "linear_regularization": metrics.get(
+                    "linear_regularization"
+                ),
+                "nonlinear_context_variant": metrics.get(
+                    "nonlinear_context_variant"
+                ),
+                "nonlinear_tree_preset": metrics.get(
+                    "nonlinear_tree_preset"
+                ),
                 "base_training_through": metrics.get(
                     "base_training_through"
                 ),
@@ -3926,6 +3941,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "nested_value_stack_selection_policy_id": metrics.get(
                     "nested_value_stack_selection_policy_id"
+                ),
+                "nested_value_linear_context_variant": metrics.get(
+                    "nested_value_linear_context_variant"
+                ),
+                "nested_value_linear_context_feature_count": metrics.get(
+                    "nested_value_linear_context_feature_count"
+                ),
+                "nested_value_linear_regularization": metrics.get(
+                    "nested_value_linear_regularization"
+                ),
+                "nested_value_nonlinear_context_variant": metrics.get(
+                    "nested_value_nonlinear_context_variant"
+                ),
+                "nested_value_nonlinear_tree_preset": metrics.get(
+                    "nested_value_nonlinear_tree_preset"
                 ),
                 "nested_value_stack_selection_fallback_reasons": metrics.get(
                     "nested_value_stack_selection_fallback_reasons"

@@ -426,6 +426,24 @@ def apply_archive_residual_summary(
             if isinstance(nested_probability_selection, Mapping)
             else {}
         )
+        nested_probability_refit = nested.get("probability_refit")
+        nested_probability_refit = (
+            nested_probability_refit
+            if isinstance(nested_probability_refit, Mapping)
+            else {}
+        )
+        nested_component_selection = nested_probability_refit.get(
+            "component_selection"
+        )
+        if not isinstance(nested_component_selection, Mapping):
+            nested_component_selection = nested_probability_selection.get(
+                "component_selection"
+            )
+        nested_component_selection = (
+            nested_component_selection
+            if isinstance(nested_component_selection, Mapping)
+            else {}
+        )
         nested_stack_gate = nested_probability_selection.get(
             "stack_selection_gate"
         )
@@ -488,6 +506,21 @@ def apply_archive_residual_summary(
             ),
             "nested_value_stack_selection_policy_id": nested_stack_gate.get(
                 "policy_id"
+            ),
+            "nested_value_linear_context_variant": (
+                nested_component_selection.get("linear_context_variant")
+            ),
+            "nested_value_linear_context_feature_count": (
+                nested_component_selection.get("linear_context_feature_count")
+            ),
+            "nested_value_linear_regularization": (
+                nested_component_selection.get("linear_regularization")
+            ),
+            "nested_value_nonlinear_context_variant": (
+                nested_component_selection.get("nonlinear_context_variant")
+            ),
+            "nested_value_nonlinear_tree_preset": (
+                nested_component_selection.get("nonlinear_tree_preset")
             ),
             "nested_value_stack_selection_fallback_reasons": (
                 nested_stack_gate.get("fallback_reasons")

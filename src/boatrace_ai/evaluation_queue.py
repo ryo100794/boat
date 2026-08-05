@@ -4164,6 +4164,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         metrics = metrics if isinstance(metrics, dict) else {}
         artifact = payload.get("artifact")
         artifact = artifact if isinstance(artifact, dict) else {}
+        component_selection = payload.get("component_selection")
+        component_selection = (
+            component_selection if isinstance(component_selection, dict) else {}
+        )
         summary.update({
             "model": payload.get("model"),
             "training_status": payload.get("training_status"),
@@ -4222,6 +4226,21 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "selected_shrinkage": payload.get("selected_shrinkage"),
             "selected_stack": payload.get("selected_stack"),
             "selected_weights": payload.get("selected_weights"),
+            "linear_context_variant": component_selection.get(
+                "linear_context_variant"
+            ),
+            "linear_context_feature_count": component_selection.get(
+                "linear_context_feature_count"
+            ),
+            "linear_regularization": component_selection.get(
+                "linear_regularization"
+            ),
+            "nonlinear_context_variant": component_selection.get(
+                "nonlinear_context_variant"
+            ),
+            "nonlinear_tree_preset": component_selection.get(
+                "nonlinear_tree_preset"
+            ),
             "base_training_through": payload.get("base_training_through"),
             "stack_validation_from": payload.get("stack_validation_from"),
             "inner_fit_through": payload.get("inner_fit_through"),

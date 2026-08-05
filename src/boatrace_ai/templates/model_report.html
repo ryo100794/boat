@@ -707,7 +707,9 @@ function decisionStackEvidence(x){
   const closing=x.official_closing_fields_used===false?"終値不使用":"終値境界未確認";
   const lead=x.minimum_decision_lead_seconds==null?"":` / 購入余裕 ${ratio(x.minimum_decision_lead_seconds)}秒/${ratio(x.required_minimum_decision_lead_seconds)}秒`;
   const time=x.decision_time_boundary_all_passed===true?`締切前OK 最大${ratio(x.maximum_input_snapshot_age_seconds)}秒/${ratio(x.allowed_input_snapshot_age_seconds)}秒${lead}`:`時刻境界未確認(${fmt(x.decision_time_boundary_violations)})`;
-  return `判断時モデル ${fmt(x.training_days)}日/${fmt(x.training_races)}R ${closing} ${time}${stack} / ${gate}`;
+  const linear=x.linear_context_variant?` / linear ${esc(x.linear_context_variant)} ${fmt(x.linear_context_feature_count)}特徴 λ${ratio(x.linear_regularization)}`:"";
+  const nonlinear=x.nonlinear_context_variant?` / nonlinear ${esc(x.nonlinear_context_variant)} ${esc(x.nonlinear_tree_preset||"-")}`:"";
+  return `判断時モデル ${fmt(x.training_days)}日/${fmt(x.training_races)}R ${closing} ${time}${stack}${linear}${nonlinear} / ${gate}`;
 }
 function contextualValueEvidence(x){
   if(!x.frozen_probability_model&&!x.calibration_contextual_hierarchy) return "";
@@ -723,7 +725,9 @@ function nestedStackGateEvidence(x){
   const status=x.nested_value_stack_selection_gate_status||"未記録";
   const policy=x.nested_value_stack_selection_policy_id||"policy未記録";
   const reasons=(x.nested_value_stack_selection_fallback_reasons||[]).join(",")||"-";
-  return `確率選択 ${raw}→${selected} / ${policy} / gate ${status} (${reasons})`;
+  const linear=x.nested_value_linear_context_variant?` / linear ${esc(x.nested_value_linear_context_variant)} ${fmt(x.nested_value_linear_context_feature_count)}特徴 λ${ratio(x.nested_value_linear_regularization)}`:"";
+  const nonlinear=x.nested_value_nonlinear_context_variant?` / nonlinear ${esc(x.nested_value_nonlinear_context_variant)} ${esc(x.nested_value_nonlinear_tree_preset||"-")}`:"";
+  return `確率選択 ${raw}→${selected} / ${policy} / gate ${status} (${reasons})${linear}${nonlinear}`;
 }
 function valueAlignedStackEvidence(x){
   const audit=x.nested_value_value_aligned_stack_selection||{};

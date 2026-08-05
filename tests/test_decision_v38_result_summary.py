@@ -74,6 +74,13 @@ def test_v44_summary_exposes_stack_selection_audit() -> None:
             "linear": 0.5,
             "nonlinear": 0.0,
         },
+        "component_selection": {
+            "linear_context_variant": "official_history_core",
+            "linear_context_feature_count": 11,
+            "linear_regularization": 0.1,
+            "nonlinear_context_variant": "independent_core_10",
+            "nonlinear_tree_preset": "compact",
+        },
         "artifact": {"artifact_sha256": "c" * 64},
         "holdout_metrics": {
             "evaluated_races": 1000,
@@ -91,6 +98,10 @@ def test_v44_summary_exposes_stack_selection_audit() -> None:
 
     assert summary["selected_stack"] == "market50_linear50"
     assert summary["selected_weights"]["linear"] == 0.5
+    assert summary["linear_context_variant"] == "official_history_core"
+    assert summary["linear_context_feature_count"] == 11
+    assert summary["nonlinear_context_variant"] == "independent_core_10"
+    assert summary["nonlinear_tree_preset"] == "compact"
     assert summary["base_training_through"] < summary["stack_validation_from"]
     assert summary["challenger_selection_gate_pass"] is True
     assert result_decision("decision_stacked_market_v44", summary) == (
