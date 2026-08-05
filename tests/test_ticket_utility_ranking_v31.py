@@ -14,6 +14,9 @@ from boatrace_ai.listwise.ticket_utility_ranking_v31 import (
     ticket_ranking,
     ticket_ranking_metrics,
 )
+from boatrace_ai.listwise.ticket_utility_ranking_v33 import (
+    evaluate_calibration_aligned_ticket_utility,
+)
 
 
 COMBINATIONS = [
@@ -238,3 +241,48 @@ def test_temporal_ticket_roles_keep_all_teacher_windows_prior() -> None:
         30 * int(result["selected_candidate"]["top_k"])
     )
     assert result["bankroll"]["evaluation_days"] == 1
+
+
+def test_v33_freezes_calibration_generators_and_adjusts_candidate_family() -> None:
+    start = date(2026, 1, 1)
+    calibration = [
+        _race(
+            start + timedelta(days=index),
+            winner_index=index,
+            payout=8000 if index % 7 == 0 else 1400,
+        )
+        for index in range(42)
+    ]
+    evaluation = [_race(start + timedelta(days=42), winner_index=5)]
+    result = evaluate_calibration_aligned_ticket_utility(
+        calibration,
+        evaluation,
+        daily_budget_yen=10_000,
+        label_schemes=("winner",),
+        tree_presets=({"name": "tiny", "num_leaves": 7, "max_depth": 3},),
+        bootstrap_samples=100,
+    )
+
+    assert result["status"] == "completed"
+    assert result["model"] == "ticket_utility_calibration_aligned_v33"
+    assert result["candidate_family_size"] == 3
+    assert result["selection_lower_quantile"] == pytest.approx(0.05 / 3)
+    assert set(result["selection_robustness_gate"]) == {
+        "day_block_familywise_roi_lcb_above_one",
+        "largest_hit_excluded_roi_above_one",
+        "every_temporal_block_roi_above_one",
+        "effective_hit_count_at_least_five",
+    }
+    assert result["selection_bootstrap_samples"] == 100
+    assert result["selected_candidate"]["selected_top_k_metrics"][
+        "roi_bootstrap_samples"
+    ] == 100
+    transport = result["calibration_generator_transport"]
+    assert transport == {
+        "frozen": True,
+        "ranking_sha256_match": True,
+        "probability_artifact_match": True,
+    }
+    assert result["ranking_artifact"]["booster_sha256"] == (
+        result["prior_ranking_artifact"]["booster_sha256"]
+    )

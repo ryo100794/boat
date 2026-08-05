@@ -110,6 +110,7 @@ def bootstrap_daily_roi(
     samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
     seed: int = DEFAULT_SEED,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    lower_quantile: float = 0.05,
 ) -> dict[str, Any]:
     """Estimate bankroll ROI uncertainty by resampling complete days.
 
@@ -125,6 +126,13 @@ def bootstrap_daily_roi(
     normalized_seed = int(seed)
     if normalized_seed < 0:
         raise ValueError("seed must be a non-negative integer")
+    if (
+        isinstance(lower_quantile, bool)
+        or not isinstance(lower_quantile, (int, float, np.integer, np.floating))
+        or not 0.0 < float(lower_quantile) < 0.5
+    ):
+        raise ValueError("lower_quantile must be between zero and 0.5")
+    normalized_lower_quantile = float(lower_quantile)
 
     stakes, returns = _aggregate_days(daily_rows)
     observed_stake = float(stakes.sum())
@@ -161,7 +169,7 @@ def bootstrap_daily_roi(
 
     if valid_count:
         valid_roi = bootstrap_roi[:valid_count]
-        roi_lower = float(np.quantile(valid_roi, 0.05))
+        roi_lower = float(np.quantile(valid_roi, normalized_lower_quantile))
         probability_above_one = float(np.mean(valid_roi > 1.0))
     else:
         roi_lower = None
@@ -176,6 +184,7 @@ def bootstrap_daily_roi(
         "profit_yen": float(observed_return - observed_stake),
         "roi": observed_roi,
         "roi_ci95_lower": roi_lower,
+        "roi_lower_quantile": normalized_lower_quantile,
         "probability_roi_above_one": probability_above_one,
     }
 

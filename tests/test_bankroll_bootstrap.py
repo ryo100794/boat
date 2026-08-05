@@ -65,6 +65,34 @@ def test_two_day_bootstrap_matches_all_possible_cluster_draws(monkeypatch) -> No
     assert result["probability_roi_above_one"] == 0.25
 
 
+def test_bootstrap_supports_predeclared_stricter_lower_quantile(
+    monkeypatch,
+) -> None:
+    combinations = list(product(range(2), repeat=2))
+    monkeypatch.setattr(
+        "boatrace_ai.bankroll_bootstrap.np.random.default_rng",
+        lambda seed: _ExhaustiveRng(combinations),
+    )
+    result = bootstrap_daily_roi(
+        [_row("2026-07-01", 100, 0), _row("2026-07-02", 100, 200)],
+        samples=4,
+        seed=17,
+        chunk_size=2,
+        lower_quantile=0.01,
+    )
+    exhaustive_roi = np.asarray([0.0, 1.0, 1.0, 2.0])
+    assert result["roi_ci95_lower"] == pytest.approx(
+        np.quantile(exhaustive_roi, 0.01)
+    )
+    assert result["roi_lower_quantile"] == 0.01
+
+
+@pytest.mark.parametrize("value", [True, 0.0, 0.5, -0.1, float("nan")])
+def test_bootstrap_rejects_invalid_lower_quantile(value) -> None:
+    with pytest.raises(ValueError, match="lower_quantile"):
+        bootstrap_daily_roi([_row("2026-07-01", 100, 100)], lower_quantile=value)
+
+
 def test_bootstrap_is_reproducible_for_a_fixed_seed() -> None:
     rows = [
         _row("2026-07-01", 100, 0),
@@ -121,6 +149,7 @@ def test_all_zero_stake_draws_report_undefined_roi_statistics() -> None:
         "return_yen": 0.0,
         "profit_yen": 0.0,
         "roi": None,
+        "roi_lower_quantile": 0.05,
         "roi_ci95_lower": None,
         "probability_roi_above_one": None,
     }

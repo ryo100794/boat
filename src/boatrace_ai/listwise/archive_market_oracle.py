@@ -57,6 +57,9 @@ from .conditional_ticket_residual_v30 import (
 from .ticket_utility_ranking_v31 import (
     evaluate_temporal_ticket_utility_roles,
 )
+from .ticket_utility_ranking_v33 import (
+    evaluate_calibration_aligned_ticket_utility,
+)
 from .nonlinear_market_residual_v38 import (
     fit_temporal_nonlinear_market_residual,
     nonlinear_residual_probabilities,
@@ -530,6 +533,13 @@ def temporal_residual_diagnostic(
             else None
         ),
     )
+    calibration_aligned_ticket_utility = (
+        evaluate_calibration_aligned_ticket_utility(
+            calibration,
+            evaluation,
+            daily_budget_yen=daily_budget_yen,
+        )
+    )
     nonlinear_purchase_diagnostics = []
     if len({str(race["race_date"]) for race in calibration}) >= 5:
         nonlinear_market_residual = fit_temporal_nonlinear_market_residual(
@@ -761,6 +771,7 @@ def temporal_residual_diagnostic(
         "payout_weighted_role_model_v29": payout_weighted_roles,
         "conditional_ticket_residual_v30": conditional_ticket_residual,
         "ticket_utility_robust_temporal_ranking_v32": ticket_utility_roles,
+        "ticket_utility_calibration_aligned_v33": calibration_aligned_ticket_utility,
         "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
         "nested_nonlinear_value_calibration_v40": nested_nonlinear_value,
         "nonlinear_market_offset_context_search_v41": nonlinear_context_search,

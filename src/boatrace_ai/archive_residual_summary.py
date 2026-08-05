@@ -6,6 +6,12 @@ from typing import Any, Mapping
 
 RESIDUAL_MODELS = (
     (
+        "ticket_utility_calibration_aligned_v33",
+        "ticket_utility_calibration_aligned_v33",
+        "probability_metrics",
+        "probability_artifact",
+    ),
+    (
         "stacked_market_residual_v42",
         "stacked_market_residual_v42",
         "metrics",

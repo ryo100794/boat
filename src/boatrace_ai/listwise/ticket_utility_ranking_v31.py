@@ -337,7 +337,11 @@ def _ranking_provider(artifact: Mapping[str, Any]):
 
 
 def ticket_ranking_metrics(
-    races: list[dict[str, Any]], artifact: Mapping[str, Any]
+    races: list[dict[str, Any]],
+    artifact: Mapping[str, Any],
+    *,
+    lower_quantile: float = 0.05,
+    bootstrap_samples: int = 2_000,
 ) -> dict[str, Any]:
     totals = {
         top_k: {
@@ -382,7 +386,12 @@ def ticket_ranking_metrics(
             {"race_date": day, **amounts}
             for day, amounts in sorted(daily[top_k].items())
         ]
-        confidence = bootstrap_daily_roi(daily_rows, samples=2_000, seed=20260731)
+        confidence = bootstrap_daily_roi(
+            daily_rows,
+            samples=bootstrap_samples,
+            seed=20260731,
+            lower_quantile=lower_quantile,
+        )
         temporal_block_rois: list[float] = []
         block_count = min(3, len(daily_rows))
         for block_index in range(block_count):
@@ -410,9 +419,12 @@ def ticket_ranking_metrics(
             "profit_yen": returned - stake,
             "roi": returned / stake if stake else None,
             "roi_ci95_lower": confidence.get("roi_ci95_lower"),
+            "roi_lower_quantile": confidence.get("roi_lower_quantile"),
             "probability_roi_above_one": confidence.get(
                 "probability_roi_above_one"
             ),
+            "roi_bootstrap_samples": confidence.get("samples"),
+            "roi_bootstrap_valid_samples": confidence.get("valid_samples"),
             "largest_hit_return_yen": largest_hit,
             "roi_excluding_largest_hit": (
                 (returned - largest_hit) / stake if stake else None
@@ -468,12 +480,15 @@ def evaluate_temporal_ticket_utility_roles(
     tree_presets: Iterable[Mapping[str, Any]] = TREE_PRESETS,
     probability_artifact: Mapping[str, Any] | None = None,
     bootstrap_samples: int = 2_000,
+    result_model_name: str = MODEL_NAME,
+    freeze_calibration_generators: bool = False,
+    familywise_selection_alpha: float | None = None,
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in calibration})
     minimum_days = int(policy_calibration_days) + 10
     if len(dates) < minimum_days:
         return {
-            "model": MODEL_NAME,
+            "model": result_model_name,
             "status": "insufficient_calibration_days",
             "calibration_days": len(dates),
             "required_calibration_days": minimum_days,
@@ -502,13 +517,34 @@ def evaluate_temporal_ticket_utility_roles(
 
     normalized_label_schemes = tuple(str(value) for value in label_schemes)
     normalized_tree_presets = tuple(dict(value) for value in tree_presets)
+    candidate_family_size = (
+        len(normalized_label_schemes)
+        * len(normalized_tree_presets)
+        * len(TOP_K_CHOICES)
+    )
+    if candidate_family_size < 1:
+        raise ValueError("at least one ticket utility candidate is required")
+    if familywise_selection_alpha is None:
+        selection_lower_quantile = 0.05
+    else:
+        alpha = float(familywise_selection_alpha)
+        if not 0.0 < alpha < 0.5:
+            raise ValueError(
+                "familywise_selection_alpha must be between zero and 0.5"
+            )
+        selection_lower_quantile = alpha / candidate_family_size
     candidates: list[dict[str, Any]] = []
     for label_scheme in normalized_label_schemes:
         for preset in normalized_tree_presets:
             artifact = fit_ticket_utility_ranker(
                 inner_fit, label_scheme=label_scheme, tree_preset=preset
             )
-            metrics = ticket_ranking_metrics(inner_validation, artifact)
+            metrics = ticket_ranking_metrics(
+                inner_validation,
+                artifact,
+                lower_quantile=selection_lower_quantile,
+                bootstrap_samples=bootstrap_samples,
+            )
             for top_k in TOP_K_CHOICES:
                 candidates.append({
                     "label_scheme": label_scheme,
@@ -518,8 +554,13 @@ def evaluate_temporal_ticket_utility_roles(
                 })
     selected = max(candidates, key=_candidate_score)
     selected_inner_metrics = selected["selected_top_k_metrics"]
+    lcb_gate_name = (
+        "day_block_familywise_roi_lcb_above_one"
+        if familywise_selection_alpha is not None
+        else "day_block_roi_lcb95_above_one"
+    )
     selection_robustness_gate = {
-        "day_block_roi_lcb95_above_one": float(
+        lcb_gate_name: float(
             selected_inner_metrics.get("roi_ci95_lower") or 0.0
         ) > 1.0,
         "largest_hit_excluded_roi_above_one": float(
@@ -575,7 +616,11 @@ def evaluate_temporal_ticket_utility_roles(
         min_cell_tickets=50,
     )
 
-    final_probability_artifact = dict(probability_artifact or {})
+    final_probability_artifact = (
+        dict(prior_probability_artifact)
+        if freeze_calibration_generators
+        else dict(probability_artifact or {})
+    )
     if not final_probability_artifact:
         final_probability_artifact = fit_structure_residual(
             calibration,
@@ -583,10 +628,14 @@ def evaluate_temporal_ticket_utility_roles(
             regularization=PROBABILITY_REGULARIZATION,
             max_iterations=200,
         )
-    final_ranking_artifact = fit_ticket_utility_ranker(
-        calibration,
-        label_scheme=str(selected["label_scheme"]),
-        tree_preset=selected_preset,
+    final_ranking_artifact = (
+        dict(prior_ranking_artifact)
+        if freeze_calibration_generators
+        else fit_ticket_utility_ranker(
+            calibration,
+            label_scheme=str(selected["label_scheme"]),
+            tree_preset=selected_preset,
+        )
     )
     evaluation_probability_races = _replace_probability_head(
         evaluation, final_probability_artifact
@@ -611,7 +660,7 @@ def evaluate_temporal_ticket_utility_roles(
         selected_top_k
     ]
     return {
-        "model": MODEL_NAME,
+        "model": result_model_name,
         "status": "completed",
         "validation_design": (
             "Ticket-level LightGBM winner ranking and capped Poisson realized-"
@@ -632,10 +681,14 @@ def evaluate_temporal_ticket_utility_roles(
         ),
         "selection_robustness_gate": selection_robustness_gate,
         "selection_robustness_passed": selection_robustness_passed,
+        "candidate_family_size": candidate_family_size,
+        "selection_lower_quantile": selection_lower_quantile,
+        "familywise_selection_alpha": familywise_selection_alpha,
         "policy_calibration_from": dates[-int(policy_calibration_days)],
         "policy_calibration_through": dates[-1],
         "evaluation_from": first_evaluation_date,
         "evaluation_through": max(str(race["race_date"]) for race in evaluation),
+        "selection_bootstrap_samples": bootstrap_samples,
         "selected_candidate": selected,
         "candidates": candidates,
         "probability_artifact": final_probability_artifact,
@@ -646,6 +699,16 @@ def evaluate_temporal_ticket_utility_roles(
         "ranking_artifact": final_ranking_artifact,
         "ranking_metrics": ranking_metrics,
         "empirical_ev_calibration": empirical_artifact.as_dict(),
+        "calibration_generator_transport": {
+            "frozen": freeze_calibration_generators,
+            "ranking_sha256_match": (
+                str(prior_ranking_artifact.get("booster_sha256"))
+                == str(final_ranking_artifact.get("booster_sha256"))
+            ),
+            "probability_artifact_match": (
+                prior_probability_artifact == final_probability_artifact
+            ),
+        },
         "bankroll": bankroll,
         "promotion_eligible": bool(
             selection_robustness_passed
