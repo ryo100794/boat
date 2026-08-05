@@ -12,6 +12,15 @@ from ..storage import upsert_payout, upsert_result_row
 
 
 TRANS = str.maketrans("０１２３４５６７８９．：－　ＲＨｍ", "0123456789.:- RHm")
+PAYOUT_BET_TYPES = (
+    "3連単",
+    "3連複",
+    "2連単",
+    "2連複",
+    "拡連複",
+    "単勝",
+    "複勝",
+)
 ENTRY_DEFAULTS = {
     "origin": None,
     "f_count": None,
@@ -137,12 +146,14 @@ def parse_result_text(conn, *, text: str, race_date: date) -> dict[str, int]:
     counters = {"races": 0, "results": 0, "payouts": 0}
     current_jcd: str | None = None
     current_race_id: str | None = None
+    current_payout_type: str | None = None
     for raw_line in text.splitlines():
         line = normalize(raw_line)
         section = re.match(r"^(?P<jcd>\d{2})KBGN", line)
         if section:
             current_jcd = section.group("jcd")
             current_race_id = None
+            current_payout_type = None
             continue
         if not current_jcd:
             continue
@@ -169,6 +180,7 @@ def parse_result_text(conn, *, text: str, race_date: date) -> dict[str, int]:
                 },
             )
             counters["races"] += 1
+            current_payout_type = None
             continue
         if not current_race_id:
             continue
@@ -177,8 +189,9 @@ def parse_result_text(conn, *, text: str, race_date: date) -> dict[str, int]:
             upsert_result_row(conn, race_id=current_race_id, row=result)
             counters["results"] += 1
             continue
-        payout = parse_payout_row(line)
+        payout = parse_payout_row(line, inherited_bet_type=current_payout_type)
         if payout:
+            current_payout_type = str(payout["bet_type"])
             upsert_payout(conn, race_id=current_race_id, row=payout)
             counters["payouts"] += 1
     return counters
@@ -209,16 +222,26 @@ def parse_result_row(line: str) -> dict[str, Any] | None:
     }
 
 
-def parse_payout_row(line: str) -> dict[str, Any] | None:
+def parse_payout_row(
+    line: str, *, inherited_bet_type: str | None = None
+) -> dict[str, Any] | None:
     match = re.match(
         r"^\s*(?P<bet>3連単|3連複|2連単|2連複|拡連複|単勝|複勝)\s+"
         r"(?P<combo>[1-6-]+)\s+(?P<payout>\d+)(?:\s+人気\s+(?P<popularity>\d+))?",
         line,
     )
-    if not match:
+    bet_type = match.group("bet") if match else None
+    if match is None and inherited_bet_type in PAYOUT_BET_TYPES:
+        match = re.match(
+            r"^\s*(?P<combo>[1-6](?:-[1-6]){0,2})\s+"
+            r"(?P<payout>\d+)(?:\s+人気\s+(?P<popularity>\d+))?",
+            line,
+        )
+        bet_type = inherited_bet_type if match else None
+    if not match or not bet_type:
         return None
     return {
-        "bet_type": match.group("bet"),
+        "bet_type": bet_type,
         "combination": match.group("combo"),
         "payout_yen": int(match.group("payout")),
         "popularity": (

@@ -18,6 +18,7 @@ from .archive_closing_odds import (
 )
 from .db import connection
 from .http import FetchError, fetch_text
+from .ingestion.backfill import backfill_historical
 from .ingestion.parsers import parse_odds3t_html
 from .odds_quality import TRIFECTA_COMBINATION_KEYS, plausible_trifecta_odds
 from .official import race_page_url
@@ -122,6 +123,114 @@ def reclassify_confirmed_non_six_boat_attempts(conn: Any) -> int:
     return max(0, int(cursor.rowcount or 0))
 
 
+def _incomplete_dead_heat_dates(conn: Any) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT r.race_date
+        FROM races r
+        WHERE (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL
+        ) = 6
+          AND EXISTS (
+            SELECT 1
+            FROM race_results tied
+            WHERE tied.race_id = r.race_id AND tied.rank IS NOT NULL
+            GROUP BY tied.rank
+            HAVING COUNT(*) > 1
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM payouts p
+            WHERE p.race_id = r.race_id
+              AND p.bet_type = '3連単'
+              AND p.payout_yen IS NOT NULL
+          ) = 1
+        ORDER BY r.race_date
+        """
+    ).fetchall()
+    return [str(row["race_date"])[:10] for row in rows]
+
+
+def repair_incomplete_dead_heat_payouts(
+    conn: Any,
+    *,
+    raw_dir: Path = Path("data/raw"),
+    sleep_seconds: float = 0.5,
+) -> dict[str, Any]:
+    target_dates = _incomplete_dead_heat_dates(conn)
+    before = len(target_dates)
+    downloaded_dates = 0
+    failed_dates = 0
+    failure_examples: list[dict[str, str]] = []
+    for value in target_dates:
+        target_date = date.fromisoformat(value)
+        try:
+            stats = backfill_historical(
+                conn,
+                start=target_date,
+                end=target_date,
+                kind="result",
+                raw_dir=raw_dir,
+                sleep_seconds=sleep_seconds,
+                skip_existing=False,
+            )
+            downloaded_dates += int(stats.downloaded > 0)
+        except (FetchError, OSError, ValueError) as exc:
+            failed_dates += 1
+            if len(failure_examples) < 25:
+                failure_examples.append(
+                    {
+                        "race_date": value,
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                )
+    remaining_dates = _incomplete_dead_heat_dates(conn)
+    return {
+        "target_dates": before,
+        "downloaded_dates": downloaded_dates,
+        "failed_dates": failed_dates,
+        "repaired_dates": max(0, before - len(remaining_dates)),
+        "remaining_dates": len(remaining_dates),
+        "failure_examples": failure_examples,
+    }
+
+
+def reclassify_confirmed_special_settlement_attempts(conn: Any) -> int:
+    ensure_archive_schema(conn)
+    cursor = conn.execute(
+        """
+        UPDATE archive_closing_odds_attempts
+        SET status = 'excluded_special_settlement'
+        WHERE source_key = ? AND status = 'invalid'
+          AND (
+            SELECT COUNT(DISTINCT rr.lane)
+            FROM race_results rr
+            WHERE rr.race_id = archive_closing_odds_attempts.race_id
+              AND rr.rank IS NOT NULL
+          ) = 6
+          AND EXISTS (
+            SELECT 1
+            FROM race_results tied
+            WHERE tied.race_id = archive_closing_odds_attempts.race_id
+              AND tied.rank IS NOT NULL
+            GROUP BY tied.rank
+            HAVING COUNT(*) > 1
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM payouts p
+            WHERE p.race_id = archive_closing_odds_attempts.race_id
+              AND p.bet_type = '3連単'
+              AND p.payout_yen IS NOT NULL
+          ) > 1
+        """,
+        (OFFICIAL_SOURCE_KEY,),
+    )
+    return max(0, int(cursor.rowcount or 0))
+
+
 def backfill_official_closing_odds(
     conn: Any,
     *,
@@ -130,6 +239,10 @@ def backfill_official_closing_odds(
     sleep_seconds: float = 0.5,
     max_pages: int | None = None,
 ) -> dict[str, Any]:
+    dead_heat_repair = repair_incomplete_dead_heat_payouts(
+        conn, sleep_seconds=sleep_seconds
+    )
+    reclassified_special = reclassify_confirmed_special_settlement_attempts(conn)
     reclassified = reclassify_confirmed_non_six_boat_attempts(conn)
     targets = pending_races(
         conn,
@@ -152,6 +265,8 @@ def backfill_official_closing_odds(
         "fetch_failed": 0,
         "excluded_non_six_boat": 0,
         "reclassified_non_six_boat": reclassified,
+        "reclassified_special_settlement": reclassified_special,
+        "dead_heat_payout_repair": dead_heat_repair,
         "invalid_reason_counts": {},
         "incomplete_odds_count_counts": {},
         "invalid_confirmed_result_boats_counts": {},

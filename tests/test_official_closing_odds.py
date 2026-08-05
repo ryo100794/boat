@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from boatrace_ai.archive_closing_odds import OFFICIAL_SOURCE_KEY, SOURCE_KEY, pending_races
+from boatrace_ai.archive_closing_odds import (
+    OFFICIAL_SOURCE_KEY,
+    SOURCE_KEY,
+    pending_races,
+    record_attempt,
+)
 from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.evaluation_queue import build_command, summarize_result
 from boatrace_ai.official_closing_odds import (
@@ -8,6 +13,8 @@ from boatrace_ai.official_closing_odds import (
     backfill_official_closing_odds,
     official_closing_url,
     parse_official_closing_odds_html,
+    reclassify_confirmed_special_settlement_attempts,
+    repair_incomplete_dead_heat_payouts,
 )
 
 
@@ -349,3 +356,76 @@ def test_invalid_official_odds_publish_bounded_diagnostics(
             "confirmed_result_boats": 6,
         }
     ]
+
+
+
+def test_repairs_and_reclassifies_incomplete_dead_heat_payouts(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "repair-dead-heat.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-03-27",
+                "jcd": "09",
+                "venue_name": "津",
+                "rno": 12,
+                "status": "final",
+            },
+        )
+        for lane, rank in enumerate((1, 2, 3, 3, 5, 6), start=1):
+            conn.execute(
+                "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
+                (race_id, lane, rank),
+            )
+        conn.execute(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', '1-3-5', 590)",
+            (race_id,),
+        )
+        record_attempt(
+            conn,
+            race_id=race_id,
+            status="invalid",
+            source_key=OFFICIAL_SOURCE_KEY,
+        )
+
+        class Stats:
+            downloaded = 1
+
+        def fake_backfill(_conn, **kwargs):
+            assert kwargs["start"].isoformat() == "2026-03-27"
+            assert kwargs["end"].isoformat() == "2026-03-27"
+            assert kwargs["kind"] == "result"
+            assert kwargs["skip_existing"] is False
+            _conn.execute(
+                "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+                "VALUES (?, '3連単', '1-3-6', 3940)",
+                (race_id,),
+            )
+            return Stats()
+
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.backfill_historical", fake_backfill
+        )
+        repaired = repair_incomplete_dead_heat_payouts(
+            conn, raw_dir=tmp_path, sleep_seconds=0.0
+        )
+        reclassified = reclassify_confirmed_special_settlement_attempts(conn)
+        attempt = conn.execute(
+            "SELECT status FROM archive_closing_odds_attempts WHERE race_id = ?",
+            (race_id,),
+        ).fetchone()
+
+    assert repaired == {
+        "target_dates": 1,
+        "downloaded_dates": 1,
+        "failed_dates": 0,
+        "repaired_dates": 1,
+        "remaining_dates": 0,
+        "failure_examples": [],
+    }
+    assert reclassified == 1
+    assert attempt["status"] == "excluded_special_settlement"
