@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from ..bankroll_bootstrap import bootstrap_daily_roi
+from .closing_odds import decision_odds
 from .contextual_empirical_ev_calibration import (
     fit_contextual_empirical_ev_calibration,
 )
@@ -24,6 +27,13 @@ MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_CALIBRATION_DAYS = 120
 PURCHASE_MAX_RANK = 20
 CONTEXT_AUDIT_BOOTSTRAP_SAMPLES = 5_000
+VALUE_ALIGNED_STACK_POLICY_ID = (
+    "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+)
+VALUE_ALIGNED_STACK_BOOTSTRAP_SAMPLES = 5_000
+VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE = 0.01
+VALUE_ALIGNED_STACK_MIN_DAYS = 80
+VALUE_ALIGNED_STACK_MIN_TICKETS = 300
 CONTEXT_RANK_GROUPS = (("top5", 1, 5), ("6-20", 6, 20))
 CONTEXT_ODDS_BANDS = (
     ("<20", 0.0, 20.0),
@@ -137,6 +147,301 @@ def _score(
     ]
 
 
+def _value_stack_shortlist(
+    probability: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    source = probability.get("stack_candidates")
+    if not isinstance(source, list):
+        return []
+    candidates = [
+        dict(candidate) for candidate in source
+        if isinstance(candidate, Mapping)
+        and isinstance(candidate.get("weights"), Mapping)
+        and isinstance(candidate.get("metrics"), Mapping)
+    ]
+    if not candidates:
+        return []
+
+    def best(predicate: Any) -> dict[str, Any] | None:
+        matches = [candidate for candidate in candidates if predicate(candidate)]
+        if not matches:
+            return None
+        return min(
+            matches,
+            key=lambda candidate: (
+                float(candidate["metrics"]["trifecta_log_loss"]),
+                float(candidate["weights"]["linear"])
+                + float(candidate["weights"]["nonlinear"]),
+                str(candidate["name"]),
+            ),
+        )
+
+    selected_name = str(probability.get("selected_stack") or "")
+    selected: list[dict[str, Any] | None] = [
+        best(lambda candidate: str(candidate["name"]) == "market"),
+        best(lambda candidate: str(candidate["name"]) == selected_name),
+        best(
+            lambda candidate: float(candidate["weights"]["linear"]) > 0.0
+            and float(candidate["weights"]["nonlinear"]) == 0.0
+        ),
+        best(
+            lambda candidate: float(candidate["weights"]["nonlinear"]) > 0.0
+            and float(candidate["weights"]["linear"]) == 0.0
+        ),
+        best(
+            lambda candidate: float(candidate["weights"]["linear"]) > 0.0
+            and float(candidate["weights"]["nonlinear"]) > 0.0
+        ),
+    ]
+    unique: dict[str, dict[str, Any]] = {}
+    for candidate in selected:
+        if candidate is not None:
+            unique[str(candidate["name"])] = candidate
+    return list(unique.values())
+
+
+def _value_aligned_artifact(
+    base_artifact: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    base_selected_stack: str,
+) -> dict[str, Any]:
+    artifact = {
+        str(key): value
+        for key, value in base_artifact.items()
+        if str(key) != "artifact_sha256"
+    }
+    weights = candidate.get("weights")
+    if not isinstance(weights, Mapping):
+        raise ValueError("value-aligned stack candidate weights are missing")
+    artifact.update({
+        "selected_stack": str(candidate["name"]),
+        "weights": {
+            key: float(weights[key])
+            for key in ("market", "linear", "nonlinear")
+        },
+        "pre_value_alignment_stack": base_selected_stack,
+        "value_alignment_policy_id": VALUE_ALIGNED_STACK_POLICY_ID,
+    })
+    encoded = json.dumps(
+        artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    artifact["artifact_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return artifact
+
+
+def _value_alignment_metrics(
+    races: list[dict[str, Any]],
+    artifact: Mapping[str, Any],
+) -> dict[str, Any]:
+    scored = _score(races, artifact)
+    daily: dict[str, dict[str, Any]] = {}
+    top5_hits = market_top5_hits = hit_tickets = 0
+    total_raw_ev = total_return = largest_return = 0.0
+    for race in scored:
+        probabilities = {
+            str(key): float(value)
+            for key, value in race["model_probabilities"].items()
+        }
+        odds = decision_odds(race)
+        multipliers = race.get("historical_return_multipliers") or {}
+        ranked = sorted(
+            probabilities,
+            key=lambda combination: (
+                -probabilities[combination],
+                combination,
+            ),
+        )[:PURCHASE_MAX_RANK]
+        if not ranked:
+            continue
+
+        def value_key(combination: str) -> tuple[float, float, str]:
+            raw_ev = (
+                probabilities[combination]
+                * float(odds[combination])
+                * float(multipliers.get(combination, 1.0))
+            )
+            return (-raw_ev, -probabilities[combination], combination)
+
+        selected = min(ranked, key=value_key)
+        raw_ev = -value_key(selected)[0]
+        actual = str(race["actual_combination"])
+        hit = selected == actual
+        returned = float(race["actual_payout_yen"]) if hit else 0.0
+        day = str(race["race_date"])
+        aggregate = daily.setdefault(day, {
+            "race_date": day,
+            "stake_yen": 0,
+            "return_yen": 0.0,
+        })
+        aggregate["stake_yen"] += 100
+        aggregate["return_yen"] += returned
+        total_raw_ev += raw_ev
+        total_return += returned
+        largest_return = max(largest_return, returned)
+        hit_tickets += int(hit)
+        top5_hits += int(actual in ranked[:5])
+        market = race["market_probabilities"]
+        market_top5 = sorted(
+            market,
+            key=lambda combination: (-float(market[combination]), combination),
+        )[:5]
+        market_top5_hits += int(actual in market_top5)
+
+    tickets = sum(int(row["stake_yen"]) // 100 for row in daily.values())
+    confidence = (
+        bootstrap_daily_roi(
+            list(daily.values()),
+            samples=VALUE_ALIGNED_STACK_BOOTSTRAP_SAMPLES,
+            lower_quantile=VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE,
+        )
+        if tickets
+        else {
+            "roi": None,
+            "roi_ci95_lower": None,
+            "probability_roi_above_one": None,
+        }
+    )
+    stake_yen = tickets * 100
+    return {
+        "tickets": tickets,
+        "hit_tickets": hit_tickets,
+        "candidate_days": len(daily),
+        "mean_selected_raw_ev": (
+            total_raw_ev / tickets if tickets else None
+        ),
+        "roi": confidence.get("roi"),
+        "roi_lcb95": confidence.get("roi_ci95_lower"),
+        "probability_roi_above_one": confidence.get(
+            "probability_roi_above_one"
+        ),
+        "roi_excluding_largest_hit": (
+            (total_return - largest_return) / stake_yen
+            if stake_yen else None
+        ),
+        "trifecta_top5_hit_rate": (
+            top5_hits / tickets if tickets else None
+        ),
+        "market_trifecta_top5_hit_rate": (
+            market_top5_hits / tickets if tickets else None
+        ),
+    }
+
+
+def select_value_aligned_stack(
+    probability: Mapping[str, Any],
+    value_calibration: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    base_artifact = probability.get("artifact")
+    if not isinstance(base_artifact, Mapping):
+        raise ValueError("mature probability artifact is missing")
+    base_selected = str(probability.get("selected_stack") or "")
+    shortlist = _value_stack_shortlist(probability)
+    if not shortlist:
+        return dict(base_artifact), {
+            "policy_id": VALUE_ALIGNED_STACK_POLICY_ID,
+            "status": "not_available",
+            "base_selected_stack": base_selected,
+            "selected_stack": base_selected,
+            "candidate_family_size": 0,
+            "shortlisted_candidates": 0,
+            "outer_period_used": False,
+        }
+
+    rows: list[dict[str, Any]] = []
+    artifacts: dict[str, dict[str, Any]] = {}
+    for candidate in shortlist:
+        name = str(candidate["name"])
+        artifact = _value_aligned_artifact(
+            base_artifact,
+            candidate,
+            base_selected_stack=base_selected,
+        )
+        artifacts[name] = artifact
+        metrics = _value_alignment_metrics(value_calibration, artifact)
+        support_ready = (
+            int(metrics["candidate_days"]) >= VALUE_ALIGNED_STACK_MIN_DAYS
+            and int(metrics["tickets"]) >= VALUE_ALIGNED_STACK_MIN_TICKETS
+        )
+        top5_noninferior = (
+            metrics["trifecta_top5_hit_rate"] is not None
+            and metrics["market_trifecta_top5_hit_rate"] is not None
+            and float(metrics["trifecta_top5_hit_rate"])
+            >= float(metrics["market_trifecta_top5_hit_rate"])
+        )
+        rows.append({
+            "name": name,
+            "weights": dict(candidate["weights"]),
+            **metrics,
+            "support_ready": support_ready,
+            "top5_noninferior_to_market": top5_noninferior,
+            "eligible": support_ready and top5_noninferior,
+        })
+
+    eligible = [
+        row for row in rows
+        if row["eligible"] and row["roi_lcb95"] is not None
+    ]
+    if eligible:
+        selected_row = max(
+            eligible,
+            key=lambda row: (
+                float(row["roi_lcb95"]),
+                float(row["roi"] if row["roi"] is not None else -1.0),
+                float(
+                    row["roi_excluding_largest_hit"]
+                    if row["roi_excluding_largest_hit"] is not None
+                    else -1.0
+                ),
+                float(row["weights"]["market"]),
+                str(row["name"]),
+            ),
+        )
+        selected_name = str(selected_row["name"])
+        status = "selected"
+    else:
+        selected_name = base_selected
+        status = "fallback_base_no_eligible_value_candidate"
+        if selected_name not in artifacts:
+            return dict(base_artifact), {
+                "policy_id": VALUE_ALIGNED_STACK_POLICY_ID,
+                "status": status,
+                "base_selected_stack": base_selected,
+                "selected_stack": base_selected,
+                "candidate_family_size": len(
+                    probability.get("stack_candidates") or []
+                ),
+                "shortlisted_candidates": len(rows),
+                "candidates": rows,
+                "outer_period_used": False,
+            }
+
+    for row in rows:
+        row["selected"] = str(row["name"]) == selected_name
+    return artifacts[selected_name], {
+        "policy_id": VALUE_ALIGNED_STACK_POLICY_ID,
+        "status": status,
+        "selection_objective": (
+            "maximum day-block Q05 ROI for one max-raw-EV ticket per race "
+            "within probability top20"
+        ),
+        "base_selected_stack": base_selected,
+        "selected_stack": selected_name,
+        "candidate_family_size": len(probability.get("stack_candidates") or []),
+        "shortlisted_candidates": len(rows),
+        "selection_lower_quantile": (
+            VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE
+        ),
+        "familywise_candidate_cap": 5,
+        "minimum_candidate_days": VALUE_ALIGNED_STACK_MIN_DAYS,
+        "minimum_tickets": VALUE_ALIGNED_STACK_MIN_TICKETS,
+        "top5_noninferiority_required": True,
+        "value_calibration_shared_with_empirical_gate_training": True,
+        "outer_period_used": False,
+        "candidates": rows,
+    }
+
+
 def evaluate_mature_stacked_value(
     calibration: list[dict[str, Any]],
     evaluation: list[dict[str, Any]],
@@ -173,7 +478,10 @@ def evaluate_mature_stacked_value(
         [],
         num_threads=num_threads,
     )
-    artifact = probability["artifact"]
+    artifact, value_aligned_selection = select_value_aligned_stack(
+        probability,
+        value_calibration,
+    )
     value_scored = _score(value_calibration, artifact)
     evaluation_scored = _score(evaluation, artifact)
     calibrator = {"model_weight": 1.0, "temperature": 1.0}
@@ -247,8 +555,9 @@ def evaluate_mature_stacked_value(
         ),
         "validation_design": (
             "earliest 60 or more days for nested V42 component and stack "
-            "selection; following 120 untouched days for top20 contextual "
-            "rank-by-odds value calibration; final outer days used once"
+            "selection; following 120 untouched days for predeclared "
+            "value-aligned stack reweighting and top20 contextual rank-by-odds "
+            "value calibration; final outer days used once"
         ),
         "outer_period_used_for_selection": False,
         "model_training_from": min(model_dates),
@@ -281,6 +590,7 @@ def evaluate_mature_stacked_value(
             )
         },
         "probability_artifact": artifact,
+        "value_aligned_stack_selection": value_aligned_selection,
         "value_calibration_probability_metrics": stacked_metrics(
             value_calibration, artifact
         ),

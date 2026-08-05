@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
+
 from boatrace_ai.listwise import mature_stacked_value as subject
 
 
@@ -126,7 +128,9 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
         "status": "fallback_market",
         "fallback_reasons": ["validation_top5_below_market"],
     }
-    assert "top20 contextual" in result["validation_design"]
+    assert result["value_aligned_stack_selection"]["status"] == "not_available"
+    assert result["value_aligned_stack_selection"]["outer_period_used"] is False
+    assert "value-aligned stack reweighting" in result["validation_design"]
     assert result["evidence_role"] == (
         "retrospective_research_only_candidate_universe_search"
     )
@@ -209,3 +213,123 @@ def test_mature_value_requires_180_prior_days() -> None:
     assert result["status"] == "insufficient_nested_days"
     assert result["required_days"] == 180
     assert result["real_betting_enabled"] is False
+
+def test_value_aligned_stack_selects_highest_supported_lcb(
+    monkeypatch,
+) -> None:
+    probability = {
+        "selected_stack": "linear",
+        "artifact": {
+            "model": "stacked_market_residual_v42",
+            "selected_stack": "linear",
+            "weights": {"market": 0.0, "linear": 1.0, "nonlinear": 0.0},
+            "artifact_sha256": "a" * 64,
+        },
+        "stack_candidates": [
+            {
+                "name": "market",
+                "weights": {
+                    "market": 1.0,
+                    "linear": 0.0,
+                    "nonlinear": 0.0,
+                },
+                "metrics": {"trifecta_log_loss": 1.00},
+            },
+            {
+                "name": "linear",
+                "weights": {
+                    "market": 0.0,
+                    "linear": 1.0,
+                    "nonlinear": 0.0,
+                },
+                "metrics": {"trifecta_log_loss": 0.99},
+            },
+            {
+                "name": "nonlinear",
+                "weights": {
+                    "market": 0.0,
+                    "linear": 0.0,
+                    "nonlinear": 1.0,
+                },
+                "metrics": {"trifecta_log_loss": 0.98},
+            },
+        ],
+    }
+    metrics = {
+        "market": (0.70, 0.80, 0.60),
+        "linear": (0.90, 0.95, 0.61),
+        "nonlinear": (1.10, 1.20, 0.59),
+    }
+
+    def fake_metrics(races, artifact):
+        lcb, roi, top5 = metrics[artifact["selected_stack"]]
+        return {
+            "tickets": 600,
+            "hit_tickets": 20,
+            "candidate_days": 100,
+            "mean_selected_raw_ev": 1.0,
+            "roi": roi,
+            "roi_lcb95": lcb,
+            "probability_roi_above_one": 0.5,
+            "roi_excluding_largest_hit": roi - 0.1,
+            "trifecta_top5_hit_rate": top5,
+            "market_trifecta_top5_hit_rate": 0.60,
+        }
+
+    monkeypatch.setattr(subject, "_value_alignment_metrics", fake_metrics)
+
+    artifact, audit = subject.select_value_aligned_stack(
+        probability,
+        [{"race_date": "2026-01-01"}],
+    )
+
+    assert audit["selected_stack"] == "linear"
+    assert audit["status"] == "selected"
+    assert audit["outer_period_used"] is False
+    assert audit["candidate_family_size"] == 3
+    assert audit["shortlisted_candidates"] == 3
+    assert audit["selection_lower_quantile"] == 0.01
+    assert audit["familywise_candidate_cap"] == 5
+    nonlinear = next(
+        row for row in audit["candidates"] if row["name"] == "nonlinear"
+    )
+    assert nonlinear["roi_lcb95"] == 1.10
+    assert nonlinear["top5_noninferior_to_market"] is False
+    assert nonlinear["eligible"] is False
+    assert artifact["selected_stack"] == "linear"
+    assert artifact["pre_value_alignment_stack"] == "linear"
+    assert artifact["value_alignment_policy_id"] == (
+        "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+    )
+    assert len(artifact["artifact_sha256"]) == 64
+
+def test_value_alignment_metrics_use_one_ticket_per_race_and_yen_payout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        subject,
+        "_score",
+        lambda races, artifact: [dict(race) for race in races],
+    )
+    monkeypatch.setattr(
+        subject,
+        "VALUE_ALIGNED_STACK_BOOTSTRAP_SAMPLES",
+        100,
+    )
+    first = _race(date(2026, 1, 1), 1)
+    second = _race(date(2026, 1, 2), 2)
+
+    metrics = subject._value_alignment_metrics(
+        [first, second],
+        {"selected_stack": "test"},
+    )
+
+    assert metrics["tickets"] == 2
+    assert metrics["hit_tickets"] == 2
+    assert metrics["candidate_days"] == 2
+    assert metrics["mean_selected_raw_ev"] == pytest.approx(1.8)
+    assert metrics["roi"] == 3.0
+    assert metrics["roi_lcb95"] == 3.0
+    assert metrics["roi_excluding_largest_hit"] == 1.5
+    assert metrics["trifecta_top5_hit_rate"] == 1.0
+    assert metrics["market_trifecta_top5_hit_rate"] == 1.0
