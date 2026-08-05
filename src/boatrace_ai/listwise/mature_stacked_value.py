@@ -19,10 +19,10 @@ from .stacked_market_residual_v42 import (
 )
 
 
-MODEL_NAME = "mature_stacked_contextual_value"
+MODEL_NAME = "mature_stacked_contextual_value_rank20"
 MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_CALIBRATION_DAYS = 120
-PURCHASE_MAX_RANK = 5
+PURCHASE_MAX_RANK = 20
 
 
 def _identity_probability_blender(
@@ -151,6 +151,9 @@ def evaluate_mature_stacked_value(
     result = {
         "model": MODEL_NAME,
         "status": "completed",
+        "evidence_role": (
+            "retrospective_research_only_candidate_universe_search"
+        ),
         "validation_design": (
             "earliest 60 or more days for nested V42 component and stack "
             "selection; following 120 untouched days for top5 contextual "
@@ -198,10 +201,11 @@ def evaluate_mature_stacked_value(
             ledger, evaluation_ledger
         ),
         "bankroll": bankroll,
+        "statistical_gate_passed": False,
         "promotion_eligible": False,
         "real_betting_enabled": False,
     }
-    result["promotion_eligible"] = empirical_bankroll_promotion_eligible(
+    result["statistical_gate_passed"] = empirical_bankroll_promotion_eligible(
         bankroll
     )
     return result
