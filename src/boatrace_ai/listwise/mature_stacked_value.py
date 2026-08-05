@@ -499,10 +499,53 @@ def evaluate_mature_stacked_value(
         [],
         num_threads=num_threads,
     )
-    artifact, value_aligned_selection = select_value_aligned_stack(
+    selection_artifact, value_aligned_selection = select_value_aligned_stack(
         probability,
         stack_selection,
     )
+    probability_refit_training = model_training + stack_selection
+    probability_refit = fit_temporal_stacked_market_residual(
+        probability_refit_training,
+        [],
+        num_threads=num_threads,
+    )
+    selected_weights = selection_artifact.get("weights")
+    if not isinstance(selected_weights, Mapping):
+        raise ValueError("selected mature stack weights are missing")
+    selected_stack = str(selection_artifact.get("selected_stack") or "")
+    if not selected_stack:
+        raise ValueError("selected mature stack name is missing")
+    artifact = _value_aligned_artifact(
+        probability_refit["artifact"],
+        {
+            "name": selected_stack,
+            "weights": selected_weights,
+        },
+        base_selected_stack=str(probability.get("selected_stack") or ""),
+    )
+    value_aligned_selection = dict(value_aligned_selection)
+    value_aligned_selection.update({
+        "probability_component_refit_after_selection": True,
+        "selected_stack_fixed_before_refit": True,
+        "refit_excludes_empirical_gate_calibration": True,
+        "refit_training_from": min(
+            str(race["race_date"]) for race in probability_refit_training
+        ),
+        "refit_training_through": max(
+            str(race["race_date"]) for race in probability_refit_training
+        ),
+        "refit_training_days": len(
+            {
+                str(race["race_date"])
+                for race in probability_refit_training
+            }
+        ),
+        "refit_training_races": len(probability_refit_training),
+        "selection_artifact_sha256": selection_artifact.get(
+            "artifact_sha256"
+        ),
+        "refit_artifact_sha256": artifact.get("artifact_sha256"),
+    })
     value_scored = _score(value_calibration, artifact)
     evaluation_scored = _score(evaluation, artifact)
     calibrator = {"model_weight": 1.0, "temperature": 1.0}
@@ -618,6 +661,28 @@ def evaluate_mature_stacked_value(
             )
         },
         "probability_artifact": artifact,
+        "probability_refit": {
+            "training_from": min(
+                str(race["race_date"])
+                for race in probability_refit_training
+            ),
+            "training_through": max(
+                str(race["race_date"])
+                for race in probability_refit_training
+            ),
+            "training_days": len(
+                {
+                    str(race["race_date"])
+                    for race in probability_refit_training
+                }
+            ),
+            "training_races": len(probability_refit_training),
+            "selected_stack_fixed_before_refit": True,
+            "empirical_gate_calibration_used": False,
+            "component_selection": probability_refit.get(
+                "component_selection"
+            ),
+        },
         "value_aligned_stack_selection": value_aligned_selection,
         "value_stack_selection_probability_metrics": stacked_metrics(
             stack_selection, artifact

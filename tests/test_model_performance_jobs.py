@@ -113,6 +113,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nested_value_stack_selection_calibration_disjoint" in MODEL_REPORT_HTML
     assert "nested_value_stack_selection_from" in MODEL_REPORT_HTML
     assert "valueAlignedStackEvidence" in MODEL_REPORT_HTML
+    assert "probability_component_refit_after_selection" in MODEL_REPORT_HTML
+    assert "refit_excludes_empirical_gate_calibration" in MODEL_REPORT_HTML
     assert "officialCoverageEvidence" in MODEL_REPORT_HTML
     assert "official_monthly_coverage" in MODEL_REPORT_HTML
     assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML

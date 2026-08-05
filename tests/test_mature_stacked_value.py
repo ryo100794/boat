@@ -48,7 +48,7 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     observed = {}
 
     def fake_fit(model_training, evaluation, *, num_threads):
-        observed["training"] = model_training
+        observed.setdefault("training_calls", []).append(list(model_training))
         assert evaluation == []
         assert num_threads == 2
         return {
@@ -66,7 +66,15 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
                 "nonlinear": 0.0,
             },
             "component_selection": {},
-            "artifact": {"artifact_sha256": "a" * 64},
+            "artifact": {
+                "selected_stack": "market",
+                "weights": {
+                    "market": 1.0,
+                    "linear": 0.0,
+                    "nonlinear": 0.0,
+                },
+                "artifact_sha256": "a" * 64,
+            },
         }
 
     def fake_select(probability, stack_selection):
@@ -125,7 +133,9 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
         num_threads=2,
     )
 
-    assert len(observed["training"]) == 600
+    assert len(observed["training_calls"]) == 2
+    assert len(observed["training_calls"][0]) == 600
+    assert len(observed["training_calls"][1]) == 1200
     assert len(observed["stack_selection"]) == 600
     assert len(observed["records"]) == 1200
     assert observed["contextual_kwargs"]["min_days"] == 60
@@ -150,7 +160,17 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
         "fallback_reasons": ["validation_top5_below_market"],
     }
     assert result["value_aligned_stack_selection"]["status"] == "not_available"
-    assert result["value_aligned_stack_selection"]["outer_period_used"] is False
+    aligned = result["value_aligned_stack_selection"]
+    assert aligned["outer_period_used"] is False
+    assert aligned["probability_component_refit_after_selection"] is True
+    assert aligned["selected_stack_fixed_before_refit"] is True
+    assert aligned["refit_excludes_empirical_gate_calibration"] is True
+    assert aligned["refit_training_days"] == 120
+    assert aligned["refit_training_races"] == 1200
+    assert result["probability_refit"]["training_days"] == 120
+    assert result["probability_refit"]["training_races"] == 1200
+    assert result["probability_refit"]["selected_stack_fixed_before_refit"] is True
+    assert result["probability_refit"]["empirical_gate_calibration_used"] is False
     assert "value-aligned stack reweighting" in result["validation_design"]
     assert result["evidence_role"] == (
         "retrospective_research_only_candidate_universe_search"

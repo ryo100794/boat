@@ -730,7 +730,8 @@ function valueAlignedStackEvidence(x){
   if(!audit.policy_id) return "";
   const boundary=audit.outer_period_used===false?"外側不使用 PASS":"外側境界 FAIL";
   const disjoint=x.nested_value_stack_selection_calibration_disjoint===true?"探索/校正分離 PASS":"探索/校正分離 FAIL";
-  return `価値整合 ${audit.base_selected_stack||"-"}→${audit.selected_stack||"-"} / ${audit.policy_id} / Q${audit.selection_lower_quantile==null?"-":audit.selection_lower_quantile} / ${audit.status||"-"} / ${boundary} / ${disjoint}`;
+  const refit=audit.probability_component_refit_after_selection===true&&audit.selected_stack_fixed_before_refit===true&&audit.refit_excludes_empirical_gate_calibration===true?`stack固定後再学習 ${fmt(audit.refit_training_days)}日 PASS`:"stack固定後再学習 未記録";
+  return `価値整合 ${audit.base_selected_stack||"-"}→${audit.selected_stack||"-"} / ${audit.policy_id} / Q${audit.selection_lower_quantile==null?"-":audit.selection_lower_quantile} / ${audit.status||"-"} / ${boundary} / ${disjoint} / ${refit}`;
 }
 function officialCoverageEvidence(x){
   const ratioValue=x.official_coverage_ratio;
