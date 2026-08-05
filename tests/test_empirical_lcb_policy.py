@@ -191,6 +191,43 @@ def test_policy_rejects_candidate_when_local_lcb_is_unavailable():
     )
 
 
+def test_policy_reports_unsupported_context_local_bin() -> None:
+    class _UnsupportedContextBinArtifact(_Artifact):
+        def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
+            return {
+                "empirical_ev": 1.20,
+                "empirical_ev_lcb95": 1.05,
+                "purchase_lcb95_available": False,
+                "cell_ready": True,
+                "context_local_support_ready": False,
+                "context_local_support_reasons": [
+                    "insufficient_context_bin_support"
+                ],
+                "required_context_local_candidates": 100,
+                "required_context_local_candidate_days": 20,
+            }
+
+    result = simulate_empirical_lcb_policy(
+        [_race("r1")],
+        CALIBRATOR,
+        _blend,
+        _UnsupportedContextBinArtifact(),
+        10_000,
+    )
+
+    decisions = result["daily"][0]["candidate_decision_audit"]
+    assert decisions
+    assert all(
+        row["denial_reason"] == "context_local_bin_not_ready"
+        for row in decisions
+    )
+    assert all(
+        row["required_context_local_candidates"] == 100
+        for row in decisions
+    )
+    assert result["tickets"] == 0
+
+
 def test_candidate_audit_carries_calibration_stability_metadata():
     class _StableArtifact(_Artifact):
         def predict(self, raw_ev, probability_rank=None, forecast_odds=None):
@@ -217,7 +254,7 @@ def test_candidate_audit_carries_calibration_stability_metadata():
     decision = result["daily"][0]["candidate_decision_audit"][0]
     assert decision["purchase_gate_approved"] is True
     assert decision["approval_reason"] == (
-        "local_support_ready_and_calibrated_roi_lcb95_above_one"
+        "context_and_global_local_support_ready_and_calibrated_roi_lcb95_above_one"
     )
     assert decision["buy_threshold"] == 1.0
 

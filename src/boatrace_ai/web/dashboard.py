@@ -3621,6 +3621,24 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "local_block_candidates": metrics.get("local_block_candidates"),
                 "local_block_candidate_days": metrics.get("local_block_candidate_days"),
                 "local_block_ess": metrics.get("local_block_ess"),
+                "context_local_support_ready": metrics.get(
+                    "context_local_support_ready"
+                ),
+                "context_local_support_reasons": metrics.get(
+                    "context_local_support_reasons"
+                ),
+                "context_local_candidates": metrics.get(
+                    "context_local_candidates"
+                ),
+                "context_local_candidate_days": metrics.get(
+                    "context_local_candidate_days"
+                ),
+                "required_context_local_candidates": metrics.get(
+                    "required_context_local_candidates"
+                ),
+                "required_context_local_candidate_days": metrics.get(
+                    "required_context_local_candidate_days"
+                ),
                 "local_block_raw_ev_min": metrics.get("local_block_raw_ev_min"),
                 "local_block_raw_ev_max": metrics.get("local_block_raw_ev_max"),
                 "raw_V_buy": metrics.get("raw_V_buy"),
@@ -4802,6 +4820,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "local_block_candidates": candidate_metrics.get("local_block_candidates"),
                 "local_block_candidate_days": candidate_metrics.get("local_block_candidate_days"),
                 "local_block_ess": candidate_metrics.get("local_block_ess"),
+                "context_local_support_ready": candidate_metrics.get("context_local_support_ready"),
+                "context_local_support_reasons": candidate_metrics.get("context_local_support_reasons"),
+                "context_local_candidates": candidate_metrics.get("context_local_candidates"),
+                "context_local_candidate_days": candidate_metrics.get("context_local_candidate_days"),
+                "required_context_local_candidates": candidate_metrics.get("required_context_local_candidates"),
+                "required_context_local_candidate_days": candidate_metrics.get("required_context_local_candidate_days"),
                 "local_block_raw_ev_min": candidate_metrics.get("local_block_raw_ev_min"),
                 "local_block_raw_ev_max": candidate_metrics.get("local_block_raw_ev_max"),
                 "raw_V_buy": candidate_metrics.get("raw_V_buy"),

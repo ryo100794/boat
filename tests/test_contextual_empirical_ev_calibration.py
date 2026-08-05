@@ -66,7 +66,7 @@ def test_top5_and_non_top5_contexts_can_calibrate_differently() -> None:
     assert non_top5["calibration_level"] == "rank_odds_cell"
     assert top5["positive_return_days"] == 6
     assert top5["return_hhi"] == pytest.approx(1.0 / 6.0)
-    assert artifact.calibration_version == 3
+    assert artifact.calibration_version == 4
     assert top5["empirical_ev"] > non_top5["empirical_ev"]
 
 
@@ -145,6 +145,43 @@ def test_context_prediction_propagates_global_local_range_gate() -> None:
     assert supported["purchase_lcb95_available"] is True
     assert outside["input_in_local_block_range"] is False
     assert outside["purchase_lcb95_available"] is False
+
+
+def test_ready_cell_rejects_an_unsupported_local_ev_bin() -> None:
+    records = []
+    for day in range(20):
+        records.extend(
+            _record(day, 1, 12.0, 1.2, raw_ev=1.02)
+            for _ in range(4)
+        )
+        records.extend(
+            _record(day, 1, 30.0, 1.2, raw_ev=1.12)
+            for _ in range(4)
+        )
+    artifact = _fit(
+        records,
+        min_rank_days=1,
+        min_rank_tickets=1,
+        min_cell_days=10,
+        min_cell_tickets=20,
+        min_local_candidates=1,
+        min_local_candidate_days=1,
+        min_local_ess=1.0,
+    )
+
+    unsupported = artifact.predict(1.12, 1, 12.0)
+    supported = artifact.predict(1.02, 1, 12.0)
+
+    assert unsupported["cell_ready"] is True
+    assert unsupported["input_in_training_range"] is True
+    assert unsupported["context_local_support_ready"] is False
+    assert unsupported["context_local_support_reasons"] == [
+        "insufficient_context_bin_support",
+        "insufficient_context_bin_support_days",
+    ]
+    assert unsupported["purchase_lcb95_available"] is False
+    assert supported["context_local_support_ready"] is True
+    assert supported["purchase_lcb95_available"] is True
 
 
 def test_hierarchical_shrinkage_preserves_raw_ev_monotonicity() -> None:

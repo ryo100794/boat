@@ -18,7 +18,7 @@ from boatrace_ai.listwise.empirical_ev_calibration import (
 
 RANK_GROUPS = ("top5", "6-20", "21+")
 ODDS_BANDS = ("<20", "20-50", "50-101", ">=101")
-CONTEXTUAL_CALIBRATION_VERSION = 3
+CONTEXTUAL_CALIBRATION_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -139,9 +139,25 @@ class ContextualEmpiricalEVCalibrationArtifact:
             "local_support_reasons",
         ):
             result[key] = global_prediction.get(key)
+        context_local_reasons: list[str] = []
+        if int(result["cell_support"]) < self.min_cell_tickets:
+            context_local_reasons.append("insufficient_context_bin_support")
+        if int(result["cell_support_days"]) < self.min_cell_days:
+            context_local_reasons.append(
+                "insufficient_context_bin_support_days"
+            )
+        context_local_support_ready = bool(
+            cell.ready
+            and result.get("calibration_level") == "rank_odds_cell"
+            and not context_local_reasons
+        )
+        result["context_local_support_ready"] = context_local_support_ready
+        result["context_local_support_reasons"] = context_local_reasons
+        result["required_context_local_candidates"] = self.min_cell_tickets
+        result["required_context_local_candidate_days"] = self.min_cell_days
         result["purchase_lcb95_available"] = bool(
             global_prediction.get("purchase_lcb95_available")
-            and cell.ready
+            and context_local_support_ready
             and result.get("empirical_ev_lcb95") is not None
         )
         result.update(

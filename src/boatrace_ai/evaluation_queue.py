@@ -4382,6 +4382,22 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "local_block_candidate_days"
             ),
             "local_block_ess": audit_decision.get("local_block_ess"),
+            "context_local_support_ready": audit_decision.get(
+                "context_local_support_ready"
+            ),
+            "context_local_support_reasons": audit_decision.get(
+                "context_local_support_reasons"
+            ),
+            "context_local_candidates": audit_decision.get("cell_support"),
+            "context_local_candidate_days": audit_decision.get(
+                "cell_support_days"
+            ),
+            "required_context_local_candidates": audit_decision.get(
+                "required_context_local_candidates"
+            ),
+            "required_context_local_candidate_days": audit_decision.get(
+                "required_context_local_candidate_days"
+            ),
             "local_block_minimum_raw_ev": audit_decision.get(
                 "local_block_raw_ev_min"
             ),
@@ -5039,6 +5055,24 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "local_block_candidate_days"
             ),
             "local_block_ess": latest_decision.get("local_block_ess"),
+            "context_local_support_ready": latest_decision.get(
+                "context_local_support_ready"
+            ),
+            "context_local_support_reasons": latest_decision.get(
+                "context_local_support_reasons"
+            ),
+            "context_local_candidates": latest_decision.get(
+                "context_local_candidates"
+            ) or latest_decision.get("cell_support"),
+            "context_local_candidate_days": latest_decision.get(
+                "context_local_candidate_days"
+            ) or latest_decision.get("cell_support_days"),
+            "required_context_local_candidates": latest_decision.get(
+                "required_context_local_candidates"
+            ),
+            "required_context_local_candidate_days": latest_decision.get(
+                "required_context_local_candidate_days"
+            ),
             "local_block_raw_ev_min": latest_decision.get(
                 "local_block_raw_ev_min"
             ),

@@ -117,6 +117,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "局所ready" in MODEL_REPORT_HTML
     assert "candidate_decision_count" in MODEL_REPORT_HTML
     assert "maximum_calibrated_roi_lcb95" in MODEL_REPORT_HTML
+    assert "context-local N" in MODEL_REPORT_HTML
+    assert "required_context_local_candidates" in MODEL_REPORT_HTML
     assert "denial_reason_counts" in MODEL_REPORT_HTML
     assert "監査snapshot" in MODEL_REPORT_HTML
     assert "N/A / 購入なし" in MODEL_REPORT_HTML

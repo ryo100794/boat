@@ -160,6 +160,20 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
                 "local_support_ready_and_calibrated_roi_lcb95_above_one"
             ),
         }],
+        "candidate_decision_audit": [{
+            "race_id": "r1",
+            "combination": "1-2-3",
+            "cell_support": 80,
+            "cell_support_days": 18,
+            "context_local_support_ready": False,
+            "context_local_support_reasons": [
+                "insufficient_context_bin_support",
+                "insufficient_context_bin_support_days",
+            ],
+            "required_context_local_candidates": 100,
+            "required_context_local_candidate_days": 20,
+            "denial_reason": "context_local_bin_not_ready",
+        }],
         "ledger_candidates": 150,
         "ledger_hash": "d" * 64,
         "bankroll": {
@@ -207,6 +221,11 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
     assert summary["denied_candidate_count"] == 15
     assert summary["maximum_calibrated_roi_lcb95"] == 0.94
     assert summary["buy_threshold"] == 1.0
+    assert summary["context_local_support_ready"] is False
+    assert summary["context_local_candidates"] == 80
+    assert summary["context_local_candidate_days"] == 18
+    assert summary["required_context_local_candidates"] == 100
+    assert summary["required_context_local_candidate_days"] == 20
     assert "roi" not in summary
     assert summary["roi_display"] == "N/A"
     assert summary["roi_status"] == "not_applicable_no_stake"

@@ -290,6 +290,10 @@ def _race_candidates(
             "local_block_raw_ev_max",
             "local_support_ready",
             "local_support_reasons",
+            "context_local_support_ready",
+            "context_local_support_reasons",
+            "required_context_local_candidates",
+            "required_context_local_candidate_days",
         ):
             if key in prediction:
                 decision[key] = prediction[key]
@@ -300,6 +304,8 @@ def _race_candidates(
         if prediction.get("purchase_lcb95_available") is False:
             if prediction.get("cell_ready") is False:
                 decision["denial_reason"] = "context_cell_not_ready"
+            elif prediction.get("context_local_support_ready") is False:
+                decision["denial_reason"] = "context_local_bin_not_ready"
             elif prediction.get("input_in_training_range") is False:
                 decision["denial_reason"] = "outside_training_range"
             elif prediction.get("input_in_local_block_range") is False:
@@ -332,7 +338,7 @@ def _race_candidates(
             continue
         decision["purchase_gate_approved"] = True
         decision["approval_reason"] = (
-            "local_support_ready_and_calibrated_roi_lcb95_above_one"
+            "context_and_global_local_support_ready_and_calibrated_roi_lcb95_above_one"
         )
         decisions.append(decision)
         candidate = _eligible_candidate(
@@ -353,6 +359,9 @@ def _race_candidates(
             "cell_support_days",
             "rank_support",
             "rank_support_days",
+            "context_local_support_ready",
+            "required_context_local_candidates",
+            "required_context_local_candidate_days",
         ):
             if key in prediction:
                 candidate[key] = prediction[key]
@@ -383,6 +392,15 @@ def _candidate_audit(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "cell_support_days": candidate.get("cell_support_days"),
         "rank_support": candidate.get("rank_support"),
         "rank_support_days": candidate.get("rank_support_days"),
+        "context_local_support_ready": candidate.get(
+            "context_local_support_ready"
+        ),
+        "required_context_local_candidates": candidate.get(
+            "required_context_local_candidates"
+        ),
+        "required_context_local_candidate_days": candidate.get(
+            "required_context_local_candidate_days"
+        ),
     }
 
 
