@@ -3900,6 +3900,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_stack_selection_required_conditions": metrics.get(
                     "nested_value_stack_selection_required_conditions"
                 ),
+                "nested_value_value_aligned_stack_selection": metrics.get(
+                    "nested_value_value_aligned_stack_selection"
+                ),
                 "nested_value_model_training_from": metrics.get(
                     "nested_value_model_training_from"
                 ),

@@ -416,6 +416,14 @@ def apply_archive_residual_summary(
             if isinstance(nested_stack_gate, Mapping)
             else {}
         )
+        nested_value_aligned_selection = nested.get(
+            "value_aligned_stack_selection"
+        )
+        nested_value_aligned_selection = (
+            dict(nested_value_aligned_selection)
+            if isinstance(nested_value_aligned_selection, Mapping)
+            else {}
+        )
         nested_global_calibration = nested_calibration.get(
             "global_calibration"
         )
@@ -468,6 +476,9 @@ def apply_archive_residual_summary(
             ),
             "nested_value_stack_selection_required_conditions": (
                 nested_stack_gate.get("required_conditions")
+            ),
+            "nested_value_value_aligned_stack_selection": (
+                nested_value_aligned_selection
             ),
             "nested_value_model_training_from": nested.get(
                 "model_training_from"

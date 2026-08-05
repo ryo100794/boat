@@ -725,6 +725,12 @@ function nestedStackGateEvidence(x){
   const reasons=(x.nested_value_stack_selection_fallback_reasons||[]).join(",")||"-";
   return `確率選択 ${raw}→${selected} / ${policy} / gate ${status} (${reasons})`;
 }
+function valueAlignedStackEvidence(x){
+  const audit=x.nested_value_value_aligned_stack_selection||{};
+  if(!audit.policy_id) return "";
+  const boundary=audit.outer_period_used===false?"外側不使用 PASS":"外側境界 FAIL";
+  return `価値整合 ${audit.base_selected_stack||"-"}→${audit.selected_stack||"-"} / ${audit.policy_id} / Q${audit.selection_lower_quantile==null?"-":audit.selection_lower_quantile} / ${audit.status||"-"} / ${boundary}`;
+}
 function nestedValueEvidence(x){
   if(!x.nested_value_model) return "";
   const ready=x.nested_value_calibration_ready===true?"校正ready":"校正未達";
@@ -732,7 +738,9 @@ function nestedValueEvidence(x){
   const roi=Number(x.nested_value_stake_yen||0)>0?ratio(x.nested_value_roi):"N/A / 購入なし";
   const stackGate=nestedStackGateEvidence(x);
   const stackText=stackGate?` / ${stackGate}`:"";
-  return `入れ子 ${fmt(x.nested_value_model_training_days)}日 ${x.nested_value_model_training_from||"-"}..${x.nested_value_model_training_through||"-"} / 価値校正 ${fmt(x.nested_value_calibration_days)}日 ${fmt(x.nested_value_calibration_candidates)}候補 ${ready}(${reasons}) / 外側 ${x.nested_value_evaluation_from||"-"}..${x.nested_value_evaluation_through||"-"} ${fmt(x.nested_value_evaluated_races)}R ${fmt(x.nested_value_evaluation_candidates)}候補 / ${fmt(x.nested_value_tickets)}券 ROI ${roi} / LCB ${ratio(x.nested_value_roi_ci95_lower)} / ${x.nested_value_promotion_eligible===true?"昇格可":"昇格不可"}${stackText}`;
+  const valueAligned=valueAlignedStackEvidence(x);
+  const valueAlignedText=valueAligned?` / ${valueAligned}`:"";
+  return `入れ子 ${fmt(x.nested_value_model_training_days)}日 ${x.nested_value_model_training_from||"-"}..${x.nested_value_model_training_through||"-"} / 価値校正 ${fmt(x.nested_value_calibration_days)}日 ${fmt(x.nested_value_calibration_candidates)}候補 ${ready}(${reasons}) / 外側 ${x.nested_value_evaluation_from||"-"}..${x.nested_value_evaluation_through||"-"} ${fmt(x.nested_value_evaluated_races)}R ${fmt(x.nested_value_evaluation_candidates)}候補 / ${fmt(x.nested_value_tickets)}券 ROI ${roi} / LCB ${ratio(x.nested_value_roi_ci95_lower)} / ${x.nested_value_promotion_eligible===true?"昇格可":"昇格不可"}${stackText}${valueAlignedText}`;
 }
 function renderEvaluationJobs(jobs,generatedAt){
   jobs=jobs.map(x=>({...x,decision:`${x.decision||"-"}${pairedAuditText(x)}`}));
@@ -756,8 +764,20 @@ function renderNestedValueAudit(jobs){
   const localReady=latest.nested_value_context_ready_cells==null?"":` / 局所ready ${fmt(latest.nested_value_context_ready_cells)}/${fmt((latest.nested_value_context_cells||[]).length)}`;
   const stackGate=nestedStackGateEvidence(latest);
   const stackText=stackGate?` / ${stackGate}`:"";
-  $("nestedValueMeta").textContent=`#${fmt(latest.db_job_id||latest.job_id)} / 学習 ${latest.nested_value_model_training_from||"-"}..${latest.nested_value_model_training_through||"-"} (${fmt(latest.nested_value_model_training_days)}日) / 価値校正 ${latest.nested_value_calibration_from||"-"}..${latest.nested_value_calibration_through||"-"} (${fmt(latest.nested_value_calibration_days)}日, ${fmt(latest.nested_value_calibration_candidates)}候補, ${ready})${localReady} / 外側 ${latest.nested_value_evaluation_from||"-"}..${latest.nested_value_evaluation_through||"-"} (${fmt(latest.nested_value_evaluated_races)}R, ${fmt(latest.nested_value_evaluation_candidates)}候補) / ${fmt(latest.nested_value_tickets)}券 / ROI ${roi} / 昇格 ${latest.nested_value_promotion_eligible===true?"可":"不可"}${stackText}`;
+  const valueAligned=valueAlignedStackEvidence(latest);
+  const valueAlignedText=valueAligned?` / ${valueAligned}`:"";
+  $("nestedValueMeta").textContent=`#${fmt(latest.db_job_id||latest.job_id)} / 学習 ${latest.nested_value_model_training_from||"-"}..${latest.nested_value_model_training_through||"-"} (${fmt(latest.nested_value_model_training_days)}日) / 価値校正 ${latest.nested_value_calibration_from||"-"}..${latest.nested_value_calibration_through||"-"} (${fmt(latest.nested_value_calibration_days)}日, ${fmt(latest.nested_value_calibration_candidates)}候補, ${ready})${localReady} / 外側 ${latest.nested_value_evaluation_from||"-"}..${latest.nested_value_evaluation_through||"-"} (${fmt(latest.nested_value_evaluated_races)}R, ${fmt(latest.nested_value_evaluation_candidates)}候補) / ${fmt(latest.nested_value_tickets)}券 / ROI ${roi} / 昇格 ${latest.nested_value_promotion_eligible===true?"可":"不可"}${stackText}${valueAlignedText}`;
   const rows=[];
+  const aligned=latest.nested_value_value_aligned_stack_selection||{};
+  for(const row of aligned.candidates||[]) rows.push({
+    scope_label:row.selected===true?"stack候補 (採用)":"stack候補",
+    decile_label:row.name||"-",
+    candidates:row.tickets,
+    candidate_days:row.candidate_days,
+    mean_predicted_raw_ev:row.mean_selected_raw_ev,
+    realized_roi:row.roi,
+    realized_roi_lcb95:row.roi_lcb95,
+  });
   for(const [scope,label] of [["calibration","校正"],["evaluation","外側"]]){
     for(const row of audit[scope]||[]) rows.push({...row,scope_label:label});
   }

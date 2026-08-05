@@ -319,6 +319,26 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
                 "required_conditions": ["validation_top5_not_below_market"],
             },
         },
+        "value_aligned_stack_selection": {
+            "policy_id": (
+                "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+            ),
+            "status": "selected",
+            "base_selected_stack": "market",
+            "selected_stack": "linear",
+            "selection_lower_quantile": 0.01,
+            "outer_period_used": False,
+            "candidates": [
+                {
+                    "name": "linear",
+                    "tickets": 1200,
+                    "candidate_days": 120,
+                    "roi": 1.02,
+                    "roi_lcb95": 0.91,
+                    "selected": True,
+                }
+            ],
+        },
         "context_value_audit": {
             "status": "completed",
             "evaluation": [{"rank_group": "top5", "odds_band": "<20"}],
@@ -346,6 +366,11 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     assert summary["nested_value_stack_selection_fallback_reasons"] == [
         "validation_top5_below_market"
     ]
+    aligned = summary["nested_value_value_aligned_stack_selection"]
+    assert aligned["selection_lower_quantile"] == 0.01
+    assert aligned["selected_stack"] == "linear"
+    assert aligned["outer_period_used"] is False
+    assert aligned["candidates"][0]["roi_lcb95"] == 0.91
     assert summary["nested_value_context_audit"]["evaluation"][0] == {
         "rank_group": "top5",
         "odds_band": "<20",

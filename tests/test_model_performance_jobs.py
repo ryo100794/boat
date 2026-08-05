@@ -109,6 +109,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nestedStackGateEvidence" in MODEL_REPORT_HTML
     assert "nested_value_stack_selection_fallback_reasons" in MODEL_REPORT_HTML
     assert "nested_value_stack_selection_policy_id" in MODEL_REPORT_HTML
+    assert "nested_value_value_aligned_stack_selection" in MODEL_REPORT_HTML
+    assert "valueAlignedStackEvidence" in MODEL_REPORT_HTML
     assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML
     assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
@@ -248,6 +250,27 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "nested_value_stack_selection_required_conditions": [
             "validation_top5_hit_rate_not_below_market"
         ],
+        "nested_value_value_aligned_stack_selection": {
+            "policy_id": (
+                "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+            ),
+            "status": "selected",
+            "base_selected_stack": "market",
+            "selected_stack": "linear",
+            "selection_lower_quantile": 0.01,
+            "outer_period_used": False,
+            "candidates": [
+                {
+                    "name": "linear",
+                    "tickets": 1200,
+                    "candidate_days": 120,
+                    "mean_selected_raw_ev": 1.05,
+                    "roi": 1.02,
+                    "roi_lcb95": 0.91,
+                    "selected": True,
+                }
+            ],
+        },
         "nested_value_model_training_from": "2026-05-10",
         "nested_value_model_training_through": "2026-05-31",
         "nested_value_model_training_days": 22,
@@ -428,6 +451,12 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["nested_value_stack_selection_policy_id"] == (
         "logloss_daily_majority_top5_noninferiority_v1"
     )
+    aligned = status["jobs"][0][
+        "nested_value_value_aligned_stack_selection"
+    ]
+    assert aligned["selected_stack"] == "linear"
+    assert aligned["selection_lower_quantile"] == 0.01
+    assert aligned["candidates"][0]["roi_lcb95"] == 0.91
     assert status["jobs"][0][
         "nested_value_stack_selection_fallback_reasons"
     ] == ["validation_top5_below_market"]
