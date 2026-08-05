@@ -122,7 +122,7 @@ const yen = v => v == null ? "-" : `${Number(v).toLocaleString("ja-JP")}円`;
 const ratio = v => v == null ? "-" : Number(v).toFixed(3);
 const corr = v => v == null ? "-" : Number(v).toFixed(4);
 function shortName(s){ s=String(s||""); return s.replace(/^win_model_/,"").replace(/^bankroll_backtest_/,"").replace(/_10000$/,"").replace(/pastlog_/,"pl_").replace(/\.json$/,""); }
-function renderModelAuditBanner(audit){ audit=audit||{}; const parts=[audit.status||"不明"]; if(audit.running) parts.push(`実行 job ${audit.running.job_id}`); if(audit.queued) parts.push(`次 job ${audit.queued.job_id}`); if(audit.latest_completed) parts.push(`最新確定 job ${audit.latest_completed.job_id} ${audit.latest_completed.decision||""}`); parts.push(`本番昇格: ${audit.promotion_status||"不明"}`); $("modelAuditBanner").textContent=parts.join(" / "); }
+function renderModelAuditBanner(audit){ audit=audit||{}; const parts=[audit.status||"不明"]; if(audit.audit_snapshot_id) parts.push(`監査snapshot ${audit.audit_snapshot_id.slice(0,16)}`); if(audit.running) parts.push(`実行 job ${audit.running.job_id}`); if(audit.queued) parts.push(`次 job ${audit.queued.job_id}`); if(audit.latest_completed) parts.push(`最新確定 job ${audit.latest_completed.job_id} ${audit.latest_completed.decision||""}`); parts.push(`本番昇格: ${audit.promotion_status||"不明"}`); $("modelAuditBanner").textContent=parts.join(" / "); }
 async function loadReport(){ const res=await fetch("/api/reports/model-performance",{cache:"no-store"}); const data=await res.json(); render(data); }
 async function refreshGeneticEvolution(){ if(gaRefreshing||document.hidden) return; gaRefreshing=true; try{ const res=await fetch("/api/reports/genetic-evolution",{cache:"no-store"}); if(res.ok){ const data=await res.json(); renderGeneticEvolution(data.jobs||[]); } } finally { gaRefreshing=false; } }
 function render(data){
@@ -696,7 +696,10 @@ function decisionStackEvidence(x){
 function contextualValueEvidence(x){
   if(!x.frozen_probability_model&&!x.calibration_contextual_hierarchy) return "";
   const ready=x.calibration_context_ready_cells==null?"-":`${fmt(x.calibration_context_ready_cells)}/${fmt(x.calibration_context_cells)}`;
-  return `階層LCB ${x.frozen_probability_model||"-"} / 局所ready ${ready} / ${x.calibration_contextual_hierarchy||"-"}`;
+  const decisions=x.candidate_decision_count==null?"":` / 判断 ${fmt(x.candidate_decision_count)} (承認 ${fmt(x.approved_candidate_count)} / 拒否 ${fmt(x.denied_candidate_count)})`;
+  const values=x.maximum_raw_estimated_ev==null&&x.maximum_calibrated_roi==null&&x.maximum_calibrated_roi_lcb95==null?"":` / 最大 raw ${ratio(x.maximum_raw_estimated_ev)} → 校正ROI ${ratio(x.maximum_calibrated_roi)} / LCB95 ${ratio(x.maximum_calibrated_roi_lcb95)} > ${ratio(x.buy_threshold)}`;
+  const reasons=x.denial_reason_counts&&Object.keys(x.denial_reason_counts).length?` / 拒否理由 ${Object.entries(x.denial_reason_counts).map(([k,v])=>`${k}:${fmt(v)}`).join(",")}`:"";
+  return `階層LCB ${x.frozen_probability_model||"-"} / 局所ready ${ready} / ${x.calibration_contextual_hierarchy||"-"}${decisions}${values}${reasons}`;
 }
 function nestedValueEvidence(x){
   if(!x.nested_value_model) return "";

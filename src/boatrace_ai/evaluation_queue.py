@@ -4280,6 +4280,29 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "strict_prior_check": latest_fold.get("strict_prior_check"),
             "isotonic_block_count": latest.get("isotonic_block_count"),
+            "candidate_decision_count": latest_fold.get(
+                "candidate_decisions"
+            ),
+            "approved_candidate_count": latest_fold.get(
+                "purchase_gate_approved_candidates"
+            ),
+            "denied_candidate_count": latest_fold.get(
+                "purchase_gate_denied_candidates"
+            ),
+            "denial_reason_counts": latest_fold.get(
+                "denial_reason_counts"
+            ),
+            "maximum_raw_estimated_ev": latest_fold.get(
+                "maximum_raw_estimated_ev"
+            ),
+            "maximum_calibrated_roi": latest_fold.get(
+                "maximum_calibrated_roi"
+            ),
+            "maximum_calibrated_roi_lcb95": latest_fold.get(
+                "maximum_calibrated_roi_lcb95"
+            ),
+            "buy_threshold": latest_fold.get("buy_threshold"),
+            "approval_rule": latest_fold.get("approval_rule"),
             "calibrator_hash": latest_fold.get("calibrator_hash"),
             "calibration_ledger_hash": latest_fold.get(
                 "calibration_ledger_hash"

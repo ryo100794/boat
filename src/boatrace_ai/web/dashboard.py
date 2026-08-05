@@ -3587,6 +3587,26 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "max_training_settlement_time": metrics.get("max_training_settlement_time"),
                 "strict_prior_check": metrics.get("strict_prior_check"),
                 "isotonic_block_count": metrics.get("isotonic_block_count"),
+                "candidate_decision_count": metrics.get(
+                    "candidate_decision_count"
+                ),
+                "approved_candidate_count": metrics.get(
+                    "approved_candidate_count"
+                ),
+                "denied_candidate_count": metrics.get(
+                    "denied_candidate_count"
+                ),
+                "denial_reason_counts": metrics.get("denial_reason_counts"),
+                "maximum_raw_estimated_ev": metrics.get(
+                    "maximum_raw_estimated_ev"
+                ),
+                "maximum_calibrated_roi": metrics.get(
+                    "maximum_calibrated_roi"
+                ),
+                "maximum_calibrated_roi_lcb95": metrics.get(
+                    "maximum_calibrated_roi_lcb95"
+                ),
+                "approval_rule": metrics.get("approval_rule"),
                 "local_block_candidates": metrics.get("local_block_candidates"),
                 "local_block_candidate_days": metrics.get("local_block_candidate_days"),
                 "local_block_ess": metrics.get("local_block_ess"),

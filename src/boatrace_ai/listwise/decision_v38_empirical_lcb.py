@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 from datetime import date
+from math import isfinite
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -222,6 +224,49 @@ def walk_forward_decision_v38_lcb(
             daily_budget_yen,
             max_rank=PURCHASE_MAX_PROBABILITY_RANK,
         )
+        current = policy_edge_records(
+            day_races,
+            calibrator,
+            _identity_probability_blender,
+            max_rank=PURCHASE_MAX_PROBABILITY_RANK,
+        )
+        if any(str(row["race_date"]) != evaluation_date for row in current):
+            raise AssertionError("V39 admitted a mismatched settlement batch")
+        candidate_decisions = [
+            row
+            for day in simulation.get("daily") or ()
+            for row in day.get("candidate_decision_audit") or ()
+            if isinstance(row, Mapping)
+        ]
+        denial_reasons = Counter(
+            str(row.get("denial_reason") or "unspecified")
+            for row in candidate_decisions
+            if row.get("purchase_gate_approved") is not True
+        )
+        if not latest_calibrator.ready:
+            denial_reasons = Counter({"calibration_not_ready": len(current)})
+        approved_decisions = sum(
+            row.get("purchase_gate_approved") is True
+            for row in candidate_decisions
+        )
+        numeric_points = [
+            float(row[key])
+            for row in candidate_decisions
+            for key in ("calibrated_roi",)
+            if row.get(key) is not None and isfinite(float(row[key]))
+        ]
+        numeric_raw = [
+            float(row["raw_estimated_ev"])
+            for row in candidate_decisions
+            if row.get("raw_estimated_ev") is not None
+            and isfinite(float(row["raw_estimated_ev"]))
+        ]
+        numeric_lcbs = [
+            float(row[key])
+            for row in candidate_decisions
+            for key in ("calibrated_roi_lcb95",)
+            if row.get(key) is not None and isfinite(float(row[key]))
+        ]
         if evaluation_date > registration:
             prospective_daily.extend(simulation["daily"])
         calibrator_hash = _stable_hash(latest_calibrator.as_dict())
@@ -255,20 +300,34 @@ def walk_forward_decision_v38_lcb(
             "ready_reasons": list(latest_calibrator.ready_reasons),
             "authorized_tickets": simulation.get("tickets"),
             "stake_yen": simulation.get("stake_yen"),
+            "pregate_candidates": len(current),
+            "candidate_decisions": (
+                len(candidate_decisions)
+                if latest_calibrator.ready
+                else len(current)
+            ),
+            "purchase_gate_approved_candidates": approved_decisions,
+            "purchase_gate_denied_candidates": sum(denial_reasons.values()),
+            "denial_reason_counts": dict(sorted(denial_reasons.items())),
+            "maximum_calibrated_roi": (
+                max(numeric_points) if numeric_points else None
+            ),
+            "maximum_raw_estimated_ev": (
+                max(numeric_raw) if numeric_raw else None
+            ),
+            "maximum_calibrated_roi_lcb95": (
+                max(numeric_lcbs) if numeric_lcbs else None
+            ),
+            "buy_threshold": 1.0,
+            "approval_rule": (
+                "local_support_ready_and_calibrated_roi_lcb95_above_one"
+            ),
             "frozen_model_hash": source_hash,
             "calibrator_hash": calibrator_hash,
             "calibration_ledger_hash": ledger_hash,
             "settlement_engine_hash": settlement_engine_hash,
             "decision_contract_hash": decision_contract_hash,
         })
-        current = policy_edge_records(
-            day_races,
-            calibrator,
-            _identity_probability_blender,
-            max_rank=PURCHASE_MAX_PROBABILITY_RANK,
-        )
-        if any(str(row["race_date"]) != evaluation_date for row in current):
-            raise AssertionError("V39 admitted a mismatched settlement batch")
         ledger.extend(current)
 
     bankroll = _aggregate_daily(prospective_daily)

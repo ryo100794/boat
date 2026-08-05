@@ -43,3 +43,4 @@ def test_roadmap_milestone_status_is_bounded(monkeypatch, tmp_path) -> None:
     }
     assert payload["model_audit"]["status"] == "評価未登録"
     assert payload["model_audit"]["audit_ready"] is False
+    assert len(payload["model_audit"]["audit_snapshot_id"]) == 64

@@ -221,11 +221,12 @@ def _race_candidates(
     artifact: EmpiricalEVArtifact,
     ranking_provider: RankingProvider | None = None,
     max_rank: int | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     probabilities = _blended_probabilities(race, calibrator, probability_blender)
     odds = decision_odds(race)
     multipliers = race.get("historical_return_multipliers") or {}
     candidates: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
     ranked = _limited_ranking(
         race, probabilities, ranking_provider, max_rank
     )
@@ -236,18 +237,75 @@ def _race_candidates(
         return_multiplier = float(multipliers.get(combination, 1.0))
         raw_ev = float(probability) * price * return_multiplier
         prediction = artifact.predict(raw_ev, ranks[combination], price)
+        decision = {
+            "race_id": str(race["race_id"]),
+            "race_date": str(race["race_date"]),
+            "combination": str(combination),
+            "probability_rank": ranks[combination],
+            "probability": float(probability),
+            "forecast_odds": price,
+            "raw_estimated_ev": raw_ev,
+            "calibrated_roi": prediction.get("empirical_ev"),
+            "calibrated_roi_lcb95": prediction.get("empirical_ev_lcb95"),
+            "buy_threshold": 1.0,
+            "purchase_gate_approved": False,
+            "denial_reason": None,
+        }
+        for key in (
+            "calibration_level",
+            "cell_ready",
+            "cell_support",
+            "cell_support_days",
+            "rank_support",
+            "rank_support_days",
+            "input_in_training_range",
+            "input_in_local_block_range",
+            "local_block_candidates",
+            "local_block_candidate_days",
+            "local_block_ess",
+            "local_support_ready",
+            "local_support_reasons",
+        ):
+            if key in prediction:
+                decision[key] = prediction[key]
         if prediction.get("purchase_lcb95_available") is False:
+            if prediction.get("cell_ready") is False:
+                decision["denial_reason"] = "context_cell_not_ready"
+            elif prediction.get("input_in_training_range") is False:
+                decision["denial_reason"] = "outside_training_range"
+            elif prediction.get("input_in_local_block_range") is False:
+                decision["denial_reason"] = "outside_local_block_range"
+            elif prediction.get("local_support_ready") is False:
+                decision["denial_reason"] = "local_support_not_ready"
+            else:
+                decision["denial_reason"] = "calibrated_lcb_unavailable"
+            decisions.append(decision)
             continue
         point_value = prediction.get("empirical_ev")
         lcb_value = prediction.get("empirical_ev_lcb95")
         if point_value is None or lcb_value is None:
+            decision["denial_reason"] = "calibrated_value_missing"
+            decisions.append(decision)
             continue
         point = float(point_value)
         lcb95 = float(lcb_value)
         if not isfinite(point) or not isfinite(lcb95):
+            decision["denial_reason"] = "calibrated_value_nonfinite"
+            decisions.append(decision)
             continue
-        if point <= 1.0 or lcb95 <= 1.0:
+        if point <= 1.0:
+            decision["denial_reason"] = "calibrated_roi_not_above_one"
+            decisions.append(decision)
             continue
+        if lcb95 <= 1.0:
+            decision["denial_reason"] = "calibrated_roi_lcb95_not_above_one"
+            decisions.append(decision)
+            continue
+        decision["purchase_gate_approved"] = True
+        decision["approval_reason"] = (
+            "local_support_ready_and_calibrated_roi_lcb95_above_one"
+        )
+        decisions.append(decision)
         candidate = _eligible_candidate(
             race,
             str(combination),
@@ -270,9 +328,12 @@ def _race_candidates(
             if key in prediction:
                 candidate[key] = prediction[key]
         candidates.append(candidate)
-    return sorted(candidates, key=_candidate_sort_key, reverse=True)[
-        :MAX_TICKETS_PER_RACE
-    ]
+    return (
+        sorted(candidates, key=_candidate_sort_key, reverse=True)[
+            :MAX_TICKETS_PER_RACE
+        ],
+        decisions,
+    )
 
 
 def _candidate_audit(candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -346,18 +407,19 @@ def simulate_empirical_lcb_policy(
     for race_date in sorted(races_by_day):
         day_races = races_by_day[race_date]
         candidates: list[dict[str, Any]] = []
+        candidate_decisions: list[dict[str, Any]] = []
         if artifact.ready:
             for race in day_races:
-                candidates.extend(
-                    _race_candidates(
-                        race,
-                        calibrator,
-                        probability_blender,
-                        artifact,
-                        ranking_provider,
-                        max_rank,
-                    )
+                race_candidates, race_decisions = _race_candidates(
+                    race,
+                    calibrator,
+                    probability_blender,
+                    artifact,
+                    ranking_provider,
+                    max_rank,
                 )
+                candidates.extend(race_candidates)
+                candidate_decisions.extend(race_decisions)
             candidates = sorted(
                 candidates, key=_candidate_sort_key, reverse=True
             )[:MAX_DAILY_TICKETS]
@@ -379,6 +441,7 @@ def simulate_empirical_lcb_policy(
         result["eligible_candidate_audit"] = [
             _candidate_audit(candidate) for candidate in candidates
         ]
+        result["candidate_decision_audit"] = candidate_decisions
         cumulative_profit += int(result["profit_yen"])
         peak_profit = max(peak_profit, cumulative_profit)
         max_drawdown = max(max_drawdown, peak_profit - cumulative_profit)

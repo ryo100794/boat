@@ -99,6 +99,11 @@ def test_v39_ledger_is_strictly_after_model_and_before_each_fold(
         result["settlement_engine_hash"]
     )
     assert result["fold_audit"][0]["stake_yen"] == 0
+    assert result["fold_audit"][0]["candidate_decisions"] == 2
+    assert result["fold_audit"][0]["denial_reason_counts"] == {
+        "calibration_not_ready": 2
+    }
+    assert result["fold_audit"][0]["buy_threshold"] == 1.0
     assert result["candidate_population"] == (
         "all_probability_top5_before_purchase_gate"
     )

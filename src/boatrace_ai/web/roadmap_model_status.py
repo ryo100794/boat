@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -176,7 +177,7 @@ def archive_oracle_audit_status(
         }
 
     completed_public = compact(completed)
-    return {
+    public_state = {
         "scope": ["dashboard", "model-performance", "roadmap"],
         "status": status,
         "audit_ready": bool(
@@ -196,3 +197,36 @@ def archive_oracle_audit_status(
         "queued": compact(queued),
         "latest_completed": completed_public,
     }
+    logical_state = {
+        **public_state,
+        "running": (
+            {key: value for key, value in public_state["running"].items()
+             if key != "updated_at"}
+            if public_state["running"] else None
+        ),
+        "queued": (
+            {key: value for key, value in public_state["queued"].items()
+             if key != "updated_at"}
+            if public_state["queued"] else None
+        ),
+        "latest_completed": (
+            {
+                key: value
+                for key, value in public_state["latest_completed"].items()
+                if key != "updated_at"
+            }
+            if public_state["latest_completed"] else None
+        ),
+    }
+    canonical = json.dumps(
+        logical_state,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    public_state["audit_snapshot_id"] = hashlib.sha256(canonical).hexdigest()
+    public_state["audit_snapshot_basis"] = (
+        "archive evaluation job IDs, states, decisions, model identities, "
+        "ROI state, profit and promotion result; heartbeat timestamps excluded"
+    )
+    return public_state

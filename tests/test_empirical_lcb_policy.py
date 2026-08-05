@@ -182,6 +182,13 @@ def test_policy_rejects_candidate_when_local_lcb_is_unavailable():
     assert result["eligible_tickets"] == 0
     assert result["tickets"] == 0
     assert result["stake_yen"] == 0
+    audit = result["daily"][0]["candidate_decision_audit"]
+    assert len(audit) == 3
+    assert all(row["purchase_gate_approved"] is False for row in audit)
+    assert all(
+        row["denial_reason"] == "outside_local_block_range"
+        for row in audit
+    )
 
 
 def test_candidate_audit_carries_calibration_stability_metadata():
@@ -207,6 +214,12 @@ def test_candidate_audit_carries_calibration_stability_metadata():
     assert audit["return_hhi"] == pytest.approx(0.30)
     assert audit["rank_support"] == 120
     assert audit["rank_support_days"] == 6
+    decision = result["daily"][0]["candidate_decision_audit"][0]
+    assert decision["purchase_gate_approved"] is True
+    assert decision["approval_reason"] == (
+        "local_support_ready_and_calibrated_roi_lcb95_above_one"
+    )
+    assert decision["buy_threshold"] == 1.0
 
 
 def test_simulator_contract_has_no_calibration_records_argument():

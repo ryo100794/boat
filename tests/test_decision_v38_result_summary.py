@@ -142,6 +142,19 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
             "frozen_model_hash": "a" * 64,
             "settlement_engine_hash": "b" * 64,
             "decision_contract_hash": "c" * 64,
+            "candidate_decisions": 15,
+            "purchase_gate_approved_candidates": 0,
+            "purchase_gate_denied_candidates": 15,
+            "denial_reason_counts": {
+                "calibrated_roi_lcb95_not_above_one": 15
+            },
+            "maximum_raw_estimated_ev": 1.42,
+            "maximum_calibrated_roi": 1.08,
+            "maximum_calibrated_roi_lcb95": 0.94,
+            "buy_threshold": 1.0,
+            "approval_rule": (
+                "local_support_ready_and_calibrated_roi_lcb95_above_one"
+            ),
         }],
         "ledger_candidates": 150,
         "ledger_hash": "d" * 64,
@@ -185,6 +198,11 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
     assert summary["calibration_lcb_ticket_independence_assumed"] is False
     assert summary["decision_model_sha256"] == "a" * 64
     assert summary["decision_hash_bundle_sha256"] == "c" * 64
+    assert summary["candidate_decision_count"] == 15
+    assert summary["approved_candidate_count"] == 0
+    assert summary["denied_candidate_count"] == 15
+    assert summary["maximum_calibrated_roi_lcb95"] == 0.94
+    assert summary["buy_threshold"] == 1.0
     assert "roi" not in summary
     assert summary["roi_display"] == "N/A"
     assert summary["roi_status"] == "not_applicable_no_stake"
