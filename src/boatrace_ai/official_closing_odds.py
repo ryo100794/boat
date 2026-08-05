@@ -70,6 +70,39 @@ def _confirmed_result_boats(conn: Any, race_id: str) -> int:
     return int(row["boats"] if row is not None else 0)
 
 
+def _increment_counter(counters: dict[str, Any], field: str, key: object) -> None:
+    values = counters.setdefault(field, {})
+    normalized = str(key)
+    values[normalized] = int(values.get(normalized, 0)) + 1
+
+
+def _record_failure_example(
+    counters: dict[str, Any],
+    row: Any,
+    *,
+    status: str,
+    error: str,
+    odds_count: int | None = None,
+    confirmed_result_boats: int | None = None,
+) -> None:
+    examples = counters.setdefault("failure_examples", [])
+    if len(examples) >= 25:
+        return
+    example = {
+        "race_id": str(row["race_id"]),
+        "race_date": str(row["race_date"]),
+        "jcd": str(row["jcd"]),
+        "rno": int(row["rno"]),
+        "status": status,
+        "error": error[:500],
+    }
+    if odds_count is not None:
+        example["odds_count"] = int(odds_count)
+    if confirmed_result_boats is not None:
+        example["confirmed_result_boats"] = int(confirmed_result_boats)
+    examples.append(example)
+
+
 def reclassify_confirmed_non_six_boat_attempts(conn: Any) -> int:
     ensure_archive_schema(conn)
     cursor = conn.execute(
@@ -123,6 +156,11 @@ def backfill_official_closing_odds(
         "fetch_failed": 0,
         "excluded_non_six_boat": 0,
         "reclassified_non_six_boat": reclassified,
+        "invalid_reason_counts": {},
+        "incomplete_odds_count_counts": {},
+        "invalid_confirmed_result_boats_counts": {},
+        "fetch_failure_reason_counts": {},
+        "failure_examples": [],
     }
     for index, row in enumerate(targets):
         url = official_closing_url(row["race_date"], row["jcd"], int(row["rno"]))
@@ -179,6 +217,14 @@ def backfill_official_closing_odds(
                 counters["stored"] += 1
         except (FetchError, OSError) as exc:
             counters["fetch_failed"] += 1
+            reason = type(exc).__name__
+            _increment_counter(counters, "fetch_failure_reason_counts", reason)
+            _record_failure_example(
+                counters,
+                row,
+                status="fetch_error",
+                error=f"{reason}: {exc}",
+            )
             record_attempt(
                 conn,
                 race_id=row["race_id"],
@@ -187,10 +233,13 @@ def backfill_official_closing_odds(
                 source_key=OFFICIAL_SOURCE_KEY,
             )
         except (KeyError, TypeError, ValueError) as exc:
+            confirmed_result_boats = _confirmed_result_boats(
+                conn, str(row["race_id"])
+            )
             confirmed_non_six = (
                 isinstance(exc, IncompleteOfficialTrifectaOdds)
                 and exc.odds_count == 60
-                and _confirmed_result_boats(conn, str(row["race_id"])) == 5
+                and confirmed_result_boats == 5
             )
             if confirmed_non_six:
                 counters["excluded_non_six_boat"] += 1
@@ -203,6 +252,27 @@ def backfill_official_closing_odds(
                 )
             else:
                 counters["invalid"] += 1
+                reason = type(exc).__name__
+                _increment_counter(counters, "invalid_reason_counts", reason)
+                _increment_counter(
+                    counters,
+                    "invalid_confirmed_result_boats_counts",
+                    confirmed_result_boats,
+                )
+                odds_count = None
+                if isinstance(exc, IncompleteOfficialTrifectaOdds):
+                    odds_count = exc.odds_count
+                    _increment_counter(
+                        counters, "incomplete_odds_count_counts", odds_count
+                    )
+                _record_failure_example(
+                    counters,
+                    row,
+                    status="invalid",
+                    error=f"{reason}: {exc}",
+                    odds_count=odds_count,
+                    confirmed_result_boats=confirmed_result_boats,
+                )
                 record_attempt(
                     conn,
                     race_id=row["race_id"],

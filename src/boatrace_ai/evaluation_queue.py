@@ -5953,7 +5953,11 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "targets", "stored", "not_found", "invalid", "fetch_failed",
             "remaining", "from_date", "through_date", "source_key",
-            "source_role",
+            "source_role", "excluded_non_six_boat",
+            "reclassified_non_six_boat", "invalid_reason_counts",
+            "incomplete_odds_count_counts",
+            "invalid_confirmed_result_boats_counts",
+            "fetch_failure_reason_counts", "failure_examples",
         ):
             if key in payload:
                 summary[f"archive_{key}"] = payload[key]

@@ -211,8 +211,90 @@ def test_official_collection_counts_are_preserved_in_job_summary() -> None:
             "invalid": 0,
             "fetch_failed": 0,
             "remaining": 116,
+            "invalid_reason_counts": {
+                "IncompleteOfficialTrifectaOdds": 3
+            },
+            "incomplete_odds_count_counts": {"72": 3},
+            "failure_examples": [
+                {
+                    "race_id": "202606020203",
+                    "status": "invalid",
+                    "odds_count": 72,
+                }
+            ],
         }
     )
     assert summary["archive_stored"] == 20
     assert summary["archive_remaining"] == 116
     assert summary["archive_source_key"] == OFFICIAL_SOURCE_KEY
+    assert summary["archive_invalid_reason_counts"] == {
+        "IncompleteOfficialTrifectaOdds": 3
+    }
+    assert summary["archive_incomplete_odds_count_counts"] == {"72": 3}
+    assert summary["archive_failure_examples"][0]["race_id"] == "202606020203"
+
+def test_invalid_official_odds_publish_bounded_diagnostics(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "official-invalid.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-06-02",
+                "jcd": "02",
+                "venue_name": "戸田",
+                "rno": 3,
+                "status": "final",
+            },
+        )
+        conn.execute(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', '1-2-3', 12350)",
+            (race_id,),
+        )
+        for lane in range(1, 7):
+            conn.execute(
+                "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
+                (race_id, lane, lane),
+            )
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.fetch_text",
+            lambda *_args, **_kwargs: (200, "incomplete", b"incomplete"),
+        )
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.parse_official_closing_odds_html",
+            lambda _html: (_ for _ in ()).throw(
+                IncompleteOfficialTrifectaOdds(72)
+            ),
+        )
+
+        result = backfill_official_closing_odds(
+            conn,
+            from_date="2026-06-02",
+            through_date="2026-06-02",
+            sleep_seconds=0.0,
+        )
+
+    assert result["invalid"] == 1
+    assert result["invalid_reason_counts"] == {
+        "IncompleteOfficialTrifectaOdds": 1
+    }
+    assert result["incomplete_odds_count_counts"] == {"72": 1}
+    assert result["invalid_confirmed_result_boats_counts"] == {"6": 1}
+    assert result["failure_examples"] == [
+        {
+            "race_id": race_id,
+            "race_date": "2026-06-02",
+            "jcd": "02",
+            "rno": 3,
+            "status": "invalid",
+            "error": (
+                "IncompleteOfficialTrifectaOdds: official trifecta odds are "
+                "incomplete: 72/120"
+            ),
+            "odds_count": 72,
+            "confirmed_result_boats": 6,
+        }
+    ]
