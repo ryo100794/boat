@@ -3794,6 +3794,7 @@ def build_command(
             "scored_cache",
             "registered_after",
             "daily_budget_yen",
+            "purchase_max_probability_rank",
             "timeout_seconds",
             "prospective_candidate",
         }
@@ -3847,6 +3848,9 @@ def build_command(
         daily_budget = _integer(
             params, "daily_budget_yen", 10_000, 100, 10_000_000
         )
+        purchase_max_rank = _integer(
+            params, "purchase_max_probability_rank", 5, 1, 120
+        )
         _integer(params, "timeout_seconds", 14_400, 300, 86_400)
         return [
             str(python),
@@ -3860,6 +3864,8 @@ def build_command(
             registration,
             "--daily-budget-yen",
             str(daily_budget),
+            "--purchase-max-probability-rank",
+            str(purchase_max_rank),
             "--output",
             str(output),
         ], output

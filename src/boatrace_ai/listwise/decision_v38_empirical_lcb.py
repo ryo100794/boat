@@ -249,9 +249,13 @@ def walk_forward_decision_v38_lcb(
     minimum_local_ess: float = 10.0,
     bootstrap_samples: int = 5_000,
     purchase_safety_margin: float = 0.0,
+    purchase_max_probability_rank: int = PURCHASE_MAX_PROBABILITY_RANK,
 ) -> dict[str, Any]:
     if not isfinite(float(purchase_safety_margin)) or purchase_safety_margin < 0:
         raise ValueError("purchase_safety_margin must be finite and nonnegative")
+    if not 1 <= int(purchase_max_probability_rank) <= 120:
+        raise ValueError("purchase_max_probability_rank must be between 1 and 120")
+    purchase_max_rank = int(purchase_max_probability_rank)
     buy_threshold = 1.0 + float(purchase_safety_margin)
     training_through = _iso_date(frozen.get("training_through"), "training_through")
     registration = _iso_date(registered_after, "registered_after")
@@ -291,7 +295,7 @@ def walk_forward_decision_v38_lcb(
     joint_scenario_model_hash = frozen.get("joint_scenario_model_hash")
     portfolio_policy_hash = _stable_hash({
         "policy_model": MODEL_NAME,
-        "maximum_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
+        "maximum_probability_rank": purchase_max_rank,
         "residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
         "daily_budget_yen": daily_budget_yen,
         "purchase_safety_margin": purchase_safety_margin,
@@ -364,7 +368,7 @@ def walk_forward_decision_v38_lcb(
             _identity_probability_blender,
             latest_calibrator,
             daily_budget_yen,
-            max_rank=PURCHASE_MAX_PROBABILITY_RANK,
+            max_rank=purchase_max_rank,
             buy_threshold=buy_threshold,
             purchase_gate_enabled=strict_calibration_ready,
             purchase_gate_denial_reason=(
@@ -376,7 +380,7 @@ def walk_forward_decision_v38_lcb(
             day_races,
             calibrator,
             _identity_probability_blender,
-            max_rank=PURCHASE_MAX_PROBABILITY_RANK,
+            max_rank=purchase_max_rank,
         )
         if any(str(row["race_date"]) != evaluation_date for row in current):
             raise AssertionError("V39 admitted a mismatched settlement batch")
@@ -409,7 +413,7 @@ def walk_forward_decision_v38_lcb(
             "ledger_hash": ledger_hash,
             "purchase_threshold": buy_threshold,
             "purchase_threshold_unit": "gross_roi_including_principal",
-            "maximum_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
+            "maximum_probability_rank": purchase_max_rank,
             "residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
             "settlement_engine_hash": settlement_engine_hash,
         })
@@ -614,9 +618,11 @@ def walk_forward_decision_v38_lcb(
         "settlement_engine_contract": SETTLEMENT_ENGINE_CONTRACT,
         "settlement_engine_hash": settlement_engine_hash,
         "purchase_residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
-        "candidate_population": "all_probability_top5_before_purchase_gate",
+        "candidate_population": (
+            f"all_probability_top{purchase_max_rank}_before_purchase_gate"
+        ),
         "candidate_population_includes_denied": True,
-        "purchase_max_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
+        "purchase_max_probability_rank": purchase_max_rank,
         "same_race_update_rule": (
             "one prior calibrator for the complete race batch; settlement added "
             "only after every decision in that date batch"
@@ -789,6 +795,7 @@ def evaluate_from_files(
     *,
     registered_after: str,
     daily_budget_yen: int = 10_000,
+    purchase_max_probability_rank: int = PURCHASE_MAX_PROBABILITY_RANK,
 ) -> dict[str, Any]:
     frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
     cache = joblib.load(cache_path)
@@ -802,6 +809,7 @@ def evaluate_from_files(
         frozen,
         registered_after=registered_after,
         daily_budget_yen=daily_budget_yen,
+        purchase_max_probability_rank=purchase_max_probability_rank,
     )
     return {
         **result,
@@ -821,6 +829,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scored-cache", type=Path, required=True)
     parser.add_argument("--registered-after", required=True)
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
+    parser.add_argument(
+        "--purchase-max-probability-rank",
+        type=int,
+        default=PURCHASE_MAX_PROBABILITY_RANK,
+    )
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -832,6 +845,7 @@ def main(argv: list[str] | None = None) -> int:
         args.scored_cache,
         registered_after=args.registered_after,
         daily_budget_yen=args.daily_budget_yen,
+        purchase_max_probability_rank=args.purchase_max_probability_rank,
     )
     _write_json_atomic(args.output, result)
     print(json.dumps({

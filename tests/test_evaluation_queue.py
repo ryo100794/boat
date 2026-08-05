@@ -870,6 +870,7 @@ def test_decision_v38_lcb_command_requires_frozen_artifact_and_cache(
                 ),
                 "registered_after": "2026-08-26",
                 "daily_budget_yen": 10000,
+                "purchase_max_probability_rank": 20,
                 "timeout_seconds": 14400,
                 "prospective_candidate": {
                     "real_betting_enabled": False,
@@ -887,6 +888,9 @@ def test_decision_v38_lcb_command_requires_frozen_artifact_and_cache(
     ]
     assert command[command.index("--frozen-artifact") + 1] == str(artifact)
     assert command[command.index("--registered-after") + 1] == "2026-08-26"
+    assert command[command.index("--purchase-max-probability-rank") + 1] == (
+        "20"
+    )
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
     assert TASK_PROFILES["decision_v38_empirical_lcb"]["max_parallel"] == 1
 

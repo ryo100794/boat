@@ -125,6 +125,41 @@ def test_v39_ledger_is_strictly_after_model_and_before_each_fold(
     assert result["formal_promotion_gate"]["positive_profit"] is False
 
 
+def test_v45_can_predeclare_a_wider_or_narrower_candidate_rank(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        subject,
+        "nonlinear_residual_probabilities",
+        lambda race, _artifact, *, shrinkage: dict(
+            race["market_probabilities"]
+        ),
+    )
+    start = date(2026, 1, 1)
+    races = [_race(start + timedelta(days=index), index) for index in range(4)]
+
+    result = subject.walk_forward_decision_v38_lcb(
+        races,
+        _frozen(),
+        registered_after="2026-01-01",
+        purchase_max_probability_rank=1,
+        minimum_ledger_days=30,
+        minimum_ledger_candidates=300,
+        minimum_ledger_candidate_days=20,
+        bootstrap_samples=100,
+    )
+
+    assert result["ledger_candidates"] == 3
+    assert result["purchase_max_probability_rank"] == 1
+    assert result["candidate_population"] == (
+        "all_probability_top1_before_purchase_gate"
+    )
+    assert all(
+        row["probability_rank"] == 1
+        for row in result["candidate_decision_audit"]
+    )
+
+
 def test_v39_zero_stake_roi_is_na_not_zero(monkeypatch) -> None:
     monkeypatch.setattr(
         subject,
@@ -206,5 +241,17 @@ def test_v39_refuses_reuse_of_challenger_selection_period() -> None:
             [],
             frozen,
             registered_after="2026-01-06",
+            bootstrap_samples=100,
+        )
+
+
+@pytest.mark.parametrize("maximum_rank", [0, 121])
+def test_v45_refuses_invalid_candidate_rank(maximum_rank: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 120"):
+        subject.walk_forward_decision_v38_lcb(
+            [],
+            _frozen(),
+            registered_after="2026-01-01",
+            purchase_max_probability_rank=maximum_rank,
             bootstrap_samples=100,
         )
