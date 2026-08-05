@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from boatrace_ai.listwise.ticket_utility_ranking_v31 import (
+    _candidate_score,
     _ranking_teacher_weights,
     evaluate_temporal_ticket_utility_roles,
     fit_ticket_utility_ranker,
@@ -166,10 +167,37 @@ def test_ticket_ranker_serializes_and_returns_a_complete_order() -> None:
     assert len(ranked) == len(COMBINATIONS)
     assert metrics["evaluated_races"] == len(races)
     assert set(metrics["by_top_k"]) == {"1", "3", "5"}
+    top1 = metrics["by_top_k"]["1"]
+    assert top1["roi_excluding_largest_hit"] <= top1["roi"]
+    assert top1["temporal_block_count"] == 3
+    assert len(top1["temporal_block_rois"]) == 3
 
     broken = {**artifact, "booster_sha256": "0" * 64}
     with pytest.raises(ValueError, match="digest mismatch"):
         ticket_ranking(races[-1], broken)
+
+
+def test_candidate_selection_rejects_single_hit_roi_spike() -> None:
+    jackpot = {
+        "top_k": 1,
+        "selected_top_k_metrics": {
+            "roi": 1.40,
+            "roi_ci95_lower": 1.10,
+            "roi_excluding_largest_hit": 0.52,
+            "minimum_temporal_block_roi": 0.20,
+        },
+    }
+    stable = {
+        "top_k": 1,
+        "selected_top_k_metrics": {
+            "roi": 0.98,
+            "roi_ci95_lower": 0.90,
+            "roi_excluding_largest_hit": 0.91,
+            "minimum_temporal_block_roi": 0.88,
+        },
+    }
+
+    assert _candidate_score(stable) > _candidate_score(jackpot)
 
 
 def test_temporal_ticket_roles_keep_all_teacher_windows_prior() -> None:
@@ -193,6 +221,15 @@ def test_temporal_ticket_roles_keep_all_teacher_windows_prior() -> None:
     )
 
     assert result["status"] == "completed"
+    assert result["model"] == "ticket_utility_robust_temporal_ranking_v32"
+    assert result["inner_validation_days"] >= 5
+    assert "largest-hit-excluded" in result["selection_rule"]
+    assert set(result["selection_robustness_gate"]) == {
+        "day_block_roi_lcb95_above_one",
+        "largest_hit_excluded_roi_above_one",
+        "every_temporal_block_roi_above_one",
+        "effective_hit_count_at_least_five",
+    }
     assert result["ranking_training_through"] < result["policy_calibration_from"]
     assert result["policy_calibration_through"] < result["evaluation_from"]
     assert result["probability_metrics"]["evaluated_races"] == 1

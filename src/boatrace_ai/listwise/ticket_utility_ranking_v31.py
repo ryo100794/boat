@@ -28,7 +28,7 @@ from .pruned_direct_context_v27 import (
 )
 
 
-MODEL_NAME = "ticket_utility_meta_ranking_v31"
+MODEL_NAME = "ticket_utility_robust_temporal_ranking_v32"
 PROBABILITY_STRUCTURE = "shared_independent_core"
 PROBABILITY_REGULARIZATION = 0.03
 POLICY_CALIBRATION_DAYS = 30
@@ -340,7 +340,13 @@ def ticket_ranking_metrics(
     races: list[dict[str, Any]], artifact: Mapping[str, Any]
 ) -> dict[str, Any]:
     totals = {
-        top_k: {"hits": 0, "stake_yen": 0, "return_yen": 0}
+        top_k: {
+            "hits": 0,
+            "stake_yen": 0,
+            "return_yen": 0,
+            "largest_hit_return_yen": 0,
+            "hit_return_square_sum_yen2": 0,
+        }
         for top_k in TOP_K_CHOICES
     }
     daily: dict[int, dict[str, dict[str, int]]] = {
@@ -358,6 +364,13 @@ def ticket_ranking_metrics(
             totals[top_k]["hits"] += int(hit)
             totals[top_k]["stake_yen"] += stake
             totals[top_k]["return_yen"] += payout if hit else 0
+            if hit:
+                totals[top_k]["largest_hit_return_yen"] = max(
+                    totals[top_k]["largest_hit_return_yen"], payout
+                )
+                totals[top_k]["hit_return_square_sum_yen2"] += (
+                    payout * payout
+                )
             daily[top_k][race_date]["stake_yen"] += stake
             daily[top_k][race_date]["return_yen"] += payout if hit else 0
     by_top_k: dict[str, Any] = {}
@@ -370,6 +383,23 @@ def ticket_ranking_metrics(
             for day, amounts in sorted(daily[top_k].items())
         ]
         confidence = bootstrap_daily_roi(daily_rows, samples=2_000, seed=20260731)
+        temporal_block_rois: list[float] = []
+        block_count = min(3, len(daily_rows))
+        for block_index in range(block_count):
+            start = len(daily_rows) * block_index // block_count
+            stop = len(daily_rows) * (block_index + 1) // block_count
+            block = daily_rows[start:stop]
+            block_stake = sum(int(row["stake_yen"]) for row in block)
+            block_return = sum(int(row["return_yen"]) for row in block)
+            temporal_block_rois.append(
+                block_return / block_stake if block_stake else 0.0
+            )
+        largest_hit = int(values["largest_hit_return_yen"])
+        return_square_sum = int(values["hit_return_square_sum_yen2"])
+        effective_hit_count = (
+            returned * returned / return_square_sum
+            if return_square_sum else 0.0
+        )
         by_top_k[str(top_k)] = {
             "top_k": top_k,
             "evaluated_races": len(races),
@@ -382,6 +412,17 @@ def ticket_ranking_metrics(
             "roi_ci95_lower": confidence.get("roi_ci95_lower"),
             "probability_roi_above_one": confidence.get(
                 "probability_roi_above_one"
+            ),
+            "largest_hit_return_yen": largest_hit,
+            "roi_excluding_largest_hit": (
+                (returned - largest_hit) / stake if stake else None
+            ),
+            "hit_return_square_sum_yen2": return_square_sum,
+            "effective_hit_count": effective_hit_count,
+            "temporal_block_count": block_count,
+            "temporal_block_rois": temporal_block_rois,
+            "minimum_temporal_block_roi": (
+                min(temporal_block_rois) if temporal_block_rois else None
             ),
         }
     return {"evaluated_races": len(races), "by_top_k": by_top_k}
@@ -396,12 +437,23 @@ def _replace_probability_head(
     ]
 
 
-def _candidate_score(candidate: Mapping[str, Any]) -> tuple[float, float, float, int]:
+def _candidate_score(
+    candidate: Mapping[str, Any],
+) -> tuple[float, float, float, float, float, int]:
     metrics = candidate["selected_top_k_metrics"]
+    lower = float(metrics.get("roi_ci95_lower") or 0.0)
+    without_largest = float(
+        metrics.get("roi_excluding_largest_hit") or 0.0
+    )
+    temporal_floor = float(
+        metrics.get("minimum_temporal_block_roi") or 0.0
+    )
     return (
-        float(metrics.get("roi_ci95_lower") or 0.0),
+        min(lower, without_largest, temporal_floor),
+        lower,
+        without_largest,
+        temporal_floor,
         float(metrics.get("roi") or 0.0),
-        float(metrics.get("hit_rate") or 0.0),
         -int(candidate["top_k"]),
     )
 
@@ -435,7 +487,8 @@ def evaluate_temporal_ticket_utility_roles(
     policy_races = [
         race for race in calibration if str(race["race_date"]) in policy_dates
     ]
-    split_index = max(1, min(len(ranking_dates) - 1, int(len(ranking_dates) * 0.8)))
+    inner_validation_days = max(5, min(14, len(ranking_dates) // 2))
+    split_index = len(ranking_dates) - inner_validation_days
     inner_fit_dates = set(ranking_dates[:split_index])
     inner_validation_dates = set(ranking_dates[split_index:])
     inner_fit = [
@@ -464,6 +517,24 @@ def evaluate_temporal_ticket_utility_roles(
                     "selected_top_k_metrics": metrics["by_top_k"][str(top_k)],
                 })
     selected = max(candidates, key=_candidate_score)
+    selected_inner_metrics = selected["selected_top_k_metrics"]
+    selection_robustness_gate = {
+        "day_block_roi_lcb95_above_one": float(
+            selected_inner_metrics.get("roi_ci95_lower") or 0.0
+        ) > 1.0,
+        "largest_hit_excluded_roi_above_one": float(
+            selected_inner_metrics.get("roi_excluding_largest_hit") or 0.0
+        ) > 1.0,
+        "every_temporal_block_roi_above_one": float(
+            selected_inner_metrics.get("minimum_temporal_block_roi") or 0.0
+        ) > 1.0,
+        "effective_hit_count_at_least_five": float(
+            selected_inner_metrics.get("effective_hit_count") or 0.0
+        ) >= 5.0,
+    }
+    selection_robustness_passed = all(
+        selection_robustness_gate.values()
+    )
     selected_preset = next(
         value
         for value in normalized_tree_presets
@@ -528,6 +599,10 @@ def evaluate_temporal_ticket_utility_roles(
         daily_budget_yen,
         _ranking_provider(final_ranking_artifact),
         max_rank=int(selected["top_k"]),
+        purchase_gate_enabled=selection_robustness_passed,
+        purchase_gate_denial_reason=(
+            "inner_selection_robustness_gate_failed"
+        ),
     )
     ranking_metrics = ticket_ranking_metrics(evaluation, final_ranking_artifact)
     selected_top_k = str(selected["top_k"])
@@ -540,14 +615,23 @@ def evaluate_temporal_ticket_utility_roles(
         "status": "completed",
         "validation_design": (
             "Ticket-level LightGBM winner ranking and capped Poisson realized-"
-            "gross-return heads are selected on an inner prior-day block. The selected "
-            "rank cutoff limits both empirical-EV calibration and outer purchases; "
+            "gross-return heads are selected on an enlarged inner prior-day block "
+            "by the worst of day-LCB, largest-hit-excluded ROI, and chronological "
+            "block ROI. The selected rank cutoff limits both empirical-EV "
+            "calibration and outer purchases; "
             "a separate proper probability head supplies EV."
         ),
         "ranking_training_from": ranking_dates[0],
         "ranking_training_through": ranking_dates[-1],
         "inner_fit_through": ranking_dates[split_index - 1],
         "inner_validation_from": ranking_dates[split_index],
+        "inner_validation_days": inner_validation_days,
+        "selection_rule": (
+            "maximize minimum of day-block ROI LCB95, largest-hit-excluded "
+            "ROI, and worst chronological validation-block ROI"
+        ),
+        "selection_robustness_gate": selection_robustness_gate,
+        "selection_robustness_passed": selection_robustness_passed,
         "policy_calibration_from": dates[-int(policy_calibration_days)],
         "policy_calibration_through": dates[-1],
         "evaluation_from": first_evaluation_date,
@@ -563,7 +647,10 @@ def evaluate_temporal_ticket_utility_roles(
         "ranking_metrics": ranking_metrics,
         "empirical_ev_calibration": empirical_artifact.as_dict(),
         "bankroll": bankroll,
-        "promotion_eligible": empirical_bankroll_promotion_eligible(bankroll),
+        "promotion_eligible": bool(
+            selection_robustness_passed
+            and empirical_bankroll_promotion_eligible(bankroll)
+        ),
     }
 
 

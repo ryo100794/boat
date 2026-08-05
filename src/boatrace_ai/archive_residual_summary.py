@@ -24,6 +24,12 @@ RESIDUAL_MODELS = (
         "artifact",
     ),
     (
+        "ticket_utility_robust_temporal_ranking_v32",
+        "ticket_utility_robust_temporal_ranking_v32",
+        "probability_metrics",
+        "probability_artifact",
+    ),
+    (
         "ticket_utility_meta_ranking_v31",
         "ticket_utility_meta_ranking_v31",
         "probability_metrics",

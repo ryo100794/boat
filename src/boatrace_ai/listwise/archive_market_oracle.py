@@ -78,7 +78,7 @@ from .mature_stacked_value import evaluate_mature_stacked_value
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 18
+EVALUATION_VERSION = 19
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -760,7 +760,7 @@ def temporal_residual_diagnostic(
         "course_interaction_market_residual_v28": course_interaction,
         "payout_weighted_role_model_v29": payout_weighted_roles,
         "conditional_ticket_residual_v30": conditional_ticket_residual,
-        "ticket_utility_meta_ranking_v31": ticket_utility_roles,
+        "ticket_utility_robust_temporal_ranking_v32": ticket_utility_roles,
         "nonlinear_market_offset_residual_v38": nonlinear_market_residual,
         "nested_nonlinear_value_calibration_v40": nested_nonlinear_value,
         "nonlinear_market_offset_context_search_v41": nonlinear_context_search,
