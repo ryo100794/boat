@@ -803,6 +803,43 @@ def test_decision_market_residual_v38_command_is_cache_bounded(tmp_path) -> None
     assert TASK_PROFILES["decision_market_residual_v38"]["max_parallel"] == 1
 
 
+def test_decision_stacked_market_v44_command_is_cache_bounded(tmp_path) -> None:
+    root = tmp_path / "boat"
+    cache = (
+        root
+        / "data/models/evaluation_cache/market_scored/source_period.races.joblib"
+    )
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"cache")
+    command, output = build_command(
+        _job(
+            "decision_stacked_market_v44",
+            {
+                "scored_cache": (
+                    "data/models/evaluation_cache/market_scored/"
+                    "source_period.races.joblib"
+                ),
+                "calibration_through": "2026-08-18",
+                "minimum_training_days": 30,
+                "minimum_training_races": 3000,
+                "num_threads": 4,
+                "timeout_seconds": 14400,
+            },
+        ),
+        app_root=root,
+        python=root / ".venv/bin/python",
+        db="postgresql://test",
+    )
+
+    assert command[1:3] == [
+        "-m",
+        "boatrace_ai.listwise.decision_stacked_market_v44",
+    ]
+    assert command[command.index("--scored-cache") + 1] == str(cache)
+    assert output == root / "data/models/evaluation_queue/job-00000007.json"
+    assert TASK_PROFILES["decision_stacked_market_v44"]["max_parallel"] == 1
+
+
 def test_decision_v38_lcb_command_requires_frozen_artifact_and_cache(
     tmp_path,
 ) -> None:

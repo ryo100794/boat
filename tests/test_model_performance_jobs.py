@@ -104,6 +104,9 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "id=\"nestedValueRows\"" in MODEL_REPORT_HTML
     assert "renderNestedValueAudit(jobs)" in MODEL_REPORT_HTML
     assert "nested_value_decile_audit" in MODEL_REPORT_HTML
+    assert "decisionStackEvidence" in MODEL_REPORT_HTML
+    assert "contextualValueEvidence" in MODEL_REPORT_HTML
+    assert "局所ready" in MODEL_REPORT_HTML
     assert "N/A / 購入なし" in MODEL_REPORT_HTML
     assert "daily_block_roi_lower_95" in MODEL_REPORT_HTML
     assert "安全余裕" in MODEL_REPORT_HTML
@@ -169,6 +172,20 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         ],
         "residual_selected_context_variant": "full_context_20",
         "residual_outer_period_used_for_selection": False,
+        "training_status": "ready",
+        "market_probability_source": "decision_snapshot_odds",
+        "official_closing_fields_used": False,
+        "training_days": 30,
+        "training_races": 4300,
+        "selected_stack": "market50_linear50",
+        "selected_weights": {"market": 0.5, "linear": 0.5, "nonlinear": 0.0},
+        "challenger_selection_gate_pass": True,
+        "frozen_probability_model": "decision_time_stacked_market_residual_v44",
+        "calibration_context_ready_cells": 2,
+        "calibration_context_cells": 12,
+        "calibration_contextual_hierarchy": (
+            "global -> probability-rank -> rank-by-odds"
+        ),
         "nested_value_model": "nested_nonlinear_value_calibration_v40",
         "nested_value_status": "completed",
         "nested_value_model_training_from": "2026-05-10",
@@ -317,6 +334,9 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0][
         "residual_outer_period_used_for_selection"
     ] is False
+    assert status["jobs"][0]["selected_stack"] == "market50_linear50"
+    assert status["jobs"][0]["official_closing_fields_used"] is False
+    assert status["jobs"][0]["calibration_context_ready_cells"] == 2
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
     assert status["jobs"][0]["nested_value_calibration_bins"][0][
         "empirical_ev_lcb95"

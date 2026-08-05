@@ -484,6 +484,8 @@ function purposeScope(x){
   if(b.allocation_mode) parts.push(String(b.allocation_mode));
   if(b.profit_reinvestment!=null) parts.push(b.profit_reinvestment?"利益再投資":"日次リセット");
   if(b.folds!=null) parts.push(`${fmt(b.folds)}fold`);
+  const decisionStack=decisionStackEvidence(x);
+  if(decisionStack) parts.push(decisionStack);
   return parts.join(" / ");
 }
 function probabilityDelta(x){
@@ -674,12 +676,26 @@ function pairedAuditText(x){
   return ` / ${state} J ${ratio(a.ticket_jaccard)} 回転 ${ratio(a.stake_turnover)} Δ ${yen(a.profit_difference_yen)} 下限 ${lower}`;
 }
 function formalJointEvidence(x){
-  if(x.joint_purchase_value_minimum==null&&x.formal_roi_gate_method==null) return "";
+  if(x.joint_purchase_value_minimum==null&&x.formal_roi_gate_method==null) return contextualValueEvidence(x);
   const valueGate=x.joint_purchase_value_gate_passed===true?"価値合格":x.joint_purchase_value_gate_passed===false?"価値不合格":"価値未評価";
   const roiGate=x.formal_roi_gate_passed===true?"ROI合格":x.formal_roi_gate_passed===false?"ROI不合格":"ROI未評価";
   const condition=x.bootstrap_condition_id?String(x.bootstrap_condition_id).slice(0,10):"再標本化未記録";
   const protocol=x.evaluation_protocol_id?String(x.evaluation_protocol_id).slice(0,10):"評価条件未記録";
-  return `評価#${esc(protocol)} / V_buy ${ratio(x.joint_purchase_value_minimum)} > m ${ratio(x.joint_purchase_safety_margin)} ${valueGate} / ROI LCB95 ${ratio(x.daily_cluster_bootstrap_roi_lower_95??x.roi_ci95_lower)} ${roiGate} / ${esc(x.bootstrap_primary_block||"-")} ${esc(x.bootstrap_quantile_method||"-")} n=${fmt(x.bootstrap_samples)} 再標本化#${esc(condition)} / 日x場 ${ratio(x.day_venue_roi_lower_95)} / 節 ${ratio(x.venue_meeting_roi_lower_95)}`;
+  const contextual=contextualValueEvidence(x);
+  return `評価#${esc(protocol)} / V_buy ${ratio(x.joint_purchase_value_minimum)} > m ${ratio(x.joint_purchase_safety_margin)} ${valueGate} / ROI LCB95 ${ratio(x.daily_cluster_bootstrap_roi_lower_95??x.roi_ci95_lower)} ${roiGate} / ${esc(x.bootstrap_primary_block||"-")} ${esc(x.bootstrap_quantile_method||"-")} n=${fmt(x.bootstrap_samples)} 再標本化#${esc(condition)} / 日x場 ${ratio(x.day_venue_roi_lower_95)} / 節 ${ratio(x.venue_meeting_roi_lower_95)}${contextual?` / ${contextual}`:""}`;
+}
+function decisionStackEvidence(x){
+  if(x.training_status==null) return "";
+  const weights=x.selected_weights||{};
+  const stack=x.selected_stack?` / stack ${x.selected_stack} M${ratio(weights.market)} L${ratio(weights.linear)} N${ratio(weights.nonlinear)}`:"";
+  const gate=x.challenger_selection_gate_pass===true?"凍結可":x.challenger_selection_gate_pass===false?"凍結不可":"選択待ち";
+  const closing=x.official_closing_fields_used===false?"終値不使用":"終値境界未確認";
+  return `判断時モデル ${fmt(x.training_days)}日/${fmt(x.training_races)}R ${closing}${stack} / ${gate}`;
+}
+function contextualValueEvidence(x){
+  if(!x.frozen_probability_model&&!x.calibration_contextual_hierarchy) return "";
+  const ready=x.calibration_context_ready_cells==null?"-":`${fmt(x.calibration_context_ready_cells)}/${fmt(x.calibration_context_cells)}`;
+  return `階層LCB ${x.frozen_probability_model||"-"} / 局所ready ${ready} / ${x.calibration_contextual_hierarchy||"-"}`;
 }
 function nestedValueEvidence(x){
   if(!x.nested_value_model) return "";

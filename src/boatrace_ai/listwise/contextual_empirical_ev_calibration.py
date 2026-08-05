@@ -141,6 +141,7 @@ class ContextualEmpiricalEVCalibrationArtifact:
             result[key] = global_prediction.get(key)
         result["purchase_lcb95_available"] = bool(
             global_prediction.get("purchase_lcb95_available")
+            and cell.ready
             and result.get("empirical_ev_lcb95") is not None
         )
         result.update(
@@ -447,6 +448,9 @@ def fit_contextual_empirical_ev_calibration(
     min_days: int = 30,
     min_tickets: int = 300,
     min_candidate_days: int = 20,
+    min_local_candidates: int = 50,
+    min_local_candidate_days: int = 20,
+    min_local_ess: float = 10.0,
     candidate_min_raw_ev: float = 1.0,
     min_rank_days: int = 15,
     min_rank_tickets: int = 150,
@@ -503,6 +507,9 @@ def fit_contextual_empirical_ev_calibration(
         min_days=min_days,
         min_tickets=min_tickets,
         min_candidate_days=min_candidate_days,
+        min_local_candidates=min_local_candidates,
+        min_local_candidate_days=min_local_candidate_days,
+        min_local_ess=min_local_ess,
         candidate_min_raw_ev=candidate_min_raw_ev,
         shape_constraint=shape_constraint,
     )

@@ -85,11 +85,13 @@ def test_sparse_cells_fall_back_to_parent_then_global_conservatively() -> None:
     global_prediction = artifact.global_calibration.predict(1.12)
 
     assert sparse["cell_ready"] is False
+    assert sparse["purchase_lcb95_available"] is False
     assert sparse["calibration_level"] == "rank_group"
     assert sparse["empirical_ev"] == same_rank_empty["empirical_ev"]
     assert sparse["empirical_ev_lcb95"] == same_rank_empty["empirical_ev_lcb95"]
     assert sparse["empirical_ev"] < 20.0
     assert unsupported_rank["calibration_level"] == "global"
+    assert unsupported_rank["purchase_lcb95_available"] is False
     assert unsupported_rank["empirical_ev"] == global_prediction["empirical_ev"]
     assert (
         unsupported_rank["empirical_ev_lcb95"]

@@ -10,7 +10,9 @@ from typing import Any, Mapping
 import joblib
 
 from ..bankroll_bootstrap import bootstrap_daily_roi
-from .empirical_ev_calibration import fit_empirical_ev_calibration
+from .contextual_empirical_ev_calibration import (
+    fit_contextual_empirical_ev_calibration,
+)
 from .empirical_lcb_policy import (
     empirical_bankroll_promotion_eligible,
     policy_edge_records,
@@ -18,9 +20,10 @@ from .empirical_lcb_policy import (
 )
 from .nonlinear_market_residual_v38 import nonlinear_residual_probabilities
 from .decision_market_residual_v38 import decision_time_race
+from .stacked_market_residual_v42 import stacked_probabilities
 
 
-MODEL_NAME = "decision_v38_strict_prior_empirical_lcb_v39"
+MODEL_NAME = "decision_stack_contextual_strict_prior_lcb_v45"
 SETTLEMENT_ENGINE_CONTRACT = (
     "official_result_gross_roi_v1_previous_calendar_dates_only"
 )
@@ -29,6 +32,10 @@ PURCHASE_MAX_PROBABILITY_RANK = 5
 MINIMUM_LEDGER_DAYS = 30
 MINIMUM_LEDGER_CANDIDATES = 300
 MINIMUM_LEDGER_CANDIDATE_DAYS = 20
+MINIMUM_RANK_DAYS = 30
+MINIMUM_RANK_CANDIDATES = 300
+MINIMUM_CELL_DAYS = 20
+MINIMUM_CELL_CANDIDATES = 100
 
 
 def _iso_date(value: object, name: str) -> str:
@@ -77,15 +84,19 @@ def score_frozen_v38_races(
     artifact = frozen.get("artifact")
     if not isinstance(artifact, Mapping):
         raise ValueError("V39 frozen V38 artifact is missing")
+    model = str(frozen.get("model") or "")
+    if model == "decision_time_stacked_market_residual_v44":
+        scorer = lambda race: stacked_probabilities(race, artifact)
+    elif model == "decision_time_nonlinear_market_residual_v38":
+        scorer = lambda race: nonlinear_residual_probabilities(
+            race,
+            artifact,
+            shrinkage=PURCHASE_RESIDUAL_SHRINKAGE,
+        )
+    else:
+        raise ValueError(f"V39 refuses unsupported frozen model: {model}")
     return [
-        {
-            **race,
-            "model_probabilities": nonlinear_residual_probabilities(
-                race,
-                artifact,
-                shrinkage=PURCHASE_RESIDUAL_SHRINKAGE,
-            ),
-        }
+        {**race, "model_probabilities": scorer(race)}
         for race in races
     ]
 
@@ -178,8 +189,9 @@ def walk_forward_decision_v38_lcb(
     for evaluation_date in sorted(by_day):
         if any(str(row["race_date"]) >= evaluation_date for row in ledger):
             raise AssertionError("V39 ledger contains a non-prior settlement")
-        latest_calibrator = fit_empirical_ev_calibration(
+        latest_calibrator = fit_contextual_empirical_ev_calibration(
             ledger,
+            prediction_date=evaluation_date,
             bootstrap_samples=bootstrap_samples,
             min_days=minimum_ledger_days,
             min_tickets=minimum_ledger_candidates,
@@ -188,6 +200,18 @@ def walk_forward_decision_v38_lcb(
             min_local_candidate_days=minimum_local_candidate_days,
             min_local_ess=minimum_local_ess,
             candidate_min_raw_ev=1.0,
+            min_rank_days=max(minimum_ledger_days, MINIMUM_RANK_DAYS),
+            min_rank_tickets=max(
+                minimum_ledger_candidates, MINIMUM_RANK_CANDIDATES
+            ),
+            min_cell_days=max(
+                minimum_local_candidate_days, MINIMUM_CELL_DAYS
+            ),
+            min_cell_tickets=max(
+                minimum_local_candidates, MINIMUM_CELL_CANDIDATES
+            ),
+            rank_prior_tickets=500.0,
+            cell_prior_tickets=200.0,
         )
         day_races = by_day[evaluation_date]
         simulation = simulate_empirical_lcb_policy(
@@ -257,6 +281,7 @@ def walk_forward_decision_v38_lcb(
         "selection_evaluation_through": selection_through,
         "frozen_model_training_through": training_through,
         "frozen_model_hash": source_hash,
+        "frozen_probability_model": frozen.get("model"),
         "settlement_engine_contract": SETTLEMENT_ENGINE_CONTRACT,
         "settlement_engine_hash": settlement_engine_hash,
         "purchase_residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
@@ -274,7 +299,12 @@ def walk_forward_decision_v38_lcb(
         },
         "calibration_target": "gross ROI including principal",
         "purchase_threshold": "empirical_ROI_LCB95 > 1.0",
-        "range_policy": "deny outside local isotonic block support",
+        "range_policy": (
+            "deny outside local isotonic block support or when rank-by-odds "
+            "cell support is not ready"
+        ),
+        "contextual_dimensions": ["probability_rank", "forecast_odds"],
+        "contextual_hierarchy": "global -> probability-rank -> rank-by-odds",
         "bootstrap_cluster_unit": "race_date",
         "ticket_level_independence_assumed": False,
         "ledger_candidates": len(ledger),

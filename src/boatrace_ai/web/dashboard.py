@@ -3521,6 +3521,46 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "replay_deterministic_output_fingerprint_sha256": metrics.get(
                     "replay_deterministic_output_fingerprint_sha256"
                 ),
+                "training_status": metrics.get("training_status"),
+                "market_probability_source": metrics.get(
+                    "market_probability_source"
+                ),
+                "official_closing_fields_used": metrics.get(
+                    "official_closing_fields_used"
+                ),
+                "training_from": metrics.get("training_from"),
+                "training_through": metrics.get("training_through"),
+                "training_days": metrics.get("training_days"),
+                "training_races": metrics.get("training_races"),
+                "selected_stack": metrics.get("selected_stack"),
+                "selected_weights": metrics.get("selected_weights"),
+                "base_training_through": metrics.get(
+                    "base_training_through"
+                ),
+                "stack_validation_from": metrics.get(
+                    "stack_validation_from"
+                ),
+                "challenger_selection_gate_pass": metrics.get(
+                    "challenger_selection_gate_pass"
+                ),
+                "frozen_probability_model": metrics.get(
+                    "frozen_probability_model"
+                ),
+                "calibration_context_ready_cells": metrics.get(
+                    "calibration_context_ready_cells"
+                ),
+                "calibration_context_cells": metrics.get(
+                    "calibration_context_cells"
+                ),
+                "calibration_context_cell_audit": metrics.get(
+                    "calibration_context_cell_audit"
+                ),
+                "calibration_contextual_dimensions": metrics.get(
+                    "calibration_contextual_dimensions"
+                ),
+                "calibration_contextual_hierarchy": metrics.get(
+                    "calibration_contextual_hierarchy"
+                ),
                 "warmup_days": metrics.get("warmup_days"),
                 "required_days": metrics.get("required_days"),
                 "prior_candidates": metrics.get("prior_candidates"),

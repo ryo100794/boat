@@ -51,9 +51,55 @@ def test_v38_summary_exposes_frozen_probability_selection_audit() -> None:
     )
 
 
+def test_v44_summary_exposes_stack_selection_audit() -> None:
+    payload = {
+        "model": "decision_time_stacked_market_residual_v44",
+        "training_status": "ready",
+        "official_closing_fields_used": False,
+        "market_probability_source": "decision_snapshot_odds",
+        "training_days": 30,
+        "training_races": 4300,
+        "evaluation_from": "2026-08-19",
+        "evaluation_through": "2026-08-25",
+        "market_is_exact_nested_null": True,
+        "base_training_through": "2026-08-12",
+        "stack_validation_from": "2026-08-13",
+        "selected_stack": "market50_linear50",
+        "selected_weights": {
+            "market": 0.5,
+            "linear": 0.5,
+            "nonlinear": 0.0,
+        },
+        "artifact": {"artifact_sha256": "c" * 64},
+        "holdout_metrics": {
+            "evaluated_races": 1000,
+            "evaluated_days": 7,
+            "trifecta_log_loss": 3.61,
+            "market_trifecta_log_loss": 3.62,
+            "log_loss_delta_vs_market": -0.01,
+            "days_better_than_market": 5,
+            "trifecta_top5_hit_rate": 0.371,
+            "market_trifecta_top5_hit_rate": 0.372,
+        },
+    }
+
+    summary = summarize_result(payload)
+
+    assert summary["selected_stack"] == "market50_linear50"
+    assert summary["selected_weights"]["linear"] == 0.5
+    assert summary["base_training_through"] < summary["stack_validation_from"]
+    assert summary["challenger_selection_gate_pass"] is True
+    assert result_decision("decision_stacked_market_v44", summary) == (
+        "freeze_for_prospective_value_calibration"
+    )
+
+
 def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
     payload = {
-        "model": "decision_v38_strict_prior_empirical_lcb_v39",
+        "model": "decision_stack_contextual_strict_prior_lcb_v45",
+        "frozen_probability_model": (
+            "decision_time_stacked_market_residual_v44"
+        ),
         "registered_after": "2026-08-26",
         "frozen_model_training_through": "2026-08-18",
         "selection_evaluation_through": "2026-08-25",
@@ -80,6 +126,9 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
             "tickets": 150,
             "candidate_days": 3,
             "isotonic_block_count": 2,
+            "context_ready_cells": 1,
+            "context_cells": 12,
+            "cells": [{"rank_group": "top5", "odds_band": "<20"}],
         },
         "fold_audit": [{
             "calibration_ready": False,
@@ -117,6 +166,11 @@ def test_v39_summary_exposes_strict_prior_lcb_and_na_roi() -> None:
 
     assert summary["model"] == payload["model"]
     assert summary["calibration_warmup_logical_operator"] == "AND"
+    assert summary["frozen_probability_model"] == (
+        "decision_time_stacked_market_residual_v44"
+    )
+    assert summary["calibration_context_ready_cells"] == 1
+    assert summary["calibration_context_cells"] == 12
     assert summary["calibration_strict_prior_all_folds"] is True
     assert summary["calibration_max_training_settlement_date"] == "2026-08-28"
     assert summary["calibration_decision_contract_hashes"] == 1

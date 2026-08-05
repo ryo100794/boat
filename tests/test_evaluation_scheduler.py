@@ -307,12 +307,12 @@ def test_periodic_scheduler_registers_v38_only_after_30_prior_days_and_cache(
         app_root=root,
     )
 
-    v38 = next(
+    v44 = next(
         row for row in calls
-        if row["task_type"] == "decision_market_residual_v38"
+        if row["task_type"] == "decision_stacked_market_v44"
     )
-    assert v38["model_key"].endswith("cutoff_20260818")
-    assert v38["parameters"] == {
+    assert v44["model_key"].endswith("cutoff_20260818")
+    assert v44["parameters"] == {
         "scored_cache": (
             "data/models/evaluation_cache/market_scored/"
             "job-00012315_2026-07-20_2026-08-19.races.joblib"
@@ -323,7 +323,7 @@ def test_periodic_scheduler_registers_v38_only_after_30_prior_days_and_cache(
         "num_threads": 4,
         "timeout_seconds": 14400,
     }
-    assert v38["priority"] == 49
+    assert v44["priority"] == 49
 
 
 def test_periodic_scheduler_freezes_first_eligible_v38_and_starts_v39(
@@ -402,7 +402,9 @@ def test_periodic_scheduler_freezes_first_eligible_v38_and_starts_v39(
         row for row in calls
         if row["task_type"] == "decision_v38_empirical_lcb"
     )
-    assert v39["model_key"] == "prospective_decision_v38_v39_job_00013000"
+    assert v39["model_key"] == (
+        "prospective_decision_stack_value_job_00013000"
+    )
     assert v39["parameters"]["registered_after"] == "2026-08-26"
     registration = v39["parameters"]["prospective_candidate"]
     assert registration["selection_evaluation_through"] == "2026-08-25"

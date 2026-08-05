@@ -32,6 +32,9 @@ from .listwise.tail_portfolio_diagnostics import diagnose_tail_portfolio
 from .listwise.decision_market_residual_v38 import (
     decision_v38_challenger_eligible,
 )
+from .listwise.decision_stacked_market_v44 import (
+    decision_v44_challenger_eligible,
+)
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -161,6 +164,13 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
     "archive_closing_backfill": {"category": "collection", "memory_mb": 512, "idle_cpu": 3.0, "max_parallel": 1, "disk_mb": 256},
     "archive_market_oracle": {"category": "evaluation", "memory_mb": 4096, "idle_cpu": 15.0, "max_parallel": 1, "disk_mb": 1024},
     "decision_market_residual_v38": {
+        "category": "training",
+        "memory_mb": 8192,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+        "disk_mb": 1024,
+    },
+    "decision_stacked_market_v44": {
         "category": "training",
         "memory_mb": 8192,
         "idle_cpu": 15.0,
@@ -3689,7 +3699,10 @@ def build_command(
                 "--temporal-calibration-through", temporal_calibration_through,
             ])
         return command, output
-    if task_type == "decision_market_residual_v38":
+    if task_type in {
+        "decision_market_residual_v38",
+        "decision_stacked_market_v44",
+    }:
         allowed = {
             "scored_cache",
             "calibration_through",
@@ -3701,13 +3714,13 @@ def build_command(
         unsupported = set(params) - allowed
         if unsupported:
             raise ValueError(
-                "unsupported decision_market_residual_v38 parameters: "
+                f"unsupported {task_type} parameters: "
                 + ", ".join(sorted(unsupported))
             )
         missing = {"scored_cache", "calibration_through"} - set(params)
         if missing:
             raise ValueError(
-                "missing decision_market_residual_v38 parameters: "
+                f"missing {task_type} parameters: "
                 + ", ".join(sorted(missing))
             )
         cache_root = (
@@ -3738,7 +3751,11 @@ def build_command(
         return [
             str(python),
             "-m",
-            "boatrace_ai.listwise.decision_market_residual_v38",
+                (
+                    "boatrace_ai.listwise.decision_stacked_market_v44"
+                    if task_type == "decision_stacked_market_v44"
+                    else "boatrace_ai.listwise.decision_market_residual_v38"
+                ),
             "--scored-cache",
             str(scored_cache),
             "--calibration-through",
@@ -4016,7 +4033,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
-    if payload.get("model") == "decision_time_nonlinear_market_residual_v38":
+    if payload.get("model") in {
+        "decision_time_nonlinear_market_residual_v38",
+        "decision_time_stacked_market_residual_v44",
+    }:
         metrics = payload.get("holdout_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
         artifact = payload.get("artifact")
@@ -4058,6 +4078,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "selected_tree_preset": payload.get("selected_tree_preset"),
             "selected_shrinkage": payload.get("selected_shrinkage"),
+            "selected_stack": payload.get("selected_stack"),
+            "selected_weights": payload.get("selected_weights"),
+            "base_training_through": payload.get("base_training_through"),
+            "stack_validation_from": payload.get("stack_validation_from"),
             "inner_fit_through": payload.get("inner_fit_through"),
             "inner_validation_from": payload.get("inner_validation_from"),
             "market_is_exact_nested_null": payload.get(
@@ -4068,17 +4092,27 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "source_scored_cache_sha256"
             ),
             "challenger_selection_gate_pass": (
-                decision_v38_challenger_eligible(payload)
+                decision_v44_challenger_eligible(payload)
+                if payload.get("model")
+                == "decision_time_stacked_market_residual_v44"
+                else decision_v38_challenger_eligible(payload)
             ),
             "promotion_eligible": False,
         })
-    if payload.get("model") == "decision_v38_strict_prior_empirical_lcb_v39":
+    if payload.get("model") in {
+        "decision_v38_strict_prior_empirical_lcb_v39",
+        "decision_stack_contextual_strict_prior_lcb_v45",
+    }:
         bankroll = payload.get("bankroll")
         bankroll = bankroll if isinstance(bankroll, dict) else {}
         warmup = payload.get("warmup")
         warmup = warmup if isinstance(warmup, dict) else {}
         latest = payload.get("latest_calibrator")
         latest = latest if isinstance(latest, dict) else {}
+        latest_global = latest.get("global_calibration")
+        latest_global = (
+            latest_global if isinstance(latest_global, dict) else {}
+        )
         folds = [
             row for row in payload.get("fold_audit") or ()
             if isinstance(row, dict)
@@ -4106,6 +4140,9 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "selection_evaluation_through"
             ),
             "frozen_model_hash": payload.get("frozen_model_hash"),
+            "frozen_probability_model": payload.get(
+                "frozen_probability_model"
+            ),
             "settlement_engine_hash": payload.get("settlement_engine_hash"),
             "candidate_population": payload.get("candidate_population"),
             "purchase_residual_shrinkage": payload.get(
@@ -4140,6 +4177,17 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "calibration_candidate_days": latest.get("candidate_days"),
             "calibration_isotonic_block_count": latest.get(
                 "isotonic_block_count"
+            ) or latest_global.get("isotonic_block_count"),
+            "calibration_context_ready_cells": latest.get(
+                "context_ready_cells"
+            ),
+            "calibration_context_cells": latest.get("context_cells"),
+            "calibration_context_cell_audit": latest.get("cells"),
+            "calibration_contextual_dimensions": payload.get(
+                "contextual_dimensions"
+            ),
+            "calibration_contextual_hierarchy": payload.get(
+                "contextual_hierarchy"
             ),
             "calibration_ready": latest.get("ready"),
             "calibration_ready_reasons": latest.get("ready_reasons"),
@@ -6651,7 +6699,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_decision(task_type: str, summary: dict[str, Any]) -> str:
-    if task_type == "decision_market_residual_v38":
+    if task_type in {
+        "decision_market_residual_v38",
+        "decision_stacked_market_v44",
+    }:
         if summary.get("challenger_selection_gate_pass") is True:
             return "freeze_for_prospective_value_calibration"
         if summary.get("training_status") == "insufficient_training_history":
@@ -8135,15 +8186,20 @@ def eligible_decision_v38_frozen_artifact(
     artifact_root = (
         app_root / "data" / "models" / "evaluation_queue"
     ).resolve()
-    rows = conn.execute(
-        """
-        SELECT job_id, result_path, completed_at
-        FROM model_evaluation_jobs
-        WHERE task_type = ? AND status = ? AND result_path IS NOT NULL
-        ORDER BY completed_at ASC, job_id ASC
-        """,
-        ("decision_market_residual_v38", "completed"),
-    ).fetchall()
+    rows = []
+    for task_type in (
+        "decision_stacked_market_v44",
+        "decision_market_residual_v38",
+    ):
+        rows.extend(conn.execute(
+            """
+            SELECT job_id, result_path, completed_at
+            FROM model_evaluation_jobs
+            WHERE task_type = ? AND status = ? AND result_path IS NOT NULL
+            ORDER BY completed_at ASC, job_id ASC
+            """,
+            (task_type, "completed"),
+        ).fetchall())
     for row in rows:
         result_path = Path(str(row["result_path"]))
         if not result_path.is_absolute():
@@ -8158,9 +8214,15 @@ def eligible_decision_v38_frozen_artifact(
             payload = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if not isinstance(payload, dict) or not decision_v38_challenger_eligible(
-            payload
-        ):
+        if not isinstance(payload, dict):
+            continue
+        eligible = (
+            decision_v44_challenger_eligible(payload)
+            if payload.get("model")
+            == "decision_time_stacked_market_residual_v44"
+            else decision_v38_challenger_eligible(payload)
+        )
+        if not eligible:
             continue
         return {
             "job_id": int(row["job_id"]),
@@ -8603,18 +8665,18 @@ def seed_periodic_jobs(
                 "timeout_seconds": 14_400,
             }
             model_key = (
-                "decision_market_residual_v38_job_12315_cutoff_"
+                "decision_stacked_market_v44_job_12315_cutoff_"
                 + v38_cutoff.strftime("%Y%m%d")
             )
             key = dedupe_key(
-                "decision_market_residual_v38", model_key, parameters
+                "decision_stacked_market_v44", model_key, parameters
             )
             if not already_scheduled(
-                "decision_market_residual_v38", key, model_key
+                "decision_stacked_market_v44", key, model_key
             ):
                 job_id = enqueue_job(
                     conn,
-                    task_type="decision_market_residual_v38",
+                    task_type="decision_stacked_market_v44",
                     model_key=model_key,
                     parameters=parameters,
                     priority=49,
@@ -8647,7 +8709,7 @@ def seed_periodic_jobs(
                     "source_model_job_id": source_job_id,
                     "source_artifact_sha256": v38_frozen["result_sha256"],
                     "policy": (
-                        "decision_v38_full_residual_top5_strict_prior_"
+                        "decision_frozen_stack_top5_strict_prior_"
                         "empirical_roi_lcb95"
                     ),
                     "registered_after": registration_date.isoformat(),
@@ -8660,7 +8722,7 @@ def seed_periodic_jobs(
                 },
             }
             model_key = (
-                "prospective_decision_v38_v39_job_"
+                "prospective_decision_stack_value_job_"
                 f"{source_job_id:08d}"
             )
             key = dedupe_key(

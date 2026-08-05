@@ -27,12 +27,35 @@ def _race(day: date, index: int) -> dict:
 
 def _frozen() -> dict:
     return {
+        "model": "decision_time_nonlinear_market_residual_v38",
         "training_status": "ready",
         "training_through": "2026-01-01",
         "official_closing_fields_used": False,
         "source_scored_cache_sha256": "a" * 64,
         "artifact": {"booster_sha256": "b" * 64},
     }
+
+
+def test_v39_scores_frozen_v44_stack(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        subject,
+        "stacked_probabilities",
+        lambda race, artifact: calls.append((race, artifact)) or {
+            "1-2-3": 0.7,
+            "1-3-2": 0.3,
+        },
+    )
+    frozen = {
+        **_frozen(),
+        "model": "decision_time_stacked_market_residual_v44",
+        "artifact": {"artifact_sha256": "c" * 64},
+    }
+    scored = subject.score_frozen_v38_races(
+        [_race(date(2026, 1, 2), 1)], frozen
+    )
+    assert scored[0]["model_probabilities"]["1-2-3"] == 0.7
+    assert calls[0][1] == frozen["artifact"]
 
 
 def test_v39_ledger_is_strictly_after_model_and_before_each_fold(
