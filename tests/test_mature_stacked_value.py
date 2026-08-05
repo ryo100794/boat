@@ -123,6 +123,68 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
     assert result["real_betting_enabled"] is False
 
 
+def test_context_value_audit_uses_predeclared_outer_cells(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(subject, "CONTEXT_AUDIT_BOOTSTRAP_SAMPLES", 100)
+    calibration = [
+        {
+            "race_date": "2026-06-01",
+            "probability_rank": 1,
+            "forecast_odds": 10.0,
+            "raw_estimated_ev": 1.1,
+            "gross_return_per_yen": 2.0,
+        },
+        {
+            "race_date": "2026-06-02",
+            "probability_rank": 4,
+            "forecast_odds": 15.0,
+            "raw_estimated_ev": 0.9,
+            "gross_return_per_yen": 0.0,
+        },
+        {
+            "race_date": "2026-06-02",
+            "probability_rank": 6,
+            "forecast_odds": 25.0,
+            "raw_estimated_ev": 1.2,
+            "gross_return_per_yen": 3.0,
+        },
+    ]
+    evaluation = [
+        {
+            "race_date": "2026-07-01",
+            "probability_rank": 2,
+            "forecast_odds": 12.0,
+            "raw_estimated_ev": 1.05,
+            "gross_return_per_yen": 1.5,
+        },
+    ]
+
+    audit = subject.context_value_audit(calibration, evaluation)
+
+    assert audit["evaluation_used_for_context_definition"] is False
+    assert audit["bootstrap_cluster_unit"] == "race_date"
+    calibration_cells = {
+        (row["rank_group"], row["odds_band"]): row
+        for row in audit["calibration"]
+    }
+    top5 = calibration_cells[("top5", "<20")]
+    assert top5["candidates"] == 2
+    assert top5["candidate_days"] == 2
+    assert top5["mean_predicted_raw_ev"] == 1.0
+    assert top5["realized_roi"] == 1.0
+    assert top5["roi_excluding_largest_hit"] == 0.0
+    rank_6_20 = calibration_cells[("6-20", "20-50")]
+    assert rank_6_20["candidates"] == 1
+    assert rank_6_20["realized_roi"] == 3.0
+    evaluation_cells = {
+        (row["rank_group"], row["odds_band"]): row
+        for row in audit["evaluation"]
+    }
+    assert evaluation_cells[("top5", "<20")]["realized_roi"] == 1.5
+    assert evaluation_cells[("6-20", ">=101")]["realized_roi"] is None
+
+
 def test_mature_value_requires_180_prior_days() -> None:
     start = date(2026, 1, 1)
     races = [_race(start + timedelta(days=day), day) for day in range(179)]

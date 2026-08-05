@@ -23,6 +23,97 @@ MODEL_NAME = "mature_stacked_contextual_value_rank20"
 MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_CALIBRATION_DAYS = 120
 PURCHASE_MAX_RANK = 20
+CONTEXT_AUDIT_BOOTSTRAP_SAMPLES = 5_000
+CONTEXT_RANK_GROUPS = (("top5", 1, 5), ("6-20", 6, 20))
+CONTEXT_ODDS_BANDS = (
+    ("<20", 0.0, 20.0),
+    ("20-50", 20.0, 50.0),
+    ("50-101", 50.0, 101.0),
+    (">=101", 101.0, float("inf")),
+)
+
+
+def _context_value_rows(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for rank_group, minimum_rank, maximum_rank in CONTEXT_RANK_GROUPS:
+        for odds_band, minimum_odds, maximum_odds in CONTEXT_ODDS_BANDS:
+            bucket = [
+                record for record in records
+                if minimum_rank <= int(record["probability_rank"]) <= maximum_rank
+                and minimum_odds <= float(record["forecast_odds"]) < maximum_odds
+            ]
+            daily: dict[str, dict[str, Any]] = {}
+            gross_returns: list[float] = []
+            for record in bucket:
+                gross = 100.0 * float(record["gross_return_per_yen"])
+                gross_returns.append(gross)
+                day = str(record["race_date"])
+                aggregate = daily.setdefault(day, {
+                    "race_date": day,
+                    "stake_yen": 0,
+                    "return_yen": 0.0,
+                })
+                aggregate["stake_yen"] += 100
+                aggregate["return_yen"] += gross
+            confidence = (
+                bootstrap_daily_roi(
+                    list(daily.values()),
+                    samples=CONTEXT_AUDIT_BOOTSTRAP_SAMPLES,
+                )
+                if bucket
+                else {
+                    "roi": None,
+                    "roi_ci95_lower": None,
+                    "probability_roi_above_one": None,
+                }
+            )
+            stake = 100 * len(bucket)
+            returned = sum(gross_returns)
+            largest_hit = max(gross_returns, default=0.0)
+            rows.append({
+                "rank_group": rank_group,
+                "odds_band": odds_band,
+                "minimum_probability_rank": minimum_rank,
+                "maximum_probability_rank": maximum_rank,
+                "minimum_forecast_odds": minimum_odds,
+                "maximum_forecast_odds": (
+                    maximum_odds if maximum_odds != float("inf") else None
+                ),
+                "candidates": len(bucket),
+                "candidate_days": len(daily),
+                "mean_predicted_raw_ev": (
+                    sum(float(record["raw_estimated_ev"]) for record in bucket)
+                    / len(bucket)
+                    if bucket else None
+                ),
+                "realized_roi": confidence.get("roi"),
+                "realized_roi_lcb95": confidence.get("roi_ci95_lower"),
+                "probability_roi_above_one": confidence.get(
+                    "probability_roi_above_one"
+                ),
+                "largest_hit_return_yen": largest_hit if bucket else None,
+                "roi_excluding_largest_hit": (
+                    (returned - largest_hit) / stake if stake else None
+                ),
+            })
+    return rows
+
+
+def context_value_audit(
+    calibration_records: list[dict[str, Any]],
+    evaluation_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "status": "completed",
+        "context_definition": "predeclared_probability_rank_by_forecast_odds",
+        "evaluation_used_for_context_definition": False,
+        "bootstrap_cluster_unit": "race_date",
+        "bootstrap_samples": CONTEXT_AUDIT_BOOTSTRAP_SAMPLES,
+        "calibration": _context_value_rows(calibration_records),
+        "evaluation": _context_value_rows(evaluation_records),
+    }
 
 
 def _identity_probability_blender(
@@ -198,6 +289,9 @@ def evaluate_mature_stacked_value(
         "calibration_ledger_candidates": len(ledger),
         "evaluation_ledger_candidates": len(evaluation_ledger),
         "value_decile_audit": value_decile_audit(
+            ledger, evaluation_ledger
+        ),
+        "context_value_audit": context_value_audit(
             ledger, evaluation_ledger
         ),
         "bankroll": bankroll,
