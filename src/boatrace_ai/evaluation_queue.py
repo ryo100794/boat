@@ -2877,6 +2877,11 @@ def build_command(
             "ev_threshold",
             "ev_thresholds",
             "timeout_seconds",
+            "mature_long_followup",
+            "mature_long_from_date",
+            "mature_long_through_date",
+            "mature_long_calibration_through",
+            "mature_long_temporal_component",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -2903,6 +2908,27 @@ def build_command(
             raise ValueError(
                 "include_decayed_history is supported only for listwise_feature_search"
             )
+        mature_long_followup = params.get("mature_long_followup", False)
+        if not isinstance(mature_long_followup, bool):
+            raise ValueError("mature_long_followup must be a boolean")
+        if mature_long_followup:
+            if task_type != "listwise_feature_search":
+                raise ValueError(
+                    "mature_long_followup is supported only for listwise_feature_search"
+                )
+            mature_from = _date(params, "mature_long_from_date")
+            mature_through = _date(params, "mature_long_through_date")
+            mature_cutoff = _date(params, "mature_long_calibration_through")
+            if not mature_from <= mature_cutoff < mature_through:
+                raise ValueError("invalid mature long followup date boundaries")
+            mature_component = str(
+                params.get("mature_long_temporal_component") or ""
+            )
+            if mature_component not in {
+                "mature_stacked_contextual_value_daily_refit",
+                "mature_stacked_contextual_value_daily_refit_bandwise",
+            }:
+                raise ValueError("unsupported mature long followup component")
         targets = str(params.get("targets", "winner,top3_pl"))
         if targets not in {"winner", "top3_pl", "winner,top3_pl"}:
             raise ValueError("unsupported targets")
@@ -8051,6 +8077,16 @@ def enqueue_refinement(
         "ev_threshold": float((job.get("parameters") or {}).get("ev_threshold", 1.2)),
         "timeout_seconds": 21600,
     }
+    source_parameters = job.get("parameters") or {}
+    for key in (
+        "mature_long_followup",
+        "mature_long_from_date",
+        "mature_long_through_date",
+        "mature_long_calibration_through",
+        "mature_long_temporal_component",
+    ):
+        if key in source_parameters:
+            params[key] = source_parameters[key]
     return enqueue_job(
         conn,
         task_type="listwise_newton_refine",
@@ -8114,6 +8150,69 @@ def enqueue_refined_market_evaluation(
         },
         priority=int(job["priority"]) + 2,
         max_attempts=2,
+        parent_job_id=source_job_id,
+    )
+
+
+def enqueue_refined_mature_long_evaluation(
+    conn: Any,
+    job: dict[str, Any],
+    *,
+    app_root: Path,
+) -> int | None:
+    """Attach a leakage-safe long mature evaluation to a historical refinement."""
+    if job.get("task_type") != "listwise_newton_refine":
+        return None
+    parameters = job.get("parameters") or {}
+    if not isinstance(parameters, dict) or not parameters.get(
+        "mature_long_followup"
+    ):
+        return None
+    source_job_id = int(job["job_id"])
+    relative_model = (
+        f"data/models/evaluation_queue/job-{source_job_id:08d}.joblib"
+    )
+    model_path = (app_root / relative_model).resolve()
+    model_root = (app_root / "data/models/evaluation_queue").resolve()
+    if model_root not in model_path.parents or not model_path.is_file():
+        raise JobDependencyUnavailable(
+            f"refined model artifact is unavailable: {model_path}"
+        )
+    result_path = model_path.with_suffix(".json")
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        trained_through = payload["trained_through"]
+        trained_date = str(trained_through[1])
+    except (OSError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise JobDependencyUnavailable(
+            f"refined training boundary is unavailable: {result_path}"
+        ) from exc
+    from_date = str(parameters["mature_long_from_date"])
+    through_date = str(parameters["mature_long_through_date"])
+    calibration_through = str(
+        parameters["mature_long_calibration_through"]
+    )
+    temporal_component = str(parameters["mature_long_temporal_component"])
+    if trained_date >= from_date:
+        raise ValueError(
+            "refined model overlaps mature long evaluation: "
+            f"trained_through={trained_date} from_date={from_date}"
+        )
+    return enqueue_job(
+        conn,
+        task_type="archive_market_oracle",
+        model_key=f"{job['model_key']}:mature_long_strict_prior",
+        parameters={
+            "from_date": from_date,
+            "through_date": through_date,
+            "temporal_calibration_through": calibration_through,
+            "temporal_component": temporal_component,
+            "model_input": relative_model,
+            "daily_budget_yen": 10_000,
+            "timeout_seconds": 172_800,
+        },
+        priority=int(job.get("priority") or 50) + 2,
+        max_attempts=3,
         parent_job_id=source_job_id,
     )
 
@@ -8234,6 +8333,42 @@ def reconcile_refined_market_evaluations(
     inserted: list[int] = []
     for row in rows:
         job_id = enqueue_refined_market_evaluation(
+            conn, dict(row), app_root=app_root
+        )
+        if job_id is not None:
+            inserted.append(job_id)
+    return inserted
+
+
+def reconcile_refined_mature_long_evaluations(
+    conn: Any,
+    *,
+    app_root: Path,
+) -> list[int]:
+    """Recover historical-refinement long evaluations after worker reloads."""
+    rows = conn.execute(
+        """
+        SELECT refined.*
+        FROM model_evaluation_jobs AS refined
+        WHERE refined.task_type = 'listwise_newton_refine'
+          AND refined.status = 'completed'
+          AND refined.parameters->>'mature_long_followup' = 'true'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM model_evaluation_jobs AS child
+            WHERE child.parent_job_id = refined.job_id
+              AND child.task_type = 'archive_market_oracle'
+              AND child.model_key = (
+                refined.model_key || ':mature_long_strict_prior'
+              )
+              AND child.status IN ('queued', 'running', 'completed')
+          )
+        ORDER BY refined.completed_at, refined.job_id
+        """
+    ).fetchall()
+    inserted: list[int] = []
+    for row in rows:
+        job_id = enqueue_refined_mature_long_evaluation(
             conn, dict(row), app_root=app_root
         )
         if job_id is not None:
@@ -10119,6 +10254,10 @@ def run_worker(args: argparse.Namespace) -> int:
                         conn,
                         app_root=app_root,
                     )
+                    reconcile_refined_mature_long_evaluations(
+                        conn,
+                        app_root=app_root,
+                    )
                     reconcile_joint_edge_calibrated_replays(
                         conn,
                         app_root=app_root,
@@ -10206,6 +10345,11 @@ def run_worker(args: argparse.Namespace) -> int:
                         app_root=app_root,
                     )
                     enqueue_refined_market_evaluation(
+                        conn,
+                        job,
+                        app_root=app_root,
+                    )
+                    enqueue_refined_mature_long_evaluation(
                         conn,
                         job,
                         app_root=app_root,

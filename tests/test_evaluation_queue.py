@@ -23,10 +23,12 @@ from boatrace_ai.evaluation_queue import (
     defer_job,
     enqueue_job,
     enqueue_joint_edge_calibrated_replay,
+    enqueue_refined_mature_long_evaluation,
     enqueue_refined_market_evaluation,
     ensure_schema,
     fail_job,
     reconcile_joint_edge_calibrated_replays,
+    reconcile_refined_mature_long_evaluations,
     reconcile_refined_market_evaluations,
     prepare_standardized_workspace,
     result_decision,
@@ -3571,6 +3573,11 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         evaluation_queue,
+        "reconcile_refined_mature_long_evaluations",
+        lambda *_a, **_k: events.append("reconcile-refined-mature-long"),
+    )
+    monkeypatch.setattr(
+        evaluation_queue,
         "reconcile_joint_edge_calibrated_replays",
         lambda *_a, **_k: events.append("reconcile-joint-value"),
     )
@@ -3640,6 +3647,9 @@ def test_leader_commits_maintenance_before_claim(monkeypatch, tmp_path) -> None:
     assert events.index("seed-market") < events.index("commit:maintenance")
     assert events.index("reconcile") < events.index("commit:maintenance")
     assert events.index("reconcile-joint-value") < events.index(
+        "commit:maintenance"
+    )
+    assert events.index("reconcile-refined-mature-long") < events.index(
         "commit:maintenance"
     )
     assert events.index("cancel-superseded") < events.index("seed-market")
@@ -4385,6 +4395,229 @@ def test_newton_refinement_enqueues_market_evaluation_from_its_artifact(
         "max_attempts": 2,
         "parent_job_id": 10027,
     }]
+
+
+def test_historical_feature_search_command_accepts_mature_followup(tmp_path) -> None:
+    command, _output = build_command(
+        _job(
+            "listwise_feature_search",
+            {
+                "evaluation_date": "2026-01-21",
+                "mature_long_followup": True,
+                "mature_long_from_date": "2025-07-26",
+                "mature_long_through_date": "2026-08-05",
+                "mature_long_calibration_through": "2026-01-21",
+                "mature_long_temporal_component": (
+                    "mature_stacked_contextual_value_daily_refit"
+                ),
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--as-of-date") + 1] == "2026-01-21"
+
+
+def test_historical_feature_search_rejects_invalid_mature_boundaries(
+    tmp_path,
+) -> None:
+    with pytest.raises(ValueError, match="date boundaries"):
+        build_command(
+            _job(
+                "listwise_feature_search",
+                {
+                    "evaluation_date": "2026-01-21",
+                    "mature_long_followup": True,
+                    "mature_long_from_date": "2026-02-01",
+                    "mature_long_through_date": "2026-08-05",
+                    "mature_long_calibration_through": "2026-01-21",
+                    "mature_long_temporal_component": (
+                        "mature_stacked_contextual_value_daily_refit"
+                    ),
+                },
+            ),
+            app_root=tmp_path,
+            python=tmp_path / "python",
+            db="postgresql://test",
+        )
+
+
+def test_refinement_preserves_historical_mature_followup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return 12834
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+    source_parameters = {
+        "ev_threshold": 1.2,
+        "mature_long_followup": True,
+        "mature_long_from_date": "2025-07-26",
+        "mature_long_through_date": "2026-08-05",
+        "mature_long_calibration_through": "2026-01-21",
+        "mature_long_temporal_component": (
+            "mature_stacked_contextual_value_daily_refit"
+        ),
+    }
+
+    job_id = evaluation_queue.enqueue_refinement(
+        object(),
+        {
+            "job_id": 12833,
+            "task_type": "listwise_feature_search",
+            "model_key": "historical-cutoff",
+            "priority": 89,
+            "parameters": source_parameters,
+        },
+        "refine_selected_candidate",
+        app_root=tmp_path,
+    )
+
+    assert job_id == 12834
+    assert calls[0]["task_type"] == "listwise_newton_refine"
+    for key in (
+        "mature_long_followup",
+        "mature_long_from_date",
+        "mature_long_through_date",
+        "mature_long_calibration_through",
+        "mature_long_temporal_component",
+    ):
+        assert calls[0]["parameters"][key] == source_parameters[key]
+
+
+def test_refined_historical_model_enqueues_mature_long_evaluation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    artifact = tmp_path / "data/models/evaluation_queue/job-00012834.joblib"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"model")
+    artifact.with_suffix(".json").write_text(
+        json.dumps({"trained_through": ["race", "2025-02-04", "01", 1]}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_enqueue(_conn, **kwargs):
+        calls.append(kwargs)
+        return 12835
+
+    monkeypatch.setattr(evaluation_queue, "enqueue_job", fake_enqueue)
+    job = {
+        "job_id": 12834,
+        "task_type": "listwise_newton_refine",
+        "model_key": "historical-cutoff:newton",
+        "priority": 90,
+        "parameters": {
+            "mature_long_followup": True,
+            "mature_long_from_date": "2025-07-26",
+            "mature_long_through_date": "2026-08-05",
+            "mature_long_calibration_through": "2026-01-21",
+            "mature_long_temporal_component": (
+                "mature_stacked_contextual_value_daily_refit"
+            ),
+        },
+    }
+
+    assert enqueue_refined_mature_long_evaluation(
+        object(), job, app_root=tmp_path
+    ) == 12835
+    assert calls == [{
+        "task_type": "archive_market_oracle",
+        "model_key": "historical-cutoff:newton:mature_long_strict_prior",
+        "parameters": {
+            "from_date": "2025-07-26",
+            "through_date": "2026-08-05",
+            "temporal_calibration_through": "2026-01-21",
+            "temporal_component": (
+                "mature_stacked_contextual_value_daily_refit"
+            ),
+            "model_input": (
+                "data/models/evaluation_queue/job-00012834.joblib"
+            ),
+            "daily_budget_yen": 10_000,
+            "timeout_seconds": 172_800,
+        },
+        "priority": 92,
+        "max_attempts": 3,
+        "parent_job_id": 12834,
+    }]
+
+
+def test_refined_historical_model_rejects_training_overlap(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "data/models/evaluation_queue/job-00012834.joblib"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"model")
+    artifact.with_suffix(".json").write_text(
+        json.dumps({"trained_through": ["race", "2025-07-26", "01", 1]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="overlaps mature long evaluation"):
+        enqueue_refined_mature_long_evaluation(
+            object(),
+            {
+                "job_id": 12834,
+                "task_type": "listwise_newton_refine",
+                "model_key": "historical-cutoff:newton",
+                "priority": 90,
+                "parameters": {
+                    "mature_long_followup": True,
+                    "mature_long_from_date": "2025-07-26",
+                    "mature_long_through_date": "2026-08-05",
+                    "mature_long_calibration_through": "2026-01-21",
+                    "mature_long_temporal_component": (
+                        "mature_stacked_contextual_value_daily_refit"
+                    ),
+                },
+            },
+            app_root=tmp_path,
+        )
+
+
+def test_reconcile_recovers_refined_mature_long_evaluation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    completed = {
+        "job_id": 12834,
+        "task_type": "listwise_newton_refine",
+        "model_key": "historical-cutoff:newton",
+        "parameters": {"mature_long_followup": True},
+    }
+
+    class Result:
+        def fetchall(self):
+            return [completed]
+
+    class Connection:
+        def execute(self, sql):
+            assert "NOT EXISTS" in sql
+            assert "mature_long_followup" in sql
+            assert "mature_long_strict_prior" in sql
+            return Result()
+
+    calls = []
+
+    def fake_enqueue(conn, job, *, app_root):
+        calls.append((conn, job, app_root))
+        return 12835
+
+    monkeypatch.setattr(
+        evaluation_queue,
+        "enqueue_refined_mature_long_evaluation",
+        fake_enqueue,
+    )
+    conn = Connection()
+
+    assert reconcile_refined_mature_long_evaluations(
+        conn, app_root=tmp_path
+    ) == [12835]
+    assert calls == [(conn, completed, tmp_path)]
 
 
 def test_joint_bankroll_enqueues_strict_prior_value_calibration(

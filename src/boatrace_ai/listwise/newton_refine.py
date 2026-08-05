@@ -444,6 +444,7 @@ def run(conn, *, args: argparse.Namespace) -> dict[str, Any]:
         "resume_source_sha256": resume_source_sha256,
         "coefficient_optimizer": optimizer,
         "train_races": selection_end,
+        "trained_through": list(race_keys[selection_end - 1]),
         "holdout_races": len(race_keys) - selection_end,
         "evaluation_race_set_sha256": evaluation_hash,
         "adam_history": adam_history,
