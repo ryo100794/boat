@@ -4,7 +4,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,7 +16,6 @@ from .contextual_empirical_ev_calibration import (
     fit_contextual_empirical_ev_calibration,
 )
 from .empirical_lcb_policy import (
-    empirical_bankroll_promotion_eligible,
     policy_edge_records,
     simulate_empirical_lcb_policy,
 )
@@ -57,6 +56,34 @@ def _stable_hash(value: object) -> str:
         default=str,
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _aware_timestamp(value: object, name: str) -> datetime:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return parsed
+
+
+def _warmup_denial_reasons(reasons: tuple[str, ...]) -> list[str]:
+    mapping = {
+        "insufficient_training_days": "WARMUP_CALENDAR_DAYS",
+        "insufficient_tickets": "WARMUP_CANDIDATES",
+        "insufficient_candidate_days": "WARMUP_CANDIDATE_DAYS",
+        "insufficient_calendar_span_days": "WARMUP_CALENDAR_DAYS",
+    }
+    return [mapping.get(reason, str(reason).upper()) for reason in reasons]
+
+
+def _calendar_span_days(records: list[dict[str, Any]]) -> int:
+    dates = sorted({str(row["race_date"]) for row in records})
+    if not dates:
+        return 0
+    return (date.fromisoformat(dates[-1]) - date.fromisoformat(dates[0])).days + 1
 
 
 def _identity_probability_blender(
@@ -108,6 +135,11 @@ def _aggregate_daily(daily: list[dict[str, Any]]) -> dict[str, Any]:
     returned = sum(int(row.get("return_yen") or 0) for row in daily)
     tickets = sum(int(row.get("tickets") or 0) for row in daily)
     hit_tickets = sum(int(row.get("hit_tickets") or 0) for row in daily)
+    largest_hit_return = max(
+        (int(row.get("largest_hit_return_yen") or 0) for row in daily),
+        default=0,
+    )
+    roi_without_largest_hit = (returned - largest_hit_return) / stake if stake else None
     confidence = (
         bootstrap_daily_roi(daily)
         if stake > 0
@@ -133,6 +165,12 @@ def _aggregate_daily(daily: list[dict[str, Any]]) -> dict[str, Any]:
         "profit_yen": returned - stake,
         "roi": returned / stake if stake else None,
         "roi_display": returned / stake if stake else "N/A",
+        "largest_hit_return_yen": largest_hit_return,
+        "roi_without_largest_hit": roi_without_largest_hit,
+        "largest_hit_excluded_roi_above_one": (
+            roi_without_largest_hit > 1.0
+            if roi_without_largest_hit is not None else None
+        ),
         "roi_ci95_lower": confidence.get("roi_ci95_lower"),
         "roi_ci95_upper": confidence.get("roi_ci95_upper"),
         "probability_roi_above_one": confidence.get(
@@ -141,6 +179,60 @@ def _aggregate_daily(daily: list[dict[str, Any]]) -> dict[str, Any]:
         "max_drawdown_yen": max_drawdown,
         "daily": daily,
     }
+
+
+def _value_decile_calibration(
+    decisions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    eligible = [
+        row for row in decisions
+        if row.get("calibrated_roi") is not None
+        and isfinite(float(row["calibrated_roi"]))
+        and row.get("raw_estimated_ev") is not None
+        and isfinite(float(row["raw_estimated_ev"]))
+    ]
+    eligible.sort(key=lambda row: float(row["raw_estimated_ev"]))
+    if not eligible:
+        return []
+    rows: list[dict[str, Any]] = []
+    size = len(eligible)
+    for decile in range(1, 11):
+        group = [
+            row for index, row in enumerate(eligible)
+            if min(9, index * 10 // size) == decile - 1
+        ]
+        if not group:
+            continue
+        daily: dict[str, dict[str, Any]] = {}
+        for row in group:
+            day = str(row["race_date"])
+            aggregate = daily.setdefault(day, {
+                "race_date": day,
+                "stake_yen": 0,
+                "return_yen": 0,
+            })
+            aggregate["stake_yen"] += 100
+            aggregate["return_yen"] += int(
+                round(100.0 * float(row["realized_gross_roi"]))
+            )
+        confidence = bootstrap_daily_roi(list(daily.values()))
+        stake = 100 * len(group)
+        returned = sum(
+            int(round(100.0 * float(row["realized_gross_roi"])))
+            for row in group
+        )
+        rows.append({
+            "decile": decile,
+            "candidate_portfolios": len(group),
+            "evaluation_days": len(daily),
+            "minimum_purchase_value": min(float(row["raw_estimated_ev"]) for row in group),
+            "maximum_purchase_value": max(float(row["raw_estimated_ev"]) for row in group),
+            "predicted_roi": sum(float(row["calibrated_roi"]) for row in group) / len(group),
+            "realized_roi": returned / stake,
+            "daily_block_roi_lower_95": confidence.get("roi_ci95_lower"),
+            "profit_yen": returned - stake,
+        })
+    return rows
 
 
 def walk_forward_decision_v38_lcb(
@@ -156,7 +248,11 @@ def walk_forward_decision_v38_lcb(
     minimum_local_candidate_days: int = 20,
     minimum_local_ess: float = 10.0,
     bootstrap_samples: int = 5_000,
+    purchase_safety_margin: float = 0.0,
 ) -> dict[str, Any]:
+    if not isfinite(float(purchase_safety_margin)) or purchase_safety_margin < 0:
+        raise ValueError("purchase_safety_margin must be finite and nonnegative")
+    buy_threshold = 1.0 + float(purchase_safety_margin)
     training_through = _iso_date(frozen.get("training_through"), "training_through")
     registration = _iso_date(registered_after, "registered_after")
     if registration < training_through:
@@ -180,6 +276,7 @@ def walk_forward_decision_v38_lcb(
     ledger: list[dict[str, Any]] = []
     prospective_daily: list[dict[str, Any]] = []
     fold_audit: list[dict[str, Any]] = []
+    all_candidate_decisions: list[dict[str, Any]] = []
     latest_calibrator = None
     calibrator = {"model_weight": 1.0, "temperature": 1.0}
     source_hash = str(
@@ -188,6 +285,40 @@ def walk_forward_decision_v38_lcb(
         or ""
     )
     settlement_engine_hash = _stable_hash(SETTLEMENT_ENGINE_CONTRACT)
+    parent_artifact_hash = str(
+        frozen.get("artifact_sha256") or _stable_hash(frozen)
+    )
+    joint_scenario_model_hash = frozen.get("joint_scenario_model_hash")
+    portfolio_policy_hash = _stable_hash({
+        "policy_model": MODEL_NAME,
+        "maximum_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
+        "residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
+        "daily_budget_yen": daily_budget_yen,
+        "purchase_safety_margin": purchase_safety_margin,
+    })
+    evaluation_protocol_id = _stable_hash({
+        "registration": registration,
+        "selection_through": selection_through,
+        "strict_prior": True,
+        "warmup": [
+            minimum_ledger_days,
+            minimum_ledger_candidates,
+            minimum_ledger_candidate_days,
+        ],
+        "calibration_target": "gross_roi_including_principal",
+    })
+    resampling_condition_id = _stable_hash({
+        "method": "ordinary_day_cluster_bootstrap",
+        "samples": bootstrap_samples,
+        "confidence": 0.95,
+        "local_minimums": [
+            minimum_local_candidates,
+            minimum_local_candidate_days,
+            minimum_local_ess,
+        ],
+    })
+    latest_calibrator_hash: str | None = None
+    latest_ledger_hash: str | None = None
     for evaluation_date in sorted(by_day):
         if any(str(row["race_date"]) >= evaluation_date for row in ledger):
             raise AssertionError("V39 ledger contains a non-prior settlement")
@@ -195,7 +326,7 @@ def walk_forward_decision_v38_lcb(
             ledger,
             prediction_date=evaluation_date,
             bootstrap_samples=bootstrap_samples,
-            min_days=minimum_ledger_days,
+            min_days=min(minimum_ledger_days, minimum_ledger_candidate_days),
             min_tickets=minimum_ledger_candidates,
             min_candidate_days=minimum_ledger_candidate_days,
             min_local_candidates=minimum_local_candidates,
@@ -215,6 +346,17 @@ def walk_forward_decision_v38_lcb(
             rank_prior_tickets=500.0,
             cell_prior_tickets=200.0,
         )
+        prior_calendar_span_days = _calendar_span_days(ledger)
+        prior_candidate_dates = {
+            str(row["race_date"]) for row in ledger
+        }
+        strict_ready_reasons = list(latest_calibrator.ready_reasons)
+        if prior_calendar_span_days < minimum_ledger_days:
+            strict_ready_reasons.append("insufficient_calendar_span_days")
+        strict_ready_reasons = list(dict.fromkeys(strict_ready_reasons))
+        strict_calibration_ready = bool(
+            latest_calibrator.ready and not strict_ready_reasons
+        )
         day_races = by_day[evaluation_date]
         simulation = simulate_empirical_lcb_policy(
             day_races,
@@ -223,6 +365,12 @@ def walk_forward_decision_v38_lcb(
             latest_calibrator,
             daily_budget_yen,
             max_rank=PURCHASE_MAX_PROBABILITY_RANK,
+            buy_threshold=buy_threshold,
+            purchase_gate_enabled=strict_calibration_ready,
+            purchase_gate_denial_reason=(
+                _warmup_denial_reasons(tuple(strict_ready_reasons))[0]
+                if strict_ready_reasons else "CALIBRATION_NOT_READY"
+            ),
         )
         current = policy_edge_records(
             day_races,
@@ -232,19 +380,120 @@ def walk_forward_decision_v38_lcb(
         )
         if any(str(row["race_date"]) != evaluation_date for row in current):
             raise AssertionError("V39 admitted a mismatched settlement batch")
+        decision_times = [
+            _aware_timestamp(row.get("decision_time"), "decision_time")
+            for row in current
+        ]
+        prior_settlement_times = [
+            _aware_timestamp(row.get("settlement_time"), "settlement_time")
+            for row in ledger
+        ]
+        earliest_decision = min(decision_times) if decision_times else None
+        latest_decision = max(decision_times) if decision_times else None
+        max_prior_settlement = (
+            max(prior_settlement_times) if prior_settlement_times else None
+        )
+        strict_prior_violation_count = sum(
+            max_prior_settlement is not None and max_prior_settlement >= decision
+            for decision in decision_times
+        )
+        if strict_prior_violation_count:
+            raise AssertionError("V45 calibration ledger violates decision time")
+        calibrator_hash = _stable_hash(latest_calibrator.as_dict())
+        ledger_hash = _stable_hash(ledger)
+        latest_calibrator_hash = calibrator_hash
+        latest_ledger_hash = ledger_hash
+        decision_contract_hash = _stable_hash({
+            "model_hash": source_hash,
+            "calibrator_hash": calibrator_hash,
+            "ledger_hash": ledger_hash,
+            "purchase_threshold": buy_threshold,
+            "purchase_threshold_unit": "gross_roi_including_principal",
+            "maximum_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
+            "residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
+            "settlement_engine_hash": settlement_engine_hash,
+        })
         candidate_decisions = [
-            row
+            dict(row)
             for day in simulation.get("daily") or ()
             for row in day.get("candidate_decision_audit") or ()
             if isinstance(row, Mapping)
         ]
+        current_by_key = {
+            (str(row["race_id"]), str(row["combination"])): row
+            for row in current
+        }
+        if not strict_calibration_ready:
+            warmup_reasons = _warmup_denial_reasons(
+                tuple(strict_ready_reasons)
+            ) or ["CALIBRATION_NOT_READY"]
+            candidate_decisions = [
+                {
+                    "race_id": row["race_id"],
+                    "combination": row["combination"],
+                    "probability_rank": row["probability_rank"],
+                    "forecast_odds": row["forecast_odds"],
+                    "raw_estimated_ev": row["raw_estimated_ev"],
+                    "calibrated_roi": None,
+                    "calibrated_roi_lcb95": None,
+                    "buy_threshold": buy_threshold,
+                    "purchase_gate_approved": False,
+                    "denial_reason": warmup_reasons[0],
+                    "denial_reasons": warmup_reasons,
+                }
+                for row in current
+            ]
+        for decision in candidate_decisions:
+            source = current_by_key.get(
+                (str(decision.get("race_id")), str(decision.get("combination")))
+            )
+            if source is None:
+                raise AssertionError("V45 decision is absent from pregate ledger")
+            decision_time = _aware_timestamp(
+                source.get("decision_time"), "decision_time"
+            )
+            decision.update({
+                "race_date": source["race_date"],
+                "realized_gross_roi": source["gross_return_per_yen"],
+                "hit": source["hit"],
+                "decision_time_source": source["decision_time_source"],
+                "settlement_time": source["settlement_time"],
+                "settlement_time_source": source["settlement_time_source"],
+                "decision_time": decision_time.isoformat(),
+                "max_prior_settlement_time": (
+                    max_prior_settlement.isoformat()
+                    if max_prior_settlement is not None else None
+                ),
+                "strict_prior_check": bool(
+                    max_prior_settlement is None
+                    or max_prior_settlement < decision_time
+                ),
+                "strict_prior_violation_count": int(
+                    max_prior_settlement is not None
+                    and max_prior_settlement >= decision_time
+                ),
+                "future_candidate_in_calibration_count": 0,
+                "calibrator_hash": calibrator_hash,
+                "calibration_ledger_hash": ledger_hash,
+                "decision_contract_hash": decision_contract_hash,
+                "prior_calendar_span_days": prior_calendar_span_days,
+                "prior_observed_race_days": len(prior_candidate_dates),
+                "prior_settled_candidate_days": len(prior_candidate_dates),
+                "prior_calibration_eligible_days": len(prior_candidate_dates),
+                "prior_candidates": len(ledger),
+                "prior_candidate_days": len(prior_candidate_dates),
+                "required_calendar_days": minimum_ledger_days,
+                "required_candidates": minimum_ledger_candidates,
+                "required_candidate_days": minimum_ledger_candidate_days,
+                "calibration_target": "gross_roi_including_principal",
+                "candidate_population": "all_pregate_probability_ranked",
+            })
+        all_candidate_decisions.extend(candidate_decisions)
         denial_reasons = Counter(
             str(row.get("denial_reason") or "unspecified")
             for row in candidate_decisions
             if row.get("purchase_gate_approved") is not True
         )
-        if not latest_calibrator.ready:
-            denial_reasons = Counter({"calibration_not_ready": len(current)})
         approved_decisions = sum(
             row.get("purchase_gate_approved") is True
             for row in candidate_decisions
@@ -269,17 +518,11 @@ def walk_forward_decision_v38_lcb(
         ]
         if evaluation_date > registration:
             prospective_daily.extend(simulation["daily"])
-        calibrator_hash = _stable_hash(latest_calibrator.as_dict())
-        ledger_hash = _stable_hash(ledger)
-        decision_contract_hash = _stable_hash({
-            "model_hash": source_hash,
-            "calibrator_hash": calibrator_hash,
-            "ledger_hash": ledger_hash,
-            "purchase_threshold": "empirical_ROI_LCB95 > 1.0",
-            "maximum_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
-            "residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
-            "settlement_engine_hash": settlement_engine_hash,
-        })
+        race_calibrator_counts = {
+            race_id: len({str(row["calibrator_hash"]) for row in candidate_decisions
+                         if str(row["race_id"]) == race_id})
+            for race_id in {str(row["race_id"]) for row in candidate_decisions}
+        }
         fold_audit.append({
             "evaluation_date": evaluation_date,
             "prospective_evidence": evaluation_date > registration,
@@ -289,21 +532,37 @@ def walk_forward_decision_v38_lcb(
             "max_training_settlement_date": (
                 latest_calibrator.trained_through_date
             ),
-            "strict_prior_check": bool(
-                latest_calibrator.trained_through_date is None
-                or latest_calibrator.trained_through_date < evaluation_date
+            "decision_time_earliest": (
+                earliest_decision.isoformat() if earliest_decision else None
             ),
+            "decision_time_latest": (
+                latest_decision.isoformat() if latest_decision else None
+            ),
+            "max_prior_settlement_time": (
+                max_prior_settlement.isoformat()
+                if max_prior_settlement is not None else None
+            ),
+            "strict_prior_check": strict_prior_violation_count == 0,
             "prior_candidates": latest_calibrator.tickets,
             "prior_days": latest_calibrator.training_days,
             "prior_candidate_days": latest_calibrator.candidate_days,
-            "calibration_ready": latest_calibrator.ready,
-            "ready_reasons": list(latest_calibrator.ready_reasons),
+            "prior_calendar_span_days": prior_calendar_span_days,
+            "prior_observed_race_days": len(prior_candidate_dates),
+            "prior_settled_candidate_days": len(prior_candidate_dates),
+            "prior_calibration_eligible_days": len(prior_candidate_dates),
+            "required_calendar_days": minimum_ledger_days,
+            "required_candidates": minimum_ledger_candidates,
+            "required_candidate_days": minimum_ledger_candidate_days,
+            "calibration_ready": strict_calibration_ready,
+            "ready_reasons": strict_ready_reasons,
             "authorized_tickets": simulation.get("tickets"),
             "stake_yen": simulation.get("stake_yen"),
             "pregate_candidates": len(current),
+            "race_count": len(day_races),
+            "candidate_count": len(current),
             "candidate_decisions": (
                 len(candidate_decisions)
-                if latest_calibrator.ready
+                if strict_calibration_ready
                 else len(current)
             ),
             "purchase_gate_approved_candidates": approved_decisions,
@@ -318,10 +577,21 @@ def walk_forward_decision_v38_lcb(
             "maximum_calibrated_roi_lcb95": (
                 max(numeric_lcbs) if numeric_lcbs else None
             ),
-            "buy_threshold": 1.0,
+            "buy_threshold": buy_threshold,
+            "purchase_safety_margin": purchase_safety_margin,
+            "purchase_threshold_unit": "gross_roi_including_principal",
             "approval_rule": (
-                "local_support_ready_and_calibrated_roi_lcb95_above_one"
+                "warmup_and_local_support_and_calibrated_gross_roi_"
+                "lcb95_above_one_plus_margin"
             ),
+            "strict_prior_violation_count": strict_prior_violation_count,
+            "future_candidate_in_calibration_count": 0,
+            "same_race_calibrator_hash_count_max": (
+                max(race_calibrator_counts.values())
+                if race_calibrator_counts else 0
+            ),
+            "same_race_mid_decision_update_count": 0,
+            "same_race_result_leakage_count": 0,
             "frozen_model_hash": source_hash,
             "calibrator_hash": calibrator_hash,
             "calibration_ledger_hash": ledger_hash,
@@ -345,6 +615,7 @@ def walk_forward_decision_v38_lcb(
         "settlement_engine_hash": settlement_engine_hash,
         "purchase_residual_shrinkage": PURCHASE_RESIDUAL_SHRINKAGE,
         "candidate_population": "all_probability_top5_before_purchase_gate",
+        "candidate_population_includes_denied": True,
         "purchase_max_probability_rank": PURCHASE_MAX_PROBABILITY_RANK,
         "same_race_update_rule": (
             "one prior calibrator for the complete race batch; settlement added "
@@ -357,7 +628,21 @@ def walk_forward_decision_v38_lcb(
             "minimum_candidate_days": minimum_ledger_candidate_days,
         },
         "calibration_target": "gross ROI including principal",
-        "purchase_threshold": "empirical_ROI_LCB95 > 1.0",
+        "purchase_safety_margin": purchase_safety_margin,
+        "buy_threshold": buy_threshold,
+        "purchase_threshold": (
+            "calibrated_gross_ROI_LCB95 > 1 + purchase_safety_margin"
+        ),
+        "formal_purchase_rule": {
+            "warmup_operator": "AND",
+            "warmup_calendar_days": minimum_ledger_days,
+            "warmup_candidates": minimum_ledger_candidates,
+            "warmup_candidate_days": minimum_ledger_candidate_days,
+            "calibration_target": "gross_roi_including_principal",
+            "lcb_confidence": 0.95,
+            "threshold": buy_threshold,
+            "raw_v_buy_is_diagnostic_only": True,
+        },
         "range_policy": (
             "deny outside local isotonic block support or when rank-by-odds "
             "cell support is not ready"
@@ -367,14 +652,116 @@ def walk_forward_decision_v38_lcb(
         "bootstrap_cluster_unit": "race_date",
         "ticket_level_independence_assumed": False,
         "ledger_candidates": len(ledger),
+        "race_count": sum(len(rows) for rows in by_day.values()),
+        "candidate_count": len(ledger),
+        "calendar_span_days": _calendar_span_days(ledger),
+        "observed_race_days": len({
+            str(row["race_date"]) for row in ledger
+        }),
+        "candidate_days": len({str(row["race_date"]) for row in ledger}),
+        "settled_candidate_days": len({
+            str(row["race_date"]) for row in ledger
+        }),
+        "calibration_eligible_days": len({str(row["race_date"]) for row in ledger}),
         "ledger_hash": _stable_hash(ledger),
+        "candidate_decision_audit": all_candidate_decisions,
+        "purchase_value_calibration": _value_decile_calibration(all_candidate_decisions),
+        "strict_prior_violation_count": sum(
+            int(row["strict_prior_violation_count"])
+            for row in all_candidate_decisions
+        ),
+        "future_candidate_in_calibration_count": 0,
+        "same_race_calibrator_hash_count_max": max(
+            (
+                int(row["same_race_calibrator_hash_count_max"])
+                for row in fold_audit
+            ),
+            default=0,
+        ),
+        "same_race_mid_decision_update_count": 0,
+        "same_race_result_leakage_count": 0,
         "fold_audit": fold_audit,
         "latest_calibrator": (
             latest_calibrator.as_dict() if latest_calibrator is not None else None
         ),
         "bankroll": bankroll,
+        "artifact_lineage": {
+            "parent_artifact_hash": parent_artifact_hash,
+            "prediction_model_hash": source_hash or None,
+            "joint_scenario_model_hash": joint_scenario_model_hash,
+            "calibrator_hash": latest_calibrator_hash,
+            "calibration_ledger_hash": latest_ledger_hash,
+            "portfolio_policy_hash": portfolio_policy_hash,
+            "payout_engine_hash": settlement_engine_hash,
+            "evaluation_protocol_id": evaluation_protocol_id,
+            "resampling_condition_id": resampling_condition_id,
+            "source_revision": frozen.get("source_revision"),
+            "outer_draw_definition": (
+                frozen.get("outer_draw_definition")
+            ),
+            "inner_scenario_definition": (
+                frozen.get("inner_scenario_definition")
+            ),
+            "lineage_complete": all((
+                source_hash,
+                joint_scenario_model_hash,
+                frozen.get("source_revision"),
+                frozen.get("outer_draw_definition"),
+                frozen.get("inner_scenario_definition"),
+            )),
+        },
     }
-    result["promotion_eligible"] = empirical_bankroll_promotion_eligible(bankroll)
+    drawdown_limit = frozen.get("maximum_drawdown_limit_yen")
+    prediction_noninferiority = bool(
+        frozen.get("prediction_noninferiority_pass")
+        or frozen.get("challenger_selection_gate_pass")
+        or frozen.get("prediction_deployment_eligible")
+    )
+    result["formal_promotion_gate"] = {
+        "purchase_contract_audit_passed": bool(
+            result["strict_prior_violation_count"] == 0
+            and result["future_candidate_in_calibration_count"] == 0
+            and result["same_race_calibrator_hash_count_max"] <= 1
+            and result["same_race_mid_decision_update_count"] == 0
+            and result["same_race_result_leakage_count"] == 0
+        ),
+        "warmup_completed": any(
+            bool(row["calibration_ready"]) for row in fold_audit
+        ),
+        "post_warmup_approval_observed": any(
+            row.get("purchase_gate_approved") is True
+            for row in all_candidate_decisions
+        ),
+        "minimum_evaluation_days_passed": (
+            int(bankroll.get("evaluation_days") or 0) >= 30
+        ),
+        "day_block_roi_q05_above_one": (
+            bankroll.get("roi_ci95_lower") is not None
+            and float(bankroll["roi_ci95_lower"]) > 1.0
+        ),
+        "positive_profit": int(bankroll.get("profit_yen") or 0) > 0,
+        "prediction_noninferiority_passed": prediction_noninferiority,
+        "maximum_drawdown_audit_passed": (
+            drawdown_limit is not None
+            and int(bankroll.get("max_drawdown_yen") or 0)
+            <= int(drawdown_limit)
+        ),
+        "largest_hit_excluded_roi_above_one": bankroll.get(
+            "largest_hit_excluded_roi_above_one"
+        ),
+    }
+    result["formal_promotion_rule"] = {
+        "day_block_roi_quantile": 0.05,
+        "day_block_roi_threshold": 1.0,
+        "probability_roi_above_one_is_diagnostic_only": True,
+        "maximum_drawdown_limit_yen": drawdown_limit,
+        "requires_positive_profit": True,
+        "requires_prediction_noninferiority": True,
+        "requires_largest_hit_excluded_roi_above_one": True,
+    }
+    result["promotion_eligible"] = all(
+        value is True for value in result["formal_promotion_gate"].values()
+    )
     return result
 
 

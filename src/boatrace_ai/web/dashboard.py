@@ -823,7 +823,7 @@ def make_handler(db_path: Path, backtest_path: Path | None):
             query = parse_qs(parsed.query)
             try:
                 if parsed.path == "/":
-                    send_html(self, HTML)
+                    send_html(self, dashboard_operational_html(db_path))
                 elif parsed.path == "/api/summary":
                     send_json(self, summary_cached(db_path))
                 elif parsed.path == "/api/venues":
@@ -868,7 +868,7 @@ def make_handler(db_path: Path, backtest_path: Path | None):
                 elif parsed.path == "/api/reports/genetic-evolution":
                     send_json(self, genetic_evolution_report(db_path))
                 elif parsed.path == "/reports/roadmap":
-                    send_html(self, ROADMAP_REPORT_HTML)
+                    send_html(self, roadmap_operational_html(db_path))
                 elif parsed.path == "/api/reports/roadmap-status":
                     send_json(self, roadmap_status(db_path, query))
                 elif parsed.path == "/api/reports/roadmap-milestones":
@@ -1660,7 +1660,9 @@ def _model_performance_report_contract(
             "損失は艇Entry LLと3連単LLを区別する",
             "投資0円はROI 0ではなく購入なしと表示する",
             "正式T-5評価は事前登録日以降の完全日だけを集計する",
-            "結合購入価値は単票でなく固定賭け金ベクトル全体のV_buyを使う",
+            "raw V_buyは診断入力に限定し購入許可へ直接接続しない",
+            "購入許可は30暦日・300全候補・20候補日のAND成立後に厳密過去isotonic gross ROI LCB95だけで判定する",
+            "同一レース全候補は同じ事前校正器を使い決済後に全候補を一括登録する",
             "正式ROIゲートはQ0.05(ROI)>1だけとしP(ROI>1)は補助表示に限定する",
             "封印検証・模擬運用・少額固定運用の証拠を別系列で表示する",
         ],
@@ -1683,8 +1685,8 @@ def _model_performance_report_contract(
                 "id": "purchase_policy",
                 "label": "購入・資金配分",
                 "teacher": "払戻と資金制約下の実現損益",
-                "metrics": ["V_buy", "ROI", "損益", "最大DD", "ROI片側95%下限"],
-                "gate": "V_buyが安全余裕を超え、未使用日でQ0.05(ROI)>1",
+                "metrics": ["raw V_buy診断", "V_buy", "校正gross ROI", "ROI片側95%下限", "LCB95", "損益", "最大DD"],
+                "gate": "strict-priorウォームアップAND成立後、校正gross ROI LCB95>1+m。長期未使用日でQ0.05(ROI)>1",
             },
             {
                 "id": "promotion",
@@ -1708,7 +1710,9 @@ def _model_performance_report_contract(
             "roi": "払戻総額を投資総額で割った値。購入なしは未評価",
             "roi_ci95_lower": "日単位再標本化によるROI片側95%下限",
             "joint_purchase_value": "外側パラメータ標本ごとのポートフォリオ下側期待値についての経験5%分位",
-            "joint_purchase_safety_margin": "購入価値が超える必要がある事前固定の安全余裕",
+            "joint_purchase_safety_margin": "strict-prior校正gross ROIのLCB95が1に加えて超える必要がある事前固定の安全余裕",
+            "strict_prior_purchase_gate": "30暦日・300全候補・20候補日のAND成立後、決済時刻が判断時刻より厳密に前の全候補台帳だけでisotonic校正し、gross ROI LCB95>1+mのときだけ許可",
+            "raw_v_buy": "候補順位付けと校正器入力に使う診断値。正式購入条件または昇格条件には直接使用しない",
             "formal_roi_gate": "inverted_cdf経験分位でQ0.05(ROI)>1。P(ROI>1)は補助診断",
             "evaluation_protocol_id": "モデル・入力データ・評価時点t・場・賭式・人気帯・購入規則・決済・再標本化を固定するSHA-256識別子",
             "evaluation_time_t": "各レースで購入判断を実行した時刻。decision_at、履歴評価では事前固定したodds_deadline_at",
@@ -9480,7 +9484,7 @@ def model_performance_audit_snapshot(
         '<div class="group-heading"><h2>結合価値監査・サーバ実測値</h2>'
         '<span class="scope-note">JavaScript不要・公開HTMLに埋込</span></div>'
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
-        '<thead><tr><th>Job / モデル</th><th>母数</th><th>V_buy &gt; m</th>'
+        '<thead><tr><th>Job / モデル</th><th>母数</th><th>raw V_buy診断 / strict-prior校正購入</th>'
         '<th>ROI / 日LCB</th><th>結合期待倍率 E[πD] / 独立近似倍率 E[π]E[D] / 確率・倍率共分散 Cov(π,D) / 独立近似バイアス</th>'
         '<th>探索R / 検証R / 内側S・ESS</th><th>共同経路・portfolio</th><th>決済</th>'
         '<th>最良候補反実仮想</th><th>感度LCB</th><th>評価プロトコルID / t / snapshot age</th>' +
@@ -9498,6 +9502,137 @@ def model_performance_html(db_path: Path) -> str:
     )
     anchor = '  <section id="purposeSection"'
     return MODEL_REPORT_HTML.replace(anchor, section + "\n" + anchor, 1)
+
+
+def _server_operational_audit_section(
+    db_path: Path,
+    *,
+    include_management: bool,
+) -> str:
+    queue_status = queue_model_roadmap_status(db_path, connector=connect)
+    audit = archive_oracle_audit_status(queue_status)
+    selected = (
+        queue_status.get("running_archive_oracle")
+        or queue_status.get("queued_archive_oracle")
+        or queue_status.get("latest_completed_archive_oracle")
+        or {}
+    )
+    metrics = selected.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    fields = [
+        ("queue_snapshot_id", audit.get("audit_snapshot_id")),
+        ("generated_at", now_jst().isoformat(timespec="seconds")),
+        ("source_revision", metrics.get("source_revision")),
+        ("target_job_id", selected.get("job_id")),
+        (
+            "active_prediction_model_id",
+            metrics.get("frozen_probability_model")
+            or metrics.get("prediction_model_id"),
+        ),
+        (
+            "active_joint_value_model_id",
+            metrics.get("joint_scenario_model_hash")
+            or metrics.get("nested_value_model"),
+        ),
+        ("active_calibrator_id", metrics.get("calibrator_hash")),
+        (
+            "active_calibration_ledger_hash",
+            metrics.get("calibration_ledger_hash")
+            or metrics.get("ledger_hash"),
+        ),
+        (
+            "active_purchase_gate_version",
+            metrics.get("model")
+            or metrics.get("active_purchase_gate_version"),
+        ),
+        (
+            "active_payout_engine_version",
+            metrics.get("settlement_engine_hash")
+            or metrics.get("payout_engine_hash"),
+        ),
+        (
+            "decision_reason",
+            metrics.get("decision_reason")
+            or selected.get("decision"),
+        ),
+    ]
+    rendered_fields = "".join(
+        "<tr><th>" + html.escape(name) + "</th><td class=\"mono\">"
+        + html.escape(str(value if value not in (None, "") else "未記録"))
+        + "</td></tr>"
+        for name, value in fields
+    )
+    job_rows = []
+    for label, key in (
+        ("実行中", "running_archive_oracle"),
+        ("待機中", "queued_archive_oracle"),
+        ("最新確定", "latest_completed_archive_oracle"),
+    ):
+        job = queue_status.get(key)
+        if not isinstance(job, dict):
+            continue
+        job_rows.append(
+            "<tr><td>" + label + "</td><td>"
+            + html.escape(str(job.get("job_id") or "-")) + "</td><td>"
+            + html.escape(str(job.get("model_key") or "-")) + "</td><td>"
+            + html.escape(str(job.get("status") or "-")) + "</td><td>"
+            + html.escape(str(job.get("decision") or "-")) + "</td></tr>"
+        )
+    management = ""
+    if include_management:
+        tickets = _roadmap_work_tickets(db_path)
+        milestone_payload = roadmap_milestones_status(db_path, {})
+        milestones = milestone_payload.get("milestones") or []
+        ticket_rows = "".join(
+            "<tr><td>" + html.escape(str(row.get("ticket_key") or "-"))
+            + "</td><td>" + html.escape(str(row.get("status") or "-"))
+            + "</td><td>" + html.escape(str(row.get("progress") or 0))
+            + "%</td><td>" + html.escape(str(row.get("acceptance_criteria") or "-"))
+            + "</td></tr>"
+            for row in tickets
+        ) or '<tr><td colspan="4">DBチケットなし</td></tr>'
+        milestone_rows = "".join(
+            "<tr><td>" + html.escape(str(row.get("id") or "-"))
+            + "</td><td>" + html.escape(str(row.get("status") or "-"))
+            + "</td><td>" + html.escape(str(row.get("progress") or 0))
+            + "%</td><td>" + html.escape(str(row.get("next") or "-"))
+            + "</td></tr>"
+            for row in milestones
+        ) or '<tr><td colspan="4">マイルストーンなし</td></tr>'
+        management = (
+            '<h3>DB作業チケット・サーバ描画</h3><table><thead><tr>'
+            '<th>ID</th><th>状態</th><th>進捗</th><th>受入条件</th>'
+            '</tr></thead><tbody>' + ticket_rows + '</tbody></table>'
+            '<h3>マイルストーン・サーバ描画</h3><table><thead><tr>'
+            '<th>ID</th><th>状態</th><th>進捗</th><th>次作業</th>'
+            '</tr></thead><tbody>' + milestone_rows + '</tbody></table>'
+        )
+    return (
+        '<section id="serverOperationalAudit" class="panel">'
+        '<h2>3画面共通・サーバ監査証跡</h2><p>'
+        + html.escape(str(audit.get("status") or "不明")) + " / "
+        + html.escape(str(audit.get("reason") or "")) + " / 本番昇格 "
+        + html.escape(str(audit.get("promotion_status") or "未承認"))
+        + '</p><table><tbody>' + rendered_fields + '</tbody></table>'
+        '<h3>評価キュー正本</h3><table><thead><tr><th>区分</th><th>Job</th>'
+        '<th>モデル</th><th>状態</th><th>判定</th></tr></thead><tbody>'
+        + ("".join(job_rows) or '<tr><td colspan="5">評価ジョブなし</td></tr>')
+        + '</tbody></table>' + management + '</section>'
+    )
+
+
+def dashboard_operational_html(db_path: Path) -> str:
+    section = _server_operational_audit_section(
+        db_path, include_management=False
+    )
+    return HTML.replace('<div class="bankroll-band">', section + '<div class="bankroll-band">', 1)
+
+
+def roadmap_operational_html(db_path: Path) -> str:
+    section = _server_operational_audit_section(
+        db_path, include_management=True
+    )
+    return ROADMAP_REPORT_HTML.replace("<main>", "<main>" + section, 1)
 
 
 MODEL_REPORT_HTML = _load_template("model_report.html")

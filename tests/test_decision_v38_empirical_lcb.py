@@ -101,7 +101,7 @@ def test_v39_ledger_is_strictly_after_model_and_before_each_fold(
     assert result["fold_audit"][0]["stake_yen"] == 0
     assert result["fold_audit"][0]["candidate_decisions"] == 2
     assert result["fold_audit"][0]["denial_reason_counts"] == {
-        "calibration_not_ready": 2
+        "WARMUP_CALENDAR_DAYS": 2
     }
     assert result["fold_audit"][0]["buy_threshold"] == 1.0
     assert result["candidate_population"] == (
@@ -109,6 +109,20 @@ def test_v39_ledger_is_strictly_after_model_and_before_each_fold(
     )
     assert result["ticket_level_independence_assumed"] is False
     assert result["real_betting_enabled"] is False
+    assert result["strict_prior_violation_count"] == 0
+    assert result["same_race_calibrator_hash_count_max"] == 1
+    first_decision = result["candidate_decision_audit"][0]
+    assert first_decision["decision_time"].endswith("+09:00")
+    assert first_decision["max_prior_settlement_time"] is None
+    assert first_decision["candidate_population"] == (
+        "all_pregate_probability_ranked"
+    )
+    assert first_decision["required_calendar_days"] == 2
+    assert result["formal_purchase_rule"]["raw_v_buy_is_diagnostic_only"] is True
+    assert result["formal_promotion_rule"][
+        "probability_roi_above_one_is_diagnostic_only"
+    ] is True
+    assert result["formal_promotion_gate"]["positive_profit"] is False
 
 
 def test_v39_zero_stake_roi_is_na_not_zero(monkeypatch) -> None:
@@ -134,6 +148,45 @@ def test_v39_zero_stake_roi_is_na_not_zero(monkeypatch) -> None:
     assert result["bankroll"]["roi"] is None
     assert result["bankroll"]["roi_display"] == "N/A"
     assert result["promotion_eligible"] is False
+
+
+def test_v45_calendar_warmup_is_separate_from_candidate_days(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        subject,
+        "nonlinear_residual_probabilities",
+        lambda race, _artifact, *, shrinkage: dict(
+            race["market_probabilities"]
+        ),
+    )
+    races = [
+        _race(date(2026, 1, 2), 1),
+        _race(date(2026, 1, 3), 2),
+        _race(date(2026, 1, 4), 3),
+    ]
+    result = subject.walk_forward_decision_v38_lcb(
+        races,
+        _frozen(),
+        registered_after="2026-01-01",
+        minimum_ledger_days=30,
+        minimum_ledger_candidates=2,
+        minimum_ledger_candidate_days=2,
+        minimum_local_candidates=1,
+        minimum_local_candidate_days=1,
+        minimum_local_ess=1.0,
+        bootstrap_samples=100,
+    )
+
+    latest = result["fold_audit"][-1]
+    assert latest["prior_candidate_days"] == 2
+    assert latest["prior_calendar_span_days"] == 2
+    assert latest["calibration_ready"] is False
+    assert "insufficient_calendar_span_days" in latest["ready_reasons"]
+    assert latest["authorized_tickets"] == 0
+    assert latest["denial_reason_counts"] == {
+        "WARMUP_CALENDAR_DAYS": 2
+    }
 
 
 def test_v39_refuses_registration_before_frozen_training() -> None:

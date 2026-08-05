@@ -280,6 +280,28 @@ def test_replay_uses_only_strictly_prior_days_for_purchase_gate(
     assert profitable["formal_purchase_value"]["value_unit"] == (
         "net_expected_edge_equals_gross_return_minus_one"
     )
+    assert profitable["strict_prior_violation_count"] == 0
+    assert profitable["future_candidate_in_calibration_count"] == 0
+    assert profitable["same_race_calibrator_hash_count_max"] == 1
+    assert profitable["same_race_mid_decision_update_count"] == 0
+    assert profitable["same_race_result_leakage_count"] == 0
+    assert profitable["candidate_decision_count"] == 4
+    assert profitable["candidate_approval_examples"]
+    assert profitable["candidate_denial_examples"]
+    assert profitable["calendar_span_days"] == 4
+    assert profitable["observed_race_days"] == 4
+    assert profitable["candidate_days"] == 4
+    assert profitable["candidate_count"] == 4
+    lineage = profitable["artifact_lineage"]
+    assert len(lineage["parent_artifact_hash"]) == 64
+    assert len(lineage["prediction_model_hash"]) == 64
+    assert len(lineage["payout_engine_hash"]) == 64
+    assert lineage["outer_draw_definition"] == {
+        "search_outer_draws": 20,
+        "validation_outer_draws": 100,
+        "draw_sets_disjoint": True,
+    }
+    assert lineage["lineage_complete"] is False
     assert "minimum_30_calibration_ready_days" in (
         profitable["promotion_gate_failed"]
     )

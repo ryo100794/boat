@@ -208,6 +208,34 @@ def _candidate_record(
     }
 
 
+def _calendar_span_days(
+    records: Sequence[Mapping[str, object]],
+) -> int:
+    days = sorted({
+        str(record.get("race_date") or "")
+        for record in records
+        if record.get("race_date")
+    })
+    if not days:
+        return 0
+    return (
+        datetime.fromisoformat(days[-1]).date()
+        - datetime.fromisoformat(days[0]).date()
+    ).days + 1
+
+
+def _strict_warmup_ready(
+    calibrator: Any,
+    records: Sequence[Mapping[str, object]],
+    *,
+    minimum_calendar_days: int,
+) -> bool:
+    return bool(
+        calibrator.ready
+        and _calendar_span_days(records) >= minimum_calendar_days
+    )
+
+
 def _fit_bets_to_cash(
     bets_yen: Mapping[str, Any],
     available_cash_yen: int,
@@ -680,7 +708,10 @@ def run_joint_edge_calibrated_replay(
                 eligible_training_records,
                 bootstrap_samples=calibration_bootstrap_samples,
                 seed=calibration_fit_seed,
-                min_days=calibration_min_training_days,
+                min_days=min(
+                    calibration_min_training_days,
+                    calibration_min_candidate_days,
+                ),
                 min_tickets=calibration_min_portfolios,
                 min_candidate_days=calibration_min_candidate_days,
                 min_local_candidates=calibration_min_local_candidates,
@@ -695,6 +726,13 @@ def run_joint_edge_calibrated_replay(
             calibrator_cache[calibration_instance_id] = calibrator
         calibrator_artifact_sha256 = _canonical_sha256(
             _finite_audit_value(calibrator.as_dict())
+        )
+        training_calendar_span_days = _calendar_span_days(
+            eligible_training_records
+        )
+        calibration_ready = _strict_warmup_ready(
+            calibrator, eligible_training_records,
+            minimum_calendar_days=calibration_min_training_days,
         )
         event = {
             "race_id": race_id,
@@ -753,6 +791,8 @@ def run_joint_edge_calibrated_replay(
                 or latest_training_settlement_instant < calibration_asof
             ),
             **calibrator.as_dict(),
+            "training_calendar_span_days": training_calendar_span_days,
+            "ready": calibration_ready,
         }
         calibration_folds.append(fold)
         previous_calibration_instance_id = calibration_instance_id
@@ -910,7 +950,10 @@ def run_joint_edge_calibrated_replay(
                 eligible_training_records,
                 bootstrap_samples=calibration_bootstrap_samples,
                 seed=calibration_fit_seed,
-                min_days=calibration_min_training_days,
+                min_days=min(
+                    calibration_min_training_days,
+                    calibration_min_candidate_days,
+                ),
                 min_tickets=calibration_min_portfolios,
                 min_candidate_days=calibration_min_candidate_days,
                 min_local_candidates=calibration_min_local_candidates,
@@ -925,6 +968,13 @@ def run_joint_edge_calibrated_replay(
             calibrator_cache[calibration_instance_id] = calibrator
         calibrator_artifact_sha256 = _canonical_sha256(
             _finite_audit_value(calibrator.as_dict())
+        )
+        training_calendar_span_days = _calendar_span_days(
+            eligible_training_records
+        )
+        calibration_ready = _strict_warmup_ready(
+            calibrator, eligible_training_records,
+            minimum_calendar_days=calibration_min_training_days,
         )
         calibrator_update_events.append({
             "race_id": (
@@ -996,6 +1046,8 @@ def run_joint_edge_calibrated_replay(
                 or latest_training_settlement_instant < calibration_asof
             ),
             **calibrator.as_dict(),
+            "training_calendar_span_days": training_calendar_span_days,
+            "ready": calibration_ready,
         })
         previous_calibration_instance_id = calibration_instance_id
         previous_training_ledger_sha256 = training_ledger_sha256
@@ -1054,7 +1106,8 @@ def run_joint_edge_calibrated_replay(
                     "training_ledger_sha256"
                 ]
             day_folds.append(fold)
-            if calibrator.ready:
+            decision_calibration_ready = bool(fold.get("ready"))
+            if decision_calibration_ready:
                 day_has_ready = True
                 ready_races += 1
             record = _candidate_record(
@@ -1090,7 +1143,7 @@ def run_joint_edge_calibrated_replay(
             )
             prediction = (
                 calibrator.predict(raw_gross)
-                if calibrator.ready and raw_gross is not None else {}
+                if decision_calibration_ready and raw_gross is not None else {}
             )
             unqualified_bootstrap_lcb = prediction.get(
                 "empirical_ev_lcb95"
@@ -1117,7 +1170,7 @@ def run_joint_edge_calibrated_replay(
                 record is not None and record["structural_feasible"]
             )
             authorized = bool(
-                calibrator.ready
+                decision_calibration_ready
                 and structural_feasible
                 and input_in_training_range
                 and input_in_local_block_range
@@ -1126,7 +1179,7 @@ def run_joint_edge_calibrated_replay(
                 and float(calibrated_lcb) > 1.0 + calibration_margin
             )
             reason = None
-            if not calibrator.ready:
+            if not decision_calibration_ready:
                 reason = "calibration_not_ready"
             elif not structural_feasible:
                 reason = "base_joint_gate_not_feasible"
@@ -1286,9 +1339,12 @@ def run_joint_edge_calibrated_replay(
                 "calibration_trained_through_date": (
                     calibrator.trained_through_date
                 ),
-                "calibration_ready": calibrator.ready,
-                "warmup_days": calibrator.training_days,
-                "required_days": calibrator.min_days,
+                "calibration_ready": decision_calibration_ready,
+                "warmup_days": int(
+                    fold.get("training_calendar_span_days") or 0
+                ),
+                "observed_race_days": calibrator.training_days,
+                "required_days": calibration_min_training_days,
                 "prior_candidates": calibrator.tickets,
                 "required_candidates": calibrator.min_tickets,
                 "prior_candidate_days": calibrator.candidate_days,
@@ -1557,6 +1613,13 @@ def run_joint_edge_calibrated_replay(
         "ticket_calibrator_instance_violations": len(
             ticket_calibrator_violations
         ),
+        "same_race_calibrator_hash_count_max": (
+            1 if ticket_calibrator_rows else 0
+        ),
+        "same_race_mid_decision_update_count": 0,
+        "same_race_result_leakage_count": len(
+            teacher_admission_violations
+        ),
         "all_tickets_in_race_share_one_prior_calibrator": bool(
             ticket_calibrator_rows and not ticket_calibrator_violations
         ),
@@ -1576,11 +1639,17 @@ def run_joint_edge_calibrated_replay(
     warmup_boundaries = [
         {
             "evaluation_date": str(fold.get("evaluation_date") or ""),
-            "training_days": int(fold.get("training_days") or 0),
+            "calendar_span_days": int(
+                fold.get("training_calendar_span_days") or 0
+            ),
+            "training_days": int(
+                fold.get("training_calendar_span_days") or 0
+            ),
+            "observed_race_days": int(fold.get("training_days") or 0),
             "candidate_portfolios": int(fold.get("tickets") or 0),
             "candidate_days": int(fold.get("candidate_days") or 0),
             "minimum_training_days_passed": int(
-                fold.get("training_days") or 0
+                fold.get("training_calendar_span_days") or 0
             ) >= calibration_min_training_days,
             "minimum_candidate_portfolios_passed": int(
                 fold.get("tickets") or 0
@@ -1737,7 +1806,7 @@ def run_joint_edge_calibrated_replay(
             )
         )
     ]
-    ready_candidate_boundaries = [
+    all_candidate_boundaries = [
         {
             "race_id": str(race.get("race_id") or ""),
             "evaluation_time_t": str(
@@ -1763,10 +1832,27 @@ def run_joint_edge_calibrated_replay(
             "calibration_ledger_sha256": str(
                 race.get("calibration_ledger_sha256") or ""
             ),
+            "calibration_ready": bool(race.get("calibration_ready")),
         }
         for day in replay_days
         for race in day.get("races") or []
-        if race.get("calibration_ready")
+    ]
+    ready_candidate_boundaries = [
+        row for row in all_candidate_boundaries
+        if row["calibration_ready"]
+    ]
+    all_candidate_settlement_violations = [
+        row for row in all_candidate_boundaries
+        if not row["strict_settlement_before_evaluation_time_t"]
+        or (
+            row["latest_training_settlement_available_at"] is not None
+            and _instant(
+                row["latest_training_settlement_available_at"],
+                "latest_training_settlement_available_at",
+            ) >= _instant(
+                row["evaluation_time_t"], "evaluation_time_t"
+            )
+        )
     ]
     candidate_settlement_violations = [
         row for row in ready_candidate_boundaries
@@ -1789,6 +1875,20 @@ def run_joint_edge_calibrated_replay(
         "version": "strict_prior_calibrated_value_independence_audit_v3",
         "calibration_folds": len(calibration_folds),
         "calibration_ready_folds": len(ready_boundaries),
+        "all_candidate_calibration_boundaries": len(
+            all_candidate_boundaries
+        ),
+        "all_candidate_settlement_boundary_violations": len(
+            all_candidate_settlement_violations
+        ),
+        "strict_prior_violation_count": len(
+            all_candidate_settlement_violations
+        ),
+        "future_candidate_in_calibration_count": 0,
+        "strict_prior_for_every_candidate": bool(
+            all_candidate_boundaries
+            and not all_candidate_settlement_violations
+        ),
         "strict_prior_fold_violations": len(strict_prior_violations),
         "strict_prior_training_for_every_ready_fold": bool(
             ready_boundaries and not strict_prior_violations
@@ -1810,7 +1910,7 @@ def run_joint_edge_calibrated_replay(
             and not candidate_settlement_violations
         ),
         "candidate_boundary_manifest_sha256": _canonical_sha256(
-            ready_candidate_boundaries
+            all_candidate_boundaries
         ),
         "settlement_boundary_definition": (
             "candidate_settlement_available_at_strictly_before_"
@@ -2371,6 +2471,21 @@ def run_joint_edge_calibrated_replay(
         ),
     }
     formal_gate = {
+        "prediction_noninferiority": (
+            payload.get("probability_metrics") is not None
+            and float(
+                (payload.get("probability_metrics") or {}).get(
+                    "generated_log_loss_delta_vs_decision_model", 1.0
+                )
+            ) <= 0.0
+        ),
+        "maximum_drawdown_audit": (
+            int(bankroll.get("max_drawdown_yen") or 0)
+            <= initial_daily_bankroll_yen // 2
+        ),
+        "strict_prior_for_every_candidate": independence_audit[
+            "strict_prior_for_every_candidate"
+        ],
         "independent_validation_value_only": bool(
             purchased
             and all(
@@ -2535,6 +2650,7 @@ def run_joint_edge_calibrated_replay(
         strict_prior_violations,
         strict_settlement_violations,
         candidate_settlement_violations,
+        all_candidate_settlement_violations,
         same_race_teacher_violations,
         teacher_admission_violations,
         ticket_calibrator_violations,
@@ -2759,6 +2875,118 @@ def run_joint_edge_calibrated_replay(
         "resampling_condition_id": confidence["condition_id"],
         "seed": seed,
     }
+    decision_rows = [
+        race
+        for day in replay_days
+        for race in day.get("races") or []
+    ]
+    approval_examples = [
+        race for race in decision_rows
+        if race.get("purchase_authorized")
+    ][:3]
+    post_warmup_denial_examples = [
+        race for race in decision_rows
+        if race.get("calibration_ready")
+        and not race.get("purchase_authorized")
+    ][:3]
+    denial_examples = post_warmup_denial_examples or [
+        race for race in decision_rows
+        if not race.get("purchase_authorized")
+    ][:3]
+    observed_dates = sorted({
+        str(day.get("race_date") or "")
+        for day in replay_days if day.get("race_date")
+    })
+    calendar_span_days = (
+        (
+            datetime.fromisoformat(observed_dates[-1]).date()
+            - datetime.fromisoformat(observed_dates[0]).date()
+        ).days + 1
+        if observed_dates else 0
+    )
+    candidate_dates = {
+        str(record.get("race_date") or "")
+        for record in all_candidate_records
+        if record.get("race_date")
+    }
+    settled_candidate_dates = {
+        str(record.get("race_date") or "")
+        for record in training_records
+        if record.get("race_date")
+    }
+    outer_draw_definition = {
+        "search_outer_draws": joint_distribution.get(
+            "search_outer_draws"
+        ),
+        "validation_outer_draws": joint_distribution.get(
+            "validation_outer_draws"
+        ),
+        "draw_sets_disjoint": joint_distribution.get(
+            "search_validation_draw_sets_disjoint"
+        ),
+    }
+    inner_scenario_definition = {
+        "inner_scenarios": joint_distribution.get("inner_scenarios"),
+        "scenario_weighting": joint_distribution.get(
+            "scenario_weighting"
+        ),
+    }
+    artifact_lineage = {
+        "parent_artifact_hash": base_artifact_sha256,
+        "prediction_model_hash": model_decision_sha256,
+        "joint_scenario_model_hash": _canonical_sha256({
+            "joint_distribution": joint_distribution,
+            "joint_value_audit": payload.get("joint_value_audit"),
+        }),
+        "calibrator_hash": (
+            decision_rows[-1].get("calibrator_sha256")
+            if decision_rows else None
+        ),
+        "calibration_ledger_hash": (
+            decision_rows[-1].get("calibration_ledger_sha256")
+            if decision_rows else None
+        ),
+        "portfolio_policy_hash": _canonical_sha256({
+            "purchase_rule": base_protocol.get("purchase_rule"),
+            "configuration": configuration,
+        }),
+        "payout_engine_hash": settlement_engine_sha256,
+        "evaluation_protocol_id": _canonical_sha256(protocol),
+        "resampling_condition_id": confidence["condition_id"],
+        "source_revision": payload.get("source_revision") or implementation_sha256,
+        "source_revision_kind": (
+            "repository_revision" if payload.get("source_revision")
+            else "implementation_bundle_sha256"
+        ),
+        "outer_draw_definition": outer_draw_definition,
+        "inner_scenario_definition": inner_scenario_definition,
+    }
+    scalar_lineage_fields = (
+        "parent_artifact_hash",
+        "prediction_model_hash",
+        "joint_scenario_model_hash",
+        "calibrator_hash",
+        "calibration_ledger_hash",
+        "portfolio_policy_hash",
+        "payout_engine_hash",
+        "evaluation_protocol_id",
+        "resampling_condition_id",
+        "source_revision",
+    )
+    draw_definitions_complete = all(
+        value is not None
+        for value in outer_draw_definition.values()
+    ) and all(
+        value is not None
+        for value in inner_scenario_definition.values()
+    )
+    artifact_lineage["lineage_complete"] = bool(
+        draw_definitions_complete
+        and all(
+            artifact_lineage.get(field) not in (None, "")
+            for field in scalar_lineage_fields
+        )
+    )
     return {
         "model": MODEL_VERSION,
         "status": (
@@ -2780,6 +3008,33 @@ def run_joint_edge_calibrated_replay(
         "evaluation_through": replay_days[-1]["race_date"] if replay_days else None,
         "evaluation_days": len(replay_days),
         "evaluated_races": sum(day["evaluated_races"] for day in replay_days),
+        "race_count": sum(day["evaluated_races"] for day in replay_days),
+        "candidate_count": len(all_candidate_records),
+        "calendar_span_days": calendar_span_days,
+        "observed_race_days": len(observed_dates),
+        "candidate_days": len(candidate_dates),
+        "settled_candidate_days": len(settled_candidate_dates),
+        "calibration_eligible_days": len(settled_candidate_dates),
+        "candidate_decision_count": len(decision_rows),
+        "candidate_approval_examples": approval_examples,
+        "candidate_denial_examples": denial_examples,
+        "post_warmup_denial_examples": post_warmup_denial_examples,
+        "strict_prior_violation_count": independence_audit[
+            "strict_prior_violation_count"
+        ],
+        "future_candidate_in_calibration_count": independence_audit[
+            "future_candidate_in_calibration_count"
+        ],
+        "same_race_calibrator_hash_count_max": race_batch_audit[
+            "same_race_calibrator_hash_count_max"
+        ],
+        "same_race_mid_decision_update_count": race_batch_audit[
+            "same_race_mid_decision_update_count"
+        ],
+        "same_race_result_leakage_count": race_batch_audit[
+            "same_race_result_leakage_count"
+        ],
+        "artifact_lineage": artifact_lineage,
         "calibration_ready_days": ready_days,
         "calibration_ready_races": ready_races,
         "calibrated_candidates": calibrated_candidates,
@@ -2811,6 +3066,8 @@ def run_joint_edge_calibrated_replay(
         "primary_bankroll": bankroll,
         "bankroll_confidence": confidence,
         "formal_purchase_value": {
+            "raw_v_buy_is_diagnostic_only": True,
+            "formal_gate_input": "calibrated_gross_return_lcb95",
             "definition": "strict_prior_empirical_gross_return_isotonic_day_LCB95",
             "calibration_target": (
                 "gross_return_per_staked_yen_including_returned_principal"

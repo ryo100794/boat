@@ -144,6 +144,21 @@ def policy_edge_records(
         ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
         actual = str(race["actual_combination"])
         actual_payout_yen = int(race["actual_payout_yen"])
+        decision_time = (
+            race.get("odds_deadline_at")
+            or race.get("captured_at")
+            or f"{race['race_date']}T00:00:00+09:00"
+        )
+        decision_time_source = (
+            "odds_deadline_at" if race.get("odds_deadline_at")
+            else "captured_at" if race.get("captured_at")
+            else "conservative_operating_day_start"
+        )
+        settlement_time = race.get("settlement_time")
+        settlement_time_source = "observed"
+        if not settlement_time:
+            settlement_time = f"{race['race_date']}T23:59:59+09:00"
+            settlement_time_source = "conservative_operating_day_end"
         for combination in ranked:
             probability = float(probabilities[combination])
             forecast_odds = float(odds[combination])
@@ -164,6 +179,11 @@ def policy_edge_records(
                         actual_payout_yen / STAKE_YEN if hit else 0.0
                     ),
                     "hit": hit,
+                    "decision_time": str(decision_time),
+                    "decision_time_source": decision_time_source,
+                    "settlement_time": str(settlement_time),
+                    "settlement_time_source": settlement_time_source,
+                    "candidate_population": "all_pregate_probability_ranked",
                     "snapshot_id": race.get("snapshot_id"),
                 }
             )
@@ -221,6 +241,9 @@ def _race_candidates(
     artifact: EmpiricalEVArtifact,
     ranking_provider: RankingProvider | None = None,
     max_rank: int | None = None,
+    buy_threshold: float = 1.0,
+    purchase_gate_enabled: bool = True,
+    purchase_gate_denial_reason: str = "warmup_not_ready",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     probabilities = _blended_probabilities(race, calibrator, probability_blender)
     odds = decision_odds(race)
@@ -247,7 +270,7 @@ def _race_candidates(
             "raw_estimated_ev": raw_ev,
             "calibrated_roi": prediction.get("empirical_ev"),
             "calibrated_roi_lcb95": prediction.get("empirical_ev_lcb95"),
-            "buy_threshold": 1.0,
+            "buy_threshold": buy_threshold,
             "purchase_gate_approved": False,
             "denial_reason": None,
         }
@@ -263,11 +286,17 @@ def _race_candidates(
             "local_block_candidates",
             "local_block_candidate_days",
             "local_block_ess",
+            "local_block_raw_ev_min",
+            "local_block_raw_ev_max",
             "local_support_ready",
             "local_support_reasons",
         ):
             if key in prediction:
                 decision[key] = prediction[key]
+        if not purchase_gate_enabled:
+            decision["denial_reason"] = purchase_gate_denial_reason
+            decisions.append(decision)
+            continue
         if prediction.get("purchase_lcb95_available") is False:
             if prediction.get("cell_ready") is False:
                 decision["denial_reason"] = "context_cell_not_ready"
@@ -293,11 +322,11 @@ def _race_candidates(
             decision["denial_reason"] = "calibrated_value_nonfinite"
             decisions.append(decision)
             continue
-        if point <= 1.0:
+        if point <= buy_threshold:
             decision["denial_reason"] = "calibrated_roi_not_above_one"
             decisions.append(decision)
             continue
-        if lcb95 <= 1.0:
+        if lcb95 <= buy_threshold:
             decision["denial_reason"] = "calibrated_roi_lcb95_not_above_one"
             decisions.append(decision)
             continue
@@ -386,10 +415,15 @@ def simulate_empirical_lcb_policy(
     allocation_mode: str = "kelly_floor",
     min_daily_exposure_fraction: float = 0.0,
     max_daily_exposure_fraction: float = 0.30,
+    buy_threshold: float = 1.0,
+    purchase_gate_enabled: bool = True,
+    purchase_gate_denial_reason: str = "warmup_not_ready",
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
         raise ValueError("daily_budget_yen must be positive")
+    if not isfinite(float(buy_threshold)) or float(buy_threshold) < 1.0:
+        raise ValueError("buy_threshold must be finite and at least gross ROI 1")
     _verify_prior_only_artifact(races, artifact)
     races_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -417,6 +451,9 @@ def simulate_empirical_lcb_policy(
                     artifact,
                     ranking_provider,
                     max_rank,
+                    buy_threshold,
+                    purchase_gate_enabled,
+                    purchase_gate_denial_reason,
                 )
                 candidates.extend(race_candidates)
                 candidate_decisions.extend(race_decisions)

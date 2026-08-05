@@ -118,8 +118,9 @@ def test_roadmap_page_shows_loading_and_fetch_errors() -> None:
         encoding="utf-8"
     )
 
-    assert 'id="ticketRows"><tr><td colspan="7" class="muted">読込中' in html
-    assert 'id="milestoneRows"><tr><td colspan="4" class="muted">読込中' in html
+    assert "読込中" not in html
+    assert 'id="ticketRows"><tr><td colspan="7" class="muted">上段サーバ描画が正本' in html
+    assert 'id="milestoneRows"><tr><td colspan="4" class="muted">上段サーバ描画が正本' in html
     assert "if(!res.ok) throw new Error(`HTTP ${res.status}`)" in html
     assert "catch(error) { showLoadError(error); }" in html
     assert "取得失敗:" in html

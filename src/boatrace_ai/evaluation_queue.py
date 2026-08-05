@@ -4130,6 +4130,33 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             row for row in payload.get("fold_audit") or ()
             if isinstance(row, dict)
         ]
+        decisions = [
+            row for row in payload.get("candidate_decision_audit") or ()
+            if isinstance(row, dict)
+        ]
+        approved_examples = [
+            row for row in decisions
+            if row.get("purchase_gate_approved") is True
+        ][:3]
+        all_denied = [
+            row for row in decisions
+            if row.get("purchase_gate_approved") is not True
+        ]
+        post_warmup_denied = [
+            row for row in all_denied
+            if row.get("calibrated_roi") is not None
+        ]
+        denied_examples = (post_warmup_denied or all_denied)[:3]
+        audit_decision = max(
+            decisions,
+            key=lambda row: float(
+                row.get("calibrated_roi_lcb95")
+                if row.get("calibrated_roi_lcb95") is not None else -1e99
+            ),
+            default={},
+        )
+        lineage = payload.get("artifact_lineage")
+        lineage = lineage if isinstance(lineage, dict) else {}
         ready_folds = [row for row in folds if row.get("calibration_ready")]
         strict_prior_violations = sum(
             row.get("strict_prior_check") is not True for row in ready_folds
@@ -4202,10 +4229,14 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "calibration_contextual_hierarchy": payload.get(
                 "contextual_hierarchy"
             ),
-            "calibration_ready": latest.get("ready"),
-            "calibration_ready_reasons": latest.get("ready_reasons"),
+            "calibration_ready": latest_fold.get(
+                "calibration_ready", latest.get("ready")
+            ),
+            "calibration_ready_reasons": latest_fold.get(
+                "ready_reasons", latest.get("ready_reasons")
+            ),
             "calibration_strict_prior_all_folds": all(
-                row.get("strict_prior_check") is True for row in folds
+                int(row.get("strict_prior_violation_count") or 0) == 0 for row in folds
             ) if folds else None,
             "calibration_strict_prior_fold_violations": (
                 strict_prior_violations
@@ -4219,9 +4250,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "calibration_settlement_before_decision_all_ready_folds": bool(
                 ready_folds and strict_prior_violations == 0
             ),
-            "calibration_same_race_teacher_fold_violations": 0,
+            "calibration_same_race_teacher_fold_violations": payload.get(
+                "same_race_result_leakage_count"
+            ),
             "calibration_same_race_excluded_all_ready_folds": bool(
                 ready_folds
+                and int(payload.get("same_race_result_leakage_count") or 0) == 0
             ),
             "calibration_same_race_rule": payload.get(
                 "same_race_update_rule"
@@ -4266,19 +4300,27 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 str(row.get("decision_contract_hash"))
                 for row in folds if row.get("decision_contract_hash")
             }),
-            "warmup_days": latest.get("training_days"),
+            "warmup_days": latest_fold.get(
+                "prior_calendar_span_days", latest.get("training_days")
+            ),
             "required_days": warmup.get("minimum_training_calendar_days"),
             "prior_candidates": latest.get("tickets"),
             "required_candidates": warmup.get("minimum_pregate_candidates"),
-            "prior_candidate_days": latest.get("candidate_days"),
+            "prior_candidate_days": latest_fold.get(
+                "prior_candidate_days", latest.get("candidate_days")
+            ),
             "required_candidate_days": warmup.get("minimum_candidate_days"),
             "calibration_cutoff_time": latest_fold.get(
-                "calibration_cutoff_date"
-            ),
+                "decision_time_earliest"
+            ) or latest_fold.get("calibration_cutoff_date"),
             "max_training_settlement_time": latest_fold.get(
-                "max_training_settlement_date"
-            ),
+                "max_prior_settlement_time"
+            ) or latest_fold.get("max_training_settlement_date"),
             "strict_prior_check": latest_fold.get("strict_prior_check"),
+            "strict_prior_violation_count": payload.get("strict_prior_violation_count"),
+            "future_candidate_in_calibration_count": payload.get(
+                "future_candidate_in_calibration_count"
+            ),
             "isotonic_block_count": latest.get("isotonic_block_count"),
             "candidate_decision_count": latest_fold.get(
                 "candidate_decisions"
@@ -4302,6 +4344,27 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "maximum_calibrated_roi_lcb95"
             ),
             "buy_threshold": latest_fold.get("buy_threshold"),
+            "local_block_candidates": audit_decision.get(
+                "local_block_candidates"
+            ),
+            "local_block_candidate_days": audit_decision.get(
+                "local_block_candidate_days"
+            ),
+            "local_block_ess": audit_decision.get("local_block_ess"),
+            "local_block_minimum_raw_ev": audit_decision.get(
+                "local_block_raw_ev_min"
+            ),
+            "local_block_maximum_raw_ev": audit_decision.get(
+                "local_block_raw_ev_max"
+            ),
+            "raw_V_buy": audit_decision.get("raw_estimated_ev"),
+            "calibrated_ROI": audit_decision.get("calibrated_roi"),
+            "calibrated_ROI_LCB95": audit_decision.get(
+                "calibrated_roi_lcb95"
+            ),
+            "decision_reason": audit_decision.get(
+                "approval_reason"
+            ) or audit_decision.get("denial_reason"),
             "approval_rule": latest_fold.get("approval_rule"),
             "calibrator_hash": latest_fold.get("calibrator_hash"),
             "calibration_ledger_hash": latest_fold.get(
@@ -4316,6 +4379,56 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "ledger_candidates": payload.get("ledger_candidates"),
             "ledger_hash": payload.get("ledger_hash"),
+            "candidate_decision_count_total": len(decisions),
+            "race_count": payload.get("race_count"),
+            "candidate_count": payload.get("candidate_count"),
+            "calendar_span_days": payload.get("calendar_span_days"),
+            "observed_race_days": payload.get("observed_race_days"),
+            "candidate_days": payload.get("candidate_days"),
+            "settled_candidate_days": payload.get("settled_candidate_days"),
+            "calibration_eligible_days": payload.get("calibration_eligible_days"),
+            "candidate_approval_examples": approved_examples,
+            "candidate_denial_examples": denied_examples,
+            "post_warmup_denial_examples": post_warmup_denied[:3],
+            "purchase_value_calibration": payload.get(
+                "purchase_value_calibration"
+            ),
+            "purchase_value_realization_deciles": payload.get(
+                "purchase_value_calibration"
+            ),
+            "same_race_calibrator_hash_count_max": payload.get(
+                "same_race_calibrator_hash_count_max"
+            ),
+            "same_race_mid_decision_update_count": payload.get(
+                "same_race_mid_decision_update_count"
+            ),
+            "same_race_result_leakage_count": payload.get(
+                "same_race_result_leakage_count"
+            ),
+            "formal_purchase_rule": payload.get("formal_purchase_rule"),
+            "formal_promotion_rule": payload.get("formal_promotion_rule"),
+            "formal_promotion_gate": payload.get("formal_promotion_gate"),
+            "parent_artifact_hash": lineage.get("parent_artifact_hash"),
+            "prediction_model_hash": lineage.get("prediction_model_hash"),
+            "joint_scenario_model_hash": lineage.get(
+                "joint_scenario_model_hash"
+            ),
+            "portfolio_policy_hash": lineage.get("portfolio_policy_hash"),
+            "payout_engine_hash": lineage.get("payout_engine_hash"),
+            "evaluation_protocol_id": lineage.get(
+                "evaluation_protocol_id"
+            ),
+            "resampling_condition_id": lineage.get(
+                "resampling_condition_id"
+            ),
+            "source_revision": lineage.get("source_revision"),
+            "outer_draw_definition": lineage.get(
+                "outer_draw_definition"
+            ),
+            "inner_scenario_definition": lineage.get(
+                "inner_scenario_definition"
+            ),
+            "artifact_lineage_complete": lineage.get("lineage_complete"),
             "evaluation_days": bankroll.get("evaluation_days"),
             "tickets": bankroll.get("tickets"),
             "hit_tickets": bankroll.get("hit_tickets"),
@@ -4324,6 +4437,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "profit_yen": bankroll.get("profit_yen"),
             "roi": bankroll.get("roi"),
             "roi_display": bankroll.get("roi_display"),
+            "largest_hit_return_yen": bankroll.get(
+                "largest_hit_return_yen"
+            ),
+            "roi_without_largest_hit": bankroll.get(
+                "roi_without_largest_hit"
+            ),
             "roi_status": (
                 "not_applicable_no_stake"
                 if bankroll.get("stake_yen") == 0 else "defined"
@@ -4499,6 +4618,8 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         latest_decision = (
             latest_decision if isinstance(latest_decision, dict) else {}
         )
+        artifact_lineage = payload.get("artifact_lineage")
+        artifact_lineage = artifact_lineage if isinstance(artifact_lineage, dict) else {}
         primary_bankroll = payload.get("primary_bankroll")
         primary_bankroll = (
             primary_bankroll if isinstance(primary_bankroll, dict) else {}
@@ -4523,6 +4644,64 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "evaluation_days": payload.get("evaluation_days"),
             "evaluated_races": payload.get("evaluated_races"),
+            "race_count": payload.get("race_count"),
+            "candidate_count": payload.get("candidate_count"),
+            "calendar_span_days": payload.get("calendar_span_days"),
+            "observed_race_days": payload.get("observed_race_days"),
+            "candidate_days": payload.get("candidate_days"),
+            "settled_candidate_days": payload.get(
+                "settled_candidate_days"
+            ),
+            "calibration_eligible_days": payload.get(
+                "calibration_eligible_days"
+            ),
+            "candidate_decision_count_total": payload.get(
+                "candidate_decision_count"
+            ),
+            "candidate_approval_examples": payload.get(
+                "candidate_approval_examples"
+            ),
+            "candidate_denial_examples": payload.get(
+                "candidate_denial_examples"
+            ),
+            "post_warmup_denial_examples": payload.get(
+                "post_warmup_denial_examples"
+            ),
+            "strict_prior_violation_count": payload.get(
+                "strict_prior_violation_count"
+            ),
+            "future_candidate_in_calibration_count": payload.get(
+                "future_candidate_in_calibration_count"
+            ),
+            "same_race_calibrator_hash_count_max": payload.get(
+                "same_race_calibrator_hash_count_max"
+            ),
+            "same_race_mid_decision_update_count": payload.get(
+                "same_race_mid_decision_update_count"
+            ),
+            "same_race_result_leakage_count": payload.get(
+                "same_race_result_leakage_count"
+            ),
+            "artifact_lineage": artifact_lineage,
+            "parent_artifact_hash": artifact_lineage.get(
+                "parent_artifact_hash"
+            ),
+            "prediction_model_hash": artifact_lineage.get(
+                "prediction_model_hash"
+            ),
+            "joint_scenario_model_hash": artifact_lineage.get(
+                "joint_scenario_model_hash"
+            ),
+            "portfolio_policy_hash": artifact_lineage.get(
+                "portfolio_policy_hash"
+            ),
+            "payout_engine_hash": artifact_lineage.get(
+                "payout_engine_hash"
+            ),
+            "source_revision": artifact_lineage.get("source_revision"),
+            "artifact_lineage_complete": artifact_lineage.get(
+                "lineage_complete"
+            ),
             "joint_search_outer_sample_count_r_requested": (
                 joint_distribution.get("search_outer_draws")
             ),
