@@ -9453,9 +9453,26 @@ def model_performance_audit_snapshot(
                 "daily_cluster_bootstrap_roi_lower_95", "max_drawdown_yen",
                 "promotion_gate_passed", "promotion_gate_total",
                 "formal_roi_gate_passed", "decision",
+                "residual_selection_robustness_passed",
+                "residual_candidate_family_size",
+                "residual_selection_lower_quantile",
+                "residual_selection_bootstrap_samples",
+                "residual_ranking_metrics",
+                "residual_calibration_generator_transport",
             )
         }
         model_rows.append(model)
+        ranking = model.get("residual_ranking_metrics")
+        ranking = ranking if isinstance(ranking, dict) else {}
+        transport = model.get("residual_calibration_generator_transport")
+        transport = transport if isinstance(transport, dict) else {}
+        transport_aligned = bool(
+            transport.get("frozen") is True
+            and transport.get("ranking_sha256_match") is True
+            and transport.get("probability_artifact_match") is True
+        )
+        selection_gate = model.get("residual_selection_robustness_passed")
+        selection_audit_recorded = bool(ranking or transport or selection_gate is not None)
         period = (
             f"{model.get('evaluation_from') or '-'}.."
             f"{model.get('evaluation_through') or '-'}"
@@ -9486,6 +9503,17 @@ def model_performance_audit_snapshot(
                 f"損益 {model.get('profit_yen') if model.get('profit_yen') is not None else '未記録'} / "
                 f"DD {model.get('max_drawdown_yen') if model.get('max_drawdown_yen') is not None else '未記録'}"
             ),
+            (
+                f"選択q {_audit_number(model.get('residual_selection_lower_quantile'), 6)} / "
+                f"family {model.get('residual_candidate_family_size') if model.get('residual_candidate_family_size') is not None else '未記録'} / "
+                f"bootstrap {model.get('residual_selection_bootstrap_samples') if model.get('residual_selection_bootstrap_samples') is not None else '未記録'} / "
+                f"最大除外 {_audit_number(ranking.get('roi_excluding_largest_hit'))} / "
+                f"最低block {_audit_number(ranking.get('minimum_temporal_block_roi'))} / "
+                f"選択gate {'合格' if selection_gate is True else '不合格' if selection_gate is False else '未記録'} / "
+                f"校正生成器 {'一致' if transport_aligned else '不一致' if transport else '未記録'}"
+                if selection_audit_recorded
+                else "-"
+            ),
             gates,
             str(model.get("decision") or "-"),
         ]
@@ -9496,7 +9524,7 @@ def model_performance_audit_snapshot(
         )
     if not general_rendered:
         general_rendered.append(
-            '<tr><td colspan="12">モデル実測値なし</td></tr>'
+            '<tr><td colspan="13">モデル実測値なし</td></tr>'
         )
     snapshot_json = json.dumps(
         {
@@ -9515,7 +9543,8 @@ def model_performance_audit_snapshot(
         '<div class="panel"><div class="table-scroll"><table class="metric-table">'
         '<thead><tr><th>Job / モデル</th><th>状態</th><th>期間</th><th>母数</th>'
         '<th>1着LL</th><th>3連単LL</th><th>3T5</th><th>確定オッズ4指標</th>'
-        '<th>ROI / LCB</th><th>損益 / DD</th><th>ゲート</th><th>判定</th>'
+        '<th>ROI / LCB</th><th>損益 / DD</th><th>券効用選択監査</th>'
+        '<th>ゲート</th><th>判定</th>'
         '</tr></thead><tbody>' + "".join(general_rendered)
         + '</tbody></table></div></div>'
         '<div class="group-heading"><h2>結合価値監査・サーバ実測値</h2>'

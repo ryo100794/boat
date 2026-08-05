@@ -382,6 +382,61 @@ def test_server_audit_snapshot_contains_numeric_rows_without_javascript() -> Non
     assert "protocol123" in section
 
 
+def test_server_audit_snapshot_exposes_v33_selection_without_javascript() -> None:
+    section, rows = model_performance_audit_snapshot({
+        "generated_at": "2026-08-05T07:00:00+00:00",
+        "jobs": [{
+            "job_id": 12810,
+            "name": "ticket_utility_calibration_aligned_v33",
+            "status": "完了",
+            "evaluation_from": "2026-07-01",
+            "evaluation_through": "2026-08-05",
+            "evaluation_days": 32,
+            "evaluated_races": 4659,
+            "roi": None,
+            "profit_yen": 0,
+            "residual_selection_robustness_passed": False,
+            "residual_candidate_family_size": 18,
+            "residual_selection_lower_quantile": 0.05 / 18,
+            "residual_selection_bootstrap_samples": 20_000,
+            "residual_ranking_metrics": {
+                "roi_excluding_largest_hit": 0.88,
+                "minimum_temporal_block_roi": 0.89,
+            },
+            "residual_calibration_generator_transport": {
+                "frozen": True,
+                "ranking_sha256_match": True,
+                "probability_artifact_match": True,
+            },
+            "decision": "reject_or_research_only",
+        }],
+    })
+
+    assert rows == []
+    assert "券効用選択監査" in section
+    assert "選択q 0.002778" in section
+    assert "family 18" in section
+    assert "bootstrap 20000" in section
+    assert "最大除外 0.8800" in section
+    assert "最低block 0.8900" in section
+    assert "選択gate 不合格" in section
+    assert "校正生成器 一致" in section
+    encoded = section.split(
+        '<script id="joint-audit-data" type="application/json">', 1
+    )[1].split("</script>", 1)[0]
+    payload = json.loads(encoded)
+    model = payload["models"][0]
+    assert model["job_id"] == 12810
+    assert model["residual_selection_lower_quantile"] == 0.05 / 18
+    assert model["residual_selection_robustness_passed"] is False
+    assert model["residual_ranking_metrics"][
+        "minimum_temporal_block_roi"
+    ] == 0.89
+    assert model["residual_calibration_generator_transport"][
+        "ranking_sha256_match"
+    ] is True
+
+
 
 def test_legacy_covariance_reconstructs_signed_independence_bias() -> None:
     section, rows = model_performance_audit_snapshot({
