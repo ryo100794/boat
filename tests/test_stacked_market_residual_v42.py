@@ -74,7 +74,7 @@ def test_stack_weight_uses_separate_prior_block_and_refits(monkeypatch) -> None:
     assert len(calls[1]) == 10
     assert result["artifact"]["artifact_sha256"]
     assert result["artifact"]["stack_selection_policy_id"] == (
-        "logloss_daily_majority_top5_noninferiority_v1"
+        "material_logloss_daily_majority_top5_noninferiority_v2"
     )
 
 def test_stack_falls_back_to_market_when_top5_degrades() -> None:
@@ -108,7 +108,7 @@ def test_stack_falls_back_to_market_when_top5_degrades() -> None:
     assert raw["name"] == "linear"
     assert selected["name"] == "market"
     assert gate["policy_id"] == (
-        "logloss_daily_majority_top5_noninferiority_v1"
+        "material_logloss_daily_majority_top5_noninferiority_v2"
     )
     assert gate["status"] == "fallback_market"
     assert gate["fallback_reasons"] == ["validation_top5_below_market"]
@@ -149,3 +149,42 @@ def test_stack_accepts_nonmarket_only_when_all_prior_gates_pass() -> None:
     assert selected["name"] == "nonlinear"
     assert gate["status"] == "accepted_nonmarket"
     assert gate["fallback_reasons"] == []
+    assert gate["minimum_log_loss_improvement_per_race"] == 1e-4
+
+
+def test_stack_rejects_numerical_noise_as_nonmarket_improvement() -> None:
+    market = {
+        "name": "market",
+        "weights": {"market": 1.0, "linear": 0.0, "nonlinear": 0.0},
+        "metrics": {
+            "trifecta_log_loss": 1.0,
+            "log_loss_delta_vs_market": 0.0,
+            "trifecta_top5_hit_rate": 0.60,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 0,
+        },
+    }
+    numerically_distinct = {
+        "name": "linear50_nonlinear50",
+        "weights": {"market": 0.0, "linear": 0.5, "nonlinear": 0.5},
+        "metrics": {
+            "trifecta_log_loss": 1.0 - 1e-12,
+            "log_loss_delta_vs_market": -1e-12,
+            "trifecta_top5_hit_rate": 0.60,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 6,
+        },
+    }
+
+    raw, selected, gate = subject._select_conservative_stack(
+        [market, numerically_distinct]
+    )
+
+    assert raw["name"] == "linear50_nonlinear50"
+    assert selected["name"] == "market"
+    assert gate["status"] == "fallback_market"
+    assert gate["fallback_reasons"] == [
+        "validation_log_loss_improvement_below_material_floor"
+    ]

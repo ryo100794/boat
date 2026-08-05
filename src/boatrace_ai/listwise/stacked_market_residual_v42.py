@@ -22,8 +22,9 @@ from .nonlinear_market_residual_v38 import (
 
 MODEL_NAME = "stacked_market_residual_v42"
 STACK_SELECTION_POLICY_ID = (
-    "logloss_daily_majority_top5_noninferiority_v1"
+    "material_logloss_daily_majority_top5_noninferiority_v2"
 )
+MINIMUM_LOG_LOSS_IMPROVEMENT_PER_RACE = 1e-4
 STACK_CANDIDATES = (
     {"name": "market", "market": 1.0, "linear": 0.0, "nonlinear": 0.0},
     {"name": "market75_linear25", "market": 0.75, "linear": 0.25, "nonlinear": 0.0},
@@ -207,8 +208,10 @@ def _select_conservative_stack(
     if str(raw_selected["name"]) != "market":
         metrics = raw_selected["metrics"]
         market_metrics = market["metrics"]
-        if float(metrics["log_loss_delta_vs_market"]) >= 0.0:
-            reasons.append("validation_log_loss_not_better_than_market")
+        if float(metrics["log_loss_delta_vs_market"]) >= (
+            -MINIMUM_LOG_LOSS_IMPROVEMENT_PER_RACE
+        ):
+            reasons.append("validation_log_loss_improvement_below_material_floor")
         if float(metrics["trifecta_top5_hit_rate"]) < float(
             market_metrics["trifecta_top5_hit_rate"]
         ):
@@ -232,10 +235,13 @@ def _select_conservative_stack(
         "raw_selected_stack": str(raw_selected["name"]),
         "final_selected_stack": str(selected["name"]),
         "required_conditions": [
-            "validation_log_loss_delta_vs_market_below_zero",
+            "validation_log_loss_delta_vs_market_at_most_negative_material_floor",
             "validation_days_better_at_least_half",
             "validation_top5_hit_rate_not_below_market",
         ],
+        "minimum_log_loss_improvement_per_race": (
+            MINIMUM_LOG_LOSS_IMPROVEMENT_PER_RACE
+        ),
         "fallback_reasons": reasons,
         "outer_period_used": False,
     }
