@@ -15,6 +15,7 @@ from ..bankroll_bootstrap import bootstrap_daily_roi
 from .contextual_empirical_ev_calibration import (
     fit_contextual_empirical_ev_calibration,
 )
+from .closing_odds_quantile import forecast_closing_odds_quantiles
 from .empirical_lcb_policy import (
     policy_edge_records,
     simulate_empirical_lcb_policy,
@@ -114,6 +115,30 @@ def score_frozen_v38_races(
     if not isinstance(artifact, Mapping):
         raise ValueError("V39 frozen V38 artifact is missing")
     model = str(frozen.get("model") or "")
+    if model == "decision_time_stacked_terminal_market_v46":
+        probability_artifact = artifact.get("probability_artifact")
+        price_model = artifact.get("closing_odds_model")
+        if not isinstance(probability_artifact, Mapping):
+            raise ValueError("V46 frozen probability artifact is missing")
+        if not isinstance(price_model, Mapping):
+            raise ValueError("V46 frozen closing-odds model is missing")
+        scored = []
+        for race in races:
+            # Forecast with the source-cache probability feature before
+            # replacing it with the frozen V44 probability distribution.
+            terminal = forecast_closing_odds_quantiles(
+                race, dict(price_model)
+            )["q50"]
+            probabilities = stacked_probabilities(
+                race, probability_artifact
+            )
+            scored.append({
+                **race,
+                "model_probabilities": probabilities,
+                "estimated_final_odds": terminal,
+                "closing_odds_forecast_target": "conditional_median",
+            })
+        return scored
     if model == "decision_time_stacked_market_residual_v44":
         scorer = lambda race: stacked_probabilities(race, artifact)
     elif model == "decision_time_nonlinear_market_residual_v38":

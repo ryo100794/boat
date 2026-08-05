@@ -180,6 +180,13 @@ TASK_PROFILES: dict[str, dict[str, Any]] = {
         "max_parallel": 1,
         "disk_mb": 1024,
     },
+    "decision_stacked_terminal_market_v46": {
+        "category": "training",
+        "memory_mb": 8192,
+        "idle_cpu": 15.0,
+        "max_parallel": 1,
+        "disk_mb": 1024,
+    },
     "decision_v38_empirical_lcb": {
         "category": "evaluation",
         "memory_mb": 4096,
@@ -3747,6 +3754,7 @@ def build_command(
     if task_type in {
         "decision_market_residual_v38",
         "decision_stacked_market_v44",
+        "decision_stacked_terminal_market_v46",
     }:
         allowed = {
             "scored_cache",
@@ -3797,9 +3805,13 @@ def build_command(
             str(python),
             "-m",
                 (
-                    "boatrace_ai.listwise.decision_stacked_market_v44"
-                    if task_type == "decision_stacked_market_v44"
-                    else "boatrace_ai.listwise.decision_market_residual_v38"
+                    "boatrace_ai.listwise.decision_stacked_terminal_market_v46"
+                    if task_type == "decision_stacked_terminal_market_v46"
+                    else (
+                        "boatrace_ai.listwise.decision_stacked_market_v44"
+                        if task_type == "decision_stacked_market_v44"
+                        else "boatrace_ai.listwise.decision_market_residual_v38"
+                    )
                 ),
             "--scored-cache",
             str(scored_cache),
@@ -4155,6 +4167,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("model") in {
         "decision_time_nonlinear_market_residual_v38",
         "decision_time_stacked_market_residual_v44",
+        "decision_time_stacked_terminal_market_v46",
     }:
         metrics = payload.get("holdout_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
@@ -4164,9 +4177,16 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
         component_selection = (
             component_selection if isinstance(component_selection, dict) else {}
         )
+        price_metrics = payload.get("closing_odds_holdout_metrics")
+        price_metrics = price_metrics if isinstance(price_metrics, dict) else {}
+        closing_model = payload.get("closing_odds_model")
+        closing_model = closing_model if isinstance(closing_model, dict) else {}
+        terminal_value = payload.get("terminal_value_candidate_diagnostic")
+        terminal_value = terminal_value if isinstance(terminal_value, dict) else {}
         summary.update({
             "model": payload.get("model"),
             "training_status": payload.get("training_status"),
+            "price_training_status": payload.get("price_training_status"),
             "market_probability_source": payload.get(
                 "market_probability_source"
             ),
@@ -4248,10 +4268,34 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "source_scored_cache_sha256": payload.get(
                 "source_scored_cache_sha256"
             ),
+            "closing_odds_model_type": closing_model.get("model_type"),
+            "closing_odds_log_mae": price_metrics.get("closing_odds_log_mae"),
+            "baseline_closing_odds_log_mae": price_metrics.get(
+                "baseline_closing_odds_log_mae"
+            ),
+            "closing_odds_rank_correlation": price_metrics.get(
+                "closing_odds_rank_correlation"
+            ),
+            "terminal_value_candidate_price_target": terminal_value.get(
+                "candidate_price_target"
+            ),
+            "terminal_value_mean_forecast_ev": terminal_value.get(
+                "mean_median_forecast_ev"
+            ),
+            "terminal_value_mean_oracle_ev": terminal_value.get(
+                "mean_oracle_closing_ev"
+            ),
+            "terminal_value_realized_roi": terminal_value.get("realized_roi"),
+            "terminal_value_day_block_roi_lcb95": terminal_value.get(
+                "day_block_roi_lcb95"
+            ),
+            "terminal_value_purchase_gate": terminal_value.get("purchase_gate"),
             "challenger_selection_gate_pass": (
                 decision_v44_challenger_eligible(payload)
-                if payload.get("model")
-                == "decision_time_stacked_market_residual_v44"
+                if payload.get("model") in {
+                    "decision_time_stacked_market_residual_v44",
+                    "decision_time_stacked_terminal_market_v46",
+                }
                 else decision_v38_challenger_eligible(payload)
             ),
             "promotion_eligible": False,
@@ -7101,6 +7145,7 @@ def result_decision(task_type: str, summary: dict[str, Any]) -> str:
     if task_type in {
         "decision_market_residual_v38",
         "decision_stacked_market_v44",
+        "decision_stacked_terminal_market_v46",
     }:
         if summary.get("challenger_selection_gate_pass") is True:
             return "freeze_for_prospective_value_calibration"
@@ -8696,6 +8741,7 @@ def eligible_decision_v38_frozen_artifact(
     ).resolve()
     rows = []
     for task_type in (
+        "decision_stacked_terminal_market_v46",
         "decision_stacked_market_v44",
         "decision_market_residual_v38",
     ):
@@ -8726,8 +8772,10 @@ def eligible_decision_v38_frozen_artifact(
             continue
         eligible = (
             decision_v44_challenger_eligible(payload)
-            if payload.get("model")
-            == "decision_time_stacked_market_residual_v44"
+            if payload.get("model") in {
+                "decision_time_stacked_market_residual_v44",
+                "decision_time_stacked_terminal_market_v46",
+            }
             else decision_v38_challenger_eligible(payload)
         )
         if not eligible:
