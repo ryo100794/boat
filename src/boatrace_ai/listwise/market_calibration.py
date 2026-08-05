@@ -134,7 +134,7 @@ CLEAN_DAY_CALIBRATOR_STRATEGIES = frozenset({
 ODDS_CHECKPOINT_SCHEMA_VERSION = 1
 ODDS_CHECKPOINT_OFFSETS_SECONDS = (300, 120, 60, 30, 10)
 PREFETCH_CHECKPOINTS_KEY = "odds_checkpoints"
-SCORED_CACHE_VERSION = 14
+SCORED_CACHE_VERSION = 15
 MIN_CLOSING_ODDS_TRAINING_DAYS = 7
 MIN_CLOSING_ODDS_TRAINING_RACES = 500
 STAKE_YEN = 100
@@ -7434,6 +7434,8 @@ def scored_cache_contract(
         ),
         "official_closing_source_priority": list(CLOSING_ODDS_SOURCE_PRIORITY),
         "official_closing_contract_version": 2,
+        "decision_time_boundary_contract_version": 1,
+        "required_decision_lead_seconds": MODEL_DECISION_LEAD_MINUTES * 60,
         "odds_data_signature": dict(odds_signature),
     }
 

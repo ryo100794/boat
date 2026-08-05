@@ -150,9 +150,11 @@ def test_scored_cache_training_records_source_hash_and_insufficient_status(
     joblib.dump(
         {
             "contract": {
-                "version": 14,
+                "version": 15,
                 "from_date": "2026-01-01",
                 "through_date": "2026-01-05",
+                "decision_time_boundary_contract_version": 1,
+                "required_decision_lead_seconds": 300,
             },
             "races": [
                 _race(start + timedelta(days=index), index)
@@ -175,7 +177,18 @@ def test_scored_cache_training_records_source_hash_and_insufficient_status(
     assert result["decision"] == "insufficient_data"
     assert result["promotion_eligible"] is False
     assert len(result["source_scored_cache_sha256"]) == 64
-    assert result["source_cache_contract"]["version"] == 14
+    assert result["source_cache_contract"]["version"] == 15
+
+
+def test_decision_cache_rejects_obsolete_or_short_lead_contracts() -> None:
+    with pytest.raises(ValueError, match="boundary contract is obsolete"):
+        subject.validate_decision_scored_cache_contract({})
+
+    with pytest.raises(ValueError, match="below T-5"):
+        subject.validate_decision_scored_cache_contract({
+            "decision_time_boundary_contract_version": 1,
+            "required_decision_lead_seconds": 299,
+        })
 
 
 def test_challenger_gate_requires_weeklong_market_improvement() -> None:

@@ -18,6 +18,7 @@ from .decision_market_residual_v38 import (
     REQUIRED_MINIMUM_DECISION_LEAD_SECONDS,
     _iso_date,
     decision_time_race,
+    validate_decision_scored_cache_contract,
 )
 from .stacked_market_residual_v42 import (
     fit_temporal_stacked_market_residual,
@@ -200,6 +201,7 @@ def train_from_scored_cache(
     contract = payload.get("contract")
     if not isinstance(races, list) or not isinstance(contract, Mapping):
         raise ValueError("decision-time V44 cache is missing races or contract")
+    validate_decision_scored_cache_contract(contract)
     fitted = fit_decision_time_stacked_market(
         races,
         calibration_through=calibration_through,

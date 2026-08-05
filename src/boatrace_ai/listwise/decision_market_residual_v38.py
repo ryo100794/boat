@@ -53,6 +53,21 @@ FORBIDDEN_SOURCE_PREFIXES = (
 )
 
 
+def validate_decision_scored_cache_contract(contract: Mapping[str, Any]) -> None:
+    if int(contract.get("decision_time_boundary_contract_version") or 0) != 1:
+        raise ValueError("decision-time scored cache boundary contract is obsolete")
+    try:
+        required_lead = float(contract["required_decision_lead_seconds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "decision-time scored cache lacks its required decision lead"
+        ) from exc
+    if required_lead < REQUIRED_MINIMUM_DECISION_LEAD_SECONDS:
+        raise ValueError(
+            "decision-time scored cache decision lead is below T-5"
+        )
+
+
 def _iso_date(value: object, name: str) -> str:
     if isinstance(value, datetime):
         return value.date().isoformat()
@@ -241,6 +256,7 @@ def train_from_scored_cache(
     contract = payload.get("contract")
     if not isinstance(races, list) or not isinstance(contract, Mapping):
         raise ValueError("decision-time V38 cache is missing races or contract")
+    validate_decision_scored_cache_contract(contract)
     fitted = fit_decision_time_market_residual(
         races,
         calibration_through=calibration_through,

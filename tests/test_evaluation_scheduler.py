@@ -296,7 +296,7 @@ def test_periodic_scheduler_registers_v38_only_after_30_prior_days_and_cache(
     cache = (
         root
         / "data/models/evaluation_cache/market_scored"
-        / "job-00012315_2026-07-20_2026-08-19.races.joblib"
+        / "job-00012315_2026-07-20_2026-08-19.v15.races.joblib"
     )
     cache.parent.mkdir(parents=True)
     cache.write_bytes(b"complete")
@@ -315,7 +315,7 @@ def test_periodic_scheduler_registers_v38_only_after_30_prior_days_and_cache(
     assert v44["parameters"] == {
         "scored_cache": (
             "data/models/evaluation_cache/market_scored/"
-            "job-00012315_2026-07-20_2026-08-19.races.joblib"
+            "job-00012315_2026-07-20_2026-08-19.v15.races.joblib"
         ),
         "calibration_through": "2026-08-18",
         "minimum_training_days": 30,
@@ -384,7 +384,7 @@ def test_periodic_scheduler_freezes_first_eligible_v38_and_starts_v39(
     cache = (
         root
         / "data/models/evaluation_cache/market_scored"
-        / "job-00012315_2026-07-20_2026-08-27.races.joblib"
+        / "job-00012315_2026-07-20_2026-08-27.v15.races.joblib"
     )
     cache.parent.mkdir(parents=True)
     cache.write_bytes(b"complete")

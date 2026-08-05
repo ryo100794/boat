@@ -4820,7 +4820,7 @@ def test_market_residual_walk_forward_command_is_fixed(tmp_path: Path) -> None:
     ]
     expected_cache = (
         root / "data/models/evaluation_cache/market_scored"
-        / "job-00002606_2026-07-18_2026-07-24.races.joblib"
+        / "job-00002606_2026-07-18_2026-07-24.v15.races.joblib"
     )
     assert command[command.index("--scored-cache") + 1] == str(expected_cache)
     assert command[command.index("--model") + 1] == str(model)
@@ -5064,7 +5064,7 @@ def test_market_residual_walk_forward_accepts_v18_schedule_quota(
     python = root / ".venv/bin/python"
     expected_cache = (
         root / "data/models/evaluation_cache/market_scored"
-        / "job-00002606_2026-07-18_2026-07-24.races.joblib"
+        / "job-00002606_2026-07-18_2026-07-24.v15.races.joblib"
     )
 
     command, _ = build_command(

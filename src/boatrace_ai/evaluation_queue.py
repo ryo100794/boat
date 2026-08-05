@@ -35,6 +35,9 @@ from .listwise.decision_market_residual_v38 import (
 from .listwise.decision_stacked_market_v44 import (
     decision_v44_challenger_eligible,
 )
+from .listwise.market_calibration import (
+    SCORED_CACHE_VERSION as MARKET_SCORED_CACHE_VERSION,
+)
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -2307,7 +2310,10 @@ def build_command(
         scored_cache = (
             app_root
             / "data/models/evaluation_cache/market_scored"
-            / f"{model_input.stem}_{cache_period}.races.joblib"
+            / (
+                f"{model_input.stem}_{cache_period}"
+                f".v{MARKET_SCORED_CACHE_VERSION}.races.joblib"
+            )
         )
         if model_root not in model_input.parents or model_input.suffix != ".joblib":
             raise ValueError("model_input must be a joblib artifact inside data/models")
@@ -8881,6 +8887,7 @@ def seed_periodic_jobs(
             / (
                 "job-00012315_"
                 f"{DECISION_V38_TRAINING_FROM}_{prospective_through.isoformat()}"
+                f".v{MARKET_SCORED_CACHE_VERSION}"
                 ".races.joblib"
             )
         )
