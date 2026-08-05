@@ -9498,11 +9498,17 @@ def model_performance_audit_snapshot(
 
 
 def model_performance_html(db_path: Path) -> str:
+    operational_section = _server_operational_audit_section(
+        db_path, include_management=False
+    )
     section, _rows = model_performance_audit_snapshot(
         _database_evaluation_status(db_path)
     )
     anchor = '  <section id="purposeSection"'
-    return MODEL_REPORT_HTML.replace(anchor, section + "\n" + anchor, 1)
+    server_sections = operational_section + "\n" + section
+    return MODEL_REPORT_HTML.replace(
+        anchor, server_sections + "\n" + anchor, 1
+    )
 
 
 def _server_operational_audit_section(

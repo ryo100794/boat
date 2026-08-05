@@ -146,12 +146,18 @@ def test_dashboard_and_roadmap_raw_html_share_server_audit_snapshot(
             }]
         },
     )
+    monkeypatch.setattr(
+        dashboard,
+        "model_performance_audit_snapshot",
+        lambda _status: ('<section id="serverAuditSection"></section>', []),
+    )
 
     dashboard_html = dashboard.dashboard_operational_html(Path("/tmp/test.db"))
+    model_html = dashboard.model_performance_html(Path("/tmp/test.db"))
     roadmap_html = dashboard.roadmap_operational_html(Path("/tmp/test.db"))
     snapshot = archive_oracle_audit_status(queue)["audit_snapshot_id"]
 
-    for raw_html in (dashboard_html, roadmap_html):
+    for raw_html in (dashboard_html, model_html, roadmap_html):
         assert 'id="serverOperationalAudit"' in raw_html
         assert snapshot in raw_html
         assert "active_prediction_model_id" in raw_html
