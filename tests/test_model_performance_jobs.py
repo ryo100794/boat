@@ -174,6 +174,25 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
                 "roi": 1.25,
             }
         ],
+        "residual_selection_robustness_gate": {
+            "day_block_familywise_roi_lcb_above_one": False,
+        },
+        "residual_selection_robustness_passed": False,
+        "residual_candidate_family_size": 18,
+        "residual_selection_lower_quantile": 0.05 / 18,
+        "residual_familywise_selection_alpha": 0.05,
+        "residual_selection_bootstrap_samples": 20_000,
+        "residual_calibration_generator_transport": {
+            "frozen": True,
+            "ranking_sha256_match": True,
+            "probability_artifact_match": True,
+        },
+        "residual_ranking_metrics": {
+            "roi": 0.91,
+            "roi_ci95_lower": 0.82,
+            "roi_excluding_largest_hit": 0.88,
+            "minimum_temporal_block_roi": 0.89,
+        },
         "residual_selected_context_variant": "full_context_20",
         "residual_selected_stack": "linear50_nonlinear50",
         "residual_selected_weights": {
@@ -345,6 +364,21 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["residual_selected_context_variant"] == (
         "full_context_20"
     )
+    assert status["jobs"][0]["residual_selection_robustness_passed"] is False
+    assert status["jobs"][0]["residual_candidate_family_size"] == 18
+    assert status["jobs"][0]["residual_selection_lower_quantile"] == 0.05 / 18
+    assert status["jobs"][0]["residual_selection_bootstrap_samples"] == 20_000
+    assert status["jobs"][0]["residual_selection_robustness_gate"] == {
+        "day_block_familywise_roi_lcb_above_one": False,
+    }
+    assert status["jobs"][0]["residual_ranking_metrics"][
+        "roi_excluding_largest_hit"
+    ] == 0.88
+    assert status["jobs"][0]["residual_calibration_generator_transport"] == {
+        "frozen": True,
+        "ranking_sha256_match": True,
+        "probability_artifact_match": True,
+    }
     assert status["jobs"][0]["residual_selected_stack"] == (
         "linear50_nonlinear50"
     )
