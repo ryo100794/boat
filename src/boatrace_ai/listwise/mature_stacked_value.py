@@ -273,6 +273,8 @@ def evaluate_mature_stacked_value(
             for key in (
                 "base_training_through",
                 "stack_validation_from",
+                "raw_selected_stack",
+                "stack_selection_gate",
                 "selected_stack",
                 "selected_weights",
                 "component_selection",

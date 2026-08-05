@@ -177,6 +177,65 @@ def _artifact(
     return artifact
 
 
+def _select_conservative_stack(
+    candidates: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], Mapping[str, Any], dict[str, Any]]:
+    if not candidates:
+        raise ValueError("V42 requires stack candidates")
+    try:
+        market = next(
+            candidate for candidate in candidates
+            if str(candidate["name"]) == "market"
+        )
+    except StopIteration as exc:
+        raise ValueError("V42 requires the exact market null candidate") from exc
+
+    raw_selected = min(
+        candidates,
+        key=lambda row: (
+            float(row["metrics"]["trifecta_log_loss"]),
+            float(row["weights"]["linear"])
+            + float(row["weights"]["nonlinear"]),
+            str(row["name"]),
+        ),
+    )
+    reasons: list[str] = []
+    if str(raw_selected["name"]) != "market":
+        metrics = raw_selected["metrics"]
+        market_metrics = market["metrics"]
+        if float(metrics["log_loss_delta_vs_market"]) >= 0.0:
+            reasons.append("validation_log_loss_not_better_than_market")
+        if float(metrics["trifecta_top5_hit_rate"]) < float(
+            market_metrics["trifecta_top5_hit_rate"]
+        ):
+            reasons.append("validation_top5_below_market")
+        evaluated_days = int(metrics["evaluated_days"])
+        days_better = int(metrics["days_better_than_market"])
+        if evaluated_days < 1 or days_better * 2 < evaluated_days:
+            reasons.append("validation_daily_majority_not_better")
+
+    selected = market if reasons else raw_selected
+    status = (
+        "market_selected"
+        if str(raw_selected["name"]) == "market"
+        else "fallback_market"
+        if reasons
+        else "accepted_nonmarket"
+    )
+    return raw_selected, selected, {
+        "status": status,
+        "raw_selected_stack": str(raw_selected["name"]),
+        "final_selected_stack": str(selected["name"]),
+        "required_conditions": [
+            "validation_log_loss_delta_vs_market_below_zero",
+            "validation_days_better_at_least_half",
+            "validation_top5_hit_rate_not_below_market",
+        ],
+        "fallback_reasons": reasons,
+        "outer_period_used": False,
+    }
+
+
 def fit_temporal_stacked_market_residual(
     calibration: list[dict[str, Any]],
     evaluation: list[dict[str, Any]],
@@ -208,16 +267,8 @@ def fit_temporal_stacked_market_residual(
             "weights": dict(artifact["weights"]),
             "metrics": stacked_metrics(stack_validation, artifact),
         })
-    if not candidates:
-        raise ValueError("V42 requires stack candidates")
-    selected = min(
-        candidates,
-        key=lambda row: (
-            float(row["metrics"]["trifecta_log_loss"]),
-            float(row["weights"]["linear"])
-            + float(row["weights"]["nonlinear"]),
-            str(row["name"]),
-        ),
+    raw_selected, selected, stack_selection_gate = (
+        _select_conservative_stack(candidates)
     )
     selected_source = next(
         value for value in stack_candidates
@@ -237,6 +288,8 @@ def fit_temporal_stacked_market_residual(
         "base_training_through": dates[split_index - 1],
         "stack_validation_from": dates[split_index],
         "stack_candidates": candidates,
+        "raw_selected_stack": raw_selected["name"],
+        "stack_selection_gate": stack_selection_gate,
         "selected_stack": selected["name"],
         "selected_weights": selected["weights"],
         "component_selection": {

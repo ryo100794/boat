@@ -52,6 +52,11 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
         return {
             "base_training_through": "2026-02-17",
             "stack_validation_from": "2026-02-18",
+            "raw_selected_stack": "linear",
+            "stack_selection_gate": {
+                "status": "fallback_market",
+                "fallback_reasons": ["validation_top5_below_market"],
+            },
             "selected_stack": "market",
             "selected_weights": {
                 "market": 1.0,
@@ -115,6 +120,12 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
     assert result["evaluation_ledger_candidates"] == 100
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
+    assert result["probability_selection"]["raw_selected_stack"] == "linear"
+    assert result["probability_selection"]["selected_stack"] == "market"
+    assert result["probability_selection"]["stack_selection_gate"] == {
+        "status": "fallback_market",
+        "fallback_reasons": ["validation_top5_below_market"],
+    }
     assert "top20 contextual" in result["validation_design"]
     assert result["evidence_role"] == (
         "retrospective_research_only_candidate_universe_search"

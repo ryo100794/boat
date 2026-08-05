@@ -73,3 +73,73 @@ def test_stack_weight_uses_separate_prior_block_and_refits(monkeypatch) -> None:
     assert len(calls[0]) == 8
     assert len(calls[1]) == 10
     assert result["artifact"]["artifact_sha256"]
+
+def test_stack_falls_back_to_market_when_top5_degrades() -> None:
+    market = {
+        "name": "market",
+        "weights": {"market": 1.0, "linear": 0.0, "nonlinear": 0.0},
+        "metrics": {
+            "trifecta_log_loss": 1.0,
+            "log_loss_delta_vs_market": 0.0,
+            "trifecta_top5_hit_rate": 0.60,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 0,
+        },
+    }
+    linear = {
+        "name": "linear",
+        "weights": {"market": 0.0, "linear": 1.0, "nonlinear": 0.0},
+        "metrics": {
+            "trifecta_log_loss": 0.99,
+            "log_loss_delta_vs_market": -0.01,
+            "trifecta_top5_hit_rate": 0.59,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 6,
+        },
+    }
+
+    raw, selected, gate = subject._select_conservative_stack([market, linear])
+
+    assert raw["name"] == "linear"
+    assert selected["name"] == "market"
+    assert gate["status"] == "fallback_market"
+    assert gate["fallback_reasons"] == ["validation_top5_below_market"]
+    assert gate["outer_period_used"] is False
+
+
+def test_stack_accepts_nonmarket_only_when_all_prior_gates_pass() -> None:
+    market = {
+        "name": "market",
+        "weights": {"market": 1.0, "linear": 0.0, "nonlinear": 0.0},
+        "metrics": {
+            "trifecta_log_loss": 1.0,
+            "log_loss_delta_vs_market": 0.0,
+            "trifecta_top5_hit_rate": 0.60,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 0,
+        },
+    }
+    nonlinear = {
+        "name": "nonlinear",
+        "weights": {"market": 0.0, "linear": 0.0, "nonlinear": 1.0},
+        "metrics": {
+            "trifecta_log_loss": 0.98,
+            "log_loss_delta_vs_market": -0.02,
+            "trifecta_top5_hit_rate": 0.61,
+            "market_trifecta_top5_hit_rate": 0.60,
+            "evaluated_days": 10,
+            "days_better_than_market": 5,
+        },
+    }
+
+    raw, selected, gate = subject._select_conservative_stack(
+        [market, nonlinear]
+    )
+
+    assert raw["name"] == "nonlinear"
+    assert selected["name"] == "nonlinear"
+    assert gate["status"] == "accepted_nonmarket"
+    assert gate["fallback_reasons"] == []
