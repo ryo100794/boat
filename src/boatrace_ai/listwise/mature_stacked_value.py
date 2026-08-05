@@ -175,7 +175,7 @@ def evaluate_mature_stacked_value(
         "evaluation_races": len(evaluation),
         "purchase_max_rank": PURCHASE_MAX_RANK,
         "candidate_population": (
-            "all_stacked_probability_top5_before_purchase_gate"
+            "all_stacked_probability_top20_before_purchase_gate"
         ),
         "probability_selection": {
             key: probability.get(key)

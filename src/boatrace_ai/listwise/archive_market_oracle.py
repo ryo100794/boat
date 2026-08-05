@@ -81,7 +81,10 @@ from .mature_stacked_value import evaluate_mature_stacked_value
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 20
+EVALUATION_VERSION = 21
+TARGETED_TEMPORAL_COMPONENTS = (
+    "mature_stacked_contextual_value",
+)
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -349,8 +352,14 @@ def temporal_residual_diagnostic(
     regularization: float = 0.01,
     calibration_through: str | None = None,
     daily_budget_yen: int = 10_000,
+    temporal_component: str | None = None,
 ) -> dict[str, Any]:
     """Fit a market residual on prior days and score untouched later days."""
+    if (
+        temporal_component is not None
+        and temporal_component not in TARGETED_TEMPORAL_COMPONENTS
+    ):
+        raise ValueError(f"unknown temporal component: {temporal_component}")
     dates = sorted({str(race["race_date"]) for race in races})
     if len(dates) < 4:
         return {
@@ -378,6 +387,57 @@ def temporal_residual_diagnostic(
     evaluation = [
         race for race in races if str(race["race_date"]) in evaluation_dates
     ]
+    if temporal_component == "mature_stacked_contextual_value":
+        mature = evaluate_mature_stacked_value(
+            calibration,
+            evaluation,
+            daily_budget_yen=daily_budget_yen,
+        )
+        probability_metrics = mature.get("evaluation_probability_metrics")
+        probability_metrics = (
+            probability_metrics
+            if isinstance(probability_metrics, Mapping)
+            else {"evaluated_races": len(evaluation)}
+        )
+        probability_artifact = mature.get("probability_artifact")
+        probability_artifact = (
+            probability_artifact
+            if isinstance(probability_artifact, Mapping)
+            else {}
+        )
+        probability_selection = mature.get("probability_selection")
+        probability_selection = (
+            probability_selection
+            if isinstance(probability_selection, Mapping)
+            else {}
+        )
+        return {
+            "status": "completed",
+            "validation_design": (
+                "Targeted execution of the preregistered mature stacked value "
+                "component on the same prior calibration and untouched outer "
+                "period; unrelated residual families are not refit."
+            ),
+            "targeted_temporal_component": temporal_component,
+            "calibration_from": dates[0],
+            "calibration_through": dates[split_index - 1],
+            "evaluation_from": dates[split_index],
+            "evaluation_through": dates[-1],
+            "calibration_days": split_index,
+            "evaluation_days": len(dates) - split_index,
+            "calibration_races": len(calibration),
+            "evaluation_races": len(evaluation),
+            "stacked_market_residual_v42": {
+                "status": mature.get("status"),
+                "metrics": dict(probability_metrics),
+                "artifact": dict(probability_artifact),
+                "selected_stack": probability_selection.get("selected_stack"),
+                "selected_weights": probability_selection.get("selected_weights"),
+                "outer_period_used_for_selection": False,
+            },
+            "mature_stacked_contextual_value": mature,
+        }
+
     calibrator = fit_log_pool_newton(
         calibration,
         regularization=regularization,
@@ -786,6 +846,7 @@ def evaluate_archive_oracle(
     *,
     daily_budget_yen: int,
     temporal_calibration_through: str | None = None,
+    temporal_component: str | None = None,
 ) -> dict[str, Any]:
     diagnostics = []
     primary = None
@@ -844,6 +905,7 @@ def evaluate_archive_oracle(
         races,
         calibration_through=temporal_calibration_through,
         daily_budget_yen=daily_budget_yen,
+        temporal_component=temporal_component,
     )
     prediction = probability_metrics(races, calibrator=PRIMARY_CALIBRATOR)
     return {
@@ -890,6 +952,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-date", required=True)
     parser.add_argument("--through-date", required=True)
     parser.add_argument("--temporal-calibration-through")
+    parser.add_argument(
+        "--temporal-component",
+        choices=TARGETED_TEMPORAL_COMPONENTS,
+    )
     parser.add_argument("--daily-budget-yen", type=int, default=10_000)
     parser.add_argument("--output", type=Path, required=True)
     return parser
@@ -914,9 +980,11 @@ def main(argv: list[str] | None = None) -> int:
         races,
         daily_budget_yen=args.daily_budget_yen,
         temporal_calibration_through=args.temporal_calibration_through,
+        temporal_component=args.temporal_component,
     )
     result.update({
         "evaluation_version": EVALUATION_VERSION,
+        "targeted_temporal_component": args.temporal_component,
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "from_date": args.from_date,
         "through_date": args.through_date,

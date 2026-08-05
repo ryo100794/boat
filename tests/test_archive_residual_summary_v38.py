@@ -275,6 +275,7 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     base = {
         "model": "archive_closing_market_oracle_v1",
         "temporal_residual_diagnostic": {
+            "targeted_temporal_component": "mature_stacked_contextual_value",
             "stacked_market_residual_v42": {
                 "metrics": {"evaluated_races": 20},
                 "artifact": {},
@@ -314,3 +315,6 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     summary = summarize_result(base)
     assert summary["nested_value_model"] == "mature_stacked_contextual_value"
     assert summary["nested_value_evaluated_races"] == 20
+    assert summary["targeted_temporal_component"] == (
+        "mature_stacked_contextual_value"
+    )

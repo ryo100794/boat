@@ -109,6 +109,10 @@ def apply_archive_residual_summary(
     temporal = payload.get("temporal_residual_diagnostic")
     if not isinstance(temporal, Mapping):
         return
+    targeted_component = temporal.get("targeted_temporal_component")
+    if targeted_component is not None:
+        summary["targeted_temporal_component"] = targeted_component
+
     selected_name = selected = selected_metric_key = selected_artifact_key = None
     for result_key, model_name, metric_key, artifact_key in RESIDUAL_MODELS:
         candidate = temporal.get(result_key)

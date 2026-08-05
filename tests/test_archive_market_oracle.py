@@ -12,7 +12,7 @@ from boatrace_ai.listwise.archive_market_oracle import (
 )
 
 def test_v33_archive_protocol_uses_new_evaluation_version() -> None:
-    assert EVALUATION_VERSION == 20
+    assert EVALUATION_VERSION == 21
 
 
 def test_restrict_probabilities_renormalizes_after_withdrawal() -> None:
@@ -105,3 +105,65 @@ def test_temporal_residual_requires_four_days() -> None:
         "calibration_days": 0,
         "evaluation_days": 0,
     }
+
+def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
+    monkeypatch,
+) -> None:
+    races = [
+        _residual_race("2026-01-01", "1-2-3"),
+        _residual_race("2026-01-02", "1-3-2"),
+        _residual_race("2026-01-03", "1-2-3"),
+        _residual_race("2026-01-04", "1-2-3"),
+    ]
+    calls: list[tuple[int, int, int]] = []
+
+    def fake_mature(calibration, evaluation, *, daily_budget_yen, num_threads=4):
+        del num_threads
+        calls.append((len(calibration), len(evaluation), daily_budget_yen))
+        return {
+            "model": "mature_stacked_contextual_value_rank20",
+            "status": "completed",
+            "evaluation_probability_metrics": {
+                "evaluated_races": len(evaluation),
+                "trifecta_log_loss": 3.5,
+                "market_trifecta_log_loss": 3.6,
+            },
+            "probability_artifact": {"artifact_sha256": "a" * 64},
+            "probability_selection": {
+                "selected_stack": "linear50_nonlinear50",
+                "selected_weights": {"linear": 0.5, "nonlinear": 0.5},
+            },
+            "bankroll": {"stake_yen": 0},
+            "promotion_eligible": False,
+        }
+
+    monkeypatch.setattr(
+        "boatrace_ai.listwise.archive_market_oracle.evaluate_mature_stacked_value",
+        fake_mature,
+    )
+    result = temporal_residual_diagnostic(
+        races,
+        calibration_through="2026-01-02",
+        daily_budget_yen=12_000,
+        temporal_component="mature_stacked_contextual_value",
+    )
+
+    assert calls == [(2, 2, 12_000)]
+    assert result["targeted_temporal_component"] == (
+        "mature_stacked_contextual_value"
+    )
+    assert result["calibration_through"] == "2026-01-02"
+    assert result["evaluation_from"] == "2026-01-03"
+    assert result["stacked_market_residual_v42"]["metrics"][
+        "evaluated_races"
+    ] == 2
+    assert result["mature_stacked_contextual_value"]["status"] == "completed"
+    assert "ticket_utility_calibration_aligned_v33" not in result
+
+
+def test_targeted_temporal_component_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError, match="unknown temporal component"):
+        temporal_residual_diagnostic(
+            [_residual_race("2026-01-01", "1-2-3")],
+            temporal_component="unknown",
+        )

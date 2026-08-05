@@ -3656,7 +3656,9 @@ def build_command(
     if task_type == "archive_market_oracle":
         allowed = {
             "from_date", "through_date", "model_input", "daily_budget_yen",
-            "timeout_seconds", "temporal_calibration_through",
+            "timeout_seconds",
+            "temporal_calibration_through",
+            "temporal_component",
         }
         unsupported = set(params) - allowed
         if unsupported:
@@ -3679,6 +3681,13 @@ def build_command(
                 raise ValueError(
                     "oracle temporal cutoff must be inside evaluation period"
                 )
+        temporal_component = params.get("temporal_component")
+        if (
+            temporal_component is not None
+            and temporal_component != "mature_stacked_contextual_value"
+        ):
+            raise ValueError("unsupported oracle temporal component")
+
         model_input = (app_root / str(params["model_input"])).resolve()
         model_root = (app_root / "data" / "models").resolve()
         if model_root not in model_input.parents:
@@ -3697,6 +3706,10 @@ def build_command(
         if temporal_calibration_through is not None:
             command.extend([
                 "--temporal-calibration-through", temporal_calibration_through,
+            ])
+        if temporal_component is not None:
+            command.extend([
+                "--temporal-component", str(temporal_component),
             ])
         return command, output
     if task_type in {

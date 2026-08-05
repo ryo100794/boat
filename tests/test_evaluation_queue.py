@@ -748,6 +748,7 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
                 "daily_budget_yen": 10000,
                 "timeout_seconds": 43200,
                 "temporal_calibration_through": "2026-07-17",
+                "temporal_component": "mature_stacked_contextual_value",
             },
         ),
         app_root=root,
@@ -761,6 +762,9 @@ def test_archive_market_oracle_command_is_period_bounded(tmp_path) -> None:
         "2026-07-17"
     )
     assert command[command.index("--daily-budget-yen") + 1] == "10000"
+    assert command[command.index("--temporal-component") + 1] == (
+        "mature_stacked_contextual_value"
+    )
     assert output == root / "data/models/evaluation_queue/job-00000007.json"
 
 
