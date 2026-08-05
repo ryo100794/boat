@@ -149,6 +149,39 @@ def test_limits_three_per_race_and_thirty_per_day_in_lcb_order():
     assert ordering == sorted(ordering, reverse=True)
 
 
+def test_configurable_one_ticket_per_race_matches_value_selection_policy():
+    combinations = {f"c{index:02d}": 0.30 - index * 0.005 for index in range(8)}
+    races = [_race(f"r{index:02d}", probabilities=combinations) for index in range(12)]
+    result = simulate_empirical_lcb_policy(
+        races,
+        CALIBRATOR,
+        _blend,
+        _RankArtifact(),
+        10_000,
+        max_tickets_per_race=1,
+    )
+
+    audit = result["daily"][0]["eligible_candidate_audit"]
+    assert len(audit) == 12
+    assert all(
+        sum(row["race_id"] == race["race_id"] for row in audit) == 1
+        for race in races
+    )
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5])
+def test_max_tickets_per_race_requires_positive_integer(invalid):
+    with pytest.raises(ValueError, match="max_tickets_per_race"):
+        simulate_empirical_lcb_policy(
+            [_race("r1")],
+            CALIBRATOR,
+            _blend,
+            _Artifact(),
+            10_000,
+            max_tickets_per_race=invalid,
+        )
+
+
 def test_policy_passes_probability_rank_and_forecast_odds_to_artifact():
     calls = []
 

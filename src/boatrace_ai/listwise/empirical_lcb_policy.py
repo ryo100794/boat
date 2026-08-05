@@ -244,6 +244,7 @@ def _race_candidates(
     buy_threshold: float = 1.0,
     purchase_gate_enabled: bool = True,
     purchase_gate_denial_reason: str = "warmup_not_ready",
+    max_tickets_per_race: int = MAX_TICKETS_PER_RACE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     probabilities = _blended_probabilities(race, calibrator, probability_blender)
     odds = decision_odds(race)
@@ -368,7 +369,7 @@ def _race_candidates(
         candidates.append(candidate)
     return (
         sorted(candidates, key=_candidate_sort_key, reverse=True)[
-            :MAX_TICKETS_PER_RACE
+            :max_tickets_per_race
         ],
         decisions,
     )
@@ -436,12 +437,19 @@ def simulate_empirical_lcb_policy(
     buy_threshold: float = 1.0,
     purchase_gate_enabled: bool = True,
     purchase_gate_denial_reason: str = "warmup_not_ready",
+    max_tickets_per_race: int = MAX_TICKETS_PER_RACE,
 ) -> dict[str, Any]:
     """Use a pre-fitted prior-only artifact; current/future teachers are not accepted."""
     if daily_budget_yen <= 0:
         raise ValueError("daily_budget_yen must be positive")
     if not isfinite(float(buy_threshold)) or float(buy_threshold) < 1.0:
         raise ValueError("buy_threshold must be finite and at least gross ROI 1")
+    if (
+        isinstance(max_tickets_per_race, bool)
+        or not isinstance(max_tickets_per_race, int)
+        or max_tickets_per_race < 1
+    ):
+        raise ValueError("max_tickets_per_race must be a positive integer")
     _verify_prior_only_artifact(races, artifact)
     races_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for race in races:
@@ -472,6 +480,7 @@ def simulate_empirical_lcb_policy(
                     buy_threshold,
                     purchase_gate_enabled,
                     purchase_gate_denial_reason,
+                    max_tickets_per_race,
                 )
                 candidates.extend(race_candidates)
                 candidate_decisions.extend(race_decisions)

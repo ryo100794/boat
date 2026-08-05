@@ -27,6 +27,7 @@ MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_STACK_SELECTION_DAYS = 60
 VALUE_CALIBRATION_DAYS = 60
 PURCHASE_MAX_RANK = 20
+PURCHASE_MAX_TICKETS_PER_RACE = 1
 CONTEXT_AUDIT_BOOTSTRAP_SAMPLES = 5_000
 VALUE_ALIGNED_STACK_POLICY_ID = (
     "top20_max_raw_ev_familywise_q01_top5_noninferiority_disjoint_v2"
@@ -586,6 +587,7 @@ def evaluate_mature_stacked_value(
         empirical,
         daily_budget_yen,
         max_rank=PURCHASE_MAX_RANK,
+        max_tickets_per_race=PURCHASE_MAX_TICKETS_PER_RACE,
     )
     confidence = (
         bootstrap_daily_roi(bankroll["daily"])
@@ -645,6 +647,7 @@ def evaluate_mature_stacked_value(
         ),
         "evaluation_races": len(evaluation),
         "purchase_max_rank": PURCHASE_MAX_RANK,
+        "purchase_max_tickets_per_race": PURCHASE_MAX_TICKETS_PER_RACE,
         "candidate_population": (
             "all_stacked_probability_top20_before_purchase_gate"
         ),

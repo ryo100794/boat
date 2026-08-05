@@ -153,6 +153,7 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     assert result["evaluation_ledger_candidates"] == 100
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
+    assert result["purchase_max_tickets_per_race"] == 1
     assert result["probability_selection"]["raw_selected_stack"] == "linear"
     assert result["probability_selection"]["selected_stack"] == "market"
     assert result["probability_selection"]["stack_selection_gate"] == {
