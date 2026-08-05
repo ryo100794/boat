@@ -20,6 +20,7 @@ import numpy as np
 from ..adaptive_allocation import allocate_adaptive_day
 from ..archive_closing_odds import OFFICIAL_SOURCE_KEY, SOURCE_KEY
 from ..bankroll_bootstrap import (
+    BOOTSTRAP_QUANTILE_METHOD,
     DEFAULT_CHUNK_SIZE as BANKROLL_BOOTSTRAP_CHUNK_SIZE,
     DEFAULT_SEED as BANKROLL_BOOTSTRAP_SEED,
     bootstrap_daily_roi,
@@ -1977,7 +1978,13 @@ def _v17_batch_bootstrap_roi_lowers(
                 sampled_returns[valid, column]
                 / sampled_stakes[valid, column]
             )
-            unique_lowers.append(float(np.quantile(roi, 0.05)))
+            unique_lowers.append(
+                float(
+                    np.quantile(
+                        roi, 0.05, method=BOOTSTRAP_QUANTILE_METHOD
+                    )
+                )
+            )
     return [unique_lowers[int(index)] for index in inverse]
 
 

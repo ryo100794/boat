@@ -60,8 +60,9 @@ def test_two_day_bootstrap_matches_all_possible_cluster_draws(monkeypatch) -> No
     assert result["samples"] == 4
     assert result["valid_samples"] == 4
     assert result["roi_ci95_lower"] == pytest.approx(
-        np.quantile(exhaustive_roi, 0.05)
+        np.quantile(exhaustive_roi, 0.05, method="inverted_cdf")
     )
+    assert result["quantile_method"] == "inverted_cdf"
     assert result["probability_roi_above_one"] == 0.25
 
 
@@ -82,9 +83,10 @@ def test_bootstrap_supports_predeclared_stricter_lower_quantile(
     )
     exhaustive_roi = np.asarray([0.0, 1.0, 1.0, 2.0])
     assert result["roi_ci95_lower"] == pytest.approx(
-        np.quantile(exhaustive_roi, 0.01)
+        np.quantile(exhaustive_roi, 0.01, method="inverted_cdf")
     )
     assert result["roi_lower_quantile"] == 0.01
+    assert result["quantile_method"] == "inverted_cdf"
 
 
 @pytest.mark.parametrize("value", [True, 0.0, 0.5, -0.1, float("nan")])
@@ -150,6 +152,7 @@ def test_all_zero_stake_draws_report_undefined_roi_statistics() -> None:
         "profit_yen": 0.0,
         "roi": None,
         "roi_lower_quantile": 0.05,
+        "quantile_method": "inverted_cdf",
         "roi_ci95_lower": None,
         "probability_roi_above_one": None,
     }
@@ -296,6 +299,8 @@ def test_moving_block_bootstrap_preserves_complete_consecutive_days(
     assert result["blocks_per_sample"] == 2
     assert result["valid_samples"] == 2
     assert result["roi_ci95_lower"] == pytest.approx(1.0)
+    assert result["roi_lower_quantile"] == 0.05
+    assert result["quantile_method"] == "inverted_cdf"
     assert result["probability_roi_above_one"] == 0.0
 
 

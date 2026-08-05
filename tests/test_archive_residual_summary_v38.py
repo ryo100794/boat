@@ -380,7 +380,18 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
             "format": "joblib",
             "candidate_decision_count": 456,
         },
-        "bankroll": {"tickets": 0, "stake_yen": 0, "roi": None},
+        "formal_roi_gate": {
+            "cluster_unit": "complete_race_date",
+            "lower_quantile": 0.05,
+            "quantile_method": "inverted_cdf",
+        },
+        "bankroll": {
+            "tickets": 0,
+            "stake_yen": 0,
+            "roi": None,
+            "roi_lower_quantile": 0.05,
+            "roi_quantile_method": "inverted_cdf",
+        },
         "promotion_eligible": False,
     }
     summary = summarize_result(base)
@@ -408,6 +419,11 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     assert aligned["selected_stack"] == "linear"
     assert aligned["outer_period_used"] is False
     assert aligned["candidates"][0]["roi_lcb95"] == 0.91
+    assert summary["nested_value_roi_lower_quantile"] == 0.05
+    assert summary["nested_value_roi_quantile_method"] == "inverted_cdf"
+    assert summary["nested_value_formal_roi_gate"]["cluster_unit"] == (
+        "complete_race_date"
+    )
     assert summary["nested_value_context_audit"]["evaluation"][0] == {
         "rank_group": "top5",
         "odds_band": "<20",

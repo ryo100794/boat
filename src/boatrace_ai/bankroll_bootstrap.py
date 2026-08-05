@@ -12,6 +12,7 @@ import numpy as np
 DEFAULT_BOOTSTRAP_SAMPLES = 20_000
 DEFAULT_SEED = 20260728
 DEFAULT_CHUNK_SIZE = 2_000
+BOOTSTRAP_QUANTILE_METHOD = "inverted_cdf"
 MAX_EXACT_YEN = float(2**53 - 1)
 
 
@@ -169,7 +170,13 @@ def bootstrap_daily_roi(
 
     if valid_count:
         valid_roi = bootstrap_roi[:valid_count]
-        roi_lower = float(np.quantile(valid_roi, normalized_lower_quantile))
+        roi_lower = float(
+            np.quantile(
+                valid_roi,
+                normalized_lower_quantile,
+                method=BOOTSTRAP_QUANTILE_METHOD,
+            )
+        )
         probability_above_one = float(np.mean(valid_roi > 1.0))
     else:
         roi_lower = None
@@ -185,6 +192,7 @@ def bootstrap_daily_roi(
         "roi": observed_roi,
         "roi_ci95_lower": roi_lower,
         "roi_lower_quantile": normalized_lower_quantile,
+        "quantile_method": BOOTSTRAP_QUANTILE_METHOD,
         "probability_roi_above_one": probability_above_one,
     }
 
@@ -263,7 +271,11 @@ def moving_block_bootstrap_roi(
 
     if valid_count:
         valid_roi = bootstrap_roi[:valid_count]
-        roi_lower = float(np.quantile(valid_roi, 0.05))
+        roi_lower = float(
+            np.quantile(
+                valid_roi, 0.05, method=BOOTSTRAP_QUANTILE_METHOD
+            )
+        )
         probability_above_one = float(np.mean(valid_roi > 1.0))
     else:
         roi_lower = None
@@ -280,6 +292,8 @@ def moving_block_bootstrap_roi(
         "profit_yen": float(observed_return - observed_stake),
         "roi": observed_roi,
         "roi_ci95_lower": roi_lower,
+        "roi_lower_quantile": 0.05,
+        "quantile_method": BOOTSTRAP_QUANTILE_METHOD,
         "probability_roi_above_one": probability_above_one,
     }
 

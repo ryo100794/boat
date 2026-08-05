@@ -4048,6 +4048,15 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_roi_ci95_lower": _float_or_none(
                     metrics.get("nested_value_roi_ci95_lower")
                 ),
+                "nested_value_roi_lower_quantile": _float_or_none(
+                    metrics.get("nested_value_roi_lower_quantile")
+                ),
+                "nested_value_roi_quantile_method": metrics.get(
+                    "nested_value_roi_quantile_method"
+                ),
+                "nested_value_formal_roi_gate": metrics.get(
+                    "nested_value_formal_roi_gate"
+                ),
                 "nested_value_probability_roi_above_one": _float_or_none(
                     metrics.get("nested_value_probability_roi_above_one")
                 ),

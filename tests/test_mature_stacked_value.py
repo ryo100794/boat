@@ -154,6 +154,14 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
     assert result["purchase_max_tickets_per_race"] == 1
+    assert result["formal_roi_gate"] == {
+        "cluster_unit": "complete_race_date",
+        "lower_quantile": 0.05,
+        "quantile_method": "inverted_cdf",
+        "condition": "day_block_roi_lower_quantile_strictly_above_one",
+    }
+    assert result["bankroll"]["roi_lower_quantile"] == 0.05
+    assert result["bankroll"]["roi_quantile_method"] == "inverted_cdf"
     assert result["probability_selection"]["raw_selected_stack"] == "linear"
     assert result["probability_selection"]["selected_stack"] == "market"
     assert result["probability_selection"]["stack_selection_gate"] == {
@@ -331,6 +339,7 @@ def test_value_aligned_stack_selects_highest_supported_lcb(
     assert audit["candidate_family_size"] == 3
     assert audit["shortlisted_candidates"] == 3
     assert audit["selection_lower_quantile"] == 0.01
+    assert audit["selection_quantile_method"] == "inverted_cdf"
     assert audit["familywise_candidate_cap"] == 5
     assert audit["minimum_candidate_days"] == 50
     nonlinear = next(
@@ -375,6 +384,8 @@ def test_value_alignment_metrics_use_one_ticket_per_race_and_yen_payout(
     assert metrics["mean_selected_raw_ev"] == pytest.approx(1.8)
     assert metrics["roi"] == 3.0
     assert metrics["roi_lcb95"] == 3.0
+    assert metrics["roi_lower_quantile"] == 0.01
+    assert metrics["roi_quantile_method"] == "inverted_cdf"
     assert metrics["roi_excluding_largest_hit"] == 1.5
     assert metrics["trifecta_top5_hit_rate"] == 1.0
     assert metrics["market_trifecta_top5_hit_rate"] == 1.0

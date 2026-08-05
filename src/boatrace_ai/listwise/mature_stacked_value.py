@@ -4,7 +4,10 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-from ..bankroll_bootstrap import bootstrap_daily_roi
+from ..bankroll_bootstrap import (
+    BOOTSTRAP_QUANTILE_METHOD,
+    bootstrap_daily_roi,
+)
 from .closing_odds import decision_odds
 from .contextual_empirical_ev_calibration import (
     fit_contextual_empirical_ev_calibration,
@@ -301,6 +304,8 @@ def _value_alignment_metrics(
         else {
             "roi": None,
             "roi_ci95_lower": None,
+            "roi_lower_quantile": VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE,
+            "quantile_method": BOOTSTRAP_QUANTILE_METHOD,
             "probability_roi_above_one": None,
         }
     )
@@ -314,6 +319,8 @@ def _value_alignment_metrics(
         ),
         "roi": confidence.get("roi"),
         "roi_lcb95": confidence.get("roi_ci95_lower"),
+        "roi_lower_quantile": confidence.get("roi_lower_quantile"),
+        "roi_quantile_method": confidence.get("quantile_method"),
         "probability_roi_above_one": confidence.get(
             "probability_roi_above_one"
         ),
@@ -438,6 +445,7 @@ def select_value_aligned_stack(
         "selection_lower_quantile": (
             VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE
         ),
+        "selection_quantile_method": BOOTSTRAP_QUANTILE_METHOD,
         "familywise_candidate_cap": 5,
         "minimum_candidate_days": VALUE_ALIGNED_STACK_MIN_DAYS,
         "minimum_tickets": VALUE_ALIGNED_STACK_MIN_TICKETS,
@@ -595,6 +603,8 @@ def evaluate_mature_stacked_value(
         else {
             "roi": None,
             "roi_ci95_lower": None,
+            "roi_lower_quantile": 0.05,
+            "quantile_method": BOOTSTRAP_QUANTILE_METHOD,
             "probability_roi_above_one": None,
         }
     )
@@ -606,6 +616,8 @@ def evaluate_mature_stacked_value(
             else "N/A"
         ),
         "roi_ci95_lower": confidence.get("roi_ci95_lower"),
+        "roi_lower_quantile": confidence.get("roi_lower_quantile"),
+        "roi_quantile_method": confidence.get("quantile_method"),
         "probability_roi_above_one": confidence.get(
             "probability_roi_above_one"
         ),
@@ -648,6 +660,12 @@ def evaluate_mature_stacked_value(
         "evaluation_races": len(evaluation),
         "purchase_max_rank": PURCHASE_MAX_RANK,
         "purchase_max_tickets_per_race": PURCHASE_MAX_TICKETS_PER_RACE,
+        "formal_roi_gate": {
+            "cluster_unit": "complete_race_date",
+            "lower_quantile": 0.05,
+            "quantile_method": BOOTSTRAP_QUANTILE_METHOD,
+            "condition": "day_block_roi_lower_quantile_strictly_above_one",
+        },
         "candidate_population": (
             "all_stacked_probability_top20_before_purchase_gate"
         ),

@@ -117,6 +117,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "refit_excludes_empirical_gate_calibration" in MODEL_REPORT_HTML
     assert "officialCoverageEvidence" in MODEL_REPORT_HTML
     assert "official_monthly_coverage" in MODEL_REPORT_HTML
+    assert "nested_value_roi_quantile_method" in MODEL_REPORT_HTML
+    assert "nested_value_roi_lower_quantile" in MODEL_REPORT_HTML
     assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML
     assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
@@ -336,6 +338,13 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "nested_value_stake_yen": 0,
         "nested_value_roi": None,
         "nested_value_roi_display": "N/A",
+        "nested_value_roi_lower_quantile": 0.05,
+        "nested_value_roi_quantile_method": "inverted_cdf",
+        "nested_value_formal_roi_gate": {
+            "cluster_unit": "complete_race_date",
+            "lower_quantile": 0.05,
+            "quantile_method": "inverted_cdf",
+        },
         "nested_value_promotion_eligible": False,
         "roi_without_largest_hit": 0.82,
         "trifecta_log_loss": 3.79,
@@ -480,6 +489,11 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["official_monthly_coverage"][0]["month"] == (
         "2026-01"
     )
+    assert status["jobs"][0]["nested_value_roi_lower_quantile"] == 0.05
+    assert status["jobs"][0]["nested_value_roi_quantile_method"] == "inverted_cdf"
+    assert status["jobs"][0]["nested_value_formal_roi_gate"][
+        "cluster_unit"
+    ] == "complete_race_date"
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
     assert status["jobs"][0]["nested_value_raw_selected_stack"] == "linear"
     assert status["jobs"][0]["nested_value_selected_stack"] == "market"

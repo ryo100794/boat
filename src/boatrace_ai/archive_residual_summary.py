@@ -603,6 +603,13 @@ def apply_archive_residual_summary(
             "nested_value_roi_ci95_lower": nested_bankroll.get(
                 "roi_ci95_lower"
             ),
+            "nested_value_roi_lower_quantile": nested_bankroll.get(
+                "roi_lower_quantile"
+            ),
+            "nested_value_roi_quantile_method": nested_bankroll.get(
+                "roi_quantile_method"
+            ),
+            "nested_value_formal_roi_gate": nested.get("formal_roi_gate"),
             "nested_value_probability_roi_above_one": nested_bankroll.get(
                 "probability_roi_above_one"
             ),
