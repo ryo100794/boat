@@ -402,6 +402,20 @@ def apply_archive_residual_summary(
             if isinstance(nested_calibration, Mapping)
             else {}
         )
+        nested_probability_selection = nested.get("probability_selection")
+        nested_probability_selection = (
+            nested_probability_selection
+            if isinstance(nested_probability_selection, Mapping)
+            else {}
+        )
+        nested_stack_gate = nested_probability_selection.get(
+            "stack_selection_gate"
+        )
+        nested_stack_gate = (
+            nested_stack_gate
+            if isinstance(nested_stack_gate, Mapping)
+            else {}
+        )
         nested_global_calibration = nested_calibration.get(
             "global_calibration"
         )
@@ -437,6 +451,21 @@ def apply_archive_residual_summary(
         summary.update({
             "nested_value_model": nested.get("model"),
             "nested_value_status": nested.get("status"),
+            "nested_value_raw_selected_stack": nested_probability_selection.get(
+                "raw_selected_stack"
+            ),
+            "nested_value_selected_stack": nested_probability_selection.get(
+                "selected_stack"
+            ),
+            "nested_value_stack_selection_gate_status": nested_stack_gate.get(
+                "status"
+            ),
+            "nested_value_stack_selection_fallback_reasons": (
+                nested_stack_gate.get("fallback_reasons")
+            ),
+            "nested_value_stack_selection_required_conditions": (
+                nested_stack_gate.get("required_conditions")
+            ),
             "nested_value_model_training_from": nested.get(
                 "model_training_from"
             ),

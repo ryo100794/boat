@@ -106,6 +106,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nested_value_decile_audit" in MODEL_REPORT_HTML
     assert "id=\"nestedContextRows\"" in MODEL_REPORT_HTML
     assert "nested_value_context_audit" in MODEL_REPORT_HTML
+    assert "nestedStackGateEvidence" in MODEL_REPORT_HTML
+    assert "nested_value_stack_selection_fallback_reasons" in MODEL_REPORT_HTML
     assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML
     assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
@@ -233,6 +235,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         ),
         "nested_value_model": "nested_nonlinear_value_calibration_v40",
         "nested_value_status": "completed",
+        "nested_value_raw_selected_stack": "linear",
+        "nested_value_selected_stack": "market",
+        "nested_value_stack_selection_gate_status": "fallback_market",
+        "nested_value_stack_selection_fallback_reasons": [
+            "validation_top5_below_market"
+        ],
+        "nested_value_stack_selection_required_conditions": [
+            "validation_top5_hit_rate_not_below_market"
+        ],
         "nested_value_model_training_from": "2026-05-10",
         "nested_value_model_training_through": "2026-05-31",
         "nested_value_model_training_days": 22,
@@ -405,6 +416,14 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["required_minimum_decision_lead_seconds"] == 300.0
     assert status["jobs"][0]["calibration_context_ready_cells"] == 2
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
+    assert status["jobs"][0]["nested_value_raw_selected_stack"] == "linear"
+    assert status["jobs"][0]["nested_value_selected_stack"] == "market"
+    assert status["jobs"][0]["nested_value_stack_selection_gate_status"] == (
+        "fallback_market"
+    )
+    assert status["jobs"][0][
+        "nested_value_stack_selection_fallback_reasons"
+    ] == ["validation_top5_below_market"]
     assert status["jobs"][0]["nested_value_calibration_bins"][0][
         "empirical_ev_lcb95"
     ] == 0.7

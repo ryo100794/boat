@@ -3882,6 +3882,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "nested_value_model": metrics.get("nested_value_model"),
                 "nested_value_status": metrics.get("nested_value_status"),
+                "nested_value_raw_selected_stack": metrics.get(
+                    "nested_value_raw_selected_stack"
+                ),
+                "nested_value_selected_stack": metrics.get(
+                    "nested_value_selected_stack"
+                ),
+                "nested_value_stack_selection_gate_status": metrics.get(
+                    "nested_value_stack_selection_gate_status"
+                ),
+                "nested_value_stack_selection_fallback_reasons": metrics.get(
+                    "nested_value_stack_selection_fallback_reasons"
+                ),
+                "nested_value_stack_selection_required_conditions": metrics.get(
+                    "nested_value_stack_selection_required_conditions"
+                ),
                 "nested_value_model_training_from": metrics.get(
                     "nested_value_model_training_from"
                 ),

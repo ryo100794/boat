@@ -309,6 +309,15 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
         "status": "completed",
         "evaluation_probability_metrics": {"evaluated_races": 20},
         "empirical_ev_calibration": {"ready": True, "cells": []},
+        "probability_selection": {
+            "raw_selected_stack": "linear",
+            "selected_stack": "market",
+            "stack_selection_gate": {
+                "status": "fallback_market",
+                "fallback_reasons": ["validation_top5_below_market"],
+                "required_conditions": ["validation_top5_not_below_market"],
+            },
+        },
         "context_value_audit": {
             "status": "completed",
             "evaluation": [{"rank_group": "top5", "odds_band": "<20"}],
@@ -325,6 +334,14 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     summary = summarize_result(base)
     assert summary["nested_value_model"] == "mature_stacked_contextual_value"
     assert summary["nested_value_evaluated_races"] == 20
+    assert summary["nested_value_raw_selected_stack"] == "linear"
+    assert summary["nested_value_selected_stack"] == "market"
+    assert summary["nested_value_stack_selection_gate_status"] == (
+        "fallback_market"
+    )
+    assert summary["nested_value_stack_selection_fallback_reasons"] == [
+        "validation_top5_below_market"
+    ]
     assert summary["nested_value_context_audit"]["evaluation"][0] == {
         "rank_group": "top5",
         "odds_band": "<20",
