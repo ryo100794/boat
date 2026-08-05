@@ -113,3 +113,7 @@ def test_v44_waits_for_training_history() -> None:
     )
     assert result["status"] == "insufficient_training_history"
     assert result["ready_reasons"] == ["training_days_below_minimum"]
+    assert result["decision_time_boundary_all_passed"] is True
+    assert result["decision_time_boundary_violations"] == 0
+    assert result["maximum_input_snapshot_age_seconds"] == 60.0
+    assert result["allowed_input_snapshot_age_seconds"] == 65.0

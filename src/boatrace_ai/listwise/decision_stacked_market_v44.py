@@ -12,6 +12,7 @@ from .decision_market_residual_v38 import (
     DEFAULT_MINIMUM_TRAINING_DAYS,
     DEFAULT_MINIMUM_TRAINING_RACES,
     FORBIDDEN_SOURCE_PREFIXES,
+    MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS,
     MAXIMUM_TOP5_HIT_RATE_DEGRADATION,
     MINIMUM_SELECTION_HOLDOUT_DAYS,
     _iso_date,
@@ -65,6 +66,16 @@ def fit_decision_time_stacked_market(
         "forbidden_source_prefixes": list(FORBIDDEN_SOURCE_PREFIXES),
         "calibration_through": cutoff,
         "training_from": training_dates[0] if training_dates else None,
+        "decision_time_boundary_all_passed": True,
+        "decision_time_boundary_violations": 0,
+        "maximum_input_snapshot_age_seconds": (
+            max(
+                float(race["input_snapshot_age_seconds"])
+                for race in sanitized
+            )
+            if sanitized else None
+        ),
+        "allowed_input_snapshot_age_seconds": MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS,
         "training_through": training_dates[-1] if training_dates else None,
         "training_days": len(training_dates),
         "training_races": len(calibration),
