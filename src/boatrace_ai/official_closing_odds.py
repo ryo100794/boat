@@ -71,6 +71,68 @@ def _confirmed_result_boats(conn: Any, race_id: str) -> int:
     return int(row["boats"] if row is not None else 0)
 
 
+def _confirmed_dead_heat(conn: Any, race_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT lane) AS boats,
+               COUNT(DISTINCT rank) AS ranks
+        FROM race_results
+        WHERE race_id = ? AND rank IS NOT NULL
+        """,
+        (race_id,),
+    ).fetchone()
+    return bool(
+        row is not None
+        and int(row["boats"] or 0) == 6
+        and int(row["ranks"] or 0) < 6
+    )
+
+
+def _trifecta_settlements(conn: Any, race_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT combination, payout_yen, popularity
+        FROM payouts
+        WHERE race_id = ? AND bet_type = '3連単' AND payout_yen IS NOT NULL
+        ORDER BY combination, payout_yen
+        """,
+        (race_id,),
+    ).fetchall()
+    return [
+        {
+            "combination": str(row["combination"]),
+            "payout_yen": int(row["payout_yen"]),
+            "popularity": row["popularity"],
+        }
+        for row in rows
+    ]
+
+
+def _verify_special_settlement(
+    conn: Any,
+    *,
+    race_id: str,
+    odds: dict[str, float],
+) -> dict[str, Any]:
+    settlements = _trifecta_settlements(conn, race_id)
+    if len(settlements) < 2 or not _confirmed_dead_heat(conn, race_id):
+        raise ValueError("multiple payouts require a confirmed six-boat dead heat")
+    missing = [
+        row["combination"] for row in settlements if row["combination"] not in odds
+    ]
+    if missing:
+        raise ValueError(
+            "special-settlement combinations absent from odds: "
+            f"{missing}"
+        )
+    return {
+        "status": "official_primary_special_settlement",
+        "payout_match_mode": "confirmed_dead_heat_multiple_payouts",
+        "settlement_count": len(settlements),
+        "settlements": settlements,
+    }
+
+
 def _increment_counter(counters: dict[str, Any], field: str, key: object) -> None:
     values = counters.setdefault(field, {})
     normalized = str(key)
@@ -238,6 +300,7 @@ def backfill_official_closing_odds(
     through_date: str,
     sleep_seconds: float = 0.5,
     max_pages: int | None = None,
+    special_settlements_only: bool = False,
 ) -> dict[str, Any]:
     dead_heat_repair = repair_incomplete_dead_heat_payouts(
         conn, sleep_seconds=sleep_seconds
@@ -249,7 +312,12 @@ def backfill_official_closing_odds(
         from_date=from_date,
         through_date=through_date,
         source_key=OFFICIAL_SOURCE_KEY,
+        include_multi_payout=True,
     )
+    if special_settlements_only:
+        targets = [
+            row for row in targets if int(row.get("payout_count") or 0) > 1
+        ]
     if max_pages is not None:
         targets = targets[: max(0, int(max_pages))]
     counters = {
@@ -259,7 +327,9 @@ def backfill_official_closing_odds(
         "from_date": from_date,
         "through_date": through_date,
         "targets": len(targets),
+        "special_settlements_only": bool(special_settlements_only),
         "stored": 0,
+        "stored_special_settlement": 0,
         "not_found": 0,
         "invalid": 0,
         "fetch_failed": 0,
@@ -302,12 +372,21 @@ def backfill_official_closing_odds(
                 )
             else:
                 parsed = parse_official_closing_odds_html(html)
-                verification = verify_winning_payout(
-                    parsed["odds"],
-                    combination=str(row["combination"]),
-                    payout_yen=int(row["payout_yen"]),
-                )
-                verification["status"] = "official_primary_winner_payout_match"
+                if int(row.get("payout_count") or 1) > 1:
+                    verification = _verify_special_settlement(
+                        conn,
+                        race_id=str(row["race_id"]),
+                        odds=parsed["odds"],
+                    )
+                else:
+                    verification = verify_winning_payout(
+                        parsed["odds"],
+                        combination=str(row["combination"]),
+                        payout_yen=int(row["payout_yen"]),
+                    )
+                    verification["status"] = (
+                        "official_primary_winner_payout_match"
+                    )
                 store_archive_closing_odds(
                     conn,
                     race_id=str(row["race_id"]),
@@ -326,6 +405,10 @@ def backfill_official_closing_odds(
                     source_key=OFFICIAL_SOURCE_KEY,
                 )
                 counters["stored"] += 1
+                counters["stored_special_settlement"] += int(
+                    verification["status"]
+                    == "official_primary_special_settlement"
+                )
         except (FetchError, OSError) as exc:
             counters["fetch_failed"] += 1
             reason = type(exc).__name__
@@ -399,6 +482,7 @@ def backfill_official_closing_odds(
             from_date=from_date,
             through_date=through_date,
             source_key=OFFICIAL_SOURCE_KEY,
+            include_multi_payout=True,
         )
     )
     return counters
@@ -413,6 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--through-date", required=True)
     parser.add_argument("--sleep-seconds", type=float, default=0.5)
     parser.add_argument("--max-pages", type=int)
+    parser.add_argument("--special-settlements-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -434,6 +519,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             through_date=through_day.isoformat(),
             sleep_seconds=args.sleep_seconds,
             max_pages=args.max_pages,
+            special_settlements_only=args.special_settlements_only,
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

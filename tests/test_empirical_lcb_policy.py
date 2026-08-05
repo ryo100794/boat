@@ -413,3 +413,42 @@ def test_promotion_requires_thirty_days_and_roi_confidence() -> None:
         candidate = dict(passing)
         candidate[key] = value
         assert not empirical_bankroll_promotion_eligible(candidate)
+
+
+
+def test_dead_heat_settlements_calibrate_and_settle_every_winning_combination():
+    race = _race(
+        "dead-heat",
+        actual="1-2-3",
+        payout=590,
+        probabilities={"1-2-3": 0.34, "1-2-4": 0.40, "2-1-3": 0.26},
+    )
+    race["settlements"] = (
+        {"combination": "1-2-3", "payout_yen": 590},
+        {"combination": "1-2-4", "payout_yen": 3940},
+    )
+    records = policy_edge_records([race], CALIBRATOR, _blend)
+    realized = {
+        row["combination"]: row["gross_return_per_yen"] for row in records
+    }
+    assert realized["1-2-3"] == pytest.approx(5.9)
+    assert realized["1-2-4"] == pytest.approx(39.4)
+    assert realized["2-1-3"] == 0.0
+
+    result = simulate_empirical_lcb_policy(
+        [race],
+        CALIBRATOR,
+        _blend,
+        _Artifact(point=1.20, lcb=1.10),
+        10_000,
+        allocation_mode="normalized_kelly",
+        min_daily_exposure_fraction=0.10,
+    )
+    selected = result["daily"][0]["selected_sample"]
+    alternative = next(
+        row for row in selected if row["combination"] == "1-2-4"
+    )
+    assert alternative["hit"] is True
+    assert alternative["return_yen"] == (
+        alternative["stake_yen"] * 3940 // 100
+    )

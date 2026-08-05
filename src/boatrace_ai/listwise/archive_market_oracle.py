@@ -217,10 +217,16 @@ def load_archive_markets(
     source_key: str = SOURCE_KEY,
 ) -> dict[str, dict[str, Any]]:
     ensure_archive_schema(conn)
-    verification_status = (
-        "official_primary_winner_payout_match"
+    verification_statuses = (
+        (
+            "official_primary_winner_payout_match",
+            "official_primary_special_settlement",
+        )
         if source_key == OFFICIAL_SOURCE_KEY
-        else "winner_only_match_unverified_market"
+        else (
+            "winner_only_match_unverified_market",
+            "winner_only_match_unverified_market",
+        )
     )
     markets: dict[str, dict[str, Any]] = {}
     for row in conn.execute(
@@ -228,31 +234,51 @@ def load_archive_markets(
         SELECT a.race_id, r.race_date, r.jcd, r.rno, r.deadline_at, a.odds_count,
                a.verification_status,
                p.combination AS actual_combination,
-               p.payout_yen AS actual_payout_yen
+               p.payout_yen AS actual_payout_yen,
+               p.popularity AS actual_popularity
         FROM archive_closing_odds_snapshots a
         JOIN races r ON r.race_id = a.race_id
         JOIN payouts p ON p.race_id = a.race_id AND p.bet_type = '3連単'
         WHERE a.source_key = ?
-          AND a.verification_status = ?
+          AND a.verification_status IN (?, ?)
           AND r.race_date BETWEEN ? AND ?
-        ORDER BY r.race_date, r.jcd, r.rno
+        ORDER BY r.race_date, r.jcd, r.rno, p.combination, p.payout_yen
         """,
-        (source_key, verification_status, from_date, through_date),
+        (
+            source_key,
+            verification_statuses[0],
+            verification_statuses[1],
+            from_date,
+            through_date,
+        ),
     ):
         race_id = str(row["race_id"])
-        markets[race_id] = {
+        settlement = {
             "race_id": race_id,
-            "race_date": str(row["race_date"]),
-            "jcd": str(row["jcd"]),
-            "rno": int(row["rno"]),
-            "archive_odds_count": int(row["odds_count"]),
-            "archive_verification_status": str(row["verification_status"]),
-            "captured_at": (str(row["deadline_at"]) if row["deadline_at"] else None),
-            "odds_deadline_at": (str(row["deadline_at"]) if row["deadline_at"] else None),
-            "actual_combination": str(row["actual_combination"]),
-            "actual_payout_yen": int(row["actual_payout_yen"]),
-            "odds": {},
+            "combination": str(row["actual_combination"]),
+            "payout_yen": int(row["actual_payout_yen"]),
+            "popularity": row["actual_popularity"],
         }
+        if race_id not in markets:
+            markets[race_id] = {
+                "race_id": race_id,
+                "race_date": str(row["race_date"]),
+                "jcd": str(row["jcd"]),
+                "rno": int(row["rno"]),
+                "archive_odds_count": int(row["odds_count"]),
+                "archive_verification_status": str(row["verification_status"]),
+                "captured_at": (
+                    str(row["deadline_at"]) if row["deadline_at"] else None
+                ),
+                "odds_deadline_at": (
+                    str(row["deadline_at"]) if row["deadline_at"] else None
+                ),
+                "actual_combination": settlement["combination"],
+                "actual_payout_yen": settlement["payout_yen"],
+                "settlements": [],
+                "odds": {},
+            }
+        markets[race_id]["settlements"].append(settlement)
     for row in conn.execute(
         """
         SELECT o.race_id, o.combination, o.odds
@@ -266,6 +292,8 @@ def load_archive_markets(
         market = markets.get(str(row["race_id"]))
         if market is not None:
             market["odds"][str(row["combination"])] = float(row["odds"])
+    for market in markets.values():
+        market["settlements"] = tuple(market["settlements"])
     return markets
 
 
@@ -287,7 +315,6 @@ def official_archive_coverage(
           FROM payouts
           WHERE bet_type = '3連単' AND payout_yen IS NOT NULL
           GROUP BY race_id
-          HAVING COUNT(*) = 1
         )
         SELECT SUBSTR(CAST(r.race_date AS TEXT), 1, 7) AS month,
                COUNT(*) AS eligible_targets,
@@ -399,11 +426,15 @@ def score_archive_markets(
         if market is None:
             continue
         odds = market["odds"]
-        actual = str(market["actual_combination"])
+        settlement_combinations = {
+            str(row["combination"])
+            for row in market.get("settlements") or ()
+        }
         if (
             len(odds) != int(market["archive_odds_count"])
             or not 1 <= len(odds) <= 120
-            or actual not in odds
+            or not settlement_combinations
+            or not settlement_combinations.issubset(odds)
         ):
             skipped_incomplete += 1
             continue

@@ -15,6 +15,7 @@ from .contextual_empirical_ev_calibration import (
 from .empirical_lcb_policy import (
     empirical_bankroll_promotion_eligible,
     policy_edge_records,
+    race_settlement_map,
     simulate_empirical_lcb_policy,
 )
 from .nested_nonlinear_value_v40 import value_decile_audit
@@ -270,9 +271,10 @@ def _value_alignment_metrics(
 
         selected = min(ranked, key=value_key)
         raw_ev = -value_key(selected)[0]
-        actual = str(race["actual_combination"])
-        hit = selected == actual
-        returned = float(race["actual_payout_yen"]) if hit else 0.0
+        settlements = race_settlement_map(race)
+        payout_yen = settlements.get(selected)
+        hit = payout_yen is not None
+        returned = float(payout_yen) if hit else 0.0
         day = str(race["race_date"])
         aggregate = daily.setdefault(day, {
             "race_date": day,
@@ -285,13 +287,13 @@ def _value_alignment_metrics(
         total_return += returned
         largest_return = max(largest_return, returned)
         hit_tickets += int(hit)
-        top5_hits += int(actual in ranked[:5])
+        top5_hits += int(bool(set(settlements) & set(ranked[:5])))
         market = race["market_probabilities"]
         market_top5 = sorted(
             market,
             key=lambda combination: (-float(market[combination]), combination),
         )[:5]
-        market_top5_hits += int(actual in market_top5)
+        market_top5_hits += int(bool(set(settlements) & set(market_top5)))
 
     tickets = sum(int(row["stake_yen"]) // 100 for row in daily.values())
     confidence = (

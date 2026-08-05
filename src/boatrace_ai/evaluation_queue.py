@@ -5955,8 +5955,10 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "remaining", "from_date", "through_date", "source_key",
             "source_role", "excluded_non_six_boat",
             "reclassified_non_six_boat", "invalid_reason_counts",
+            "stored_special_settlement", "reclassified_special_settlement",
             "incomplete_odds_count_counts",
             "invalid_confirmed_result_boats_counts",
+            "dead_heat_payout_repair",
             "fetch_failure_reason_counts", "failure_examples",
         ):
             if key in payload:

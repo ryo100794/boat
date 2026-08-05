@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..adaptive_allocation import allocate_adaptive_day
 from ..bankroll_bootstrap import bootstrap_daily_roi
+from ..discrete_log_allocation import candidate_with_settlements
 from .closing_odds import decision_odds
 
 
@@ -125,6 +126,42 @@ def _limited_ranking(
     return ranked[:max_rank]
 
 
+def race_settlement_rows(
+    race: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    additive = race.get("settlements") or race.get("trifecta_settlements")
+    rows: list[dict[str, Any]] = []
+    if additive:
+        for row in additive:
+            combination = row.get("combination", row.get("actual_combination"))
+            payout_yen = row.get("payout_yen", row.get("actual_payout_yen"))
+            if combination is None or payout_yen is None:
+                continue
+            rows.append(
+                {
+                    "race_id": str(race["race_id"]),
+                    "combination": str(combination),
+                    "payout_yen": int(payout_yen),
+                }
+            )
+    if not rows:
+        rows.append(
+            {
+                "race_id": str(race["race_id"]),
+                "combination": str(race["actual_combination"]),
+                "payout_yen": int(race["actual_payout_yen"]),
+            }
+        )
+    return tuple(rows)
+
+
+def race_settlement_map(race: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        str(row["combination"]): int(row["payout_yen"])
+        for row in race_settlement_rows(race)
+    }
+
+
 def policy_edge_records(
     races: list[dict[str, Any]],
     calibrator: Mapping[str, float],
@@ -142,8 +179,7 @@ def policy_edge_records(
             race, probabilities, ranking_provider, max_rank
         )
         ranks = {combination: index + 1 for index, combination in enumerate(ranked)}
-        actual = str(race["actual_combination"])
-        actual_payout_yen = int(race["actual_payout_yen"])
+        settlements = race_settlement_map(race)
         decision_time = (
             race.get("odds_deadline_at")
             or race.get("captured_at")
@@ -164,7 +200,8 @@ def policy_edge_records(
             forecast_odds = float(odds[combination])
             return_multiplier = float(multipliers.get(combination, 1.0))
             raw_ev = probability * forecast_odds * return_multiplier
-            hit = combination == actual
+            payout_yen = settlements.get(combination)
+            hit = payout_yen is not None
             records.append(
                 {
                     "race_date": str(race["race_date"]),
@@ -176,7 +213,7 @@ def policy_edge_records(
                     "return_multiplier": return_multiplier,
                     "raw_estimated_ev": raw_ev,
                     "gross_return_per_yen": (
-                        actual_payout_yen / STAKE_YEN if hit else 0.0
+                        float(payout_yen) / STAKE_YEN if hit else 0.0
                     ),
                     "hit": hit,
                     "decision_time": str(decision_time),
@@ -200,8 +237,7 @@ def _eligible_candidate(
     odds: float,
     return_multiplier: float,
 ) -> dict[str, Any]:
-    actual = str(race["actual_combination"])
-    return {
+    decision = {
         "race_id": str(race["race_id"]),
         "race_date": str(race["race_date"]),
         "jcd": race.get("jcd"),
@@ -209,20 +245,17 @@ def _eligible_candidate(
         "combination": combination,
         "probability": probability,
         "estimated_odds": odds,
-        # Allocation must use the same conservative edge that admitted the ticket.
         "estimated_ev": lcb95,
         "raw_estimated_ev": raw_ev,
         "empirical_ev": point,
         "empirical_ev_lcb95": lcb95,
         "historical_return_multiplier": return_multiplier,
-        "actual_combination": actual,
-        "actual_payout_yen": int(race["actual_payout_yen"]),
-        "hit": combination == actual,
         "real_odds_snapshot_id": race.get("snapshot_id"),
         "real_odds_captured_at": race.get("captured_at"),
         "real_odds_deadline_at": race.get("odds_deadline_at"),
         "real_odds_combinations": len(race["odds"]),
     }
+    return candidate_with_settlements(decision, race_settlement_rows(race))
 
 
 def _candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[float, float, float, str]:

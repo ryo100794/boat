@@ -8,6 +8,7 @@ from boatrace_ai.archive_closing_odds import (
 )
 from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.evaluation_queue import build_command, summarize_result
+from boatrace_ai.listwise.archive_market_oracle import load_archive_markets
 from boatrace_ai.official_closing_odds import (
     IncompleteOfficialTrifectaOdds,
     backfill_official_closing_odds,
@@ -269,6 +270,14 @@ def test_official_collection_counts_are_preserved_in_job_summary() -> None:
             "invalid": 0,
             "fetch_failed": 0,
             "remaining": 116,
+            "stored_special_settlement": 2,
+            "reclassified_special_settlement": 1,
+            "dead_heat_payout_repair": {
+                "target_dates": 1,
+                "repaired_dates": 1,
+                "remaining_dates": 0,
+                "failed_dates": 0,
+            },
             "invalid_reason_counts": {
                 "IncompleteOfficialTrifectaOdds": 3
             },
@@ -290,6 +299,11 @@ def test_official_collection_counts_are_preserved_in_job_summary() -> None:
     }
     assert summary["archive_incomplete_odds_count_counts"] == {"72": 3}
     assert summary["archive_failure_examples"][0]["race_id"] == "202606020203"
+    assert summary["archive_stored_special_settlement"] == 2
+    assert summary["archive_reclassified_special_settlement"] == 1
+    assert summary["archive_dead_heat_payout_repair"]["repaired_dates"] == 1
+    assert summary["archive_dead_heat_payout_repair"]["remaining_dates"] == 0
+
 
 def test_invalid_official_odds_publish_bounded_diagnostics(
     tmp_path, monkeypatch
@@ -429,3 +443,66 @@ def test_repairs_and_reclassifies_incomplete_dead_heat_payouts(
     }
     assert reclassified == 1
     assert attempt["status"] == "excluded_special_settlement"
+
+
+
+def test_official_backfill_stores_confirmed_dead_heat_settlements(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "official-dead-heat.sqlite"
+    init_db(db_path)
+    html = _official_matrix_html()
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-03-27",
+                "jcd": "09",
+                "venue_name": "津",
+                "rno": 12,
+                "status": "final",
+            },
+        )
+        for lane, rank in enumerate((1, 2, 3, 3, 5, 6), start=1):
+            conn.execute(
+                "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
+                (race_id, lane, rank),
+            )
+        conn.executemany(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', ?, ?)",
+            [
+                (race_id, "1-2-3", 590),
+                (race_id, "1-2-4", 3940),
+            ],
+        )
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.fetch_text",
+            lambda *_args, **_kwargs: (200, html, html.encode()),
+        )
+
+        result = backfill_official_closing_odds(
+            conn,
+            from_date="2026-03-27",
+            through_date="2026-03-27",
+            sleep_seconds=0.0,
+            special_settlements_only=True,
+        )
+        market = load_archive_markets(
+            conn,
+            from_date="2026-03-27",
+            through_date="2026-03-27",
+            source_key=OFFICIAL_SOURCE_KEY,
+        )[race_id]
+
+    assert result["special_settlements_only"] is True
+    assert result["stored"] == 1
+    assert result["stored_special_settlement"] == 1
+    assert result["remaining"] == 0
+    assert market["archive_verification_status"] == (
+        "official_primary_special_settlement"
+    )
+    assert [
+        (row["combination"], row["payout_yen"])
+        for row in market["settlements"]
+    ] == [("1-2-3", 590), ("1-2-4", 3940)]

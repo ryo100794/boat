@@ -222,3 +222,11 @@ def test_pending_races_excludes_multi_payout_dead_heat(tmp_path) -> None:
         assert pending_races(
             conn, from_date="2026-07-28", through_date="2026-07-28"
         ) == []
+        included = pending_races(
+            conn,
+            from_date="2026-07-28",
+            through_date="2026-07-28",
+            include_multi_payout=True,
+        )
+        assert len(included) == 1
+        assert included[0]["payout_count"] == 2

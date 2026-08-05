@@ -302,21 +302,27 @@ def record_attempt(
 
 
 def pending_races(
-    conn: Any, *, from_date: str, through_date: str, source_key: str = SOURCE_KEY
+    conn: Any,
+    *,
+    from_date: str,
+    through_date: str,
+    source_key: str = SOURCE_KEY,
+    include_multi_payout: bool = False,
 ) -> list[dict[str, Any]]:
     ensure_archive_schema(conn)
+    payout_having = "" if include_multi_payout else "HAVING COUNT(*) = 1"
     rows = conn.execute(
-        """
+        f"""
         SELECT r.race_id, r.race_date, r.jcd, r.rno,
-               p.combination, p.payout_yen
+               p.combination, p.payout_yen, p.payout_count
         FROM races r
         JOIN (
           SELECT race_id, MIN(combination) AS combination,
-                 MIN(payout_yen) AS payout_yen
+                 MIN(payout_yen) AS payout_yen, COUNT(*) AS payout_count
           FROM payouts
           WHERE bet_type = '3連単' AND payout_yen IS NOT NULL
           GROUP BY race_id
-          HAVING COUNT(*) = 1
+          {payout_having}
         ) p ON p.race_id = r.race_id
         WHERE r.race_date BETWEEN ? AND ?
           AND NOT EXISTS (
