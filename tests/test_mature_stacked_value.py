@@ -33,8 +33,8 @@ class _NoPurchaseArtifact:
             "ready": True,
             "ready_reasons": [],
             "trained_through_date": self.trained_through_date,
-            "training_days": 120,
-            "candidate_days": 120,
+            "training_days": 60,
+            "candidate_days": 60,
             "tickets": 2400,
             "context_ready_cells": 2,
             "context_cells": 12,
@@ -42,7 +42,7 @@ class _NoPurchaseArtifact:
         }
 
 
-def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
+def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     monkeypatch,
 ) -> None:
     observed = {}
@@ -69,6 +69,15 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
             "artifact": {"artifact_sha256": "a" * 64},
         }
 
+    def fake_select(probability, stack_selection):
+        observed["stack_selection"] = list(stack_selection)
+        return dict(probability["artifact"]), {
+            "policy_id": subject.VALUE_ALIGNED_STACK_POLICY_ID,
+            "status": "not_available",
+            "outer_period_used": False,
+            "search_validation_draw_sets_disjoint": True,
+        }
+
     def fake_contextual(records, **kwargs):
         observed["records"] = list(records)
         observed["contextual_kwargs"] = kwargs
@@ -86,6 +95,11 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
         subject,
         "stacked_metrics",
         lambda races, artifact: {"evaluated_races": len(races)},
+    )
+    monkeypatch.setattr(
+        subject,
+        "select_value_aligned_stack",
+        fake_select,
     )
     monkeypatch.setattr(
         subject,
@@ -112,13 +126,20 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
     )
 
     assert len(observed["training"]) == 600
-    assert len(observed["records"]) == 2400
-    assert observed["contextual_kwargs"]["min_days"] == 120
+    assert len(observed["stack_selection"]) == 600
+    assert len(observed["records"]) == 1200
+    assert observed["contextual_kwargs"]["min_days"] == 60
+    assert observed["contextual_kwargs"]["min_candidate_days"] == 40
+    assert observed["contextual_kwargs"]["min_rank_days"] == 45
+    assert observed["contextual_kwargs"]["min_cell_days"] == 30
     assert observed["contextual_kwargs"]["prediction_date"] == "2026-06-30"
     assert result["model_training_days"] == 60
-    assert result["value_calibration_days"] == 120
+    assert result["value_stack_selection_days"] == 60
+    assert result["value_calibration_days"] == 60
+    assert result["stack_selection_calibration_disjoint"] is True
+    assert result["search_validation_draw_sets_disjoint"] is True
     assert result["evaluation_from"] == "2026-06-30"
-    assert result["calibration_ledger_candidates"] == 2400
+    assert result["calibration_ledger_candidates"] == 1200
     assert result["evaluation_ledger_candidates"] == 100
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
@@ -290,6 +311,7 @@ def test_value_aligned_stack_selects_highest_supported_lcb(
     assert audit["shortlisted_candidates"] == 3
     assert audit["selection_lower_quantile"] == 0.01
     assert audit["familywise_candidate_cap"] == 5
+    assert audit["minimum_candidate_days"] == 50
     nonlinear = next(
         row for row in audit["candidates"] if row["name"] == "nonlinear"
     )
@@ -299,8 +321,10 @@ def test_value_aligned_stack_selects_highest_supported_lcb(
     assert artifact["selected_stack"] == "linear"
     assert artifact["pre_value_alignment_stack"] == "linear"
     assert artifact["value_alignment_policy_id"] == (
-        "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+        "top20_max_raw_ev_familywise_q01_top5_noninferiority_disjoint_v2"
     )
+    assert audit["stack_selection_shared_with_empirical_gate_training"] is False
+    assert audit["search_validation_draw_sets_disjoint"] is True
     assert len(artifact["artifact_sha256"]) == 64
 
 def test_value_alignment_metrics_use_one_ticket_per_race_and_yen_payout(

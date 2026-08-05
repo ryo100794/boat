@@ -3936,6 +3936,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_value_aligned_stack_selection": metrics.get(
                     "nested_value_value_aligned_stack_selection"
                 ),
+                "nested_value_stack_selection_calibration_disjoint": metrics.get(
+                    "nested_value_stack_selection_calibration_disjoint"
+                ),
+                "nested_value_search_validation_draw_sets_disjoint": metrics.get(
+                    "nested_value_search_validation_draw_sets_disjoint"
+                ),
                 "nested_value_model_training_from": metrics.get(
                     "nested_value_model_training_from"
                 ),
@@ -3944,6 +3950,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "nested_value_model_training_days": metrics.get(
                     "nested_value_model_training_days"
+                ),
+                "nested_value_stack_selection_from": metrics.get(
+                    "nested_value_stack_selection_from"
+                ),
+                "nested_value_stack_selection_through": metrics.get(
+                    "nested_value_stack_selection_through"
+                ),
+                "nested_value_stack_selection_days": metrics.get(
+                    "nested_value_stack_selection_days"
+                ),
+                "nested_value_stack_selection_races": metrics.get(
+                    "nested_value_stack_selection_races"
                 ),
                 "nested_value_calibration_from": metrics.get(
                     "nested_value_calibration_from"

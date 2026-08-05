@@ -332,6 +332,12 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     ] = {
         "model": "mature_stacked_contextual_value",
         "status": "completed",
+        "stack_selection_calibration_disjoint": True,
+        "search_validation_draw_sets_disjoint": True,
+        "value_stack_selection_from": "2026-04-01",
+        "value_stack_selection_through": "2026-05-30",
+        "value_stack_selection_days": 60,
+        "value_stack_selection_races": 8000,
         "evaluation_probability_metrics": {"evaluated_races": 20},
         "empirical_ev_calibration": {"ready": True, "cells": []},
         "probability_selection": {
@@ -380,6 +386,12 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     summary = summarize_result(base)
     assert summary["nested_value_model"] == "mature_stacked_contextual_value"
     assert summary["nested_value_evaluated_races"] == 20
+    assert summary["nested_value_stack_selection_calibration_disjoint"] is True
+    assert summary["nested_value_search_validation_draw_sets_disjoint"] is True
+    assert summary["nested_value_stack_selection_from"] == "2026-04-01"
+    assert summary["nested_value_stack_selection_through"] == "2026-05-30"
+    assert summary["nested_value_stack_selection_days"] == 60
+    assert summary["nested_value_stack_selection_races"] == 8000
     assert summary["nested_value_raw_selected_stack"] == "linear"
     assert summary["nested_value_selected_stack"] == "market"
     assert summary["nested_value_stack_selection_gate_status"] == (

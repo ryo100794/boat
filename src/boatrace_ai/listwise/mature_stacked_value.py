@@ -24,15 +24,16 @@ from .stacked_market_residual_v42 import (
 
 MODEL_NAME = "mature_stacked_contextual_value_rank20"
 MODEL_TRAINING_MINIMUM_DAYS = 60
-VALUE_CALIBRATION_DAYS = 120
+VALUE_STACK_SELECTION_DAYS = 60
+VALUE_CALIBRATION_DAYS = 60
 PURCHASE_MAX_RANK = 20
 CONTEXT_AUDIT_BOOTSTRAP_SAMPLES = 5_000
 VALUE_ALIGNED_STACK_POLICY_ID = (
-    "top20_max_raw_ev_familywise_q01_top5_noninferiority_v1"
+    "top20_max_raw_ev_familywise_q01_top5_noninferiority_disjoint_v2"
 )
 VALUE_ALIGNED_STACK_BOOTSTRAP_SAMPLES = 5_000
 VALUE_ALIGNED_STACK_SELECTION_LOWER_QUANTILE = 0.01
-VALUE_ALIGNED_STACK_MIN_DAYS = 80
+VALUE_ALIGNED_STACK_MIN_DAYS = 50
 VALUE_ALIGNED_STACK_MIN_TICKETS = 300
 CONTEXT_RANK_GROUPS = (("top5", 1, 5), ("6-20", 6, 20))
 CONTEXT_ODDS_BANDS = (
@@ -330,7 +331,7 @@ def _value_alignment_metrics(
 
 def select_value_aligned_stack(
     probability: Mapping[str, Any],
-    value_calibration: list[dict[str, Any]],
+    stack_selection_races: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     base_artifact = probability.get("artifact")
     if not isinstance(base_artifact, Mapping):
@@ -345,6 +346,8 @@ def select_value_aligned_stack(
             "selected_stack": base_selected,
             "candidate_family_size": 0,
             "shortlisted_candidates": 0,
+            "stack_selection_shared_with_empirical_gate_training": False,
+            "search_validation_draw_sets_disjoint": True,
             "outer_period_used": False,
         }
 
@@ -358,7 +361,7 @@ def select_value_aligned_stack(
             base_selected_stack=base_selected,
         )
         artifacts[name] = artifact
-        metrics = _value_alignment_metrics(value_calibration, artifact)
+        metrics = _value_alignment_metrics(stack_selection_races, artifact)
         support_ready = (
             int(metrics["candidate_days"]) >= VALUE_ALIGNED_STACK_MIN_DAYS
             and int(metrics["tickets"]) >= VALUE_ALIGNED_STACK_MIN_TICKETS
@@ -413,6 +416,8 @@ def select_value_aligned_stack(
                 ),
                 "shortlisted_candidates": len(rows),
                 "candidates": rows,
+                "stack_selection_shared_with_empirical_gate_training": False,
+                "search_validation_draw_sets_disjoint": True,
                 "outer_period_used": False,
             }
 
@@ -436,7 +441,8 @@ def select_value_aligned_stack(
         "minimum_candidate_days": VALUE_ALIGNED_STACK_MIN_DAYS,
         "minimum_tickets": VALUE_ALIGNED_STACK_MIN_TICKETS,
         "top5_noninferiority_required": True,
-        "value_calibration_shared_with_empirical_gate_training": True,
+        "stack_selection_shared_with_empirical_gate_training": False,
+        "search_validation_draw_sets_disjoint": True,
         "outer_period_used": False,
         "candidates": rows,
     }
@@ -450,7 +456,11 @@ def evaluate_mature_stacked_value(
     num_threads: int = 4,
 ) -> dict[str, Any]:
     dates = sorted({str(race["race_date"]) for race in calibration})
-    required_days = MODEL_TRAINING_MINIMUM_DAYS + VALUE_CALIBRATION_DAYS
+    required_days = (
+        MODEL_TRAINING_MINIMUM_DAYS
+        + VALUE_STACK_SELECTION_DAYS
+        + VALUE_CALIBRATION_DAYS
+    )
     if len(dates) < required_days:
         return {
             "model": MODEL_NAME,
@@ -458,6 +468,7 @@ def evaluate_mature_stacked_value(
             "calibration_days": len(dates),
             "required_days": required_days,
             "model_training_minimum_days": MODEL_TRAINING_MINIMUM_DAYS,
+            "value_stack_selection_required_days": VALUE_STACK_SELECTION_DAYS,
             "value_calibration_required_days": VALUE_CALIBRATION_DAYS,
             "promotion_eligible": False,
             "real_betting_enabled": False,
@@ -465,10 +476,20 @@ def evaluate_mature_stacked_value(
     if not evaluation:
         raise ValueError("mature stacked value requires untouched outer races")
 
-    value_dates = set(dates[-VALUE_CALIBRATION_DAYS:])
-    model_dates = set(dates[:-VALUE_CALIBRATION_DAYS])
+    value_period_days = VALUE_STACK_SELECTION_DAYS + VALUE_CALIBRATION_DAYS
+    value_period_dates = dates[-value_period_days:]
+    stack_selection_dates = set(
+        value_period_dates[:VALUE_STACK_SELECTION_DAYS]
+    )
+    value_dates = set(value_period_dates[VALUE_STACK_SELECTION_DAYS:])
+    model_dates = set(dates[:-value_period_days])
     model_training = [
         race for race in calibration if str(race["race_date"]) in model_dates
+    ]
+    stack_selection = [
+        race
+        for race in calibration
+        if str(race["race_date"]) in stack_selection_dates
     ]
     value_calibration = [
         race for race in calibration if str(race["race_date"]) in value_dates
@@ -480,7 +501,7 @@ def evaluate_mature_stacked_value(
     )
     artifact, value_aligned_selection = select_value_aligned_stack(
         probability,
-        value_calibration,
+        stack_selection,
     )
     value_scored = _score(value_calibration, artifact)
     evaluation_scored = _score(evaluation, artifact)
@@ -506,11 +527,11 @@ def evaluate_mature_stacked_value(
         bootstrap_samples=5_000,
         min_days=VALUE_CALIBRATION_DAYS,
         min_tickets=1_000,
-        min_candidate_days=80,
+        min_candidate_days=40,
         candidate_min_raw_ev=0.0,
-        min_rank_days=90,
+        min_rank_days=45,
         min_rank_tickets=1_000,
-        min_cell_days=60,
+        min_cell_days=30,
         min_cell_tickets=200,
         rank_prior_tickets=500.0,
         cell_prior_tickets=200.0,
@@ -554,16 +575,23 @@ def evaluate_mature_stacked_value(
             "retrospective_research_only_candidate_universe_search"
         ),
         "validation_design": (
-            "earliest 60 or more days for nested V42 component and stack "
-            "selection; following 120 untouched days for predeclared "
-            "value-aligned stack reweighting and top20 contextual rank-by-odds "
-            "value calibration; final outer days used once"
+            "earliest 60 or more days for nested V42 component and probability "
+            "stack selection; following 60 untouched days for predeclared "
+            "value-aligned stack reweighting; following 60 untouched days for "
+            "top20 contextual rank-by-odds value calibration; final outer "
+            "days used once"
         ),
+        "stack_selection_calibration_disjoint": True,
+        "search_validation_draw_sets_disjoint": True,
         "outer_period_used_for_selection": False,
         "model_training_from": min(model_dates),
         "model_training_through": max(model_dates),
         "model_training_days": len(model_dates),
         "model_training_races": len(model_training),
+        "value_stack_selection_from": min(stack_selection_dates),
+        "value_stack_selection_through": max(stack_selection_dates),
+        "value_stack_selection_days": len(stack_selection_dates),
+        "value_stack_selection_races": len(stack_selection),
         "value_calibration_from": min(value_dates),
         "value_calibration_through": max(value_dates),
         "value_calibration_days": len(value_dates),
@@ -591,6 +619,9 @@ def evaluate_mature_stacked_value(
         },
         "probability_artifact": artifact,
         "value_aligned_stack_selection": value_aligned_selection,
+        "value_stack_selection_probability_metrics": stacked_metrics(
+            stack_selection, artifact
+        ),
         "value_calibration_probability_metrics": stacked_metrics(
             value_calibration, artifact
         ),

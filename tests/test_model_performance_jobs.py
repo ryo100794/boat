@@ -110,6 +110,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nested_value_stack_selection_fallback_reasons" in MODEL_REPORT_HTML
     assert "nested_value_stack_selection_policy_id" in MODEL_REPORT_HTML
     assert "nested_value_value_aligned_stack_selection" in MODEL_REPORT_HTML
+    assert "nested_value_stack_selection_calibration_disjoint" in MODEL_REPORT_HTML
+    assert "nested_value_stack_selection_from" in MODEL_REPORT_HTML
     assert "valueAlignedStackEvidence" in MODEL_REPORT_HTML
     assert "officialCoverageEvidence" in MODEL_REPORT_HTML
     assert "official_monthly_coverage" in MODEL_REPORT_HTML
@@ -257,6 +259,12 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         ],
         "nested_value_model": "nested_nonlinear_value_calibration_v40",
         "nested_value_status": "completed",
+        "nested_value_stack_selection_calibration_disjoint": True,
+        "nested_value_search_validation_draw_sets_disjoint": True,
+        "nested_value_stack_selection_from": "2026-04-01",
+        "nested_value_stack_selection_through": "2026-05-30",
+        "nested_value_stack_selection_days": 60,
+        "nested_value_stack_selection_races": 8000,
         "nested_value_raw_selected_stack": "linear",
         "nested_value_selected_stack": "market",
         "nested_value_stack_selection_gate_status": "fallback_market",
@@ -473,6 +481,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
     assert status["jobs"][0]["nested_value_raw_selected_stack"] == "linear"
     assert status["jobs"][0]["nested_value_selected_stack"] == "market"
+    assert status["jobs"][0][
+        "nested_value_stack_selection_calibration_disjoint"
+    ] is True
+    assert status["jobs"][0][
+        "nested_value_search_validation_draw_sets_disjoint"
+    ] is True
+    assert status["jobs"][0]["nested_value_stack_selection_from"] == "2026-04-01"
+    assert status["jobs"][0]["nested_value_stack_selection_days"] == 60
+    assert status["jobs"][0]["nested_value_stack_selection_races"] == 8000
     assert status["jobs"][0]["nested_value_stack_selection_gate_status"] == (
         "fallback_market"
     )

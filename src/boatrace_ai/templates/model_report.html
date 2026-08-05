@@ -729,7 +729,8 @@ function valueAlignedStackEvidence(x){
   const audit=x.nested_value_value_aligned_stack_selection||{};
   if(!audit.policy_id) return "";
   const boundary=audit.outer_period_used===false?"外側不使用 PASS":"外側境界 FAIL";
-  return `価値整合 ${audit.base_selected_stack||"-"}→${audit.selected_stack||"-"} / ${audit.policy_id} / Q${audit.selection_lower_quantile==null?"-":audit.selection_lower_quantile} / ${audit.status||"-"} / ${boundary}`;
+  const disjoint=x.nested_value_stack_selection_calibration_disjoint===true?"探索/校正分離 PASS":"探索/校正分離 FAIL";
+  return `価値整合 ${audit.base_selected_stack||"-"}→${audit.selected_stack||"-"} / ${audit.policy_id} / Q${audit.selection_lower_quantile==null?"-":audit.selection_lower_quantile} / ${audit.status||"-"} / ${boundary} / ${disjoint}`;
 }
 function officialCoverageEvidence(x){
   const ratioValue=x.official_coverage_ratio;
@@ -751,7 +752,8 @@ function nestedValueEvidence(x){
   const valueAlignedText=valueAligned?` / ${valueAligned}`:"";
   const coverage=officialCoverageEvidence(x);
   const coverageText=coverage?` / ${coverage}`:"";
-  return `入れ子 ${fmt(x.nested_value_model_training_days)}日 ${x.nested_value_model_training_from||"-"}..${x.nested_value_model_training_through||"-"} / 価値校正 ${fmt(x.nested_value_calibration_days)}日 ${fmt(x.nested_value_calibration_candidates)}候補 ${ready}(${reasons}) / 外側 ${x.nested_value_evaluation_from||"-"}..${x.nested_value_evaluation_through||"-"} ${fmt(x.nested_value_evaluated_races)}R ${fmt(x.nested_value_evaluation_candidates)}候補 / ${fmt(x.nested_value_tickets)}券 ROI ${roi} / LCB ${ratio(x.nested_value_roi_ci95_lower)} / ${x.nested_value_promotion_eligible===true?"昇格可":"昇格不可"}${stackText}${valueAlignedText}${coverageText}`;
+  const selectionPeriod=` / stack探索 ${fmt(x.nested_value_stack_selection_days)}日 ${x.nested_value_stack_selection_from||"-"}..${x.nested_value_stack_selection_through||"-"}`;
+  return `入れ子 ${fmt(x.nested_value_model_training_days)}日 ${x.nested_value_model_training_from||"-"}..${x.nested_value_model_training_through||"-"}${selectionPeriod} / 価値校正 ${fmt(x.nested_value_calibration_days)}日 ${fmt(x.nested_value_calibration_candidates)}候補 ${ready}(${reasons}) / 外側 ${x.nested_value_evaluation_from||"-"}..${x.nested_value_evaluation_through||"-"} ${fmt(x.nested_value_evaluated_races)}R ${fmt(x.nested_value_evaluation_candidates)}候補 / ${fmt(x.nested_value_tickets)}券 ROI ${roi} / LCB ${ratio(x.nested_value_roi_ci95_lower)} / ${x.nested_value_promotion_eligible===true?"昇格可":"昇格不可"}${stackText}${valueAlignedText}${coverageText}`;
 }
 function renderEvaluationJobs(jobs,generatedAt){
   jobs=jobs.map(x=>({...x,decision:`${x.decision||"-"}${pairedAuditText(x)}`}));
@@ -779,7 +781,8 @@ function renderNestedValueAudit(jobs){
   const valueAlignedText=valueAligned?` / ${valueAligned}`:"";
   const coverage=officialCoverageEvidence(latest);
   const coverageText=coverage?` / ${coverage}`:"";
-  $("nestedValueMeta").textContent=`#${fmt(latest.db_job_id||latest.job_id)} / 学習 ${latest.nested_value_model_training_from||"-"}..${latest.nested_value_model_training_through||"-"} (${fmt(latest.nested_value_model_training_days)}日) / 価値校正 ${latest.nested_value_calibration_from||"-"}..${latest.nested_value_calibration_through||"-"} (${fmt(latest.nested_value_calibration_days)}日, ${fmt(latest.nested_value_calibration_candidates)}候補, ${ready})${localReady} / 外側 ${latest.nested_value_evaluation_from||"-"}..${latest.nested_value_evaluation_through||"-"} (${fmt(latest.nested_value_evaluated_races)}R, ${fmt(latest.nested_value_evaluation_candidates)}候補) / ${fmt(latest.nested_value_tickets)}券 / ROI ${roi} / 昇格 ${latest.nested_value_promotion_eligible===true?"可":"不可"}${stackText}${valueAlignedText}${coverageText}`;
+  const selectionPeriod=` / stack探索 ${latest.nested_value_stack_selection_from||"-"}..${latest.nested_value_stack_selection_through||"-"} (${fmt(latest.nested_value_stack_selection_days)}日)`;
+  $("nestedValueMeta").textContent=`#${fmt(latest.db_job_id||latest.job_id)} / 学習 ${latest.nested_value_model_training_from||"-"}..${latest.nested_value_model_training_through||"-"} (${fmt(latest.nested_value_model_training_days)}日)${selectionPeriod} / 価値校正 ${latest.nested_value_calibration_from||"-"}..${latest.nested_value_calibration_through||"-"} (${fmt(latest.nested_value_calibration_days)}日, ${fmt(latest.nested_value_calibration_candidates)}候補, ${ready})${localReady} / 外側 ${latest.nested_value_evaluation_from||"-"}..${latest.nested_value_evaluation_through||"-"} (${fmt(latest.nested_value_evaluated_races)}R, ${fmt(latest.nested_value_evaluation_candidates)}候補) / ${fmt(latest.nested_value_tickets)}券 / ROI ${roi} / 昇格 ${latest.nested_value_promotion_eligible===true?"可":"不可"}${stackText}${valueAlignedText}${coverageText}`;
   const rows=[];
   const aligned=latest.nested_value_value_aligned_stack_selection||{};
   for(const row of aligned.candidates||[]) rows.push({
