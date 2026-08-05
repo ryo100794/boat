@@ -81,7 +81,7 @@ from .mature_stacked_value import evaluate_mature_stacked_value
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 21
+EVALUATION_VERSION = 22
 TARGETED_TEMPORAL_COMPONENTS = (
     "mature_stacked_contextual_value",
 )
@@ -961,6 +961,109 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def externalize_targeted_mature_evidence(
+    result: dict[str, Any],
+    output_path: Path,
+) -> dict[str, Any]:
+    temporal = result.get("temporal_residual_diagnostic")
+    if not isinstance(temporal, Mapping):
+        return result
+    mature = temporal.get("mature_stacked_contextual_value")
+    stacked = temporal.get("stacked_market_residual_v42")
+    if not isinstance(mature, Mapping) or not isinstance(stacked, Mapping):
+        return result
+    sidecar_path = output_path.with_suffix(".research.joblib")
+    temporary = sidecar_path.with_name(f".{sidecar_path.name}.tmp")
+    sidecar_payload = {
+        "schema_version": 1,
+        "model": mature.get("model"),
+        "mature_stacked_contextual_value": dict(mature),
+        "stacked_market_residual_v42": dict(stacked),
+    }
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(sidecar_payload, temporary)
+    temporary.replace(sidecar_path)
+    sidecar_sha256 = _file_sha256(sidecar_path)
+
+    bankroll = dict(mature.get("bankroll") or {})
+    full_daily = [
+        dict(row) for row in bankroll.get("daily") or ()
+        if isinstance(row, Mapping)
+    ]
+    audit_fields = {
+        "candidate_decision_audit",
+        "eligible_candidate_audit",
+        "selected_sample",
+    }
+    compact_daily = [
+        {key: value for key, value in row.items() if key not in audit_fields}
+        for row in full_daily
+    ]
+    decision_count = sum(
+        len(row.get("candidate_decision_audit") or ())
+        for row in full_daily
+    )
+    eligible_count = sum(
+        len(row.get("eligible_candidate_audit") or ())
+        for row in full_daily
+    )
+    probability_artifact = mature.get("probability_artifact")
+    artifact_sha256 = (
+        probability_artifact.get("artifact_sha256")
+        if isinstance(probability_artifact, Mapping)
+        else None
+    )
+    sidecar = {
+        "path": str(sidecar_path),
+        "sha256": sidecar_sha256,
+        "bytes": sidecar_path.stat().st_size,
+        "format": "joblib",
+        "schema_version": 1,
+        "contains_full_probability_artifact": True,
+        "contains_full_candidate_decision_audit": True,
+        "candidate_decision_count": decision_count,
+        "eligible_candidate_count": eligible_count,
+    }
+    compact_mature = {
+        **dict(mature),
+        "probability_artifact": {
+            "externalized": True,
+            "artifact_sha256": artifact_sha256,
+            "sidecar_sha256": sidecar_sha256,
+        },
+        "bankroll": {**bankroll, "daily": compact_daily},
+        "research_sidecar": sidecar,
+    }
+    compact_stacked = {
+        **dict(stacked),
+        "artifact": {
+            "externalized": True,
+            "artifact_sha256": artifact_sha256,
+            "sidecar_sha256": sidecar_sha256,
+        },
+        "research_sidecar": sidecar,
+    }
+    compact_temporal = {
+        **dict(temporal),
+        "stacked_market_residual_v42": compact_stacked,
+        "mature_stacked_contextual_value": compact_mature,
+        "research_sidecar": sidecar,
+    }
+    return {
+        **result,
+        "temporal_residual_diagnostic": compact_temporal,
+        "research_sidecar": sidecar,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.from_date > args.through_date:
@@ -992,6 +1095,8 @@ def main(argv: list[str] | None = None) -> int:
         "source_model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
         "dataset": dataset,
     })
+    if args.temporal_component == "mature_stacked_contextual_value":
+        result = externalize_targeted_mature_evidence(result, args.output)
     write_json_atomic(args.output, result)
     print(json.dumps({key: value for key, value in result.items() if key not in {"diagnostics", "primary"}}, ensure_ascii=False, sort_keys=True))
     return 0

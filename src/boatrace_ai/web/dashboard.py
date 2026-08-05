@@ -3927,6 +3927,18 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_context_audit": metrics.get(
                     "nested_value_context_audit"
                 ),
+                "nested_value_research_sidecar_sha256": metrics.get(
+                    "nested_value_research_sidecar_sha256"
+                ),
+                "nested_value_research_sidecar_bytes": metrics.get(
+                    "nested_value_research_sidecar_bytes"
+                ),
+                "nested_value_research_sidecar_format": metrics.get(
+                    "nested_value_research_sidecar_format"
+                ),
+                "nested_value_full_candidate_decision_count": metrics.get(
+                    "nested_value_full_candidate_decision_count"
+                ),
                 "nested_value_tickets": metrics.get("nested_value_tickets"),
                 "nested_value_stake_yen": metrics.get(
                     "nested_value_stake_yen"

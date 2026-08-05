@@ -313,6 +313,12 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
             "status": "completed",
             "evaluation": [{"rank_group": "top5", "odds_band": "<20"}],
         },
+        "research_sidecar": {
+            "sha256": "d" * 64,
+            "bytes": 1234,
+            "format": "joblib",
+            "candidate_decision_count": 456,
+        },
         "bankroll": {"tickets": 0, "stake_yen": 0, "roi": None},
         "promotion_eligible": False,
     }
@@ -323,6 +329,9 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
         "rank_group": "top5",
         "odds_band": "<20",
     }
+    assert summary["nested_value_research_sidecar_sha256"] == "d" * 64
+    assert summary["nested_value_research_sidecar_bytes"] == 1234
+    assert summary["nested_value_full_candidate_decision_count"] == 456
     assert summary["targeted_temporal_component"] == (
         "mature_stacked_contextual_value"
     )

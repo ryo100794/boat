@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import joblib
 import pytest
 
 from boatrace_ai.listwise.archive_market_oracle import (
     EVALUATION_VERSION,
     PRIMARY_POLICY,
     V23_TOP5_ORACLE_POLICY,
+    externalize_targeted_mature_evidence,
     narrow_ev_diagnostic_policies,
     restrict_probabilities_to_available,
     temporal_residual_diagnostic,
 )
 
 def test_v33_archive_protocol_uses_new_evaluation_version() -> None:
-    assert EVALUATION_VERSION == 21
+    assert EVALUATION_VERSION == 22
 
 
 def test_restrict_probabilities_renormalizes_after_withdrawal() -> None:
@@ -159,6 +161,59 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
     ] == 2
     assert result["mature_stacked_contextual_value"]["status"] == "completed"
     assert "ticket_utility_calibration_aligned_v33" not in result
+
+
+def test_targeted_mature_evidence_is_externalized_without_loss(
+    tmp_path,
+) -> None:
+    result = {
+        "temporal_residual_diagnostic": {
+            "stacked_market_residual_v42": {
+                "artifact": {"artifact_sha256": "a" * 64, "booster": "full"},
+            },
+            "mature_stacked_contextual_value": {
+                "model": "mature_stacked_contextual_value_rank20",
+                "probability_artifact": {
+                    "artifact_sha256": "a" * 64,
+                    "booster": "full",
+                },
+                "bankroll": {
+                    "tickets": 0,
+                    "daily": [{
+                        "race_date": "2026-07-01",
+                        "stake_yen": 0,
+                        "candidate_decision_audit": [{"race_id": "r1"}],
+                        "eligible_candidate_audit": [{"race_id": "r2"}],
+                        "selected_sample": [{"race_id": "r3"}],
+                    }],
+                },
+                "context_value_audit": {"status": "completed"},
+            },
+        },
+    }
+
+    compact = externalize_targeted_mature_evidence(
+        result, tmp_path / "job.json"
+    )
+
+    sidecar = compact["research_sidecar"]
+    assert len(sidecar["sha256"]) == 64
+    assert sidecar["candidate_decision_count"] == 1
+    assert sidecar["eligible_candidate_count"] == 1
+    loaded = joblib.load(sidecar["path"])
+    full = loaded["mature_stacked_contextual_value"]
+    assert full["probability_artifact"]["booster"] == "full"
+    assert full["bankroll"]["daily"][0]["candidate_decision_audit"] == [
+        {"race_id": "r1"}
+    ]
+    mature = compact["temporal_residual_diagnostic"][
+        "mature_stacked_contextual_value"
+    ]
+    assert mature["probability_artifact"]["externalized"] is True
+    assert mature["context_value_audit"]["status"] == "completed"
+    assert "candidate_decision_audit" not in mature["bankroll"]["daily"][0]
+    assert "eligible_candidate_audit" not in mature["bankroll"]["daily"][0]
+    assert "selected_sample" not in mature["bankroll"]["daily"][0]
 
 
 def test_targeted_temporal_component_rejects_unknown_name() -> None:

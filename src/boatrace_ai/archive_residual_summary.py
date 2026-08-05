@@ -430,6 +430,10 @@ def apply_archive_residual_summary(
         nested_bankroll = (
             nested_bankroll if isinstance(nested_bankroll, Mapping) else {}
         )
+        nested_sidecar = nested.get("research_sidecar")
+        nested_sidecar = (
+            nested_sidecar if isinstance(nested_sidecar, Mapping) else {}
+        )
         summary.update({
             "nested_value_model": nested.get("model"),
             "nested_value_status": nested.get("status"),
@@ -501,6 +505,16 @@ def apply_archive_residual_summary(
             ),
             "nested_value_decile_audit": nested.get("value_decile_audit"),
             "nested_value_context_audit": nested.get("context_value_audit"),
+            "nested_value_research_sidecar_sha256": nested_sidecar.get(
+                "sha256"
+            ),
+            "nested_value_research_sidecar_bytes": nested_sidecar.get("bytes"),
+            "nested_value_research_sidecar_format": nested_sidecar.get(
+                "format"
+            ),
+            "nested_value_full_candidate_decision_count": nested_sidecar.get(
+                "candidate_decision_count"
+            ),
             "nested_value_tickets": nested_bankroll.get("tickets"),
             "nested_value_stake_yen": nested_bankroll.get("stake_yen"),
             "nested_value_return_yen": nested_bankroll.get("return_yen"),

@@ -779,7 +779,9 @@ function renderNestedValueAudit(jobs){
   for(const [scope,label] of [["calibration","校正"],["evaluation","外側"]]){
     for(const row of contextAudit[scope]||[]) contextRows.push({...row,scope_label:label});
   }
-  $("nestedContextMeta").textContent=contextRows.length?`#${fmt(latest.db_job_id||latest.job_id)} / 事前固定 Top5・6–20 × 4オッズ帯 / ${contextAudit.bootstrap_cluster_unit||"race_date"} cluster / n=${fmt(contextAudit.bootstrap_samples)} / 外側を境界定義に不使用 ${contextAudit.evaluation_used_for_context_definition===false?"PASS":"FAIL"}`:"固定コンテキスト監査は次回完了成果物から掲載";
+  const sidecarHash=String(latest.nested_value_research_sidecar_sha256||"");
+  const sidecar=sidecarHash?` / 完全証跡 ${esc(latest.nested_value_research_sidecar_format||"-")} ${fmt(latest.nested_value_research_sidecar_bytes)} bytes / ${fmt(latest.nested_value_full_candidate_decision_count)}判断 / sha256 ${sidecarHash.slice(0,12)}`:" / 完全証跡 未記録";
+  $("nestedContextMeta").textContent=contextRows.length?`#${fmt(latest.db_job_id||latest.job_id)} / 事前固定 Top5・6–20 × 4オッズ帯 / ${contextAudit.bootstrap_cluster_unit||"race_date"} cluster / n=${fmt(contextAudit.bootstrap_samples)} / 外側を境界定義に不使用 ${contextAudit.evaluation_used_for_context_definition===false?"PASS":"FAIL"}${sidecar}`:"固定コンテキスト監査は次回完了成果物から掲載";
   $("nestedContextRows").innerHTML=contextRows.map(row=>`<tr><td>${row.scope_label}</td><td>${esc(row.rank_group||"-")}</td><td>${esc(row.odds_band||"-")}</td><td>${fmt(row.candidates)}</td><td>${fmt(row.candidate_days)}</td><td>${ratio(row.mean_predicted_raw_ev)}</td><td>${ratio(row.realized_roi)}</td><td>${ratio(row.realized_roi_lcb95)}</td><td>${ratio(row.roi_excluding_largest_hit)}</td></tr>`).join("")||"<tr><td colspan=\"9\" class=\"muted\">固定コンテキスト監査は次回完了成果物から掲載</td></tr>";
 }
 function renderOperationalEvidence(jobs){

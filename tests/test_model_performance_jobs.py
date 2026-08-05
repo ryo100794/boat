@@ -106,6 +106,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nested_value_decile_audit" in MODEL_REPORT_HTML
     assert "id=\"nestedContextRows\"" in MODEL_REPORT_HTML
     assert "nested_value_context_audit" in MODEL_REPORT_HTML
+    assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML
+    assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
     assert "decisionStackEvidence" in MODEL_REPORT_HTML
     assert "購入余裕" in MODEL_REPORT_HTML
