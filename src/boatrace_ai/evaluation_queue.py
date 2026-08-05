@@ -4058,6 +4058,50 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 visit(value[key], depth + 1)
 
     visit(payload)
+    temporal = payload.get("temporal_residual_diagnostic")
+    if isinstance(temporal, dict) and temporal.get(
+        "targeted_temporal_component"
+    ) == "mature_stacked_contextual_value":
+        mature = temporal.get("mature_stacked_contextual_value")
+        if isinstance(mature, dict):
+            bankroll = mature.get("bankroll")
+            bankroll = bankroll if isinstance(bankroll, dict) else {}
+            summary.update({
+                "model": mature.get("model"),
+                "status": mature.get("status"),
+                "evaluation_from": mature.get("evaluation_from"),
+                "evaluation_through": mature.get("evaluation_through"),
+                "evaluation_days": bankroll.get("evaluation_days"),
+                "evaluated_races": bankroll.get("evaluated_races"),
+                "tickets": bankroll.get("tickets"),
+                "stake_yen": bankroll.get("stake_yen"),
+                "return_yen": bankroll.get("return_yen"),
+                "profit_yen": bankroll.get("profit_yen"),
+                "roi": bankroll.get("roi"),
+                "roi_display": bankroll.get("roi_display"),
+                "roi_ci95_lower": bankroll.get("roi_ci95_lower"),
+                "roi_lower_quantile": bankroll.get("roi_lower_quantile"),
+                "roi_quantile_method": bankroll.get("roi_quantile_method"),
+                "max_drawdown_yen": bankroll.get("max_drawdown_yen"),
+                "promotion_eligible": mature.get("promotion_eligible"),
+                "statistical_gate_passed": mature.get(
+                    "statistical_gate_passed"
+                ),
+                "strict_prior_artifact_audit": mature.get(
+                    "strict_prior_artifact_audit"
+                ),
+                "strict_prior_violation_count": mature.get(
+                    "strict_prior_violation_count"
+                ),
+                "same_race_calibrator_hash_count_max": mature.get(
+                    "same_race_calibrator_hash_count_max"
+                ),
+                "calibrator_hash": mature.get("calibrator_hash"),
+                "calibration_ledger_hash": mature.get(
+                    "calibration_ledger_hash"
+                ),
+                "artifact_lineage": mature.get("artifact_lineage"),
+            })
     if payload.get("model") in {
         "decision_time_nonlinear_market_residual_v38",
         "decision_time_stacked_market_residual_v44",

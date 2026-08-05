@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Any, Mapping
 
 from ..bankroll_bootstrap import (
@@ -47,6 +48,76 @@ CONTEXT_ODDS_BANDS = (
     ("50-101", 50.0, 101.0),
     (">=101", 101.0, float("inf")),
 )
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _ledger_sha256(records: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _parse_timestamp(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _strict_prior_artifact_audit(
+    calibration_ledger: list[dict[str, Any]],
+    evaluation_ledger: list[dict[str, Any]],
+) -> dict[str, Any]:
+    maximum_prior_settlement = max(
+        (_parse_timestamp(row["settlement_time"]) for row in calibration_ledger),
+        default=None,
+    )
+    evaluation_decisions = [
+        _parse_timestamp(row["decision_time"]) for row in evaluation_ledger
+    ]
+    calibration_races = {str(row["race_id"]) for row in calibration_ledger}
+    evaluation_races = {str(row["race_id"]) for row in evaluation_ledger}
+    violations = sum(
+        maximum_prior_settlement is not None
+        and maximum_prior_settlement >= decision
+        for decision in evaluation_decisions
+    )
+    return {
+        "calibration_cutoff_time": (
+            maximum_prior_settlement.isoformat()
+            if maximum_prior_settlement is not None else None
+        ),
+        "max_training_settlement_time": (
+            maximum_prior_settlement.isoformat()
+            if maximum_prior_settlement is not None else None
+        ),
+        "minimum_evaluation_decision_time": (
+            min(evaluation_decisions).isoformat() if evaluation_decisions else None
+        ),
+        "strict_prior_check": violations == 0,
+        "strict_prior_violation_count": int(violations),
+        "same_race_overlap_count": len(calibration_races & evaluation_races),
+        "same_race_calibrator_hash_count_max": 1 if evaluation_races else 0,
+        "all_pregate_candidates_registered": all(
+            row.get("candidate_population") == "all_pregate_probability_ranked"
+            for row in calibration_ledger
+        ),
+    }
 
 
 def _context_value_rows(
@@ -590,6 +661,12 @@ def evaluate_mature_stacked_value(
         rank_prior_tickets=500.0,
         cell_prior_tickets=200.0,
     )
+    empirical_payload = empirical.as_dict()
+    strict_prior_audit = _strict_prior_artifact_audit(
+        ledger, evaluation_ledger
+    )
+    calibrator_hash = _canonical_sha256(empirical_payload)
+    calibration_ledger_hash = _ledger_sha256(ledger)
     bankroll = simulate_empirical_lcb_policy(
         evaluation_scored,
         calibrator,
@@ -716,9 +793,23 @@ def evaluate_mature_stacked_value(
         "evaluation_probability_metrics": stacked_metrics(
             evaluation, artifact
         ),
-        "empirical_ev_calibration": empirical.as_dict(),
+        "empirical_ev_calibration": empirical_payload,
         "calibration_ledger_candidates": len(ledger),
         "evaluation_ledger_candidates": len(evaluation_ledger),
+        "strict_prior_artifact_audit": strict_prior_audit,
+        "strict_prior_violation_count": strict_prior_audit[
+            "strict_prior_violation_count"
+        ],
+        "same_race_calibrator_hash_count_max": strict_prior_audit[
+            "same_race_calibrator_hash_count_max"
+        ],
+        "calibrator_hash": calibrator_hash,
+        "calibration_ledger_hash": calibration_ledger_hash,
+        "artifact_lineage": {
+            "parent_artifact_hash": artifact.get("artifact_sha256"),
+            "calibrator_hash": calibrator_hash,
+            "calibration_ledger_hash": calibration_ledger_hash,
+        },
         "value_decile_audit": value_decile_audit(
             ledger, evaluation_ledger
         ),

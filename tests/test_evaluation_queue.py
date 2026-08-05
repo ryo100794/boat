@@ -5759,3 +5759,57 @@ def test_result_summary_derives_v33_forecast_only_metrics_from_folds() -> None:
     assert summary[f"{prefix}_profit_yen"] == -200
     assert summary[f"{prefix}_roi_without_largest_hit"] == 0.5
     assert summary[f"{prefix}_promotion_evidence"] is False
+
+
+def test_result_summary_promotes_targeted_mature_audit() -> None:
+    audit = {
+        "strict_prior_check": True,
+        "strict_prior_violation_count": 0,
+        "same_race_overlap_count": 0,
+    }
+    lineage = {
+        "parent_artifact_hash": "a" * 64,
+        "calibrator_hash": "b" * 64,
+        "calibration_ledger_hash": "c" * 64,
+    }
+    summary = summarize_result({
+        "roi": 0.5,
+        "temporal_residual_diagnostic": {
+            "targeted_temporal_component": "mature_stacked_contextual_value",
+            "mature_stacked_contextual_value": {
+                "model": "mature_stacked_contextual_value_rank20",
+                "status": "completed",
+                "evaluation_from": "2026-07-01",
+                "evaluation_through": "2026-08-05",
+                "promotion_eligible": False,
+                "statistical_gate_passed": False,
+                "strict_prior_artifact_audit": audit,
+                "strict_prior_violation_count": 0,
+                "same_race_calibrator_hash_count_max": 1,
+                "calibrator_hash": "b" * 64,
+                "calibration_ledger_hash": "c" * 64,
+                "artifact_lineage": lineage,
+                "bankroll": {
+                    "evaluation_days": 36,
+                    "evaluated_races": 4800,
+                    "tickets": 120,
+                    "stake_yen": 12_000,
+                    "return_yen": 12_600,
+                    "profit_yen": 600,
+                    "roi": 1.05,
+                    "roi_display": 1.05,
+                    "roi_ci95_lower": 0.94,
+                    "roi_lower_quantile": 0.05,
+                    "roi_quantile_method": "inverted_cdf",
+                    "max_drawdown_yen": 2_300,
+                },
+            },
+        },
+    })
+
+    assert summary["model"] == "mature_stacked_contextual_value_rank20"
+    assert summary["roi"] == 1.05
+    assert summary["strict_prior_artifact_audit"] == audit
+    assert summary["strict_prior_violation_count"] == 0
+    assert summary["same_race_calibrator_hash_count_max"] == 1
+    assert summary["artifact_lineage"] == lineage

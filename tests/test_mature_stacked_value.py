@@ -151,6 +151,22 @@ def test_mature_value_keeps_60_60_60_and_outer_periods_disjoint(
     assert result["evaluation_from"] == "2026-06-30"
     assert result["calibration_ledger_candidates"] == 1200
     assert result["evaluation_ledger_candidates"] == 100
+    audit = result["strict_prior_artifact_audit"]
+    assert audit["strict_prior_check"] is True
+    assert audit["strict_prior_violation_count"] == 0
+    assert audit["same_race_overlap_count"] == 0
+    assert audit["same_race_calibrator_hash_count_max"] == 1
+    assert audit["all_pregate_candidates_registered"] is True
+    assert audit["max_training_settlement_time"].startswith("2026-06-29T23:59:59")
+    assert audit["minimum_evaluation_decision_time"].startswith("2026-06-30T00:00:00")
+    assert result["strict_prior_violation_count"] == 0
+    assert result["same_race_calibrator_hash_count_max"] == 1
+    assert len(result["calibrator_hash"]) == 64
+    assert len(result["calibration_ledger_hash"]) == 64
+    assert result["artifact_lineage"]["parent_artifact_hash"] == (
+        result["probability_artifact"]["artifact_sha256"]
+    )
+    assert result["artifact_lineage"]["calibrator_hash"] == result["calibrator_hash"]
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
     assert result["purchase_max_tickets_per_race"] == 1
