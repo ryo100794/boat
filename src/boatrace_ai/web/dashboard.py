@@ -3529,6 +3529,21 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "official_closing_fields_used": metrics.get(
                     "official_closing_fields_used"
                 ),
+                "feature_time_boundary": metrics.get(
+                    "feature_time_boundary"
+                ),
+                "decision_time_boundary_all_passed": metrics.get(
+                    "decision_time_boundary_all_passed"
+                ),
+                "decision_time_boundary_violations": metrics.get(
+                    "decision_time_boundary_violations"
+                ),
+                "maximum_input_snapshot_age_seconds": metrics.get(
+                    "maximum_input_snapshot_age_seconds"
+                ),
+                "allowed_input_snapshot_age_seconds": metrics.get(
+                    "allowed_input_snapshot_age_seconds"
+                ),
                 "training_from": metrics.get("training_from"),
                 "training_through": metrics.get("training_through"),
                 "training_days": metrics.get("training_days"),

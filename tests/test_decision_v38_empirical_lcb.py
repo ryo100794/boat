@@ -22,6 +22,7 @@ def _race(day: date, index: int) -> dict:
         "snapshot_id": index,
         "captured_at": f"{race_date}T10:00:00+09:00",
         "odds_deadline_at": f"{race_date}T10:01:00+09:00",
+        "input_snapshot_age_seconds": 60.0,
     }
 
 

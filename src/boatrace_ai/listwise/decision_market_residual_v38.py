@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,17 +32,18 @@ REQUIRED_KEYS = (
     "model_probabilities",
     "market_probabilities",
     "lane_context",
-)
-OPTIONAL_AUDIT_KEYS = (
     "snapshot_id",
     "captured_at",
     "odds_deadline_at",
     "input_snapshot_age_seconds",
+)
+OPTIONAL_AUDIT_KEYS = (
     "odds_path",
     "odds_path_points",
     "odds_checkpoints",
     "historical_return_multipliers",
 )
+MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS = 65.0
 FORBIDDEN_SOURCE_PREFIXES = (
     "official_closing_",
     "closing_",
@@ -67,11 +69,24 @@ def decision_time_race(race: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "decision-time V38 race is missing fields: " + ", ".join(missing)
         )
+    captured = datetime.fromisoformat(str(race["captured_at"]).replace("Z", "+00:00"))
+    deadline = datetime.fromisoformat(
+        str(race["odds_deadline_at"]).replace("Z", "+00:00")
+    )
+    if captured.tzinfo is None or deadline.tzinfo is None:
+        raise ValueError("decision-time timestamps must include timezone offsets")
+    age = float(race["input_snapshot_age_seconds"])
+    if not math.isfinite(age) or not 0.0 <= age <= MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS:
+        raise ValueError("decision-time snapshot age is outside the allowed range")
+    observed_age = (deadline - captured).total_seconds()
+    if captured > deadline or abs(observed_age - age) > 1.0:
+        raise ValueError("decision-time snapshot violates the odds deadline boundary")
     result = {key: race[key] for key in REQUIRED_KEYS}
     for key in OPTIONAL_AUDIT_KEYS:
         if key in race:
             result[key] = race[key]
     result["market_probability_source"] = "decision_snapshot_odds"
+    result["decision_time_boundary_check"] = True
     return result
 
 
@@ -108,6 +123,15 @@ def fit_decision_time_market_residual(
         "status": status,
         "market_probability_source": "decision_snapshot_odds",
         "feature_time_boundary": "at_or_before_odds_deadline_at",
+        "decision_time_boundary_all_passed": True,
+        "decision_time_boundary_violations": 0,
+        "maximum_input_snapshot_age_seconds": max(
+            float(race["input_snapshot_age_seconds"])
+            for race in sanitized
+        ) if sanitized else None,
+        "allowed_input_snapshot_age_seconds": (
+            MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS
+        ),
         "official_closing_fields_used": False,
         "forbidden_source_prefixes": list(FORBIDDEN_SOURCE_PREFIXES),
         "calibration_through": cutoff,

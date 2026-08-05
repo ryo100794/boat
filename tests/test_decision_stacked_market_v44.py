@@ -18,6 +18,9 @@ def _race(day: date, index: int) -> dict:
         "market_probabilities": {"1-2-3": 0.55, "1-3-2": 0.45},
         "lane_context": [{"lane": lane} for lane in range(1, 7)],
         "snapshot_id": index,
+        "captured_at": f"{day.isoformat()}T10:00:00+09:00",
+        "odds_deadline_at": f"{day.isoformat()}T10:01:00+09:00",
+        "input_snapshot_age_seconds": 60.0,
         "closing_odds": {"1-2-3": 99.0},
     }
 

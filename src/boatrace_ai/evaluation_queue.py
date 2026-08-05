@@ -4050,6 +4050,19 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "official_closing_fields_used": payload.get(
                 "official_closing_fields_used"
             ),
+            "feature_time_boundary": payload.get("feature_time_boundary"),
+            "decision_time_boundary_all_passed": payload.get(
+                "decision_time_boundary_all_passed"
+            ),
+            "decision_time_boundary_violations": payload.get(
+                "decision_time_boundary_violations"
+            ),
+            "maximum_input_snapshot_age_seconds": payload.get(
+                "maximum_input_snapshot_age_seconds"
+            ),
+            "allowed_input_snapshot_age_seconds": payload.get(
+                "allowed_input_snapshot_age_seconds"
+            ),
             "training_from": payload.get("training_from"),
             "training_through": payload.get("training_through"),
             "training_days": payload.get("training_days"),
