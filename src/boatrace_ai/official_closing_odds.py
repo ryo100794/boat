@@ -185,32 +185,47 @@ def reclassify_confirmed_non_six_boat_attempts(conn: Any) -> int:
     return max(0, int(cursor.rowcount or 0))
 
 
-def _incomplete_dead_heat_dates(conn: Any) -> list[str]:
+def _incomplete_dead_heat_dates(
+    conn: Any,
+    *,
+    from_date: str | None = None,
+    through_date: str | None = None,
+) -> list[str]:
+    date_clauses: list[str] = []
+    parameters: list[str] = []
+    if from_date is not None:
+        date_clauses.append("r.race_date >= ?")
+        parameters.append(from_date)
+    if through_date is not None:
+        date_clauses.append("r.race_date <= ?")
+        parameters.append(through_date)
+    date_filter = (
+        "WHERE " + " AND ".join(date_clauses) if date_clauses else ""
+    )
     rows = conn.execute(
-        """
+        f"""
+        WITH tied_results AS (
+          SELECT race_id
+          FROM race_results
+          WHERE rank IS NOT NULL
+          GROUP BY race_id
+          HAVING COUNT(DISTINCT lane) = 6
+             AND COUNT(DISTINCT rank) < 6
+        ), single_trifecta_payout AS (
+          SELECT race_id
+          FROM payouts
+          WHERE bet_type = '3連単' AND payout_yen IS NOT NULL
+          GROUP BY race_id
+          HAVING COUNT(*) = 1
+        )
         SELECT DISTINCT r.race_date
         FROM races r
-        WHERE (
-            SELECT COUNT(DISTINCT rr.lane)
-            FROM race_results rr
-            WHERE rr.race_id = r.race_id AND rr.rank IS NOT NULL
-        ) = 6
-          AND EXISTS (
-            SELECT 1
-            FROM race_results tied
-            WHERE tied.race_id = r.race_id AND tied.rank IS NOT NULL
-            GROUP BY tied.rank
-            HAVING COUNT(*) > 1
-          )
-          AND (
-            SELECT COUNT(*)
-            FROM payouts p
-            WHERE p.race_id = r.race_id
-              AND p.bet_type = '3連単'
-              AND p.payout_yen IS NOT NULL
-          ) = 1
+        JOIN tied_results tied ON tied.race_id = r.race_id
+        JOIN single_trifecta_payout payout ON payout.race_id = r.race_id
+        {date_filter}
         ORDER BY r.race_date
-        """
+        """,
+        tuple(parameters),
     ).fetchall()
     return [str(row["race_date"])[:10] for row in rows]
 
@@ -220,8 +235,12 @@ def repair_incomplete_dead_heat_payouts(
     *,
     raw_dir: Path = Path("data/raw"),
     sleep_seconds: float = 0.5,
+    from_date: str | None = None,
+    through_date: str | None = None,
 ) -> dict[str, Any]:
-    target_dates = _incomplete_dead_heat_dates(conn)
+    target_dates = _incomplete_dead_heat_dates(
+        conn, from_date=from_date, through_date=through_date
+    )
     before = len(target_dates)
     downloaded_dates = 0
     failed_dates = 0
@@ -248,7 +267,9 @@ def repair_incomplete_dead_heat_payouts(
                         "error": f"{type(exc).__name__}: {exc}"[:500],
                     }
                 )
-    remaining_dates = _incomplete_dead_heat_dates(conn)
+    remaining_dates = _incomplete_dead_heat_dates(
+        conn, from_date=from_date, through_date=through_date
+    )
     return {
         "target_dates": before,
         "downloaded_dates": downloaded_dates,
@@ -303,7 +324,10 @@ def backfill_official_closing_odds(
     special_settlements_only: bool = False,
 ) -> dict[str, Any]:
     dead_heat_repair = repair_incomplete_dead_heat_payouts(
-        conn, sleep_seconds=sleep_seconds
+        conn,
+        sleep_seconds=sleep_seconds,
+        from_date=from_date,
+        through_date=through_date,
     )
     reclassified_special = reclassify_confirmed_special_settlement_attempts(conn)
     reclassified = reclassify_confirmed_non_six_boat_attempts(conn)
