@@ -3165,6 +3165,7 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "priority": row.get("priority"),
                 "parent_job_id": row.get("parent_job_id"),
                 "name": row.get("model_key"),
+                "model": metrics.get("model"),
                 "milestone": row.get("task_type"),
                 "kind": row.get("task_type"),
                 "status": (
@@ -3754,6 +3755,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 ),
                 "residual_selected_shrinkage": _float_or_none(
                     metrics.get("residual_selected_shrinkage")
+                ),
+                "residual_selected_stack": metrics.get(
+                    "residual_selected_stack"
+                ),
+                "residual_selected_weights": metrics.get(
+                    "residual_selected_weights"
                 ),
                 "residual_selected_context_variant": metrics.get(
                     "residual_selected_context_variant"

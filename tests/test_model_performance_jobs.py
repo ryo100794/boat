@@ -171,6 +171,12 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
             }
         ],
         "residual_selected_context_variant": "full_context_20",
+        "residual_selected_stack": "linear50_nonlinear50",
+        "residual_selected_weights": {
+            "market": 0.0,
+            "linear": 0.5,
+            "nonlinear": 0.5,
+        },
         "residual_outer_period_used_for_selection": False,
         "training_status": "ready",
         "market_probability_source": "decision_snapshot_odds",
@@ -331,6 +337,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["residual_selected_context_variant"] == (
         "full_context_20"
     )
+    assert status["jobs"][0]["residual_selected_stack"] == (
+        "linear50_nonlinear50"
+    )
+    assert status["jobs"][0]["residual_selected_weights"]["nonlinear"] == 0.5
     assert status["jobs"][0][
         "residual_outer_period_used_for_selection"
     ] is False
