@@ -309,12 +309,20 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
         "status": "completed",
         "evaluation_probability_metrics": {"evaluated_races": 20},
         "empirical_ev_calibration": {"ready": True, "cells": []},
+        "context_value_audit": {
+            "status": "completed",
+            "evaluation": [{"rank_group": "top5", "odds_band": "<20"}],
+        },
         "bankroll": {"tickets": 0, "stake_yen": 0, "roi": None},
         "promotion_eligible": False,
     }
     summary = summarize_result(base)
     assert summary["nested_value_model"] == "mature_stacked_contextual_value"
     assert summary["nested_value_evaluated_races"] == 20
+    assert summary["nested_value_context_audit"]["evaluation"][0] == {
+        "rank_group": "top5",
+        "odds_band": "<20",
+    }
     assert summary["targeted_temporal_component"] == (
         "mature_stacked_contextual_value"
     )

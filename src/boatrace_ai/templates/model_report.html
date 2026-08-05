@@ -108,6 +108,7 @@
     <div class="panel"><h2><span>運用証拠・成熟度</span><span class="muted">封印検証・模擬運用・少額固定運用を別判定</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>段階</th><th>現在の証拠</th><th>必須条件</th><th>判定</th></tr></thead><tbody id="operationalEvidenceRows"></tbody></table></div></div>
     <div class="panel"><h2><span>V_buy分位別 実現校正</span><span id="purchaseValueCalibrationMeta" class="muted">同一ポートフォリオ / 完全日ブロック</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>分位</th><th>候補数</th><th>日数</th><th>V_buy範囲</th><th>予測ROI</th><th>実現ROI</th><th>ROI LCB95</th><th>損益</th></tr></thead><tbody id="purchaseValueCalibrationRows"></tbody></table></div></div>
     <div class="panel"><h2><span>入れ子価値校正・10分位監査</span><span id="nestedValueMeta" class="muted">モデル学習 / 価値校正 / 外側評価を分離</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>母集団</th><th>分位</th><th>候補数</th><th>候補日</th><th>raw予測EV</th><th>実現ROI</th><th>日LCB95</th></tr></thead><tbody id="nestedValueRows"></tbody></table></div></div>
+    <div class="panel"><h2><span>入れ子価値・固定コンテキスト監査</span><span id="nestedContextMeta" class="muted">事前固定 順位帯 × オッズ帯 / 完全日ブロック</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>母集団</th><th>順位帯</th><th>オッズ帯</th><th>候補数</th><th>候補日</th><th>raw予測EV</th><th>実現ROI</th><th>日LCB95</th><th>最大1的中除外ROI</th></tr></thead><tbody id="nestedContextRows"></tbody></table></div></div>
     <div class="panel"><h2><span>完了候補・昇格ゲート</span><span class="muted">正式: strict-prior校正LCB購入 + 日ブロックROI 5%点 / raw V_buyとP(ROI&gt;1)は補助</span></h2><div class="table-scroll"><table class="metric-table"><thead><tr><th>Job / モデル</th><th>種別・判定</th><th>3連単LL</th><th>3T5</th><th>raw V_buy診断</th><th>安全余裕</th><th>校正購入判定</th><th>ROI LCB95</th><th>正式ROI</th><th>ROI</th><th>損益</th><th>P(ROI&gt;1) 補助</th><th>評価プロトコル / 再標本化条件</th></tr></thead><tbody id="candidateRows"></tbody></table></div></div>
     <div class="panel"><h2><span>評価ジョブ進行</span><span id="remoteMeta" class="muted"></span></h2><div class="table-scroll"><table class="wide-name-table"><thead><tr><th>対象</th><th>M</th><th>状態</th><th>判定</th><th>fold</th><th>経過</th><th>予測</th><th>ROI</th><th>損益</th><th>母数/評価R</th><th>資金診断</th><th>EV帯 証拠/診断</th></tr></thead><tbody id="evaluationRows"></tbody></table></div></div>
   </section>
@@ -734,6 +735,8 @@ function renderNestedValueAudit(jobs){
   if(!latest.nested_value_model){
     $("nestedValueMeta").textContent="入れ子価値校正の完了成果物なし";
     $("nestedValueRows").innerHTML="<tr><td colspan=\"7\" class=\"muted\">次回完了成果物から掲載</td></tr>";
+    $("nestedContextMeta").textContent="固定コンテキスト監査の完了成果物なし";
+    $("nestedContextRows").innerHTML="<tr><td colspan=\"9\" class=\"muted\">次回完了成果物から掲載</td></tr>";
     return;
   }
   const audit=latest.nested_value_decile_audit||{};
@@ -771,6 +774,13 @@ function renderNestedValueAudit(jobs){
     });
   }
   $("nestedValueRows").innerHTML=rows.map(row=>`<tr><td>${row.scope_label}</td><td>${row.decile_label||`D${fmt(row.decile)}`}</td><td>${fmt(row.candidates)}</td><td>${fmt(row.candidate_days)}</td><td>${row.raw_label||ratio(row.mean_predicted_raw_ev)}</td><td>${ratio(row.realized_roi)}</td><td>${ratio(row.realized_roi_lcb95)}</td></tr>`).join("")||"<tr><td colspan=\"7\" class=\"muted\">校正帯監査は次回完了成果物から掲載</td></tr>";
+  const contextAudit=latest.nested_value_context_audit||{};
+  const contextRows=[];
+  for(const [scope,label] of [["calibration","校正"],["evaluation","外側"]]){
+    for(const row of contextAudit[scope]||[]) contextRows.push({...row,scope_label:label});
+  }
+  $("nestedContextMeta").textContent=contextRows.length?`#${fmt(latest.db_job_id||latest.job_id)} / 事前固定 Top5・6–20 × 4オッズ帯 / ${contextAudit.bootstrap_cluster_unit||"race_date"} cluster / n=${fmt(contextAudit.bootstrap_samples)} / 外側を境界定義に不使用 ${contextAudit.evaluation_used_for_context_definition===false?"PASS":"FAIL"}`:"固定コンテキスト監査は次回完了成果物から掲載";
+  $("nestedContextRows").innerHTML=contextRows.map(row=>`<tr><td>${row.scope_label}</td><td>${esc(row.rank_group||"-")}</td><td>${esc(row.odds_band||"-")}</td><td>${fmt(row.candidates)}</td><td>${fmt(row.candidate_days)}</td><td>${ratio(row.mean_predicted_raw_ev)}</td><td>${ratio(row.realized_roi)}</td><td>${ratio(row.realized_roi_lcb95)}</td><td>${ratio(row.roi_excluding_largest_hit)}</td></tr>`).join("")||"<tr><td colspan=\"9\" class=\"muted\">固定コンテキスト監査は次回完了成果物から掲載</td></tr>";
 }
 function renderOperationalEvidence(jobs){
   const joint=(jobs||[]).filter(x=>String(x.name||x.model_key||"").includes("joint_bankroll_strict")).sort((a,b)=>Number(b.evaluation_days||0)-Number(a.evaluation_days||0))[0]||{};

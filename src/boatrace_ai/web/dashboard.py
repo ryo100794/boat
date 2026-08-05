@@ -3924,6 +3924,9 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_decile_audit": metrics.get(
                     "nested_value_decile_audit"
                 ),
+                "nested_value_context_audit": metrics.get(
+                    "nested_value_context_audit"
+                ),
                 "nested_value_tickets": metrics.get("nested_value_tickets"),
                 "nested_value_stake_yen": metrics.get(
                     "nested_value_stake_yen"
