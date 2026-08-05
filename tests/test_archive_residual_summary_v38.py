@@ -257,3 +257,48 @@ def test_v42_and_v43_are_public_summary_heads() -> None:
         "nested_stacked_value_calibration_v43"
     )
     assert summary["nested_value_evaluation_candidates"] == 13720
+
+
+def test_mature_nested_value_is_preferred_only_when_completed() -> None:
+    base = {
+        "model": "archive_closing_market_oracle_v1",
+        "temporal_residual_diagnostic": {
+            "stacked_market_residual_v42": {
+                "metrics": {"evaluated_races": 20},
+                "artifact": {},
+            },
+            "nested_stacked_value_calibration_v43": {
+                "model": "nested_stacked_value_calibration_v43",
+                "status": "completed",
+                "evaluation_probability_metrics": {"evaluated_races": 10},
+                "empirical_ev_calibration": {"ready": True, "bins": []},
+                "bankroll": {"tickets": 0, "stake_yen": 0, "roi": None},
+                "promotion_eligible": False,
+            },
+            "mature_stacked_contextual_value": {
+                "model": "mature_stacked_contextual_value",
+                "status": "insufficient_nested_days",
+                "required_days": 180,
+                "promotion_eligible": False,
+            },
+        },
+    }
+
+    summary = summarize_result(base)
+    assert summary["nested_value_model"] == (
+        "nested_stacked_value_calibration_v43"
+    )
+
+    base["temporal_residual_diagnostic"][
+        "mature_stacked_contextual_value"
+    ] = {
+        "model": "mature_stacked_contextual_value",
+        "status": "completed",
+        "evaluation_probability_metrics": {"evaluated_races": 20},
+        "empirical_ev_calibration": {"ready": True, "cells": []},
+        "bankroll": {"tickets": 0, "stake_yen": 0, "roi": None},
+        "promotion_eligible": False,
+    }
+    summary = summarize_result(base)
+    assert summary["nested_value_model"] == "mature_stacked_contextual_value"
+    assert summary["nested_value_evaluated_races"] == 20

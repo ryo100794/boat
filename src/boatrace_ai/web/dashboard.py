@@ -3780,6 +3780,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "nested_value_calibration_bins": metrics.get(
                     "nested_value_calibration_bins"
                 ),
+                "nested_value_context_ready_cells": metrics.get(
+                    "nested_value_context_ready_cells"
+                ),
+                "nested_value_context_cells": metrics.get(
+                    "nested_value_context_cells"
+                ),
                 "nested_value_calibration_candidates": metrics.get(
                     "nested_value_calibration_candidates"
                 ),

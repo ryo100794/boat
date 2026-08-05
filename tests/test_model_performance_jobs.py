@@ -187,6 +187,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
             "empirical_ev": 0.8,
             "empirical_ev_lcb95": 0.7,
         }],
+        "nested_value_context_ready_cells": 2,
+        "nested_value_context_cells": [{
+            "rank_group": "rank_1_5",
+            "odds_band": "odds_10_25",
+            "ready": True,
+            "support": 320,
+            "support_days": 90,
+            "bins": [],
+        }],
         "nested_value_calibration_candidates": 8640,
         "nested_value_evaluation_candidates": 13720,
         "nested_value_decile_audit": {
@@ -312,6 +321,10 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["nested_value_calibration_bins"][0][
         "empirical_ev_lcb95"
     ] == 0.7
+    assert status["jobs"][0]["nested_value_context_ready_cells"] == 2
+    assert status["jobs"][0]["nested_value_context_cells"][0][
+        "rank_group"
+    ] == "rank_1_5"
     assert status["jobs"][0]["nested_value_evaluation_candidates"] == 13720
     assert status["jobs"][0]["nested_value_decile_audit"][
         "evaluation_used_for_edges"

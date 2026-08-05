@@ -323,9 +323,27 @@ def apply_archive_residual_summary(
                 if calibration.get(key) is not None
             }
     summary["residual_purchase_policies"] = compact_policies
-    nested = temporal.get("nested_stacked_value_calibration_v43")
-    if not isinstance(nested, Mapping):
-        nested = temporal.get("nested_nonlinear_value_calibration_v40")
+    nested_candidates = [
+        temporal.get("mature_stacked_contextual_value"),
+        temporal.get("nested_stacked_value_calibration_v43"),
+        temporal.get("nested_nonlinear_value_calibration_v40"),
+    ]
+    nested = next(
+        (
+            value
+            for value in nested_candidates
+            if isinstance(value, Mapping)
+            and value.get("status") == "completed"
+        ),
+        next(
+            (
+                value
+                for value in nested_candidates
+                if isinstance(value, Mapping)
+            ),
+            None,
+        ),
+    )
     if isinstance(nested, Mapping):
         nested_probability = nested.get("evaluation_probability_metrics")
         nested_probability = (
@@ -339,6 +357,30 @@ def apply_archive_residual_summary(
             if isinstance(nested_calibration, Mapping)
             else {}
         )
+        nested_global_calibration = nested_calibration.get(
+            "global_calibration"
+        )
+        nested_global_calibration = (
+            nested_global_calibration
+            if isinstance(nested_global_calibration, Mapping)
+            else {}
+        )
+        nested_bin_source = nested_calibration.get("bins")
+        if not isinstance(nested_bin_source, list):
+            nested_bin_source = nested_global_calibration.get("bins")
+        nested_context_cells = []
+        for cell in nested_calibration.get("cells") or []:
+            if not isinstance(cell, Mapping):
+                continue
+            nested_context_cells.append({
+                "rank_group": cell.get("rank_group"),
+                "odds_band": cell.get("odds_band"),
+                "ready": cell.get("ready"),
+                "ready_reasons": cell.get("ready_reasons"),
+                "support": cell.get("support"),
+                "support_days": cell.get("support_days"),
+                "bins": _public_calibration_bins(cell.get("bins")),
+            })
         nested_bankroll = nested.get("bankroll")
         nested_bankroll = (
             nested_bankroll if isinstance(nested_bankroll, Mapping) else {}
@@ -385,8 +427,12 @@ def apply_archive_residual_summary(
                 "ready_reasons"
             ),
             "nested_value_calibration_bins": _public_calibration_bins(
-                nested_calibration.get("bins")
+                nested_bin_source
             ),
+            "nested_value_context_ready_cells": nested_calibration.get(
+                "context_ready_cells"
+            ),
+            "nested_value_context_cells": nested_context_cells,
             "nested_value_calibration_candidates": nested.get(
                 "calibration_ledger_candidates"
             ),

@@ -74,10 +74,11 @@ from .stacked_market_residual_v42 import (
 from .nested_stacked_value_v43 import (
     evaluate_nested_stacked_value_v43,
 )
+from .mature_stacked_value import evaluate_mature_stacked_value
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 16
+EVALUATION_VERSION = 17
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
     "name": "preregistered_closing_oracle_ev105_120_odds80_r3_ratio105_kelly025",
@@ -730,6 +731,11 @@ def temporal_residual_diagnostic(
         evaluation,
         daily_budget_yen=daily_budget_yen,
     )
+    mature_stacked_value = evaluate_mature_stacked_value(
+        calibration,
+        evaluation,
+        daily_budget_yen=daily_budget_yen,
+    )
     return {
         "status": "completed",
         "validation_design": (
@@ -760,6 +766,7 @@ def temporal_residual_diagnostic(
         "nonlinear_market_offset_context_search_v41": nonlinear_context_search,
         "stacked_market_residual_v42": stacked_market_residual,
         "nested_stacked_value_calibration_v43": nested_stacked_value,
+        "mature_stacked_contextual_value": mature_stacked_value,
     }
 
 
