@@ -274,6 +274,25 @@ def test_v42_and_v43_are_public_summary_heads() -> None:
 def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     base = {
         "model": "archive_closing_market_oracle_v1",
+        "dataset": {
+            "official_eligible_target_races": 1000,
+            "official_excluded_non_six_boat_races": 10,
+            "official_expected_six_boat_races": 990,
+            "official_snapshot_races": 980,
+            "official_unresolved_races": 10,
+            "official_invalid_attempt_races": 9,
+            "official_fetch_failure_attempt_races": 1,
+            "official_coverage_ratio": 980 / 990,
+            "official_minimum_required_coverage": 0.995,
+            "official_coverage_ready": False,
+            "official_monthly_coverage": [
+                {
+                    "month": "2026-01",
+                    "coverage_ratio": 980 / 990,
+                    "unresolved_races": 10,
+                }
+            ],
+        },
         "temporal_residual_diagnostic": {
             "targeted_temporal_component": "mature_stacked_contextual_value",
             "stacked_market_residual_v42": {
@@ -298,6 +317,12 @@ def test_mature_nested_value_is_preferred_only_when_completed() -> None:
     }
 
     summary = summarize_result(base)
+    assert summary["official_eligible_target_races"] == 1000
+    assert summary["official_expected_six_boat_races"] == 990
+    assert summary["official_snapshot_races"] == 980
+    assert summary["official_unresolved_races"] == 10
+    assert summary["official_coverage_ready"] is False
+    assert summary["official_monthly_coverage"][0]["month"] == "2026-01"
     assert summary["nested_value_model"] == (
         "nested_stacked_value_calibration_v43"
     )

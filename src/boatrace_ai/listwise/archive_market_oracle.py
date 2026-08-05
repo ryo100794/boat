@@ -81,7 +81,7 @@ from .mature_stacked_value import evaluate_mature_stacked_value
 
 
 MODEL_NAME = "archive_closing_market_oracle_v1"
-EVALUATION_VERSION = 22
+EVALUATION_VERSION = 23
 TARGETED_TEMPORAL_COMPONENTS = (
     "mature_stacked_contextual_value",
 )
@@ -269,14 +269,119 @@ def load_archive_markets(
     return markets
 
 
+OFFICIAL_MINIMUM_COVERAGE_RATIO = 0.995
+
+
+def official_archive_coverage(
+    conn: Any,
+    *,
+    from_date: str,
+    through_date: str,
+) -> dict[str, Any]:
+    ensure_archive_schema(conn)
+    monthly: list[dict[str, Any]] = []
+    for row in conn.execute(
+        """
+        WITH payout_targets AS (
+          SELECT race_id
+          FROM payouts
+          WHERE bet_type = '3連単' AND payout_yen IS NOT NULL
+          GROUP BY race_id
+          HAVING COUNT(*) = 1
+        )
+        SELECT SUBSTR(CAST(r.race_date AS TEXT), 1, 7) AS month,
+               COUNT(*) AS eligible_targets,
+               SUM(CASE WHEN s.race_id IS NOT NULL THEN 1 ELSE 0 END)
+                 AS stored_snapshots,
+               SUM(CASE WHEN a.status = 'excluded_non_six_boat'
+                        THEN 1 ELSE 0 END) AS excluded_non_six_boat,
+               SUM(CASE WHEN a.status = 'invalid' THEN 1 ELSE 0 END)
+                 AS invalid_attempts,
+               SUM(CASE WHEN a.status IN (
+                     'fetch_error', 'http_error', 'not_found'
+                   ) THEN 1 ELSE 0 END) AS fetch_failure_attempts
+        FROM races r
+        JOIN payout_targets p ON p.race_id = r.race_id
+        LEFT JOIN archive_closing_odds_snapshots s
+          ON s.race_id = r.race_id AND s.source_key = ?
+        LEFT JOIN archive_closing_odds_attempts a
+          ON a.race_id = r.race_id AND a.source_key = ?
+        WHERE r.race_date BETWEEN ? AND ?
+        GROUP BY SUBSTR(CAST(r.race_date AS TEXT), 1, 7)
+        ORDER BY month
+        """,
+        (
+            OFFICIAL_SOURCE_KEY,
+            OFFICIAL_SOURCE_KEY,
+            from_date,
+            through_date,
+        ),
+    ):
+        eligible = int(row["eligible_targets"] or 0)
+        stored = int(row["stored_snapshots"] or 0)
+        excluded = int(row["excluded_non_six_boat"] or 0)
+        expected = max(0, eligible - excluded)
+        unresolved = max(0, expected - stored)
+        coverage_ratio = stored / expected if expected else None
+        monthly.append({
+            "month": str(row["month"]),
+            "eligible_target_races": eligible,
+            "excluded_non_six_boat_races": excluded,
+            "expected_six_boat_races": expected,
+            "official_snapshot_races": stored,
+            "unresolved_races": unresolved,
+            "invalid_attempt_races": int(row["invalid_attempts"] or 0),
+            "fetch_failure_attempt_races": int(
+                row["fetch_failure_attempts"] or 0
+            ),
+            "coverage_ratio": coverage_ratio,
+            "coverage_ready": (
+                coverage_ratio is not None
+                and coverage_ratio >= OFFICIAL_MINIMUM_COVERAGE_RATIO
+            ),
+        })
+
+    eligible = sum(row["eligible_target_races"] for row in monthly)
+    excluded = sum(row["excluded_non_six_boat_races"] for row in monthly)
+    expected = sum(row["expected_six_boat_races"] for row in monthly)
+    stored = sum(row["official_snapshot_races"] for row in monthly)
+    unresolved = sum(row["unresolved_races"] for row in monthly)
+    invalid = sum(row["invalid_attempt_races"] for row in monthly)
+    fetch_failed = sum(
+        row["fetch_failure_attempt_races"] for row in monthly
+    )
+    coverage_ratio = stored / expected if expected else None
+    return {
+        "official_eligible_target_races": eligible,
+        "official_excluded_non_six_boat_races": excluded,
+        "official_expected_six_boat_races": expected,
+        "official_snapshot_races": stored,
+        "official_unresolved_races": unresolved,
+        "official_invalid_attempt_races": invalid,
+        "official_fetch_failure_attempt_races": fetch_failed,
+        "official_coverage_ratio": coverage_ratio,
+        "official_minimum_required_coverage": OFFICIAL_MINIMUM_COVERAGE_RATIO,
+        "official_coverage_ready": (
+            coverage_ratio is not None
+            and coverage_ratio >= OFFICIAL_MINIMUM_COVERAGE_RATIO
+        ),
+        "official_monthly_coverage": monthly,
+    }
+
+
 def score_archive_markets(
     conn: Any,
     *,
     artifact: dict[str, Any],
     from_date: str,
     through_date: str,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     _validate_artifact_before_period(artifact, from_date=from_date)
+    coverage = official_archive_coverage(
+        conn,
+        from_date=from_date,
+        through_date=through_date,
+    )
     markets = load_archive_markets(
         conn, from_date=from_date, through_date=through_date,
         source_key=OFFICIAL_SOURCE_KEY,
@@ -323,6 +428,7 @@ def score_archive_markets(
         })
     races.sort(key=lambda row: (row["race_date"], row["jcd"], row["rno"]))
     return races, {
+        **coverage,
         "archive_target_races": len(markets),
         "evaluated_races": len(races),
         "partial_market_races": sum(

@@ -3,18 +3,25 @@ from __future__ import annotations
 import joblib
 import pytest
 
+from boatrace_ai.archive_closing_odds import (
+    OFFICIAL_SOURCE_KEY,
+    ensure_archive_schema,
+    record_attempt,
+)
+from boatrace_ai.db import connection, init_db, upsert_race
 from boatrace_ai.listwise.archive_market_oracle import (
     EVALUATION_VERSION,
     PRIMARY_POLICY,
     V23_TOP5_ORACLE_POLICY,
     externalize_targeted_mature_evidence,
     narrow_ev_diagnostic_policies,
+    official_archive_coverage,
     restrict_probabilities_to_available,
     temporal_residual_diagnostic,
 )
 
 def test_v33_archive_protocol_uses_new_evaluation_version() -> None:
-    assert EVALUATION_VERSION == 22
+    assert EVALUATION_VERSION == 23
 
 
 def test_restrict_probabilities_renormalizes_after_withdrawal() -> None:
@@ -222,3 +229,93 @@ def test_targeted_temporal_component_rejects_unknown_name() -> None:
             [_residual_race("2026-01-01", "1-2-3")],
             temporal_component="unknown",
         )
+
+def test_official_coverage_uses_all_targets_and_publishes_missing_reasons(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "official-coverage.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        ensure_archive_schema(conn)
+        race_ids = []
+        for rno in range(1, 5):
+            race_id = upsert_race(
+                conn,
+                {
+                    "race_date": f"2026-01-0{rno}",
+                    "jcd": "01",
+                    "venue_name": "桐生",
+                    "rno": rno,
+                    "status": "final",
+                },
+            )
+            race_ids.append(race_id)
+            conn.execute(
+                "INSERT INTO payouts("
+                "race_id, bet_type, combination, payout_yen"
+                ") VALUES (?, '3連単', '1-2-3', 1230)",
+                (race_id,),
+            )
+        conn.execute(
+            """
+            INSERT INTO archive_closing_odds_snapshots(
+              race_id, source_key, fetched_at, source_url, payload_sha256,
+              parser_version, odds_count, verification_status, raw_json
+            ) VALUES (?, ?, '2026-02-01T00:00:00+00:00', 'https://example.test',
+                      ?, 'test', 120,
+                      'official_primary_winner_payout_match', '{}')
+            """,
+            (race_ids[0], OFFICIAL_SOURCE_KEY, "a" * 64),
+        )
+        record_attempt(
+            conn,
+            race_id=race_ids[1],
+            status="excluded_non_six_boat",
+            source_key=OFFICIAL_SOURCE_KEY,
+        )
+        record_attempt(
+            conn,
+            race_id=race_ids[2],
+            status="invalid",
+            error="incomplete",
+            source_key=OFFICIAL_SOURCE_KEY,
+        )
+        record_attempt(
+            conn,
+            race_id=race_ids[3],
+            status="fetch_error",
+            error="timeout",
+            source_key=OFFICIAL_SOURCE_KEY,
+        )
+        conn.commit()
+
+        coverage = official_archive_coverage(
+            conn,
+            from_date="2026-01-01",
+            through_date="2026-01-31",
+        )
+
+    assert coverage["official_eligible_target_races"] == 4
+    assert coverage["official_excluded_non_six_boat_races"] == 1
+    assert coverage["official_expected_six_boat_races"] == 3
+    assert coverage["official_snapshot_races"] == 1
+    assert coverage["official_unresolved_races"] == 2
+    assert coverage["official_invalid_attempt_races"] == 1
+    assert coverage["official_fetch_failure_attempt_races"] == 1
+    assert coverage["official_coverage_ratio"] == pytest.approx(1 / 3)
+    assert coverage["official_minimum_required_coverage"] == 0.995
+    assert coverage["official_coverage_ready"] is False
+    assert coverage["official_monthly_coverage"] == [
+        {
+            "month": "2026-01",
+            "eligible_target_races": 4,
+            "excluded_non_six_boat_races": 1,
+            "expected_six_boat_races": 3,
+            "official_snapshot_races": 1,
+            "unresolved_races": 2,
+            "invalid_attempt_races": 1,
+            "fetch_failure_attempt_races": 1,
+            "coverage_ratio": pytest.approx(1 / 3),
+            "coverage_ready": False,
+        }
+    ]

@@ -111,6 +111,8 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "nested_value_stack_selection_policy_id" in MODEL_REPORT_HTML
     assert "nested_value_value_aligned_stack_selection" in MODEL_REPORT_HTML
     assert "valueAlignedStackEvidence" in MODEL_REPORT_HTML
+    assert "officialCoverageEvidence" in MODEL_REPORT_HTML
+    assert "official_monthly_coverage" in MODEL_REPORT_HTML
     assert "nested_value_research_sidecar_sha256" in MODEL_REPORT_HTML
     assert "完全証跡" in MODEL_REPORT_HTML
     assert "最大1的中除外ROI" in MODEL_REPORT_HTML
@@ -236,6 +238,23 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "calibration_contextual_hierarchy": (
             "global -> probability-rank -> rank-by-odds"
         ),
+        "official_eligible_target_races": 1000,
+        "official_excluded_non_six_boat_races": 10,
+        "official_expected_six_boat_races": 990,
+        "official_snapshot_races": 980,
+        "official_unresolved_races": 10,
+        "official_invalid_attempt_races": 9,
+        "official_fetch_failure_attempt_races": 1,
+        "official_coverage_ratio": 980 / 990,
+        "official_minimum_required_coverage": 0.995,
+        "official_coverage_ready": False,
+        "official_monthly_coverage": [
+            {
+                "month": "2026-01",
+                "coverage_ratio": 980 / 990,
+                "unresolved_races": 10,
+            }
+        ],
         "nested_value_model": "nested_nonlinear_value_calibration_v40",
         "nested_value_status": "completed",
         "nested_value_raw_selected_stack": "linear",
@@ -442,6 +461,15 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["minimum_decision_lead_seconds"] == 300.0
     assert status["jobs"][0]["required_minimum_decision_lead_seconds"] == 300.0
     assert status["jobs"][0]["calibration_context_ready_cells"] == 2
+    assert status["jobs"][0]["official_eligible_target_races"] == 1000
+    assert status["jobs"][0]["official_expected_six_boat_races"] == 990
+    assert status["jobs"][0]["official_snapshot_races"] == 980
+    assert status["jobs"][0]["official_unresolved_races"] == 10
+    assert status["jobs"][0]["official_coverage_ratio"] == 980 / 990
+    assert status["jobs"][0]["official_coverage_ready"] is False
+    assert status["jobs"][0]["official_monthly_coverage"][0]["month"] == (
+        "2026-01"
+    )
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
     assert status["jobs"][0]["nested_value_raw_selected_stack"] == "linear"
     assert status["jobs"][0]["nested_value_selected_stack"] == "market"

@@ -106,6 +106,24 @@ def apply_archive_residual_summary(
     payload: Mapping[str, Any],
     summary: dict[str, Any],
 ) -> None:
+    dataset = payload.get("dataset")
+    if isinstance(dataset, Mapping):
+        for key in (
+            "official_eligible_target_races",
+            "official_excluded_non_six_boat_races",
+            "official_expected_six_boat_races",
+            "official_snapshot_races",
+            "official_unresolved_races",
+            "official_invalid_attempt_races",
+            "official_fetch_failure_attempt_races",
+            "official_coverage_ratio",
+            "official_minimum_required_coverage",
+            "official_coverage_ready",
+            "official_monthly_coverage",
+        ):
+            if key in dataset:
+                summary[key] = dataset[key]
+
     temporal = payload.get("temporal_residual_diagnostic")
     if not isinstance(temporal, Mapping):
         return

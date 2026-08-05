@@ -3880,6 +3880,39 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "residual_days_better_than_market": metrics.get(
                     "residual_days_better_than_market"
                 ),
+                "official_eligible_target_races": metrics.get(
+                    "official_eligible_target_races"
+                ),
+                "official_excluded_non_six_boat_races": metrics.get(
+                    "official_excluded_non_six_boat_races"
+                ),
+                "official_expected_six_boat_races": metrics.get(
+                    "official_expected_six_boat_races"
+                ),
+                "official_snapshot_races": metrics.get(
+                    "official_snapshot_races"
+                ),
+                "official_unresolved_races": metrics.get(
+                    "official_unresolved_races"
+                ),
+                "official_invalid_attempt_races": metrics.get(
+                    "official_invalid_attempt_races"
+                ),
+                "official_fetch_failure_attempt_races": metrics.get(
+                    "official_fetch_failure_attempt_races"
+                ),
+                "official_coverage_ratio": _float_or_none(
+                    metrics.get("official_coverage_ratio")
+                ),
+                "official_minimum_required_coverage": _float_or_none(
+                    metrics.get("official_minimum_required_coverage")
+                ),
+                "official_coverage_ready": metrics.get(
+                    "official_coverage_ready"
+                ),
+                "official_monthly_coverage": metrics.get(
+                    "official_monthly_coverage"
+                ),
                 "nested_value_model": metrics.get("nested_value_model"),
                 "nested_value_status": metrics.get("nested_value_status"),
                 "nested_value_raw_selected_stack": metrics.get(
