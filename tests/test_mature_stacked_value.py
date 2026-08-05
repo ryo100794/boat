@@ -115,6 +115,7 @@ def test_mature_value_keeps_60_120_and_outer_periods_disjoint(
     assert result["evaluation_ledger_candidates"] == 100
     assert result["outer_period_used_for_selection"] is False
     assert result["purchase_max_rank"] == 20
+    assert "top20 contextual" in result["validation_design"]
     assert result["evidence_role"] == (
         "retrospective_research_only_candidate_universe_search"
     )

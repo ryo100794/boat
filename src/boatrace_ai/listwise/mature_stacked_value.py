@@ -156,7 +156,7 @@ def evaluate_mature_stacked_value(
         ),
         "validation_design": (
             "earliest 60 or more days for nested V42 component and stack "
-            "selection; following 120 untouched days for top5 contextual "
+            "selection; following 120 untouched days for top20 contextual "
             "rank-by-odds value calibration; final outer days used once"
         ),
         "outer_period_used_for_selection": False,
