@@ -29,6 +29,9 @@ from .stacked_market_residual_v42 import (
 
 MODEL_NAME = "mature_stacked_contextual_value_rank20"
 DAILY_REFIT_MODEL_NAME = "mature_stacked_contextual_value_daily_refit_rank20"
+DAILY_REFIT_BANDWISE_MODEL_NAME = (
+    "mature_stacked_contextual_value_daily_refit_bandwise_rank20"
+)
 MODEL_TRAINING_MINIMUM_DAYS = 60
 VALUE_STACK_SELECTION_DAYS = 60
 VALUE_CALIBRATION_DAYS = 60
@@ -538,6 +541,7 @@ def _fit_mature_contextual_calibrator(
     ledger: list[dict[str, Any]],
     *,
     prediction_date: str,
+    shape_constraint: str = "isotonic",
 ):
     return fit_contextual_empirical_ev_calibration(
         ledger,
@@ -553,6 +557,7 @@ def _fit_mature_contextual_calibrator(
         min_cell_tickets=200,
         rank_prior_tickets=500.0,
         cell_prior_tickets=200.0,
+        shape_constraint=shape_constraint,
     )
 
 
@@ -562,6 +567,7 @@ def _simulate_daily_strict_prior_refit(
     probability_calibrator: Mapping[str, float],
     *,
     daily_budget_yen: int,
+    shape_constraint: str = "isotonic",
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
     """Refit once per day, then admit that day's teachers only after settlement."""
     races_by_day: dict[str, list[dict[str, Any]]] = {}
@@ -588,6 +594,7 @@ def _simulate_daily_strict_prior_refit(
         artifact = _fit_mature_contextual_calibrator(
             ledger,
             prediction_date=race_date,
+            shape_constraint=shape_constraint,
         )
         final_payload = dict(artifact.as_dict())
         all_ready = all_ready and bool(artifact.ready)
@@ -680,6 +687,7 @@ def _simulate_daily_strict_prior_refit(
         },
         "calibration": final_payload,
         "calibration_update_mode": "daily_strict_prior_refit",
+        "value_shape_constraint": shape_constraint,
         "evaluation_days": len(daily),
         "evaluated_races": len(evaluation_scored),
         "eligible_days": sum(
@@ -717,10 +725,15 @@ def evaluate_mature_stacked_value(
     daily_budget_yen: int,
     num_threads: int = 4,
     calibration_update_mode: str = "fixed",
+    value_shape_constraint: str = "isotonic",
 ) -> dict[str, Any]:
     if calibration_update_mode not in {"fixed", "daily_strict_prior_refit"}:
         raise ValueError(
             "calibration_update_mode must be fixed or daily_strict_prior_refit"
+        )
+    if value_shape_constraint not in {"isotonic", "bandwise"}:
+        raise ValueError(
+            "value_shape_constraint must be isotonic or bandwise"
         )
     dates = sorted({str(race["race_date"]) for race in calibration})
     required_days = (
@@ -834,6 +847,7 @@ def evaluate_mature_stacked_value(
     empirical = _fit_mature_contextual_calibrator(
         ledger,
         prediction_date=first_evaluation_date,
+        shape_constraint=value_shape_constraint,
     )
     empirical_payload = empirical.as_dict()
     strict_prior_audit = _strict_prior_artifact_audit(
@@ -855,6 +869,7 @@ def evaluate_mature_stacked_value(
             ledger,
             calibrator,
             daily_budget_yen=daily_budget_yen,
+            shape_constraint=value_shape_constraint,
         )
         calibrator_hash = _canonical_sha256(final_calibrator_payload)
     else:
@@ -912,7 +927,9 @@ def evaluate_mature_stacked_value(
     )
     result = {
         "model": (
-            DAILY_REFIT_MODEL_NAME
+            DAILY_REFIT_BANDWISE_MODEL_NAME
+            if value_shape_constraint == "bandwise"
+            else DAILY_REFIT_MODEL_NAME
             if calibration_update_mode == "daily_strict_prior_refit"
             else MODEL_NAME
         ),
@@ -959,6 +976,7 @@ def evaluate_mature_stacked_value(
             "all_stacked_probability_top20_before_purchase_gate"
         ),
         "calibration_update_mode": calibration_update_mode,
+        "value_shape_constraint": value_shape_constraint,
         "calibration_update_audit": calibration_update_audit,
         "probability_selection": {
             key: probability.get(key)

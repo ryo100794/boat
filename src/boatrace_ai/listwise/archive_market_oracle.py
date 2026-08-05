@@ -85,6 +85,7 @@ EVALUATION_VERSION = 23
 TARGETED_TEMPORAL_COMPONENTS = (
     "mature_stacked_contextual_value",
     "mature_stacked_contextual_value_daily_refit",
+    "mature_stacked_contextual_value_daily_refit_bandwise",
 )
 PRIMARY_CALIBRATOR = {"model_weight": 0.75, "temperature": 1.0}
 PRIMARY_POLICY: dict[str, Any] = {
@@ -528,15 +529,24 @@ def temporal_residual_diagnostic(
     if temporal_component in TARGETED_TEMPORAL_COMPONENTS:
         calibration_update_mode = (
             "daily_strict_prior_refit"
-            if temporal_component
-            == "mature_stacked_contextual_value_daily_refit"
+            if temporal_component in {
+                "mature_stacked_contextual_value_daily_refit",
+                "mature_stacked_contextual_value_daily_refit_bandwise",
+            }
             else "fixed"
+        )
+        value_shape_constraint = (
+            "bandwise"
+            if temporal_component
+            == "mature_stacked_contextual_value_daily_refit_bandwise"
+            else "isotonic"
         )
         mature = evaluate_mature_stacked_value(
             calibration,
             evaluation,
             daily_budget_yen=daily_budget_yen,
             calibration_update_mode=calibration_update_mode,
+            value_shape_constraint=value_shape_constraint,
         )
         probability_metrics = mature.get("evaluation_probability_metrics")
         probability_metrics = (

@@ -3693,6 +3693,7 @@ def build_command(
             and temporal_component not in {
                 "mature_stacked_contextual_value",
                 "mature_stacked_contextual_value_daily_refit",
+                "mature_stacked_contextual_value_daily_refit_bandwise",
             }
         ):
             raise ValueError("unsupported oracle temporal component")
@@ -4067,6 +4068,7 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
     ) in {
         "mature_stacked_contextual_value",
         "mature_stacked_contextual_value_daily_refit",
+        "mature_stacked_contextual_value_daily_refit_bandwise",
     }:
         mature = temporal.get("mature_stacked_contextual_value")
         if isinstance(mature, dict):
@@ -4099,6 +4101,9 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "calibration_update_mode": mature.get(
                     "calibration_update_mode"
+                ),
+                "value_shape_constraint": mature.get(
+                    "value_shape_constraint"
                 ),
                 "calibration_refit_days": update_audit.get("refit_days"),
                 "calibration_update_strict_prior_violation_count": (

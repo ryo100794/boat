@@ -124,7 +124,7 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
         _residual_race("2026-01-03", "1-2-3"),
         _residual_race("2026-01-04", "1-2-3"),
     ]
-    calls: list[tuple[int, int, int, str]] = []
+    calls: list[tuple[int, int, int, str, str]] = []
 
     def fake_mature(
         calibration,
@@ -133,6 +133,7 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
         daily_budget_yen,
         num_threads=4,
         calibration_update_mode="fixed",
+        value_shape_constraint="isotonic",
     ):
         del num_threads
         calls.append((
@@ -140,6 +141,7 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
             len(evaluation),
             daily_budget_yen,
             calibration_update_mode,
+            value_shape_constraint,
         ))
         return {
             "model": "mature_stacked_contextual_value_rank20",
@@ -169,7 +171,7 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
         temporal_component="mature_stacked_contextual_value",
     )
 
-    assert calls == [(2, 2, 12_000, "fixed")]
+    assert calls == [(2, 2, 12_000, "fixed", "isotonic")]
     assert result["targeted_temporal_component"] == (
         "mature_stacked_contextual_value"
     )
@@ -187,9 +189,26 @@ def test_targeted_mature_value_reuses_the_sealed_split_without_other_refits(
         daily_budget_yen=12_000,
         temporal_component="mature_stacked_contextual_value_daily_refit",
     )
-    assert calls[-1] == (2, 2, 12_000, "daily_strict_prior_refit")
+    assert calls[-1] == (
+        2, 2, 12_000, "daily_strict_prior_refit", "isotonic"
+    )
     assert daily_result["targeted_temporal_component"] == (
         "mature_stacked_contextual_value_daily_refit"
+    )
+
+    bandwise_result = temporal_residual_diagnostic(
+        races,
+        calibration_through="2026-01-02",
+        daily_budget_yen=12_000,
+        temporal_component=(
+            "mature_stacked_contextual_value_daily_refit_bandwise"
+        ),
+    )
+    assert calls[-1] == (
+        2, 2, 12_000, "daily_strict_prior_refit", "bandwise"
+    )
+    assert bandwise_result["targeted_temporal_component"] == (
+        "mature_stacked_contextual_value_daily_refit_bandwise"
     )
 
 

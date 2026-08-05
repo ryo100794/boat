@@ -437,7 +437,8 @@ def test_daily_strict_prior_refit_admits_teachers_only_after_each_day(
 
     fitted_ledger_sizes: list[int] = []
 
-    def fake_fit(ledger, *, prediction_date):
+    def fake_fit(ledger, *, prediction_date, shape_constraint="isotonic"):
+        assert shape_constraint == "isotonic"
         fitted_ledger_sizes.append(len(ledger))
         assert all(row["race_date"] < prediction_date for row in ledger)
         return DailyArtifact(max(str(row["race_date"]) for row in ledger))
