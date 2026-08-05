@@ -20,6 +20,7 @@ DECISION_MODEL_NAME = "decision_time_nonlinear_market_residual_v38"
 DEFAULT_MINIMUM_TRAINING_DAYS = 30
 DEFAULT_MINIMUM_TRAINING_RACES = 3_000
 MINIMUM_SELECTION_HOLDOUT_DAYS = 7
+MINIMUM_CHALLENGER_LOG_LOSS_IMPROVEMENT = 1e-4
 MAXIMUM_TOP5_HIT_RATE_DEGRADATION = 0.005
 REQUIRED_KEYS = (
     "race_id",
@@ -300,11 +301,15 @@ def decision_v38_challenger_eligible(payload: Mapping[str, Any]) -> bool:
     digest = str(artifact.get("booster_sha256") or "")
     return bool(
         payload.get("training_status") == "ready"
+        and int(payload.get("training_days") or 0)
+        >= DEFAULT_MINIMUM_TRAINING_DAYS
+        and int(payload.get("training_races") or 0)
+        >= DEFAULT_MINIMUM_TRAINING_RACES
         and payload.get("official_closing_fields_used") is False
         and payload.get("market_is_exact_nested_null") is True
         and evaluated_days >= MINIMUM_SELECTION_HOLDOUT_DAYS
         and days_better * 2 > evaluated_days
-        and loss_delta < 0.0
+        and loss_delta <= -MINIMUM_CHALLENGER_LOG_LOSS_IMPROVEMENT
         and top5 >= market_top5 - MAXIMUM_TOP5_HIT_RATE_DEGRADATION
         and float(payload.get("selected_shrinkage") or 0.0) > 0.0
         and len(digest) == 64

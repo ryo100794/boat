@@ -194,6 +194,8 @@ def test_decision_cache_rejects_obsolete_or_short_lead_contracts() -> None:
 def test_challenger_gate_requires_weeklong_market_improvement() -> None:
     payload = {
         "training_status": "ready",
+        "training_days": 30,
+        "training_races": 3_000,
         "official_closing_fields_used": False,
         "market_is_exact_nested_null": True,
         "selected_shrinkage": 0.25,
@@ -227,5 +229,17 @@ def test_challenger_gate_requires_weeklong_market_improvement() -> None:
         "holdout_metrics": {
             **payload["holdout_metrics"],
             "trifecta_top5_hit_rate": 0.360,
+        },
+    }) is False
+    assert subject.decision_v38_challenger_eligible({
+        **payload,
+        "training_days": 10,
+        "training_races": 1_500,
+    }) is False
+    assert subject.decision_v38_challenger_eligible({
+        **payload,
+        "holdout_metrics": {
+            **payload["holdout_metrics"],
+            "log_loss_delta_vs_market": -1e-12,
         },
     }) is False

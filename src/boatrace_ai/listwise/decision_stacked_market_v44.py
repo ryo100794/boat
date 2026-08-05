@@ -13,6 +13,7 @@ from .decision_market_residual_v38 import (
     DEFAULT_MINIMUM_TRAINING_RACES,
     FORBIDDEN_SOURCE_PREFIXES,
     MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS,
+    MINIMUM_CHALLENGER_LOG_LOSS_IMPROVEMENT,
     MAXIMUM_TOP5_HIT_RATE_DEGRADATION,
     MINIMUM_SELECTION_HOLDOUT_DAYS,
     REQUIRED_MINIMUM_DECISION_LEAD_SECONDS,
@@ -156,11 +157,15 @@ def decision_v44_challenger_eligible(payload: Mapping[str, Any]) -> bool:
     digest = str(artifact.get("artifact_sha256") or "")
     return bool(
         payload.get("training_status") == "ready"
+        and int(payload.get("training_days") or 0)
+        >= DEFAULT_MINIMUM_TRAINING_DAYS
+        and int(payload.get("training_races") or 0)
+        >= DEFAULT_MINIMUM_TRAINING_RACES
         and payload.get("official_closing_fields_used") is False
         and payload.get("market_is_exact_nested_null") is True
         and evaluated_days >= MINIMUM_SELECTION_HOLDOUT_DAYS
         and days_better * 2 > evaluated_days
-        and loss_delta < 0.0
+        and loss_delta <= -MINIMUM_CHALLENGER_LOG_LOSS_IMPROVEMENT
         and top5 >= market_top5 - MAXIMUM_TOP5_HIT_RATE_DEGRADATION
         and residual_weight > 0.0
         and len(digest) == 64

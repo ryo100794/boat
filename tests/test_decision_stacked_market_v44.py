@@ -83,6 +83,8 @@ def test_v44_uses_only_decision_fields_and_keeps_outer_holdout(monkeypatch) -> N
 def test_v44_challenger_requires_nonmarket_weight_and_seven_holdout_days() -> None:
     payload = {
         "training_status": "ready",
+        "training_days": 30,
+        "training_races": 3_000,
         "official_closing_fields_used": False,
         "market_is_exact_nested_null": True,
         "selected_weights": {"market": 0.5, "linear": 0.5, "nonlinear": 0.0},
@@ -102,6 +104,20 @@ def test_v44_challenger_requires_nonmarket_weight_and_seven_holdout_days() -> No
         "linear": 0.0,
         "nonlinear": 0.0,
     }
+    assert subject.decision_v44_challenger_eligible(payload) is False
+
+    payload["selected_weights"] = {
+        "market": 0.5,
+        "linear": 0.5,
+        "nonlinear": 0.0,
+    }
+    payload["training_days"] = 10
+    payload["training_races"] = 1_500
+    assert subject.decision_v44_challenger_eligible(payload) is False
+
+    payload["training_days"] = 30
+    payload["training_races"] = 3_000
+    payload["holdout_metrics"]["log_loss_delta_vs_market"] = -1e-12
     assert subject.decision_v44_challenger_eligible(payload) is False
 
 
