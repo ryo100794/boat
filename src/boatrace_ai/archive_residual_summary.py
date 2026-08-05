@@ -213,6 +213,22 @@ def apply_archive_residual_summary(
                 "converged",
             )
         }
+    for source_key, summary_key in (
+        ("validation_design", "residual_validation_design"),
+        ("selection_rule", "residual_selection_rule"),
+        ("selection_robustness_gate", "residual_selection_robustness_gate"),
+        ("selection_robustness_passed", "residual_selection_robustness_passed"),
+        ("candidate_family_size", "residual_candidate_family_size"),
+        ("selection_lower_quantile", "residual_selection_lower_quantile"),
+        ("familywise_selection_alpha", "residual_familywise_selection_alpha"),
+        ("selection_bootstrap_samples", "residual_selection_bootstrap_samples"),
+        (
+            "calibration_generator_transport",
+            "residual_calibration_generator_transport",
+        ),
+    ):
+        if selected.get(source_key) is not None:
+            summary[summary_key] = selected.get(source_key)
     ranking_metrics = selected.get("ranking_metrics")
     if isinstance(ranking_metrics, Mapping):
         summary["residual_ranking_metrics"] = {
@@ -242,7 +258,16 @@ def apply_archive_residual_summary(
                         "profit_yen",
                         "roi",
                         "roi_ci95_lower",
+                        "roi_lower_quantile",
                         "probability_roi_above_one",
+                        "largest_hit_return_yen",
+                        "roi_excluding_largest_hit",
+                        "effective_hit_count",
+                        "temporal_block_count",
+                        "temporal_block_rois",
+                        "minimum_temporal_block_roi",
+                        "roi_bootstrap_samples",
+                        "roi_bootstrap_valid_samples",
                     )
                 },
             }
