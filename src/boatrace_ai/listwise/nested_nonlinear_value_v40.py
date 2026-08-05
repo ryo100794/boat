@@ -192,7 +192,7 @@ def evaluate_nested_nonlinear_value_v40(
         min_local_candidates=50,
         min_local_candidate_days=20,
         min_local_ess=10.0,
-        candidate_min_raw_ev=1.0,
+        candidate_min_raw_ev=0.0,
     )
     bankroll = simulate_empirical_lcb_policy(
         evaluation_scored,

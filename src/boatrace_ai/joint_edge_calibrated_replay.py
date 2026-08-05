@@ -674,6 +674,7 @@ def run_joint_edge_calibrated_replay(
                 calibration_min_local_candidate_days
             ),
             "min_local_ess": calibration_min_local_ess,
+            "candidate_min_raw_ev": 0.0,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
         })
@@ -719,7 +720,7 @@ def run_joint_edge_calibrated_replay(
                     calibration_min_local_candidate_days
                 ),
                 min_local_ess=calibration_min_local_ess,
-                candidate_min_raw_ev=1.0 + buy_margin,
+                candidate_min_raw_ev=0.0,
                 shape_constraint="isotonic",
                 quantile_method="inverted_cdf",
             )
@@ -916,6 +917,7 @@ def run_joint_edge_calibrated_replay(
                 calibration_min_local_candidate_days
             ),
             "min_local_ess": calibration_min_local_ess,
+            "candidate_min_raw_ev": 0.0,
             "shape_constraint": "isotonic",
             "quantile_method": "inverted_cdf",
         })
@@ -961,7 +963,7 @@ def run_joint_edge_calibrated_replay(
                     calibration_min_local_candidate_days
                 ),
                 min_local_ess=calibration_min_local_ess,
-                candidate_min_raw_ev=1.0 + buy_margin,
+                candidate_min_raw_ev=0.0,
                 shape_constraint="isotonic",
                 quantile_method="inverted_cdf",
             )

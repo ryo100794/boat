@@ -71,6 +71,10 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
                 "empirical_ev_calibration": {
                     "ready": True,
                     "ready_reasons": [],
+                    "training_days": 30,
+                    "tickets": 20000,
+                    "candidate_days": 30,
+                    "candidate_min_raw_ev": 0.0,
                     "bins": [{
                         "bin_index": 0,
                         "lower": float("-inf"),
@@ -80,6 +84,7 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
                         "empirical_ev_lcb95": 0.7,
                     }],
                 },
+                "candidate_population": "all_stacked_probability_top5_before_purchase_gate",
                 "calibration_ledger_candidates": 20000,
                 "evaluation_ledger_candidates": 13720,
                 "value_decile_audit": {
@@ -124,6 +129,13 @@ def test_v38_summary_exposes_probability_and_fixed_strength_purchase_roles() -> 
     assert summary["nested_value_model_training_days"] == 22
     assert summary["nested_value_calibration_days"] == 30
     assert summary["nested_value_calibration_ready"] is True
+    assert summary["nested_value_calibration_training_days"] == 30
+    assert summary["nested_value_calibration_tickets"] == 20000
+    assert summary["nested_value_calibration_candidate_days"] == 30
+    assert summary["nested_value_calibration_candidate_min_raw_ev"] == 0.0
+    assert summary["nested_value_candidate_population"] == (
+        "all_stacked_probability_top5_before_purchase_gate"
+    )
     assert summary["nested_value_calibration_bins"][0][
         "empirical_ev_lcb95"
     ] == 0.7

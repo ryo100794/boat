@@ -43,9 +43,35 @@ def test_empty_data_returns_auditable_not_ready_artifact() -> None:
     assert prediction["input_in_training_range"] is False
 
 
-def test_ready_gate_counts_days_tickets_and_candidate_days_separately() -> None:
+def test_ready_gate_can_count_threshold_candidate_days_separately() -> None:
     records = [
         _record(day, 1.02 if day < 2 else 0.95, 0.8)
+        for day in range(3)
+        for _ in range(4)
+    ]
+
+    artifact = fit_empirical_ev_calibration(
+        records,
+        bootstrap_samples=100,
+        min_days=3,
+        min_tickets=12,
+        candidate_min_raw_ev=1.0,
+        min_candidate_days=3,
+    )
+
+    assert artifact.ready is False
+    assert artifact.training_days == 3
+    assert artifact.tickets == 12
+    assert artifact.candidate_days == 2
+    assert artifact.ready_reasons == ("insufficient_candidate_days",)
+    assert artifact.trained_through_date == "2026-01-03"
+    assert artifact.as_dict()["ready"] is False
+    assert artifact.predict(1.02)["empirical_ev"] is not None
+
+
+def test_ready_gate_counts_all_pregate_candidates_by_default() -> None:
+    records = [
+        _record(day, 0.95, 0.8)
         for day in range(3)
         for _ in range(4)
     ]
@@ -58,14 +84,10 @@ def test_ready_gate_counts_days_tickets_and_candidate_days_separately() -> None:
         min_candidate_days=3,
     )
 
-    assert artifact.ready is False
-    assert artifact.training_days == 3
-    assert artifact.tickets == 12
-    assert artifact.candidate_days == 2
-    assert artifact.ready_reasons == ("insufficient_candidate_days",)
-    assert artifact.trained_through_date == "2026-01-03"
-    assert artifact.as_dict()["ready"] is False
-    assert artifact.predict(1.02)["empirical_ev"] is not None
+    assert artifact.ready is True
+    assert artifact.candidate_days == 3
+    assert artifact.candidate_min_raw_ev == 0.0
+    assert artifact.ready_reasons == ()
 
 
 def test_weighted_pava_makes_bin_predictions_monotone() -> None:

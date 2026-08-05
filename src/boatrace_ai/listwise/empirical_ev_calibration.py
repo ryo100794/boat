@@ -410,7 +410,7 @@ def fit_empirical_ev_calibration(
     min_local_candidates: int = 50,
     min_local_candidate_days: int = 20,
     min_local_ess: float = 10.0,
-    candidate_min_raw_ev: float = 1.0,
+    candidate_min_raw_ev: float = 0.0,
     shape_constraint: str = "isotonic",
     quantile_method: str = "linear",
 ) -> EmpiricalEVCalibrationArtifact:

@@ -332,7 +332,7 @@ def walk_forward_decision_v38_lcb(
             min_local_candidates=minimum_local_candidates,
             min_local_candidate_days=minimum_local_candidate_days,
             min_local_ess=minimum_local_ess,
-            candidate_min_raw_ev=1.0,
+            candidate_min_raw_ev=0.0,
             min_rank_days=max(minimum_ledger_days, MINIMUM_RANK_DAYS),
             min_rank_tickets=max(
                 minimum_ledger_candidates, MINIMUM_RANK_CANDIDATES

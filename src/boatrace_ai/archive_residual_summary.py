@@ -353,12 +353,16 @@ def apply_archive_residual_summary(
                     "training_days",
                     "tickets",
                     "candidate_days",
+                    "candidate_min_raw_ev",
                     "context_ready_cells",
                     "context_cells",
                     "excluded_non_past_records",
                 )
                 if calibration.get(key) is not None
             }
+            summary["residual_candidate_population"] = selected.get(
+                "candidate_population"
+            )
     summary["residual_purchase_policies"] = compact_policies
     nested_candidates = [
         temporal.get("mature_stacked_contextual_value"),
@@ -463,6 +467,18 @@ def apply_archive_residual_summary(
             "nested_value_calibration_ready_reasons": nested_calibration.get(
                 "ready_reasons"
             ),
+            "nested_value_calibration_training_days": nested_calibration.get(
+                "training_days"
+            ),
+            "nested_value_calibration_tickets": nested_calibration.get(
+                "tickets"
+            ),
+            "nested_value_calibration_candidate_days": nested_calibration.get(
+                "candidate_days"
+            ),
+            "nested_value_calibration_candidate_min_raw_ev": (
+                nested_calibration.get("candidate_min_raw_ev")
+            ),
             "nested_value_calibration_bins": _public_calibration_bins(
                 nested_bin_source
             ),
@@ -470,6 +486,9 @@ def apply_archive_residual_summary(
                 "context_ready_cells"
             ),
             "nested_value_context_cells": nested_context_cells,
+            "nested_value_candidate_population": nested.get(
+                "candidate_population"
+            ),
             "nested_value_calibration_candidates": nested.get(
                 "calibration_ledger_candidates"
             ),

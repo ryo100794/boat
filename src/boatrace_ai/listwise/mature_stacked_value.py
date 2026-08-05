@@ -108,7 +108,7 @@ def evaluate_mature_stacked_value(
         min_days=VALUE_CALIBRATION_DAYS,
         min_tickets=1_000,
         min_candidate_days=80,
-        candidate_min_raw_ev=1.0,
+        candidate_min_raw_ev=0.0,
         min_rank_days=90,
         min_rank_tickets=1_000,
         min_cell_days=60,
