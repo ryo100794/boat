@@ -4420,6 +4420,31 @@ def test_historical_feature_search_command_accepts_mature_followup(tmp_path) -> 
     assert command[command.index("--as-of-date") + 1] == "2026-01-21"
 
 
+def test_combined_feature_search_command_accepts_mature_followup(
+    tmp_path,
+) -> None:
+    command, _output = build_command(
+        _job(
+            "combined_feature_search",
+            {
+                "evaluation_date": "2026-01-21",
+                "mature_long_followup": True,
+                "mature_long_from_date": "2025-07-26",
+                "mature_long_through_date": "2026-08-05",
+                "mature_long_calibration_through": "2026-01-21",
+                "mature_long_temporal_component": (
+                    "mature_stacked_contextual_value_daily_refit"
+                ),
+            },
+        ),
+        app_root=tmp_path,
+        python=tmp_path / "python",
+        db="postgresql://test",
+    )
+
+    assert command[command.index("--as-of-date") + 1] == "2026-01-21"
+
+
 def test_historical_feature_search_rejects_invalid_mature_boundaries(
     tmp_path,
 ) -> None:

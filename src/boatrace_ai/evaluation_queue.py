@@ -2912,10 +2912,6 @@ def build_command(
         if not isinstance(mature_long_followup, bool):
             raise ValueError("mature_long_followup must be a boolean")
         if mature_long_followup:
-            if task_type != "listwise_feature_search":
-                raise ValueError(
-                    "mature_long_followup is supported only for listwise_feature_search"
-                )
             mature_from = _date(params, "mature_long_from_date")
             mature_through = _date(params, "mature_long_through_date")
             mature_cutoff = _date(params, "mature_long_calibration_through")
