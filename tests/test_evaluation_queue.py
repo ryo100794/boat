@@ -3760,6 +3760,35 @@ def test_worker_sets_database_memory_defaults_without_overriding(monkeypatch) ->
     assert os.environ["BOATRACE_PG_APPLICATION_NAME"] == "boatrace_evaluator"
     assert os.environ["BOATRACE_PG_WORK_MEM"] == "256MB"
 
+def test_worker_source_revision_prefers_valid_environment(monkeypatch, tmp_path) -> None:
+    revision = "A" * 40
+    monkeypatch.setenv("BOATRACE_SOURCE_REVISION", revision)
+
+    assert evaluation_queue._worker_source_revision(tmp_path) == revision.lower()
+
+
+def test_worker_source_revision_reads_git_head(monkeypatch, tmp_path) -> None:
+    revision = "b" * 40
+    monkeypatch.delenv("BOATRACE_SOURCE_REVISION", raising=False)
+
+    class Completed:
+        stdout = revision + "\n"
+
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(evaluation_queue.subprocess, "run", fake_run)
+
+    assert evaluation_queue._worker_source_revision(tmp_path) == revision
+    assert observed["command"] == ["git", "rev-parse", "HEAD"]
+    assert observed["cwd"] == tmp_path
+    assert observed["timeout"] == 5.0
+
+
 
 def test_standardized_workspace_rotates_stale_protocol_metadata(tmp_path) -> None:
     current = tmp_path / "data/models/standardized_365d_v2"

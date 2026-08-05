@@ -234,8 +234,18 @@ def archive_oracle_audit_status(
                 "nested_value_promotion_eligible",
                 metrics.get("promotion_eligible"),
             ),
+            "source_revision": metrics.get("source_revision"),
         }
 
+    selected_public = compact(running or queued or completed)
+    snapshot_generated_at = max(
+        (
+            str(job.get("updated_at"))
+            for job in (running, queued, completed)
+            if isinstance(job, dict) and job.get("updated_at")
+        ),
+        default=None,
+    )
     completed_public = compact(completed)
     public_state = {
         "scope": ["dashboard", "model-performance", "roadmap"],
@@ -253,12 +263,19 @@ def archive_oracle_audit_status(
             if (completed_public or {}).get("promotion_eligible") is True
             else "未承認"
         ),
+        "snapshot_generated_at": snapshot_generated_at,
+        "target_job_id": (selected_public or {}).get("job_id"),
+        "source_revision": (selected_public or {}).get("source_revision"),
         "running": compact(running),
         "queued": compact(queued),
         "latest_completed": completed_public,
     }
     logical_state = {
-        **public_state,
+        **{
+            key: value
+            for key, value in public_state.items()
+            if key != "snapshot_generated_at"
+        },
         "running": (
             {key: value for key, value in public_state["running"].items()
              if key != "updated_at"}

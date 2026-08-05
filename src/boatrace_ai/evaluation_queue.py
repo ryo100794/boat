@@ -9931,10 +9931,31 @@ def _configure_worker_database_memory() -> None:
     os.environ.setdefault("BOATRACE_PG_WORK_MEM", "128MB")
 
 
+def _worker_source_revision(app_root: Path) -> str | None:
+    """Capture the code revision once, before this worker claims any jobs."""
+    configured = str(os.environ.get("BOATRACE_SOURCE_REVISION") or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F]{40,64}", configured):
+        return configured.lower()
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=app_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = completed.stdout.strip()
+    return revision.lower() if re.fullmatch(r"[0-9a-fA-F]{40,64}", revision) else None
+
+
 def run_worker(args: argparse.Namespace) -> int:
     _configure_worker_database_memory()
     worker_id = args.worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     app_root = Path(args.app_root).resolve()
+    worker_source_revision = _worker_source_revision(app_root)
     python = Path(args.python)
     if not python.is_absolute():
         python = (app_root / python).absolute()
@@ -10036,6 +10057,9 @@ def run_worker(args: argparse.Namespace) -> int:
                     vm_limit_gib=args.vm_limit_gib,
                     nice=args.nice,
                 )
+                summary = dict(summary)
+                if worker_source_revision:
+                    summary.setdefault("source_revision", worker_source_revision)
                 with connection(args.db) as conn:
                     complete_job(
                         conn,

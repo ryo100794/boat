@@ -9593,9 +9593,12 @@ def _server_operational_audit_section(
     metrics = metrics if isinstance(metrics, dict) else {}
     fields = [
         ("queue_snapshot_id", audit.get("audit_snapshot_id")),
-        ("generated_at", now_jst().isoformat(timespec="seconds")),
-        ("source_revision", metrics.get("source_revision")),
-        ("target_job_id", selected.get("job_id")),
+        ("generated_at", audit.get("snapshot_generated_at")),
+        (
+            "source_revision",
+            audit.get("source_revision") or metrics.get("source_revision"),
+        ),
+        ("target_job_id", audit.get("target_job_id")),
         (
             "active_prediction_model_id",
             metrics.get("frozen_probability_model")

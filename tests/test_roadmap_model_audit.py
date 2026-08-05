@@ -37,6 +37,8 @@ def test_archive_audit_waits_for_running_and_queued_results() -> None:
     assert audit["queued"]["job_id"] == 12806
     assert audit["latest_completed"]["job_id"] == 12804
     assert len(audit["audit_snapshot_id"]) == 64
+    assert audit["snapshot_generated_at"] == "2026-08-05T08:00:00+09:00"
+    assert audit["target_job_id"] == 12805
     assert "heartbeat timestamps excluded" in audit["audit_snapshot_basis"]
 
 
@@ -161,6 +163,8 @@ def test_dashboard_and_roadmap_raw_html_share_server_audit_snapshot(
         assert 'id="serverOperationalAudit"' in raw_html
         assert snapshot in raw_html
         assert "active_prediction_model_id" in raw_html
+        assert "2026-08-05T08:00:00+09:00" in raw_html
+        assert "abc123" in raw_html
         assert "prediction-v44" in raw_html
         assert "WARMUP_CANDIDATE_DAYS" in raw_html
     assert "AUDIT-1" in roadmap_html
