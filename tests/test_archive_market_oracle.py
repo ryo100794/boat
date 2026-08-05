@@ -3,12 +3,16 @@ from __future__ import annotations
 import pytest
 
 from boatrace_ai.listwise.archive_market_oracle import (
+    EVALUATION_VERSION,
     PRIMARY_POLICY,
     V23_TOP5_ORACLE_POLICY,
     narrow_ev_diagnostic_policies,
     restrict_probabilities_to_available,
     temporal_residual_diagnostic,
 )
+
+def test_v33_archive_protocol_uses_new_evaluation_version() -> None:
+    assert EVALUATION_VERSION == 20
 
 
 def test_restrict_probabilities_renormalizes_after_withdrawal() -> None:
