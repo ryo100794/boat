@@ -103,7 +103,7 @@ def test_official_backfill_is_verified_and_isolated_by_source(tmp_path, monkeypa
         ) == 1
 
 
-def test_confirmed_five_boat_odds_are_terminally_excluded(
+def test_confirmed_non_six_boat_odds_are_terminally_excluded(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "official-five-boat.sqlite"
@@ -157,13 +157,13 @@ def test_confirmed_five_boat_odds_are_terminally_excluded(
             (race_id, OFFICIAL_SOURCE_KEY),
         ).fetchone()
         assert attempt["status"] == "excluded_non_six_boat"
-        assert "five-boat" in attempt["error"]
+        assert "non-six-boat" in attempt["error"]
 
         conn.execute(
             "UPDATE archive_closing_odds_attempts "
             "SET status = 'invalid', error = ? WHERE race_id = ?",
             (
-                "ValueError: official trifecta odds are incomplete: 60/120",
+                "ValueError: winning payout mismatch: odds=4.2 expected=420 actual=350",
                 race_id,
             ),
         )
@@ -176,6 +176,57 @@ def test_confirmed_five_boat_odds_are_terminally_excluded(
         assert replay["reclassified_non_six_boat"] == 1
         assert replay["targets"] == 0
         assert replay["remaining"] == 0
+
+
+def test_confirmed_four_boat_payout_mismatch_is_terminally_excluded(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "official-four-boat.sqlite"
+    init_db(db_path)
+    with connection(db_path) as conn:
+        race_id = upsert_race(
+            conn,
+            {
+                "race_date": "2026-06-01",
+                "jcd": "02",
+                "venue_name": "戸田",
+                "rno": 2,
+                "status": "final",
+            },
+        )
+        conn.execute(
+            "INSERT INTO payouts(race_id, bet_type, combination, payout_yen) "
+            "VALUES (?, '3連単', '1-2-3', 1000)",
+            (race_id,),
+        )
+        for lane in range(1, 5):
+            conn.execute(
+                "INSERT INTO race_results(race_id, lane, rank) VALUES (?, ?, ?)",
+                (race_id, lane, lane),
+            )
+        html = _official_matrix_html()
+        monkeypatch.setattr(
+            "boatrace_ai.official_closing_odds.fetch_text",
+            lambda *_args, **_kwargs: (200, html, html.encode()),
+        )
+
+        result = backfill_official_closing_odds(
+            conn,
+            from_date="2026-06-01",
+            through_date="2026-06-01",
+            sleep_seconds=0.0,
+        )
+
+        assert result["excluded_non_six_boat"] == 1
+        assert result["invalid"] == 0
+        assert result["remaining"] == 0
+        attempt = conn.execute(
+            "SELECT status, error FROM archive_closing_odds_attempts "
+            "WHERE race_id = ? AND source_key = ?",
+            (race_id, OFFICIAL_SOURCE_KEY),
+        ).fetchone()
+        assert attempt["status"] == "excluded_non_six_boat"
+        assert "4 result boats" in attempt["error"]
 
 
 def test_archive_queue_selects_official_backfill_module(tmp_path) -> None:

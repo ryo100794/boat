@@ -110,18 +110,14 @@ def reclassify_confirmed_non_six_boat_attempts(conn: Any) -> int:
         UPDATE archive_closing_odds_attempts
         SET status = 'excluded_non_six_boat'
         WHERE source_key = ? AND status = 'invalid'
-          AND error = ?
           AND (
             SELECT COUNT(DISTINCT rr.lane)
             FROM race_results rr
             WHERE rr.race_id = archive_closing_odds_attempts.race_id
               AND rr.rank IS NOT NULL
-          ) = 5
+          ) BETWEEN 1 AND 5
         """,
-        (
-            OFFICIAL_SOURCE_KEY,
-            "ValueError: official trifecta odds are incomplete: 60/120",
-        ),
+        (OFFICIAL_SOURCE_KEY,),
     )
     return max(0, int(cursor.rowcount or 0))
 
@@ -236,18 +232,17 @@ def backfill_official_closing_odds(
             confirmed_result_boats = _confirmed_result_boats(
                 conn, str(row["race_id"])
             )
-            confirmed_non_six = (
-                isinstance(exc, IncompleteOfficialTrifectaOdds)
-                and exc.odds_count == 60
-                and confirmed_result_boats == 5
-            )
+            confirmed_non_six = 0 < confirmed_result_boats < 6
             if confirmed_non_six:
                 counters["excluded_non_six_boat"] += 1
                 record_attempt(
                     conn,
                     race_id=row["race_id"],
                     status="excluded_non_six_boat",
-                    error="confirmed five-boat race: official odds contain 60/120",
+                    error=(
+                        "confirmed non-six-boat race: "
+                        f"{confirmed_result_boats} result boats"
+                    ),
                     source_key=OFFICIAL_SOURCE_KEY,
                 )
             else:
