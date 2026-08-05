@@ -6118,6 +6118,11 @@ def score_real_odds_races(
                 "source_update_time": snapshot.get("source_update_time"),
                 "input_snapshot_age_seconds": snapshot_age,
                 "odds_deadline_at": snapshot.get("odds_deadline_at"),
+                "betting_deadline_at": snapshot.get("betting_deadline_at"),
+                "decision_lead_seconds": int(
+                    snapshot.get("target_offset_seconds")
+                    or MODEL_DECISION_LEAD_MINUTES * 60
+                ),
                 "odds_checkpoints": odds_checkpoints,
                 **official_closing_by_race.get(race_id, {}),
                 **(

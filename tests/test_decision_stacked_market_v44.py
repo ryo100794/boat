@@ -20,6 +20,8 @@ def _race(day: date, index: int) -> dict:
         "snapshot_id": index,
         "captured_at": f"{day.isoformat()}T10:00:00+09:00",
         "odds_deadline_at": f"{day.isoformat()}T10:01:00+09:00",
+        "betting_deadline_at": f"{day.isoformat()}T10:06:00+09:00",
+        "decision_lead_seconds": 300.0,
         "input_snapshot_age_seconds": 60.0,
         "closing_odds": {"1-2-3": 99.0},
     }
@@ -115,5 +117,7 @@ def test_v44_waits_for_training_history() -> None:
     assert result["ready_reasons"] == ["training_days_below_minimum"]
     assert result["decision_time_boundary_all_passed"] is True
     assert result["decision_time_boundary_violations"] == 0
+    assert result["minimum_decision_lead_seconds"] == 300.0
+    assert result["required_minimum_decision_lead_seconds"] == 300.0
     assert result["maximum_input_snapshot_age_seconds"] == 60.0
     assert result["allowed_input_snapshot_age_seconds"] == 65.0

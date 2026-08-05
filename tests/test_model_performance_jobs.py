@@ -105,6 +105,9 @@ def test_model_report_contains_live_evaluation_table() -> None:
     assert "renderNestedValueAudit(jobs)" in MODEL_REPORT_HTML
     assert "nested_value_decile_audit" in MODEL_REPORT_HTML
     assert "decisionStackEvidence" in MODEL_REPORT_HTML
+    assert "購入余裕" in MODEL_REPORT_HTML
+    assert "minimum_decision_lead_seconds" in MODEL_REPORT_HTML
+    assert "required_minimum_decision_lead_seconds" in MODEL_REPORT_HTML
     assert "contextualValueEvidence" in MODEL_REPORT_HTML
     assert "局所ready" in MODEL_REPORT_HTML
     assert "candidate_decision_count" in MODEL_REPORT_HTML
@@ -206,6 +209,8 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
         "official_closing_fields_used": False,
         "decision_time_boundary_all_passed": True,
         "decision_time_boundary_violations": 0,
+        "minimum_decision_lead_seconds": 300.0,
+        "required_minimum_decision_lead_seconds": 300.0,
         "maximum_input_snapshot_age_seconds": 60.0,
         "allowed_input_snapshot_age_seconds": 65.0,
         "training_days": 30,
@@ -389,6 +394,8 @@ def test_database_evaluation_status_exposes_paired_payout_comparison(tmp_path) -
     assert status["jobs"][0]["selected_stack"] == "market50_linear50"
     assert status["jobs"][0]["official_closing_fields_used"] is False
     assert status["jobs"][0]["decision_time_boundary_all_passed"] is True
+    assert status["jobs"][0]["minimum_decision_lead_seconds"] == 300.0
+    assert status["jobs"][0]["required_minimum_decision_lead_seconds"] == 300.0
     assert status["jobs"][0]["calibration_context_ready_cells"] == 2
     assert status["jobs"][0]["nested_value_calibration_days"] == 30
     assert status["jobs"][0]["nested_value_calibration_bins"][0][

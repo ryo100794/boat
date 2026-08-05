@@ -704,7 +704,8 @@ function decisionStackEvidence(x){
   const stack=x.selected_stack?` / stack ${x.selected_stack} M${ratio(weights.market)} L${ratio(weights.linear)} N${ratio(weights.nonlinear)}`:"";
   const gate=x.challenger_selection_gate_pass===true?"凍結可":x.challenger_selection_gate_pass===false?"凍結不可":"選択待ち";
   const closing=x.official_closing_fields_used===false?"終値不使用":"終値境界未確認";
-  const time=x.decision_time_boundary_all_passed===true?`締切前OK 最大${ratio(x.maximum_input_snapshot_age_seconds)}秒/${ratio(x.allowed_input_snapshot_age_seconds)}秒`:`時刻境界未確認(${fmt(x.decision_time_boundary_violations)})`;
+  const lead=x.minimum_decision_lead_seconds==null?"":` / 購入余裕 ${ratio(x.minimum_decision_lead_seconds)}秒/${ratio(x.required_minimum_decision_lead_seconds)}秒`;
+  const time=x.decision_time_boundary_all_passed===true?`締切前OK 最大${ratio(x.maximum_input_snapshot_age_seconds)}秒/${ratio(x.allowed_input_snapshot_age_seconds)}秒${lead}`:`時刻境界未確認(${fmt(x.decision_time_boundary_violations)})`;
   return `判断時モデル ${fmt(x.training_days)}日/${fmt(x.training_races)}R ${closing} ${time}${stack} / ${gate}`;
 }
 function contextualValueEvidence(x){

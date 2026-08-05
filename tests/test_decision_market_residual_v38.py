@@ -24,6 +24,8 @@ def _race(day: date, index: int) -> dict:
         "snapshot_id": index,
         "captured_at": f"{race_date}T10:00:00+09:00",
         "odds_deadline_at": f"{race_date}T10:01:00+09:00",
+        "betting_deadline_at": f"{race_date}T10:06:00+09:00",
+        "decision_lead_seconds": 300.0,
         "input_snapshot_age_seconds": 60.0,
         "official_closing_odds": {"1-2-3": 1.0},
         "official_closing_market_probabilities": {"1-2-3": 1.0},
@@ -64,6 +66,13 @@ def test_decision_projection_rejects_post_deadline_and_stale_snapshots() -> None
         subject.decision_time_race({
             **race,
             "input_snapshot_age_seconds": 66.0,
+        })
+
+    with pytest.raises(ValueError, match="required T-5 lead"):
+        subject.decision_time_race({
+            **race,
+            "betting_deadline_at": "2026-01-01T10:05:59+09:00",
+            "decision_lead_seconds": 299.0,
         })
 
 
@@ -121,6 +130,8 @@ def test_ready_training_keeps_outer_dates_strictly_after_cutoff(monkeypatch) -> 
     assert result["decision_time_boundary_all_passed"] is True
     assert result["decision_time_boundary_violations"] == 0
     assert result["maximum_input_snapshot_age_seconds"] == 60.0
+    assert result["minimum_decision_lead_seconds"] == 300.0
+    assert result["required_minimum_decision_lead_seconds"] == 300.0
     assert observed["num_threads"] == 2
     assert all(row["race_date"] <= "2026-01-05" for row in observed["calibration"])
     assert all(row["race_date"] > "2026-01-05" for row in observed["evaluation"])

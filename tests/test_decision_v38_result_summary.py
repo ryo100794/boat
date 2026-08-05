@@ -9,6 +9,8 @@ def test_v38_summary_exposes_frozen_probability_selection_audit() -> None:
         "training_status": "ready",
         "official_closing_fields_used": False,
         "market_probability_source": "decision_snapshot_odds",
+        "minimum_decision_lead_seconds": 300.0,
+        "required_minimum_decision_lead_seconds": 300.0,
         "training_from": "2026-07-20",
         "training_through": "2026-08-18",
         "training_days": 30,
@@ -40,6 +42,8 @@ def test_v38_summary_exposes_frozen_probability_selection_audit() -> None:
 
     assert summary["model"] == payload["model"]
     assert summary["official_closing_fields_used"] is False
+    assert summary["minimum_decision_lead_seconds"] == 300.0
+    assert summary["required_minimum_decision_lead_seconds"] == 300.0
     assert summary["training_days"] == 30
     assert summary["evaluation_days"] == 7
     assert summary["log_loss_delta_vs_market"] == -0.01

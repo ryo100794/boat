@@ -35,6 +35,8 @@ REQUIRED_KEYS = (
     "snapshot_id",
     "captured_at",
     "odds_deadline_at",
+    "betting_deadline_at",
+    "decision_lead_seconds",
     "input_snapshot_age_seconds",
 )
 OPTIONAL_AUDIT_KEYS = (
@@ -44,6 +46,7 @@ OPTIONAL_AUDIT_KEYS = (
     "historical_return_multipliers",
 )
 MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS = 65.0
+REQUIRED_MINIMUM_DECISION_LEAD_SECONDS = 300.0
 FORBIDDEN_SOURCE_PREFIXES = (
     "official_closing_",
     "closing_",
@@ -73,14 +76,26 @@ def decision_time_race(race: Mapping[str, Any]) -> dict[str, Any]:
     deadline = datetime.fromisoformat(
         str(race["odds_deadline_at"]).replace("Z", "+00:00")
     )
-    if captured.tzinfo is None or deadline.tzinfo is None:
+    betting_deadline = datetime.fromisoformat(
+        str(race["betting_deadline_at"]).replace("Z", "+00:00")
+    )
+    if any(value.tzinfo is None for value in (captured, deadline, betting_deadline)):
         raise ValueError("decision-time timestamps must include timezone offsets")
     age = float(race["input_snapshot_age_seconds"])
+    declared_lead = float(race["decision_lead_seconds"])
     if not math.isfinite(age) or not 0.0 <= age <= MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS:
         raise ValueError("decision-time snapshot age is outside the allowed range")
     observed_age = (deadline - captured).total_seconds()
     if captured > deadline or abs(observed_age - age) > 1.0:
         raise ValueError("decision-time snapshot violates the odds deadline boundary")
+    observed_lead = (betting_deadline - deadline).total_seconds()
+    if (
+        not math.isfinite(declared_lead)
+        or declared_lead < REQUIRED_MINIMUM_DECISION_LEAD_SECONDS
+        or observed_lead < REQUIRED_MINIMUM_DECISION_LEAD_SECONDS
+        or abs(observed_lead - declared_lead) > 1.0
+    ):
+        raise ValueError("decision-time snapshot lacks the required T-5 lead")
     result = {key: race[key] for key in REQUIRED_KEYS}
     for key in OPTIONAL_AUDIT_KEYS:
         if key in race:
@@ -125,6 +140,13 @@ def fit_decision_time_market_residual(
         "feature_time_boundary": "at_or_before_odds_deadline_at",
         "decision_time_boundary_all_passed": True,
         "decision_time_boundary_violations": 0,
+        "minimum_decision_lead_seconds": min(
+            float(race["decision_lead_seconds"])
+            for race in sanitized
+        ) if sanitized else None,
+        "required_minimum_decision_lead_seconds": (
+            REQUIRED_MINIMUM_DECISION_LEAD_SECONDS
+        ),
         "maximum_input_snapshot_age_seconds": max(
             float(race["input_snapshot_age_seconds"])
             for race in sanitized

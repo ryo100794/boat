@@ -4070,6 +4070,12 @@ def summarize_result(payload: dict[str, Any]) -> dict[str, Any]:
             "decision_time_boundary_violations": payload.get(
                 "decision_time_boundary_violations"
             ),
+            "minimum_decision_lead_seconds": payload.get(
+                "minimum_decision_lead_seconds"
+            ),
+            "required_minimum_decision_lead_seconds": payload.get(
+                "required_minimum_decision_lead_seconds"
+            ),
             "maximum_input_snapshot_age_seconds": payload.get(
                 "maximum_input_snapshot_age_seconds"
             ),

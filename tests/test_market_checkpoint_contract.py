@@ -462,6 +462,9 @@ def test_race_contract_keeps_local_and_official_closing_separate(
     assert set(race["official_closing_odds"].values()) == {30.0}
     assert race["official_closing_source"] == SOURCE_KEY
     assert race["official_closing_provenance"]["payload_sha256"] == "a" * 64
+    assert race["betting_deadline_at"] == BETTING_DEADLINE.isoformat()
+    assert race["decision_lead_seconds"] == 300
+    assert race["odds_deadline_at"] < race["betting_deadline_at"]
     assert len(race["odds_checkpoints"]) == 5
     assert dataset["official_closing_odds_races"] == 1
     assert dataset["primary_official_closing_odds_races"] == 0

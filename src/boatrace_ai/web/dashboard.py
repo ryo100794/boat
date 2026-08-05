@@ -3543,6 +3543,12 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                 "decision_time_boundary_violations": metrics.get(
                     "decision_time_boundary_violations"
                 ),
+                "minimum_decision_lead_seconds": metrics.get(
+                    "minimum_decision_lead_seconds"
+                ),
+                "required_minimum_decision_lead_seconds": metrics.get(
+                    "required_minimum_decision_lead_seconds"
+                ),
                 "maximum_input_snapshot_age_seconds": metrics.get(
                     "maximum_input_snapshot_age_seconds"
                 ),

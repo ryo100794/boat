@@ -15,6 +15,7 @@ from .decision_market_residual_v38 import (
     MAXIMUM_INPUT_SNAPSHOT_AGE_SECONDS,
     MAXIMUM_TOP5_HIT_RATE_DEGRADATION,
     MINIMUM_SELECTION_HOLDOUT_DAYS,
+    REQUIRED_MINIMUM_DECISION_LEAD_SECONDS,
     _iso_date,
     decision_time_race,
 )
@@ -68,6 +69,13 @@ def fit_decision_time_stacked_market(
         "training_from": training_dates[0] if training_dates else None,
         "decision_time_boundary_all_passed": True,
         "decision_time_boundary_violations": 0,
+        "minimum_decision_lead_seconds": (
+            min(float(race["decision_lead_seconds"]) for race in sanitized)
+            if sanitized else None
+        ),
+        "required_minimum_decision_lead_seconds": (
+            REQUIRED_MINIMUM_DECISION_LEAD_SECONDS
+        ),
         "maximum_input_snapshot_age_seconds": (
             max(
                 float(race["input_snapshot_age_seconds"])
