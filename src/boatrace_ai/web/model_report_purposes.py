@@ -226,6 +226,31 @@ def _purpose_evaluation(job: dict[str, Any], key: str) -> dict[str, Any]:
             "ticket_ranking_roi": ranking.get("roi"),
             "ticket_ranking_roi_ci95_lower": ranking.get("roi_ci95_lower"),
         }
+        if job.get("model") == "ticket_utility_calibration_aligned_v33":
+            required = required + (
+                "ticket_ranking_roi_excluding_largest_hit",
+                "ticket_ranking_minimum_temporal_block_roi",
+                "selection_lower_quantile",
+                "selection_robustness_passed",
+                "calibration_generator_transport",
+            )
+            values.update({
+                "ticket_ranking_roi_excluding_largest_hit": ranking.get(
+                    "roi_excluding_largest_hit"
+                ),
+                "ticket_ranking_minimum_temporal_block_roi": ranking.get(
+                    "minimum_temporal_block_roi"
+                ),
+                "selection_lower_quantile": job.get(
+                    "residual_selection_lower_quantile"
+                ),
+                "selection_robustness_passed": job.get(
+                    "residual_selection_robustness_passed"
+                ),
+                "calibration_generator_transport": job.get(
+                    "residual_calibration_generator_transport"
+                ),
+            })
         profile = "ticket_utility_ranking"
     else:
         required = PURPOSE_REQUIREMENTS[key]

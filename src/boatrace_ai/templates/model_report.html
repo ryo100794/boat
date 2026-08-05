@@ -517,7 +517,21 @@ function ticketRole(x){
 function ticketRankingDiagnostic(x){
   const r=x.residual_ranking_metrics||{};
   if(!Object.keys(r).length) return "-";
-  return `${pct(r.hit_rate)} / ROI ${ratio(r.roi)} / LCB ${ratio(r.roi_ci95_lower)}`;
+  const parts=[`${pct(r.hit_rate)} / ROI ${ratio(r.roi)} / LCB ${ratio(r.roi_ci95_lower)}`];
+  if(r.roi_excluding_largest_hit!=null) parts.push(`最大除外 ${ratio(r.roi_excluding_largest_hit)}`);
+  if(r.minimum_temporal_block_roi!=null) parts.push(`最低block ${ratio(r.minimum_temporal_block_roi)}`);
+  if(x.residual_selection_lower_quantile!=null){
+    parts.push(`選択q ${ratio(x.residual_selection_lower_quantile)}`);
+  }
+  if(x.residual_selection_robustness_passed!=null){
+    parts.push(x.residual_selection_robustness_passed?"選択gate合格":"選択gate不合格");
+  }
+  const t=x.residual_calibration_generator_transport||{};
+  if(Object.keys(t).length){
+    const aligned=t.frozen===true&&t.ranking_sha256_match===true&&t.probability_artifact_match===true;
+    parts.push(aligned?"校正生成器一致":"校正生成器不一致");
+  }
+  return parts.join(" / ");
 }
 function promotionFailures(x){
   const failed=[...(x.promotion_gate_failed||[]),...(x.prediction_deployment_gate_failed||[])];

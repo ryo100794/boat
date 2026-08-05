@@ -3772,6 +3772,42 @@ def _database_evaluation_status(db_path: Path) -> dict[str, Any]:
                     if isinstance(metrics.get("residual_selection"), dict)
                     else None
                 ),
+                "residual_validation_design": metrics.get(
+                    "residual_validation_design"
+                ),
+                "residual_selection_rule": metrics.get(
+                    "residual_selection_rule"
+                ),
+                "residual_selection_robustness_gate": (
+                    metrics.get("residual_selection_robustness_gate")
+                    if isinstance(
+                        metrics.get("residual_selection_robustness_gate"), dict
+                    )
+                    else None
+                ),
+                "residual_selection_robustness_passed": metrics.get(
+                    "residual_selection_robustness_passed"
+                ),
+                "residual_candidate_family_size": metrics.get(
+                    "residual_candidate_family_size"
+                ),
+                "residual_selection_lower_quantile": _float_or_none(
+                    metrics.get("residual_selection_lower_quantile")
+                ),
+                "residual_familywise_selection_alpha": _float_or_none(
+                    metrics.get("residual_familywise_selection_alpha")
+                ),
+                "residual_selection_bootstrap_samples": metrics.get(
+                    "residual_selection_bootstrap_samples"
+                ),
+                "residual_calibration_generator_transport": (
+                    metrics.get("residual_calibration_generator_transport")
+                    if isinstance(
+                        metrics.get("residual_calibration_generator_transport"),
+                        dict,
+                    )
+                    else None
+                ),
                 "residual_ranking_metrics": (
                     metrics.get("residual_ranking_metrics")
                     if isinstance(metrics.get("residual_ranking_metrics"), dict)

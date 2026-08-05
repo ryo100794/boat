@@ -226,12 +226,75 @@ def test_ticket_utility_ranking_uses_role_specific_required_metrics() -> None:
     assert "ticket_ranking_roi_ci95_lower" in evaluation["required_metrics"]
 
 
+def test_v33_ticket_utility_requires_selection_and_transport_audit() -> None:
+    job = {
+        "name": "archive-v33",
+        "model": "ticket_utility_calibration_aligned_v33",
+        "kind": "archive_market_oracle",
+        "status": "完了",
+        "evaluation_from": "2026-07-01",
+        "evaluation_through": "2026-08-05",
+        "evaluated_races": 4659,
+        "residual_selection": {
+            "label_scheme": "gross_return_poisson_c50",
+            "tree_preset": "compact",
+            "top_k": 3,
+        },
+        "residual_selection_lower_quantile": 0.05 / 18,
+        "residual_selection_robustness_passed": False,
+        "residual_calibration_generator_transport": {
+            "frozen": True,
+            "ranking_sha256_match": True,
+            "probability_artifact_match": True,
+        },
+        "residual_ranking_metrics": {
+            "hit_rate": 0.2478,
+            "roi": 0.91,
+            "roi_ci95_lower": 0.82,
+            "roi_excluding_largest_hit": 0.88,
+            "minimum_temporal_block_roi": 0.89,
+        },
+    }
+
+    groups = {group["key"]: group for group in evaluation_purpose_groups([job])}
+    evaluation = groups["ticket_value"]["models"][0]["purpose_evaluation"]
+    assert evaluation["complete"] is True
+    assert "selection_lower_quantile" in evaluation["required_metrics"]
+    assert "selection_robustness_passed" in evaluation["required_metrics"]
+    assert "calibration_generator_transport" in evaluation["required_metrics"]
+
+
+def test_v33_ticket_utility_is_incomplete_without_generator_transport() -> None:
+    job = {
+        "model": "ticket_utility_calibration_aligned_v33",
+        "residual_selection": {"label_scheme": "winner", "top_k": 1},
+        "residual_selection_lower_quantile": 0.05 / 18,
+        "residual_selection_robustness_passed": False,
+        "residual_ranking_metrics": {
+            "hit_rate": 0.2,
+            "roi": 0.9,
+            "roi_ci95_lower": 0.8,
+            "roi_excluding_largest_hit": 0.85,
+            "minimum_temporal_block_roi": 0.82,
+        },
+    }
+
+    groups = {group["key"]: group for group in evaluation_purpose_groups([job])}
+    evaluation = groups["ticket_value"]["models"][0]["purpose_evaluation"]
+    assert evaluation["complete"] is False
+    assert evaluation["missing_metrics"] == ["calibration_generator_transport"]
+
+
 def test_purpose_page_separates_ranking_diagnostic_from_formal_bankroll() -> None:
     assert "役割 / 教師" in MODEL_REPORT_HTML
     assert "順位診断 的中/ROI/LCB" in MODEL_REPORT_HTML
     assert "正式資金BT" in MODEL_REPORT_HTML
     assert "ticketRankingDiagnostic" in MODEL_REPORT_HTML
 
+    assert "最大除外" in MODEL_REPORT_HTML
+    assert "最低block" in MODEL_REPORT_HTML
+    assert "選択gate不合格" in MODEL_REPORT_HTML
+    assert "校正生成器一致" in MODEL_REPORT_HTML
 
 
 def test_no_bet_bankroll_does_not_count_roi_as_evaluated() -> None:
